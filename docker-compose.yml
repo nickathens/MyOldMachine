@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./skills:/app/skills
+    # Uncomment for Ollama on host machine:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"

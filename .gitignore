@@ -1,0 +1,15 @@
+# Environment
+.env
+*.pyc
+__pycache__/
+
+# Data (user-specific, not committed)
+data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
