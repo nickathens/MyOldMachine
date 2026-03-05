@@ -33,13 +33,7 @@ def get_token() -> str:
 
 def get_api_base() -> str:
     custom = os.environ.get("TELEGRAM_API_BASE", "")
-    if custom:
-        try:
-            httpx.get(f"{custom}/", timeout=2)
-            return custom
-        except Exception:
-            pass
-    return STANDARD_API
+    return custom if custom else STANDARD_API
 
 
 def api_url(token: str, method: str) -> str:

@@ -31,6 +31,8 @@ WEATHER_CODES = {
     51: "Light drizzle",
     53: "Moderate drizzle",
     55: "Dense drizzle",
+    56: "Light freezing drizzle",
+    57: "Dense freezing drizzle",
     61: "Slight rain",
     63: "Moderate rain",
     65: "Heavy rain",

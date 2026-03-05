@@ -558,7 +558,8 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lock = _get_user_lock(user_id)
 
     if lock.locked():
-        await update.message.reply_text("Still working on your previous request.")
+        await update.message.reply_text("Still working on your previous request. Please wait.")
+        return
 
     async with lock:
         attachments = await download_attachments(update, context)

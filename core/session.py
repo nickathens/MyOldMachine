@@ -4,10 +4,8 @@ Session management: conversation history, trimming, and daily reset.
 
 import json
 import logging
-import re
 from datetime import datetime, time
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -108,25 +106,23 @@ class SessionManager:
         return True
 
     def _smart_trim(self, history: list) -> list:
+        max_before_trim = self.config["max_messages_before_trim"]
         keep = self.config["keep_recent_messages"]
-        if len(history) <= keep:
+        if len(history) <= max_before_trim:
             return history
         recent = history[-keep:]
         older = history[:-keep]
-        trimmed = []
+        # From older messages, only keep decisions
+        preserved = []
         for msg in older:
             content = msg.get("content", "")
-            role = msg.get("role", "")
             is_decision = any(
                 kw.lower() in content.lower()
                 for kw in self.config["preserve_decision_keywords"]
             )
             if is_decision:
-                trimmed.append(msg)
-            elif role == "assistant" and len(content) > 2000:
-                trimmed.append({**msg, "content": content[:1500] + "\n[trimmed]"})
-            elif role == "user" and len(content) > 2000:
-                trimmed.append({**msg, "content": content[:1500] + "\n[trimmed]"})
-            else:
-                trimmed.append(msg)
-        return trimmed + recent
+                if len(content) > 2000:
+                    preserved.append({**msg, "content": content[:1500] + "\n[trimmed]"})
+                else:
+                    preserved.append(msg)
+        return preserved + recent

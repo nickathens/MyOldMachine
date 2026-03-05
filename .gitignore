@@ -4,7 +4,8 @@
 __pycache__/
 
 # Data (user-specific, not committed)
-data/
+data/*
+!data/.gitkeep
 
 # IDE
 .vscode/

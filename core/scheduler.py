@@ -4,7 +4,6 @@ Supports reminders and recurring tasks.
 """
 
 import asyncio
-import json
 import logging
 import re
 import sqlite3
@@ -12,8 +11,6 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
-
-import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +160,6 @@ class Scheduler:
         conn = _connect_db(self.db_path)
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM jobs WHERE run_at <= ?", (now.isoformat(),)).fetchall()
-        conn.close()
 
         for r in rows:
             job_id = r["job_id"]
@@ -181,24 +177,17 @@ class Scheduler:
             # Handle repeat or cleanup
             if repeat == "daily":
                 new_run = datetime.fromisoformat(r["run_at"]) + timedelta(days=1)
-                conn2 = _connect_db(self.db_path)
-                conn2.execute("UPDATE jobs SET run_at = ? WHERE job_id = ?",
-                              (new_run.isoformat(), job_id))
-                conn2.commit()
-                conn2.close()
+                conn.execute("UPDATE jobs SET run_at = ? WHERE job_id = ?",
+                             (new_run.isoformat(), job_id))
             elif repeat == "weekly":
                 new_run = datetime.fromisoformat(r["run_at"]) + timedelta(weeks=1)
-                conn2 = _connect_db(self.db_path)
-                conn2.execute("UPDATE jobs SET run_at = ? WHERE job_id = ?",
-                              (new_run.isoformat(), job_id))
-                conn2.commit()
-                conn2.close()
+                conn.execute("UPDATE jobs SET run_at = ? WHERE job_id = ?",
+                             (new_run.isoformat(), job_id))
             else:
-                # One-shot: remove
-                conn2 = _connect_db(self.db_path)
-                conn2.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
-                conn2.commit()
-                conn2.close()
+                conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+
+        conn.commit()
+        conn.close()
 
     async def _run_loop(self):
         while self._running:
