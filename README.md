@@ -112,9 +112,9 @@ User (Telegram) → Bot (Python) → LLM (any provider) → System (full access)
 | **claude** | Full (bash, files, web) | No | No | Claude Code CLI — runs `claude` subprocess. Most capable. Requires `claude login`. |
 | **claude-api** | No | No | No | Direct Anthropic API. Text-only, fast, reliable. |
 | **openai** | No | No | No | GPT-4o, GPT-4, etc. |
-| **gemini** | No | No | No | Google's models. Free tier available. |
+| **gemini** | No | No | No | Google's models. Free tier often has zero quota — consider OpenRouter or Ollama instead. |
 | **ollama** | No | Yes | Yes | Run any model locally. No API key needed. |
-| **openrouter** | No | No | Varies | Access 100+ models through one API. |
+| **openrouter** | No | No | Yes* | Access 100+ models through one API. ~25 free models available (no billing). |
 
 Set your provider in `.env`:
 ```
@@ -122,6 +122,32 @@ LLM_PROVIDER=claude       # or: claude-api, openai, gemini, ollama, openrouter
 LLM_MODEL=claude-sonnet-4-20250514
 LLM_API_KEY=              # Not needed for claude (CLI) or ollama
 ```
+
+### Free Options (no billing required)
+
+**Ollama** — runs locally, completely free, no API key. Good for machines with 8GB+ RAM:
+```
+LLM_PROVIDER=ollama
+LLM_MODEL=llama3.1:8b
+```
+
+**OpenRouter free models** — cloud-hosted, free API key from [openrouter.ai](https://openrouter.ai):
+```
+LLM_PROVIDER=openrouter
+LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+LLM_API_KEY=sk-or-v1-...
+```
+
+Available free models on OpenRouter (model IDs end in `:free`):
+| Model | Notes |
+|-------|-------|
+| `meta-llama/llama-3.3-70b-instruct:free` | Best free all-rounder (recommended) |
+| `google/gemma-3-27b-it:free` | Fast, Google's open model |
+| `qwen/qwen3-coder:free` | Best for coding tasks |
+| `nousresearch/hermes-3-llama-3.1-405b:free` | Largest free model |
+| `mistralai/mistral-small-3.1-24b-instruct:free` | Fast, multilingual |
+
+Full list: [openrouter.ai/models?q=free](https://openrouter.ai/models?q=free)
 
 ### Changing Provider After Install
 
@@ -288,13 +314,23 @@ Docker mode is a lighter deployment — no machine takeover, no system provision
 
 ## Troubleshooting
 
-### "Quota exceeded" error with Gemini
+### "Quota exceeded" or "Resource has been exhausted" error with Gemini
 
-Google's free tier may have zero quota for some models (especially `gemini-2.0-flash`). Options:
+Google's free Gemini tier frequently has zero quota. This is a Google-side issue, not a MyOldMachine bug. Options:
 
-1. **Try a different model** — edit `.env` and set `LLM_MODEL=gemini-1.5-flash`
+1. **Switch to OpenRouter with a free model** (recommended) — edit `.env`:
+   ```
+   LLM_PROVIDER=openrouter
+   LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+   LLM_API_KEY=sk-or-v1-YOUR_KEY
+   ```
+   Get a free API key at [openrouter.ai](https://openrouter.ai) (no billing required).
 2. **Enable billing** on your Google AI project at [ai.google.dev](https://ai.google.dev)
-3. **Switch provider** — see [Changing Provider After Install](#changing-provider-after-install)
+3. **Use Ollama** for free local inference (no API key needed, but slower on old hardware)
+
+### "No endpoints found" error with OpenRouter
+
+The model ID is wrong. OpenRouter model IDs are specific — they look like `meta-llama/llama-3.3-70b-instruct:free`. Check the exact ID at [openrouter.ai/models](https://openrouter.ai/models). Free models end with `:free`.
 
 ### Install hangs during Homebrew (macOS)
 

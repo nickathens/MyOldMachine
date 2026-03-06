@@ -247,9 +247,9 @@ LLM_PROVIDERS = [
     ("claude", "Claude Code CLI — full machine control via tool-use (requires Node.js + claude CLI)"),
     ("claude-api", "Anthropic Claude API — text-only, no tool-use, requires API key ($)"),
     ("openai", "OpenAI GPT — text-only, requires API key ($)"),
-    ("gemini", "Google Gemini — text-only, requires API key (free tier available)"),
+    ("gemini", "Google Gemini — text-only, requires API key (free tier often has zero quota)"),
     ("ollama", "Ollama — free, runs locally on your machine (no API key)"),
-    ("openrouter", "OpenRouter — many models, one API key ($)"),
+    ("openrouter", "OpenRouter — many models, one API key (free models available, no billing required)"),
 ]
 
 DEFAULT_MODELS = {
@@ -258,8 +258,17 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o",
     "gemini": "gemini-2.0-flash",
     "ollama": "llama3.1:8b",
-    "openrouter": "anthropic/claude-sonnet-4-20250514",
+    "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
 }
+
+# Free models available on OpenRouter (no billing required)
+OPENROUTER_FREE_MODELS = [
+    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — best free all-rounder (recommended)"),
+    ("google/gemma-3-27b-it:free", "Gemma 3 27B — Google's open model, fast"),
+    ("qwen/qwen3-coder:free", "Qwen3 Coder — best free model for coding tasks"),
+    ("nousresearch/hermes-3-llama-3.1-405b:free", "Hermes 3 405B — largest free model, slowest"),
+    ("mistralai/mistral-small-3.1-24b-instruct:free", "Mistral Small 3.1 24B — fast, multilingual"),
+]
 
 # Providers that need an API key
 API_KEY_PROVIDERS = {"claude-api", "openai", "gemini", "openrouter"}
@@ -556,8 +565,25 @@ def _run_wizard_steps(detected_os: str) -> dict:
         "Pick your provider:", LLM_PROVIDERS, default="claude",
     )
 
-    default_model = DEFAULT_MODELS.get(config["llm_provider"], "")
-    config["llm_model"] = ask(f"Model", default=default_model)
+    if config["llm_provider"] == "openrouter":
+        # Show free model options for OpenRouter
+        print()
+        print(f"  {BOLD}Free models (no billing required):{NC}")
+        for i, (model_id, desc) in enumerate(OPENROUTER_FREE_MODELS, 1):
+            print(f"    {i}. {desc}")
+            print(f"       ID: {model_id}")
+        print()
+        print(f"  Or enter any OpenRouter model ID (see openrouter.ai/models)")
+        print()
+        default_model = DEFAULT_MODELS["openrouter"]
+        raw = ask(f"Model (number or ID)", default=default_model)
+        if raw.isdigit() and 1 <= int(raw) <= len(OPENROUTER_FREE_MODELS):
+            config["llm_model"] = OPENROUTER_FREE_MODELS[int(raw) - 1][0]
+        else:
+            config["llm_model"] = raw
+    else:
+        default_model = DEFAULT_MODELS.get(config["llm_provider"], "")
+        config["llm_model"] = ask(f"Model", default=default_model)
 
     if config["llm_provider"] == "claude":
         # Claude CLI — no API key, but needs claude CLI installed
@@ -568,6 +594,17 @@ def _run_wizard_steps(detected_os: str) -> dict:
         config["llm_api_key"] = ""
         config["ollama_url"] = ask("Ollama URL", default="http://localhost:11434", required=False)
         print(f"  {YELLOW}Make sure Ollama is running: ollama serve{NC}")
+    elif config["llm_provider"] == "openrouter":
+        # Check if user picked a free model
+        is_free = config["llm_model"].endswith(":free")
+        if is_free:
+            print(f"  {GREEN}Free model selected — no billing required.{NC}")
+            print(f"  You still need an OpenRouter API key (free to create).")
+            print(f"    1. Go to https://openrouter.ai and sign up")
+            print(f"    2. Go to Keys → Create Key")
+            print(f"    3. Paste it below")
+            print()
+        config["llm_api_key"] = ask(f"OpenRouter API key", secret=True)
     elif config["llm_provider"] in API_KEY_PROVIDERS:
         config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
     else:
