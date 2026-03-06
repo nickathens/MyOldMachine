@@ -244,12 +244,12 @@ def detect_machine_specs():
 
 
 LLM_PROVIDERS = [
-    ("claude", "Claude Code CLI — full machine control via tool-use (requires Node.js + claude CLI)"),
-    ("claude-api", "Anthropic Claude API — text-only, no tool-use, requires API key ($)"),
-    ("openai", "OpenAI GPT — text-only, requires API key ($)"),
-    ("gemini", "Google Gemini — text-only, requires API key (free tier often has zero quota)"),
-    ("ollama", "Ollama — free, runs locally on your machine (no API key)"),
-    ("openrouter", "OpenRouter — many models, one API key (free models available, no billing required)"),
+    ("claude", "Claude Code CLI — full machine control via native tool-use (requires Node.js + claude CLI)"),
+    ("claude-api", "Anthropic Claude API — text-only, no machine control, requires API key ($)"),
+    ("openai", "OpenAI GPT — machine control via function calling, requires API key ($)"),
+    ("gemini", "Google Gemini — machine control via function calling, requires API key (free tier may have zero quota)"),
+    ("ollama", "Ollama — machine control via function calling, free, runs locally (no API key)"),
+    ("openrouter", "OpenRouter — machine control via function calling, many models, one API key (free models available)"),
 ]
 
 DEFAULT_MODELS = {
@@ -559,8 +559,9 @@ def _run_wizard_steps(detected_os: str) -> dict:
     # Step 3: LLM Provider
     print(f"\n{BOLD}Step 3: AI Provider{NC}")
     print("  Choose which AI model will power your assistant.")
-    print("  'Claude Code CLI' gives the bot full machine control (bash, files, web).")
-    print("  All other providers are text-only chat (no tool-use).")
+    print("  'Claude Code CLI' has native tool-use (bash, files, web) — most powerful.")
+    print("  Other providers use function calling for machine control (run commands, read/write files).")
+    print("  'Claude API' is text-only (no machine control).")
     print()
     config["llm_provider"] = ask_choice(
         "Pick your provider:", LLM_PROVIDERS, default="claude",

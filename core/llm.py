@@ -364,13 +364,13 @@ class ClaudeCLIProvider(LLMProvider):
 
 
 class ClaudeAPIProvider(LLMProvider):
-    """Anthropic Claude API (no tool-use, text-only fallback)."""
+    """Anthropic Claude API — text-only, no tool execution layer."""
 
     API_URL = "https://api.anthropic.com/v1/messages"
 
     @property
     def provider_name(self) -> str:
-        return "claude"
+        return "claude-api"
 
     @property
     def supports_tool_use(self) -> bool:
@@ -486,8 +486,10 @@ async def _openai_tool_loop(
             finish_reason = choice.get("finish_reason", "")
 
             # Check if the model wants to call tools
+            # finish_reason varies by provider: "tool_calls" (OpenAI), "stop" (some OpenRouter models),
+            # empty string, or None. Check tool_calls presence regardless of finish_reason.
             tool_calls = message.get("tool_calls")
-            if tool_calls and finish_reason in ("tool_calls", "stop"):
+            if tool_calls:
                 used_tools = True
 
                 # Append the assistant message with tool_calls to conversation
@@ -754,71 +756,83 @@ class OllamaProvider(LLMProvider):
         # Ollama supports OpenAI-compatible /v1/chat/completions endpoint
         # which includes tool-use support
         headers = {"Content-Type": "application/json"}
+
+        # OpenAI-compat endpoint uses max_tokens at root level, not options
         body = {
             "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 *[{"role": m.role, "content": m.content} for m in messages],
             ],
-            "options": {
-                "num_predict": max_tokens,
-                "temperature": temperature,
-            },
         }
 
-        # Try OpenAI-compatible endpoint first (supports tool-use)
+        # Check if Ollama is reachable before trying
         try:
-            return await _openai_tool_loop(
-                url=f"{self.base_url}/v1/chat/completions",
-                headers=headers,
-                body=body,
-                model=self.model,
-                provider_name=self.provider_name,
-                timeout=600.0,
-            )
-        except Exception as e:
-            logger.warning(f"Ollama OpenAI-compat endpoint failed, falling back to native: {e}")
-
-        # Fallback to native Ollama API (no tool-use)
-        url = f"{self.base_url}/api/chat"
-        ollama_messages = [
-            {"role": "system", "content": system_prompt},
-            *[{"role": m.role, "content": m.content} for m in messages],
-        ]
-        native_body = {
-            "model": self.model,
-            "messages": ollama_messages,
-            "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "temperature": temperature,
-            },
-        }
-        try:
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                resp = await client.post(url, json=native_body)
-                data = resp.json()
-                if resp.status_code != 200:
+            async with httpx.AsyncClient(timeout=10.0) as probe:
+                probe_resp = await probe.get(f"{self.base_url}/api/tags")
+                if probe_resp.status_code != 200:
                     return LLMResponse(
                         text="", model=self.model, provider=self.provider_name,
-                        error=f"Ollama error: {data}"
+                        error="Cannot connect to Ollama. Is it running? (ollama serve)"
                     )
-                text = data.get("message", {}).get("content", "")
-                return LLMResponse(
-                    text=text, model=self.model, provider=self.provider_name,
-                    input_tokens=data.get("prompt_eval_count", 0),
-                    output_tokens=data.get("eval_count", 0),
-                )
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.ConnectTimeout):
             return LLMResponse(
                 text="", model=self.model, provider=self.provider_name,
                 error="Cannot connect to Ollama. Is it running? (ollama serve)"
             )
-        except Exception as e:
-            return LLMResponse(
-                text="", model=self.model, provider=self.provider_name,
-                error=f"Ollama request failed: {e}"
-            )
+        except Exception:
+            pass  # Proceed anyway — the main request will fail with a better error
+
+        # Try OpenAI-compatible endpoint (supports tool-use)
+        result = await _openai_tool_loop(
+            url=f"{self.base_url}/v1/chat/completions",
+            headers=headers,
+            body=body,
+            model=self.model,
+            provider_name=self.provider_name,
+            timeout=600.0,
+        )
+
+        # If the OpenAI-compat endpoint returned an error, fall back to native API
+        if result.error and ("404" in result.error or "not found" in result.error.lower()):
+            logger.info(f"Ollama OpenAI-compat endpoint unavailable, falling back to native API")
+            url = f"{self.base_url}/api/chat"
+            native_body = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    *[{"role": m.role, "content": m.content} for m in messages],
+                ],
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "temperature": temperature,
+                },
+            }
+            try:
+                async with httpx.AsyncClient(timeout=600.0) as client:
+                    resp = await client.post(url, json=native_body)
+                    data = resp.json()
+                    if resp.status_code != 200:
+                        return LLMResponse(
+                            text="", model=self.model, provider=self.provider_name,
+                            error=f"Ollama error: {data}"
+                        )
+                    text = data.get("message", {}).get("content", "")
+                    return LLMResponse(
+                        text=text, model=self.model, provider=self.provider_name,
+                        input_tokens=data.get("prompt_eval_count", 0),
+                        output_tokens=data.get("eval_count", 0),
+                    )
+            except Exception as e:
+                return LLMResponse(
+                    text="", model=self.model, provider=self.provider_name,
+                    error=f"Ollama request failed: {e}"
+                )
+
+        return result
 
 
 def create_provider(

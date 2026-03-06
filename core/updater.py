@@ -114,12 +114,27 @@ def restart_service() -> tuple[bool, str]:
     elif system == "Darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / "com.myoldmachine.bot.plist"
         if plist.exists():
-            # Spawn a detached shell that waits 3s (for our response to send),
-            # then unloads + reloads the plist. The unload kills our process,
-            # and the load starts a fresh one.
-            # Works on all macOS versions (Catalina through Sequoia).
+            # Write a restart script and run it via nohup in a new session.
+            # This survives our process being killed by launchctl unload.
+            # The script waits 3s (for our Telegram response to send),
+            # then unloads + reloads the plist.
+            import tempfile
+            restart_script = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.sh', delete=False, prefix='mom_restart_'
+            )
+            restart_script.write(
+                f'#!/bin/bash\n'
+                f'sleep 3\n'
+                f'launchctl unload "{plist}" 2>/dev/null\n'
+                f'sleep 1\n'
+                f'launchctl load -w "{plist}"\n'
+                f'rm -f "{restart_script.name}"\n'
+            )
+            restart_script.close()
+            import os
+            os.chmod(restart_script.name, 0o755)
             subprocess.Popen(
-                f'sleep 3 && launchctl unload "{plist}" 2>/dev/null; sleep 1; launchctl load -w "{plist}"',
+                f'nohup "{restart_script.name}" >/dev/null 2>&1 &',
                 shell=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

@@ -372,6 +372,9 @@ if ! checkpoint_done "python"; then
                     esac
                 fi
             done
+
+            # Clear bash's command hash table so it picks up the new PATH
+            hash -r 2>/dev/null
         fi
 
         PYTHON=$(find_python) || true

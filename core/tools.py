@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import re
 from pathlib import Path
 from typing import Any
@@ -36,13 +37,23 @@ MAX_TOOL_ITERATIONS = 25  # max tool-call rounds per user message
 
 # Commands that should never be executed
 BLOCKED_PATTERNS = [
-    r"rm\s+-rf\s+/\s*$",          # rm -rf /
-    r"rm\s+-rf\s+/\*",            # rm -rf /*
-    r"mkfs\.",                     # format filesystem
-    r"dd\s+if=.*of=/dev/[sh]d",   # overwrite disk
-    r">\s*/dev/[sh]d",            # redirect to raw disk
-    r"chmod\s+-R\s+777\s+/\s*$",  # chmod 777 /
-    r":()\{.*\|.*&\s*\};:",       # fork bomb
+    r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/\s*$",  # rm -rf /
+    r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/\*",    # rm -rf /*
+    r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/[a-z]+\s*$",  # rm -rf /etc, /usr, etc.
+    r"mkfs\.",                                # format filesystem
+    r"dd\s+if=.*of=/dev/[sh]d",              # overwrite disk
+    r"dd\s+if=.*of=/dev/nvme",               # overwrite NVMe
+    r">\s*/dev/[sh]d",                        # redirect to raw disk
+    r"chmod\s+(-R\s+)?777\s+/\s*$",           # chmod 777 / (root only)
+    r":\(\)\s*\{.*\|.*&\s*\}\s*;\s*:",       # fork bomb :(){ :|:& };:
+    r">\s*/dev/sda",                          # overwrite disk
+    r"mv\s+/\s",                              # mv / somewhere
+]
+
+# Paths the LLM should never write to
+BLOCKED_WRITE_PATHS = [
+    "/etc/passwd", "/etc/shadow", "/etc/sudoers",
+    "/etc/hosts", "/boot/",
 ]
 
 
@@ -50,8 +61,45 @@ def _is_command_blocked(command: str) -> str | None:
     """Return a reason string if the command is blocked, else None."""
     for pattern in BLOCKED_PATTERNS:
         if re.search(pattern, command):
-            return f"Blocked: dangerous command pattern detected ({pattern})"
+            return f"Blocked: dangerous command pattern detected"
     return None
+
+
+def _is_write_blocked(path: str) -> str | None:
+    """Return a reason string if writing to this path is blocked, else None."""
+    resolved = str(Path(path).expanduser().resolve())
+    for blocked in BLOCKED_WRITE_PATHS:
+        if resolved == blocked or resolved.startswith(blocked):
+            return f"Blocked: cannot write to protected path: {blocked}"
+    return None
+
+
+def _build_command_env() -> dict:
+    """Build a clean environment for command execution.
+
+    On macOS, launchd gives a minimal PATH that misses Homebrew binaries.
+    On Linux, the bot's venv PATH is fine but we ensure standard paths are present.
+    """
+    env = {**os.environ, "HOME": str(Path.home())}
+    # Ensure Homebrew and standard paths are included
+    extra_paths = []
+    if platform.system() == "Darwin":
+        extra_paths = [
+            "/opt/homebrew/bin", "/opt/homebrew/sbin",
+            "/usr/local/bin", "/usr/local/sbin",
+            "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+        ]
+    else:
+        extra_paths = [
+            "/usr/local/bin", "/usr/bin", "/bin",
+            "/usr/local/sbin", "/usr/sbin", "/sbin",
+        ]
+    current_path = env.get("PATH", "")
+    for p in extra_paths:
+        if p not in current_path:
+            current_path = f"{p}:{current_path}"
+    env["PATH"] = current_path
+    return env
 
 
 # --- Tool Definitions ---
@@ -265,7 +313,7 @@ async def _run_command(command: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(Path.home()),
-            env={**os.environ, "HOME": str(Path.home())},
+            env=_build_command_env(),
         )
 
         try:
@@ -327,6 +375,10 @@ def _write_file(path: str, content: str) -> str:
     """Write content to a file."""
     if not path:
         return "Error: No path specified"
+
+    blocked = _is_write_blocked(path)
+    if blocked:
+        return blocked
 
     p = Path(path).expanduser()
 
