@@ -22,8 +22,8 @@ from typing import Optional
 import httpx
 
 from core.tools import (
-    TOOLS_OPENAI,
-    TOOLS_GEMINI,
+    get_tools_openai,
+    get_tools_gemini,
     MAX_TOOL_ITERATIONS,
     execute_tool,
 )
@@ -439,7 +439,7 @@ async def _openai_tool_loop(
     Repeats until the model responds with text or hits the iteration limit.
     """
     # Add tools to the request body
-    body["tools"] = TOOLS_OPENAI
+    body["tools"] = get_tools_openai()
     body["tool_choice"] = "auto"
 
     messages = body["messages"]
@@ -645,7 +645,7 @@ class GeminiProvider(LLMProvider):
                 "maxOutputTokens": max_tokens,
                 "temperature": temperature,
             },
-            "tools": TOOLS_GEMINI,
+            "tools": get_tools_gemini(),
         }
 
         total_input = 0

@@ -29,6 +29,7 @@ from core.config import (
     LOG_DIR,
 )
 from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider
+from core.tools import get_process_registry
 from core.skill_loader import SkillManager
 from core.session import SessionManager, get_session_manager
 from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
@@ -262,11 +263,17 @@ def build_system_prompt(user_id: int) -> str:
                      "manage files, and configure services.")
         if not is_claude_cli:
             parts.append(
-                "You have 4 tools available: run_command (execute shell commands), "
-                "read_file (read file contents), write_file (create/overwrite files), "
-                "and list_directory (list files in a directory). "
+                "You have 5 tools available:\n"
+                "  - run_command: Execute shell commands. Set background=true for long-running "
+                "commands (installs, builds, downloads) — returns a process_id.\n"
+                "  - read_file: Read file contents.\n"
+                "  - write_file: Create/overwrite files. Content is validated against file extension.\n"
+                "  - list_directory: List files in a directory.\n"
+                "  - check_process: Poll or kill background processes by process_id.\n\n"
                 "Use these tools to accomplish tasks. Do NOT write out commands as text — "
-                "actually call the tools to execute them."
+                "actually call the tools to execute them.\n"
+                "For long-running commands (apt install, pip install, builds, downloads), "
+                "use run_command with background=true, then poll with check_process."
             )
         parts.append("If the user asks for something and you're missing a tool, install it.")
     else:
@@ -1381,11 +1388,17 @@ def main():
                 first_boot_marker.touch()
                 logger.info("First boot message sent")
 
-    # Shutdown: stop scheduler, wait for active processes
+    # Shutdown: stop scheduler, kill background processes, wait for active processes
     async def post_shutdown(application):
         scheduler = get_scheduler()
         if scheduler:
             scheduler.stop()
+        # Kill any background processes from the tool execution layer
+        registry = get_process_registry()
+        running = registry.list_running()
+        if running:
+            logger.info(f"Killing {len(running)} background processes on shutdown...")
+            await registry.cleanup_all()
         if isinstance(_llm_provider, ClaudeCLIProvider):
             await _llm_provider.graceful_shutdown()
 
