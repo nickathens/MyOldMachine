@@ -389,7 +389,19 @@ def main():
         checkpoint_set("wizard_config")
 
     # --- Provisioning ---
-    if not checkpoint_done("provisioning"):
+    # Verify provisioning actually completed — check for key binaries.
+    # Old versions of this script set the checkpoint even on failure.
+    provisioning_valid = checkpoint_done("provisioning")
+    if provisioning_valid:
+        import shutil as _shutil
+        missing = [b for b in ["ffmpeg", "sox", "jq", "htop", "tmux"]
+                   if not _shutil.which(b)]
+        if missing:
+            warn(f"Provisioning checkpoint set but missing packages: {', '.join(missing)}")
+            warn("Re-running provisioning...")
+            provisioning_valid = False
+
+    if not provisioning_valid:
         print(f"\n{BOLD}System Provisioning{NC}")
         takeover = config.get("takeover", "full")
         print("  The installer will now configure your machine.")
@@ -424,10 +436,10 @@ def main():
         )
         if result.returncode != 0:
             warn("Provisioning had some issues (see output above). Continuing with service setup.")
+            warn("Re-run the installer to retry provisioning.")
         else:
             ok("Provisioning complete")
-
-        checkpoint_set("provisioning")
+            checkpoint_set("provisioning")
     else:
         ok("Provisioning (cached)")
 
@@ -442,15 +454,15 @@ def main():
             warn("You can start the bot manually: cd " + str(repo_dir) + " && .venv/bin/python bot.py")
         else:
             ok("Service registered")
-
-        checkpoint_set("service")
+            checkpoint_set("service")
     else:
         ok("Service setup (cached)")
 
-    # --- Done — clean up checkpoints ---
-    checkpoint_file = Path(CHECKPOINT_FILE)
-    if checkpoint_file.exists():
-        checkpoint_file.unlink()
+    # --- Done — clean up checkpoints only if everything succeeded ---
+    if checkpoint_done("provisioning") and checkpoint_done("service"):
+        checkpoint_file = Path(CHECKPOINT_FILE)
+        if checkpoint_file.exists():
+            checkpoint_file.unlink()
 
     print()
     print(f"{BOLD}╔══════════════════════════════════════╗{NC}")
