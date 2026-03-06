@@ -463,15 +463,68 @@ class OpenAIProvider(LLMProvider):
             )
 
 
-class OpenRouterProvider(OpenAIProvider):
-    """OpenRouter API (OpenAI-compatible with model routing)."""
+class OpenRouterProvider(LLMProvider):
+    """OpenRouter API — routes to many models via a single API key."""
+
+    BASE_URL = "https://openrouter.ai/api/v1"
 
     def __init__(self, model: str, api_key: str = ""):
-        super().__init__(model, api_key, base_url="https://openrouter.ai/api/v1")
+        super().__init__(model, api_key)
 
     @property
     def provider_name(self) -> str:
         return "openrouter"
+
+    @property
+    def supports_vision(self) -> bool:
+        return True  # Most OpenRouter models support vision
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/nickathens/MyOldMachine",
+            "X-Title": "MyOldMachine",
+        }
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ],
+        }
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                resp = await client.post(f"{self.BASE_URL}/chat/completions", headers=headers, json=body)
+                data = resp.json()
+                if resp.status_code != 200:
+                    error_obj = data.get("error", {})
+                    error_msg = error_obj.get("message", str(data)) if isinstance(error_obj, dict) else str(error_obj)
+                    # Include model info for debugging
+                    return LLMResponse(
+                        text="", model=self.model, provider=self.provider_name,
+                        error=f"OpenRouter error ({self.model}): {error_msg}"
+                    )
+                choices = data.get("choices", [])
+                if not choices:
+                    return LLMResponse(
+                        text="", model=self.model, provider=self.provider_name,
+                        error=f"OpenRouter returned no choices for model {self.model}"
+                    )
+                text = choices[0].get("message", {}).get("content", "")
+                usage = data.get("usage", {})
+                return LLMResponse(
+                    text=text, model=self.model, provider=self.provider_name,
+                    input_tokens=usage.get("prompt_tokens", 0),
+                    output_tokens=usage.get("completion_tokens", 0),
+                )
+        except Exception as e:
+            return LLMResponse(
+                text="", model=self.model, provider=self.provider_name,
+                error=f"OpenRouter request failed: {e}"
+            )
 
 
 class GeminiProvider(LLMProvider):

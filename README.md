@@ -134,20 +134,20 @@ LLM_MODEL=llama3.1:8b
 **OpenRouter free models** — cloud-hosted, free API key from [openrouter.ai](https://openrouter.ai):
 ```
 LLM_PROVIDER=openrouter
-LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+LLM_MODEL=google/gemini-2.0-flash-001
 LLM_API_KEY=sk-or-v1-...
 ```
 
-Available free models on OpenRouter (model IDs end in `:free`):
+Free models on OpenRouter (no billing required, verified March 2026):
 | Model | Notes |
 |-------|-------|
-| `meta-llama/llama-3.3-70b-instruct:free` | Best free all-rounder (recommended) |
-| `google/gemma-3-27b-it:free` | Fast, Google's open model |
-| `qwen/qwen3-coder:free` | Best for coding tasks |
-| `nousresearch/hermes-3-llama-3.1-405b:free` | Largest free model |
-| `mistralai/mistral-small-3.1-24b-instruct:free` | Fast, multilingual |
+| `google/gemini-2.0-flash-001` | Fast, capable, free (recommended) |
+| `google/gemini-2.5-flash-lite` | Latest Google, lightweight |
+| `openai/gpt-4o-mini` | OpenAI's free compact model |
+| `deepseek/deepseek-v3.2-20251201` | Strong reasoning, free |
+| `qwen/qwen3-235b-a22b-thinking-2507` | Large, good for complex tasks |
 
-Full list: [openrouter.ai/models?q=free](https://openrouter.ai/models?q=free)
+Full list: [openrouter.ai/collections/free-models](https://openrouter.ai/collections/free-models)
 
 ### Changing Provider After Install
 
@@ -321,16 +321,16 @@ Google's free Gemini tier frequently has zero quota. This is a Google-side issue
 1. **Switch to OpenRouter with a free model** (recommended) — edit `.env`:
    ```
    LLM_PROVIDER=openrouter
-   LLM_MODEL=meta-llama/llama-3.3-70b-instruct:free
+   LLM_MODEL=google/gemini-2.0-flash-001
    LLM_API_KEY=sk-or-v1-YOUR_KEY
    ```
    Get a free API key at [openrouter.ai](https://openrouter.ai) (no billing required).
 2. **Enable billing** on your Google AI project at [ai.google.dev](https://ai.google.dev)
 3. **Use Ollama** for free local inference (no API key needed, but slower on old hardware)
 
-### "No endpoints found" error with OpenRouter
+### "Provider returned error" with OpenRouter
 
-The model ID is wrong. OpenRouter model IDs are specific — they look like `meta-llama/llama-3.3-70b-instruct:free`. Check the exact ID at [openrouter.ai/models](https://openrouter.ai/models). Free models end with `:free`.
+The model ID is wrong or no longer available. OpenRouter model IDs change — check [openrouter.ai/collections/free-models](https://openrouter.ai/collections/free-models) for current free models. Edit `.env` and set `LLM_MODEL` to a valid model ID from that page.
 
 ### Install hangs during Homebrew (macOS)
 

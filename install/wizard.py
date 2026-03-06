@@ -258,16 +258,17 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o",
     "gemini": "gemini-2.0-flash",
     "ollama": "llama3.1:8b",
-    "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
+    "openrouter": "google/gemini-2.0-flash-001",
 }
 
 # Free models available on OpenRouter (no billing required)
+# Updated March 2026 — verified against openrouter.ai/collections/free-models
 OPENROUTER_FREE_MODELS = [
-    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — best free all-rounder (recommended)"),
-    ("google/gemma-3-27b-it:free", "Gemma 3 27B — Google's open model, fast"),
-    ("qwen/qwen3-coder:free", "Qwen3 Coder — best free model for coding tasks"),
-    ("nousresearch/hermes-3-llama-3.1-405b:free", "Hermes 3 405B — largest free model, slowest"),
-    ("mistralai/mistral-small-3.1-24b-instruct:free", "Mistral Small 3.1 24B — fast, multilingual"),
+    ("google/gemini-2.0-flash-001", "Gemini 2.0 Flash — fast, capable, free (recommended)"),
+    ("google/gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite — latest Google, lightweight"),
+    ("openai/gpt-4o-mini", "GPT-4o Mini — OpenAI's free compact model"),
+    ("deepseek/deepseek-v3.2-20251201", "DeepSeek V3.2 — strong reasoning, free"),
+    ("qwen/qwen3-235b-a22b-thinking-2507", "Qwen3 235B — large, good for complex tasks"),
 ]
 
 # Providers that need an API key
@@ -595,15 +596,16 @@ def _run_wizard_steps(detected_os: str) -> dict:
         config["ollama_url"] = ask("Ollama URL", default="http://localhost:11434", required=False)
         print(f"  {YELLOW}Make sure Ollama is running: ollama serve{NC}")
     elif config["llm_provider"] == "openrouter":
-        # Check if user picked a free model
-        is_free = config["llm_model"].endswith(":free")
+        # Check if user picked a model from the free list
+        free_model_ids = {m[0] for m in OPENROUTER_FREE_MODELS}
+        is_free = config["llm_model"] in free_model_ids or config["llm_model"].endswith(":free")
         if is_free:
             print(f"  {GREEN}Free model selected — no billing required.{NC}")
-            print(f"  You still need an OpenRouter API key (free to create).")
-            print(f"    1. Go to https://openrouter.ai and sign up")
-            print(f"    2. Go to Keys → Create Key")
-            print(f"    3. Paste it below")
-            print()
+        print(f"  You need an OpenRouter API key (free to create).")
+        print(f"    1. Go to https://openrouter.ai and sign up")
+        print(f"    2. Go to Keys → Create Key")
+        print(f"    3. Paste it below")
+        print()
         config["llm_api_key"] = ask(f"OpenRouter API key", secret=True)
     elif config["llm_provider"] in API_KEY_PROVIDERS:
         config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
