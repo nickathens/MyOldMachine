@@ -166,10 +166,18 @@ def build_system_prompt(user_id: int) -> str:
     return "\n".join(parts)
 
 
+MAX_CONTEXT_MESSAGES = 40  # Limit context sent to LLM to control token usage
+
+
 def build_messages(user_id: int, new_message: str) -> list[Message]:
     """Build the message list from conversation history + new message."""
     session = get_session(user_id)
     history = session.load_conversation()
+
+    # Cap context to avoid burning tokens on long conversations
+    # or crashing Ollama on low-RAM machines
+    if len(history) > MAX_CONTEXT_MESSAGES:
+        history = history[-MAX_CONTEXT_MESSAGES:]
 
     messages = []
     for msg in history:
@@ -471,7 +479,9 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Admin only.")
         return
     from core.updater import restart_service
-    await update.message.reply_text("Restarting...")
+    await update.message.reply_text("Restarting in 2 seconds...")
+    # Delay restart so the response is delivered first
+    await asyncio.sleep(2)
     success, msg = restart_service()
     if not success:
         await update.message.reply_text(f"Restart failed: {msg}")

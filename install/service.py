@@ -44,12 +44,12 @@ def get_sudo_password():
 
 
 def sudo_run(cmd, password=None):
-    if password:
-        full_cmd = f"echo '{password}' | sudo -S {cmd}"
-    else:
-        full_cmd = f"sudo {cmd}"
+    """Run a command with sudo, passing password safely via stdin."""
+    full_cmd = f"sudo -S {cmd}" if password else f"sudo {cmd}"
+    stdin_data = (password + "\n") if password else None
     return subprocess.run(
         full_cmd, shell=True,
+        input=stdin_data,
         capture_output=True, text=True, timeout=30
     )
 

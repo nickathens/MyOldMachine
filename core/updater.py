@@ -104,11 +104,9 @@ def restart_service() -> tuple[bool, str]:
     system = platform.system()
 
     if system == "Linux":
-        if password:
-            cmd = f"echo '{password}' | sudo -S systemctl restart myoldmachine"
-        else:
-            cmd = "sudo systemctl restart myoldmachine"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        cmd = "sudo -S systemctl restart myoldmachine" if password else "sudo systemctl restart myoldmachine"
+        stdin_data = (password + "\n") if password else None
+        result = subprocess.run(cmd, shell=True, input=stdin_data, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             return True, "Service restarting..."
         return False, f"Restart failed: {result.stderr[:200]}"

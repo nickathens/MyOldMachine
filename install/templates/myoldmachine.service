@@ -12,6 +12,7 @@ Restart=always
 RestartSec=10
 StandardOutput=append:{{LOG_DIR}}/bot.log
 StandardError=append:{{LOG_DIR}}/bot.log
+EnvironmentFile={{WORKING_DIR}}/.env
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

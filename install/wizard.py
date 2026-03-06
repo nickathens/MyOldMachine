@@ -108,7 +108,20 @@ def detect_timezone():
             return result.stdout.strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    # macOS
+    # macOS — read /etc/localtime symlink (works without sudo)
+    try:
+        localtime = Path("/etc/localtime")
+        if localtime.is_symlink():
+            target = str(localtime.resolve())
+            # /var/db/timezone/zoneinfo/America/New_York or /usr/share/zoneinfo/...
+            for marker in ["/zoneinfo/", "/zoneinfo/"]:
+                if marker in target:
+                    tz = target.split(marker, 1)[1]
+                    if "/" in tz:  # e.g. "America/New_York"
+                        return tz
+    except Exception:
+        pass
+    # macOS fallback — systemsetup (may need sudo on newer macOS)
     try:
         result = subprocess.run(
             ["systemsetup", "-gettimezone"],
@@ -240,6 +253,8 @@ def write_env(repo_dir: Path, config: dict):
 
     env_file = repo_dir / ".env"
     env_file.write_text("\n".join(lines) + "\n")
+    # Restrict permissions — .env contains API keys
+    env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
     ok(f"Configuration saved to {env_file}")
 
 
@@ -419,7 +434,24 @@ def main():
         print("  This will install the bot's dependencies without removing existing software.")
     print()
 
-    proceed = input("  Continue? (Y/n): ").strip().lower()
+    # Offer dry-run first
+    dry_run_first = input("  Preview changes first (dry run)? (Y/n): ").strip().lower()
+    if dry_run_first != "n":
+        info("Running dry run — no changes will be made...")
+        subprocess.run(
+            [
+                sys.executable, str(repo_dir / "install" / "provisioner.py"),
+                "--repo-dir", str(repo_dir),
+                "--os", detected_os,
+                "--takeover", config["takeover"],
+                "--dry-run",
+            ],
+        )
+        print()
+        proceed = input("  Proceed with actual provisioning? (Y/n): ").strip().lower()
+    else:
+        proceed = input("  Continue? (Y/n): ").strip().lower()
+
     if proceed == "n":
         ok("Configuration saved. Run the provisioner later with:")
         print(f"  python {repo_dir}/install/provisioner.py --repo-dir {repo_dir} --os {detected_os} --takeover {config['takeover']}")

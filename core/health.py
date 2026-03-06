@@ -95,7 +95,7 @@ def get_memory_usage() -> dict:
             result = subprocess.run(
                 ["vm_stat"], capture_output=True, text=True, timeout=5
             )
-            page_size = 16384  # default, parse if needed
+            page_size = 4096  # Intel default; Apple Silicon uses 16384 — parsed below
             import re
             pages_free = 0
             pages_active = 0
@@ -200,8 +200,10 @@ def get_load_average() -> Optional[str]:
 def get_network_status() -> bool:
     """Check if we have internet connectivity."""
     try:
+        # Use curl instead of ping — works consistently across Linux and macOS
+        # without platform-specific flag differences
         result = subprocess.run(
-            ["ping", "-c", "1", "-W", "3", "8.8.8.8"],
+            ["curl", "-sf", "--max-time", "3", "-o", "/dev/null", "https://www.google.com"],
             capture_output=True, timeout=5
         )
         return result.returncode == 0

@@ -43,13 +43,12 @@ def _run(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
 
 
 def _sudo_run(cmd: str, password: Optional[str] = None, timeout: int = 300) -> subprocess.CompletedProcess:
-    """Run a command with sudo."""
-    if password:
-        full_cmd = f"echo '{password}' | sudo -S {cmd}"
-    else:
-        full_cmd = f"sudo {cmd}"
+    """Run a command with sudo, passing password safely via stdin."""
+    full_cmd = f"sudo -S {cmd}" if password else f"sudo {cmd}"
+    stdin_data = (password + "\n") if password else None
     return subprocess.run(
-        full_cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        full_cmd, shell=True, input=stdin_data,
+        capture_output=True, text=True, timeout=timeout
     )
 
 
@@ -106,13 +105,20 @@ def check_skill_deps(skill_path: Path) -> list[str]:
         if result.returncode != 0:
             missing.append(f"system:{name}")
 
-    # System packages (check via binary presence)
+    # System packages — only check those not already verified by custom checks
+    checked_names = set(checks.keys())
     pkg_key = "brew" if _is_macos() else "apt"
     for pkg in deps.get(pkg_key, []):
-        # Use the package name as a rough binary check
-        # For packages where binary name differs, use the "check" field
-        binary = pkg.split("-")[0]  # rough heuristic
-        if not check_binary(binary) and f"system:{pkg}" not in missing:
+        if pkg in checked_names or f"system:{pkg}" in missing:
+            continue
+        # Use dpkg (Linux) or brew list (macOS) for reliable package checking
+        if _is_linux():
+            result = _run(f"dpkg -l {pkg} 2>/dev/null | grep -q '^ii'")
+        elif _is_macos():
+            result = _run(f"brew list {pkg} 2>/dev/null")
+        else:
+            continue
+        if result.returncode != 0:
             missing.append(f"system:{pkg}")
 
     # Pip packages
