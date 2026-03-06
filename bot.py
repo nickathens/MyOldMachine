@@ -288,10 +288,18 @@ def build_system_prompt(user_id: int) -> str:
     # Memory system
     memory_dir = DATA_DIR / "memory"
     parts.append("### Memory System:")
-    parts.append(f"Project state lives at {memory_dir}/projects/<slug>/state.json")
-    parts.append(f"Topic memories at {memory_dir}/topics/<topic>.md")
-    parts.append(f"Decision logs at {memory_dir}/decisions/YYYY-MM-DD_description.md")
     parts.append("Use memory proactively, not just when asked.")
+    parts.append("")
+    parts.append("**Projects:**")
+    parts.append(f"  python {BOT_DIR}/utils/project_manager.py create \"Name\" \"Summary\" \"/path\"")
+    parts.append(f"  Project state: {memory_dir}/projects/<slug>/state.json")
+    parts.append("")
+    parts.append("**Topic Memories:**")
+    parts.append(f"  Write domain knowledge to {memory_dir}/topics/<topic>.md")
+    parts.append("")
+    parts.append("**Decision Logs:**")
+    parts.append(f"  Log significant decisions to {memory_dir}/decisions/YYYY-MM-DD_description.md")
+    parts.append(f"  Include: what was decided, options considered, rationale")
     parts.append("")
 
     # Custom instructions file
@@ -352,6 +360,22 @@ def build_system_prompt(user_id: int) -> str:
             parts.append(f"Available topic memories: {', '.join(topics)}")
             parts.append(f"(Read with: {topics_dir}/<topic>.md)")
             parts.append("")
+
+    # Conversation summary (from compaction)
+    session = get_session(user_id)
+    summary = session.load_summary()
+    if summary:
+        parts.append("### Conversation Summary (older context):")
+        parts.append(summary)
+        parts.append("")
+
+    # Persistent memories
+    memories = session.load_memories()
+    if memories:
+        parts.append("### Persistent Memories:")
+        for mem in memories:
+            parts.append(f"- {mem['content']}")
+        parts.append("")
 
     # Skills
     if _skill_manager:
@@ -464,6 +488,31 @@ async def call_llm(user_id: int, message: str, chat=None) -> str:
     text = sanitize_response(response.text)
     logger.info(f"LLM response for {user_id}: {len(text)} chars ({response.provider}/{response.model})")
     return text
+
+
+def _save_and_send(user_id: int, user_message: str, response: str, session=None, chat=None):
+    """Save conversation turn and trigger compaction if needed."""
+    if session is None:
+        session = get_session(user_id)
+
+    response = sanitize_response(response)
+
+    current_topic = session.get_current_topic()
+    if current_topic:
+        history = session.get_topic_session(current_topic)
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": response})
+        session.save_topic_session(current_topic, history)
+    else:
+        history = session.load_conversation()
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": response})
+        # Trigger compaction if conversation is getting long
+        if len(history) > session.config["compaction_threshold"]:
+            history, _ = session.compact_conversation(history, session.summary_file)
+        session.save_conversation(history)
+
+    return response
 
 
 def split_message(text: str, max_length: int = 4000) -> list[str]:
@@ -890,6 +939,16 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+async def cleanup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+    from utils.cleanup import run_cleanup
+    report = run_cleanup()
+    await update.message.reply_text(report)
+
+
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -930,6 +989,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /clear_recovery - Delete recovery data\n\n"
         "Admin:\n"
         "  /health - System health report\n"
+        "  /cleanup - Clean old attachments and logs\n"
         "  /system - System info\n"
         "  /update - Update to latest version\n"
         "  /restart - Restart the bot\n\n"
@@ -1100,20 +1160,8 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
             pass
 
         response = await call_llm(user_id, user_message, chat=chat)
-        response = sanitize_response(response)
 
-        session = get_session(user_id)
-        current_topic = session.get_current_topic()
-        if current_topic:
-            history = session.get_topic_session(current_topic)
-            history.append({"role": "user", "content": user_message})
-            history.append({"role": "assistant", "content": response})
-            session.save_topic_session(current_topic, history)
-        else:
-            history = session.load_conversation()
-            history.append({"role": "user", "content": user_message})
-            history.append({"role": "assistant", "content": response})
-            session.save_conversation(history)
+        _save_and_send(user_id, user_message, response, session=None, chat=chat)
 
         for chunk in split_message(response):
             try:
@@ -1132,6 +1180,12 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Still working on your previous request. Your message is queued.")
 
     async with lock:
+        # Daily reset check
+        session = get_session(user_id)
+        if session.should_daily_reset():
+            session.perform_daily_reset()
+            logger.info(f"Daily reset performed for user {user_id}")
+
         # Crash-loop protection
         incomplete = get_incomplete_task(user_id)
         if incomplete:
@@ -1172,21 +1226,9 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
         response = await call_llm(user_id, user_message, chat=update.message.chat)
-        response = sanitize_response(response)
 
-        # Save to current session (topic or main)
-        session = get_session(user_id)
-        current_topic = session.get_current_topic()
-        if current_topic:
-            history = session.get_topic_session(current_topic)
-            history.append({"role": "user", "content": user_message})
-            history.append({"role": "assistant", "content": response})
-            session.save_topic_session(current_topic, history)
-        else:
-            history = session.load_conversation()
-            history.append({"role": "user", "content": user_message})
-            history.append({"role": "assistant", "content": response})
-            session.save_conversation(history)
+        # Save to current session (topic or main) with compaction
+        _save_and_send(user_id, user_message, response, session=session)
 
         for chunk in split_message(response):
             await update.message.reply_text(chunk)
@@ -1257,6 +1299,7 @@ def main():
     app.add_handler(CommandHandler("schedule", schedule_command))
     app.add_handler(CommandHandler("jobs", jobs_command))
     app.add_handler(CommandHandler("health", health_command))
+    app.add_handler(CommandHandler("cleanup", cleanup_command))
     app.add_handler(CommandHandler("system", system_command))
     app.add_handler(CommandHandler("update", update_command))
     app.add_handler(CommandHandler("restart", restart_command))
@@ -1270,13 +1313,38 @@ def main():
         handle_message,
     ))
 
-    # Startup: initialize scheduler, recover pending messages
+    # Startup: initialize scheduler, recover pending messages, send first boot
     async def post_init(application):
         scheduler = init_scheduler(token, api_base)
         scheduler.set_claude_handler(call_llm)
         scheduler.start()
         logger.info("Scheduler started with Claude handler")
         await recover_pending_messages(application.bot)
+
+        # First boot message — sent once after install
+        first_boot_marker = DATA_DIR / ".first_boot_sent"
+        if not first_boot_marker.exists():
+            allowed = get_allowed_users()
+            if allowed:
+                import platform
+                bot_name = get_bot_name()
+                skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
+                version = get_current_version(BOT_DIR)
+                msg = (
+                    f"{bot_name} is online.\n\n"
+                    f"OS: {platform.system()} {platform.release()}\n"
+                    f"Provider: {get_llm_provider()} / {get_llm_model()}\n"
+                    f"Skills: {skills_count}\n"
+                    f"Version: {version}\n\n"
+                    f"Send /help for commands, or just send me a message."
+                )
+                for uid in allowed:
+                    try:
+                        await application.bot.send_message(chat_id=uid, text=msg)
+                    except Exception as e:
+                        logger.warning(f"Failed to send first boot message to {uid}: {e}")
+                first_boot_marker.touch()
+                logger.info("First boot message sent")
 
     # Shutdown: stop scheduler, wait for active processes
     async def post_shutdown(application):

@@ -295,6 +295,11 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
     memories_file = users_dir / "memories.json"
     memories_file.write_text(json.dumps(memories, indent=2) + "\n")
 
+    # Create memory directory structure
+    memory_dir = data_dir / "memory"
+    for subdir in ["projects", "topics", "decisions"]:
+        (memory_dir / subdir).mkdir(parents=True, exist_ok=True)
+
     ok(f"User profile created for {config['user_name']}")
 
 

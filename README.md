@@ -9,17 +9,19 @@ You have an old machine collecting dust. MyOldMachine converts it into a persona
 - **Full machine takeover** — removes desktop environments, browsers, office suites, and other software you don't need. Installs only what the bot requires.
 - **Always-on** — disables sleep, suspend, and lid-close sleep. The machine stays running.
 - **Self-installing** — if the bot needs a tool to complete a task, it installs it automatically.
-- **Self-maintaining** — health monitoring, disk alerts, automatic security updates.
+- **Self-maintaining** — health monitoring, disk alerts, automatic security updates, log rotation, attachment cleanup.
 - **Self-updating** — pull the latest version from Telegram with `/update`.
-- **LLM-agnostic** — works with Claude, OpenAI, Gemini, Ollama (free/local), or OpenRouter.
-- **Modular skills** — weather, translation, OCR, downloads, file compression, URL summarization, and more. Each skill is a self-contained package.
-- **Reminders & scheduling** — set reminders via Telegram. SQLite-backed, survives reboots.
+- **Crash recovery** — pending messages survive crashes and are retried on restart. Task progress saved every 30 seconds.
+- **LLM-agnostic** — works with Claude CLI (full tool-use), Claude API, OpenAI, Gemini, Ollama (free/local), or OpenRouter.
+- **Modular skills** — weather, translation, OCR, downloads, file compression, URL summarization, and more. Each skill is a self-contained package with auto-installing dependencies.
+- **Reminders & scheduling** — set reminders via natural language. SQLite-backed, survives reboots.
+- **Memory system** — persistent memories, conversation compaction, project tracking. Sophisticated long-term context.
 - **Remote access** — VNC/Screen Sharing enabled so you can see what the machine is doing.
 
 ## Supported Platforms
 
-- **Ubuntu / Debian** (full support)
-- **macOS** (full or soft takeover)
+- **Ubuntu / Debian** (full support — systemd service)
+- **macOS 10.14+** (full or soft takeover — launchd service)
 - **Windows** (planned)
 
 ## Quick Start
@@ -38,7 +40,7 @@ cd MyOldMachine
 ./install.sh
 ```
 
-The installer will walk you through setup:
+The installer walks you through setup:
 
 1. Your name
 2. Telegram bot token (instructions provided)
@@ -49,7 +51,7 @@ The installer will walk you through setup:
 7. Takeover level (full or soft)
 8. Sudo password (stored locally, never transmitted)
 
-After setup, the bot sends you a message on Telegram. You're done.
+After setup, the bot sends you a welcome message on Telegram with machine specs and loaded skills. You're done.
 
 ## What You Need
 
@@ -61,33 +63,96 @@ After setup, the bot sends you a message on Telegram. You're done.
 ## Architecture
 
 ```
-User (Telegram) → Bot (Python) → LLM (any provider) → System (full root access)
+User (Telegram) → Bot (Python) → LLM (any provider) → System (full access)
                                                      → Skills (modular capabilities)
-                                                     → Scheduler (reminders)
-                                                     → Health (monitoring)
+                                                     → Scheduler (reminders, jobs)
+                                                     → Health (monitoring, alerts)
+                                                     → Memory (projects, decisions)
+                                                     → Cleanup (auto-maintenance)
 ```
 
 ### Core Components
 
 | Component | Purpose |
 |-----------|---------|
-| `bot.py` | Telegram handlers, message routing, system prompt |
-| `core/llm.py` | LLM provider abstraction (Claude, OpenAI, Gemini, Ollama, OpenRouter) |
-| `core/session.py` | Per-user conversation history with smart trimming |
-| `core/scheduler.py` | SQLite-backed reminder system |
-| `core/skill_loader.py` | Auto-loads skills from `skills/` directory |
-| `core/self_install.py` | Runtime dependency installer |
-| `core/health.py` | System health monitoring (disk, RAM, CPU, uptime) |
-| `core/updater.py` | Self-update via git pull + service restart |
+| `bot.py` | Telegram handlers, message routing, system prompt, conversation management |
+| `core/llm.py` | LLM provider abstraction — 6 providers, streaming support |
+| `core/session.py` | Per-user conversation history with smart trimming and compaction |
+| `core/scheduler.py` | APScheduler + SQLite job store — reminders, commands, agent tasks |
+| `core/skill_loader.py` | Auto-discovery and context injection for skills |
+| `core/self_install.py` | Runtime dependency installer (apt/brew/pip/npm) |
+| `core/health.py` | System health monitoring — disk, RAM, CPU, network, uptime |
+| `core/updater.py` | Self-update via git pull + pip install (safe — no mid-response restart) |
+| `core/config.py` | Environment-based configuration |
+
+### Utilities
+
+| Component | Purpose |
+|-----------|---------|
+| `utils/project_manager.py` | Create and track projects with state files |
+| `utils/cleanup.py` | Automated cleanup — old attachments, large logs, temp files |
+| `utils/scheduler_cli.py` | CLI for managing scheduled jobs outside the bot |
+| `utils/safe_json.py` | Atomic JSON read/write (temp + fsync + rename) |
+| `utils/send_to_telegram.py` | Send files to Telegram from scripts |
 
 ### Install System
 
 | Component | Purpose |
 |-----------|---------|
 | `install.sh` | Entry point — detects OS, sets up Python, launches wizard |
-| `install/wizard.py` | Interactive setup conversation |
-| `install/provisioner.py` | OS-level setup: bloat removal, dep installation, system config |
+| `install/wizard.py` | Interactive setup — creates .env, data dirs, memory structure |
+| `install/provisioner.py` | OS-level setup — bloat removal, deps, system config |
+| `install/os_detect.py` | Version-aware OS detection (macOS 10.14–15.x, Ubuntu/Debian) |
 | `install/service.py` | Registers as systemd (Linux) or launchd (macOS) service |
+
+## LLM Providers
+
+| Provider | Tool Use | Local | Free | Notes |
+|----------|----------|-------|------|-------|
+| **Claude CLI** | Full (bash, files, web) | No | No | Runs `claude` subprocess with dangerously-skip-permissions. Most capable. |
+| **Claude API** | No | No | No | Direct Anthropic API. Fast, reliable. |
+| **OpenAI** | No | No | No | GPT-4o, GPT-4, etc. |
+| **Gemini** | No | No | No | Google's models. |
+| **Ollama** | No | Yes | Yes | Run any model locally. No API key needed. |
+| **OpenRouter** | No | No | Varies | Access 100+ models through one API. |
+
+Set your provider in `.env`:
+```
+LLM_PROVIDER=claude_cli   # or: claude_api, openai, gemini, ollama, openrouter
+LLM_MODEL=claude-sonnet-4-20250514
+LLM_API_KEY=your-key-here
+```
+
+## Session Management
+
+Each user gets isolated conversation state:
+
+- **Smart trimming** — conversations are trimmed to stay within token limits, preserving recent context
+- **Compaction** — when conversations exceed a threshold, older messages are summarized into a compact summary that's injected into the system prompt
+- **Persistent memories** — `/remember` saves facts that persist across conversation resets and are always included in context
+- **Daily reset** — conversations reset daily to prevent unbounded growth, with summary preserved
+- **Topic sessions** — conversations can be scoped to specific topics
+
+## Memory System
+
+The bot maintains long-term memory under `data/memory/`:
+
+```
+data/memory/
+├── projects/          # Project state files (state.json per project)
+│   └── my-project/
+│       └── state.json
+├── topics/            # Domain knowledge (markdown files)
+└── decisions/         # Decision logs with rationale
+```
+
+Manage projects via CLI:
+```bash
+python utils/project_manager.py create "My Project" "Summary" "/path/to/project"
+python utils/project_manager.py list
+python utils/project_manager.py status my-project
+python utils/project_manager.py update my-project --status active --next "Do this next"
+```
 
 ## Telegram Commands
 
@@ -95,25 +160,26 @@ User (Telegram) → Bot (Python) → LLM (any provider) → System (full root ac
 |---------|-------------|
 | `/start` | Connect and show system info |
 | `/help` | List all commands |
-| `/status` | Bot status (messages, memories, skills) |
-| `/health` | System health report (disk, RAM, uptime) |
-| `/system` | System info (version, OS, provider) |
+| `/status` | Bot status — messages, memories, skills, uptime |
+| `/health` | System health — disk, RAM, CPU, network, uptime |
+| `/system` | System info — version, OS, provider, branch |
 | `/clear` | Reset conversation history |
 | `/remember <fact>` | Save a persistent memory |
 | `/memories` | Show saved memories |
-| `/forget <n>` | Delete a memory |
-| `/remind <time> <msg>` | Set a reminder |
+| `/forget <n>` | Delete a memory by number |
+| `/remind <time> <msg>` | Set a reminder (natural language time) |
 | `/reminders` | Show active reminders |
 | `/cancel <id>` | Cancel a reminder |
-| `/update` | Update to latest version |
+| `/cleanup` | Run maintenance — clean old files, rotate logs |
+| `/update` | Check for and pull updates |
 | `/restart` | Restart the bot service |
 
 ## Skills
 
 Skills are modular capability packages. Each skill has:
-- `SKILL.md` — instructions for the LLM
-- `deps.json` — dependency manifest (auto-installed if missing)
-- `scripts/` — executable scripts
+- `SKILL.md` — instructions the LLM reads to understand how to use the skill
+- `deps.json` — dependency manifest (auto-installed at runtime if missing)
+- `scripts/` — executable scripts the LLM can run
 
 ### Included Skills
 
@@ -125,8 +191,6 @@ Skills are modular capability packages. Each skill has:
 | compress | ZIP and TAR archive operations |
 | downloads | Parallel downloads with aria2 |
 | summarize | URL content fetching and summarization |
-
-More skills will be ported from the reference implementation.
 
 ### Adding Custom Skills
 
@@ -153,7 +217,7 @@ skills/my-skill/
 }
 ```
 
-The bot will auto-install missing dependencies when the skill is first used.
+The bot auto-installs missing dependencies when the skill is first loaded.
 
 ## Docker (Alternative)
 
@@ -165,7 +229,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Note: Docker mode is a lighter deployment — no machine takeover, no system provisioning. The bot runs in a container alongside your existing OS.
+Docker mode is a lighter deployment — no machine takeover, no system provisioning. The bot runs in a container alongside your existing OS.
 
 ## How It Works
 
@@ -187,6 +251,7 @@ Note: Docker mode is a lighter deployment — no machine takeover, no system pro
 3. Disables sleep, screen saver
 4. Enables Screen Sharing (VNC)
 5. Registers as LaunchAgent (starts on login, restarts on crash)
+6. Sources `.env` via bash wrapper for launchd compatibility
 
 ### Soft Takeover (macOS only)
 
@@ -197,12 +262,14 @@ Note: Docker mode is a lighter deployment — no machine takeover, no system pro
 ## Security
 
 - Bot runs as your user (not root)
-- Sudo password stored at `~/.sudo_pass` with 600 permissions
+- Sudo password stored at `~/.sudo_pass` with 600 permissions — used only for runtime package installation
 - Firewall: SSH + outbound only (Linux)
 - fail2ban on SSH (Linux)
-- Automatic security updates (Linux)
-- Telegram access restricted to `ALLOWED_USERS`
+- Automatic security updates via unattended-upgrades (Linux)
+- Telegram access restricted to `ALLOWED_USERS` — unauthorized messages are silently dropped
 - `.env` and `data/` are gitignored
+- Atomic file writes prevent data corruption on crash
+- No credentials are transmitted — all API keys stay on the machine
 
 ## License
 

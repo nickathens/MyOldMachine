@@ -129,8 +129,8 @@ def restart_service() -> tuple[bool, str]:
 
 def full_update(bot_dir: Path) -> str:
     """
-    Full update cycle: pull + restart.
-    Returns status message.
+    Update cycle: pull code + install deps. Does NOT restart automatically.
+    The user must send /restart to apply — this prevents killing the bot mid-response.
     """
     lines = []
 
@@ -147,8 +147,7 @@ def full_update(bot_dir: Path) -> str:
     if not success:
         return "\n".join(lines)
 
-    # Restart
-    success, restart_msg = restart_service()
-    lines.append(restart_msg)
+    lines.append("")
+    lines.append("Code updated. Send /restart to apply the changes.")
 
     return "\n".join(lines)

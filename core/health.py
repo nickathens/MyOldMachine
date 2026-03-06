@@ -152,38 +152,13 @@ def get_memory_usage() -> dict:
 
 
 def get_cpu_usage() -> Optional[float]:
-    """Get current CPU usage percentage (1-second sample)."""
+    """Get CPU usage estimate (non-blocking — uses load average, not sleep)."""
     try:
-        if platform.system() == "Darwin":
-            result = subprocess.run(
-                ["top", "-l", "1", "-n", "0"],
-                capture_output=True, text=True, timeout=10
-            )
-            for line in result.stdout.splitlines():
-                if "CPU usage" in line:
-                    import re
-                    # "CPU usage: 5.55% user, 3.33% sys, 91.11% idle"
-                    idle_match = re.search(r"([\d.]+)%\s*idle", line)
-                    if idle_match:
-                        return round(100 - float(idle_match.group(1)), 1)
-        else:
-            # Read /proc/stat twice with 1s interval
-            def read_cpu():
-                with open("/proc/stat") as f:
-                    line = f.readline()
-                    values = [int(x) for x in line.split()[1:]]
-                    idle = values[3]
-                    total = sum(values)
-                    return idle, total
-
-            idle1, total1 = read_cpu()
-            time.sleep(1)
-            idle2, total2 = read_cpu()
-            idle_delta = idle2 - idle1
-            total_delta = total2 - total1
-            if total_delta > 0:
-                return round((1 - idle_delta / total_delta) * 100, 1)
-    except Exception:
+        load = os.getloadavg()
+        cpu_count = os.cpu_count() or 1
+        # 1-minute load average normalized to percentage
+        return round(min(load[0] / cpu_count * 100, 100.0), 1)
+    except (OSError, AttributeError):
         pass
     return None
 

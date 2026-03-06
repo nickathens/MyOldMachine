@@ -7,8 +7,9 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>{{PYTHON}}</string>
-        <string>{{BOT_PY}}</string>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>set -a; source {{ENV_FILE}}; set +a; exec {{PYTHON}} {{BOT_PY}}</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -32,6 +33,8 @@
         <string>1</string>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{{VENV_BIN}}</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
     </dict>
 </dict>
 </plist>

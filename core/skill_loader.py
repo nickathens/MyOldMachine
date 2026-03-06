@@ -96,13 +96,15 @@ class SkillManager:
         return [s for s in self.skills.values() if s.enabled and s.name not in excluded]
 
     def build_context(self, exclude: list[str] | None = None) -> str:
-        """Build lazy context: skill names + descriptions only."""
+        """Build lazy context: skill names + descriptions only.
+        Full instructions are loaded on-demand when the LLM reads SKILL.md."""
         enabled = self.get_enabled_skills(exclude)
         if not enabled:
             return ""
         parts = [
-            "## Available Skills",
+            "## Available Skills (use Read tool on SKILL.md for full instructions):",
             f"Skills directory: {self.skills_dir}",
+            f"To use a skill, read its full instructions: Read {self.skills_dir}/<skill-name>/SKILL.md",
             "",
         ]
         for skill in sorted(enabled, key=lambda s: s.name):
