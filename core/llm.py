@@ -5,9 +5,9 @@ LLM Provider Abstraction Layer for MyOldMachine.
 PRIMARY: Claude Code CLI — runs as subprocess with full tool-use (bash, file
 read/write, etc.). This is how the bot actually controls the machine.
 
-FALLBACK API PROVIDERS: OpenAI, Google Gemini, Ollama, OpenRouter — these
-use httpx for API calls and return plain text (no tool-use capability).
-Useful for low-cost chat or when Claude Code CLI is unavailable.
+API PROVIDERS: OpenAI, Google Gemini, Ollama, OpenRouter — these use httpx
+for API calls with function-calling / tool-use support. The LLM sends
+structured tool calls, we execute them locally, and return results.
 """
 
 import asyncio
@@ -16,11 +16,17 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import httpx
+
+from core.tools import (
+    TOOLS_OPENAI,
+    TOOLS_GEMINI,
+    MAX_TOOL_ITERATIONS,
+    execute_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +74,7 @@ class LLMProvider(ABC):
     @property
     def supports_tool_use(self) -> bool:
         """Whether this provider supports tool use (running commands, etc.)."""
-        return False
+        return True  # All providers now support tool use
 
     @property
     def supports_vision(self) -> bool:
@@ -367,6 +373,10 @@ class ClaudeAPIProvider(LLMProvider):
         return "claude"
 
     @property
+    def supports_tool_use(self) -> bool:
+        return False  # Claude API provider doesn't use our tool layer
+
+    @property
     def supports_vision(self) -> bool:
         return True
 
@@ -410,8 +420,123 @@ class ClaudeAPIProvider(LLMProvider):
             )
 
 
+# --- OpenAI-Compatible Tool-Use Loop ---
+# Used by OpenAI, OpenRouter, and Ollama (all share the same format)
+
+async def _openai_tool_loop(
+    url: str,
+    headers: dict,
+    body: dict,
+    model: str,
+    provider_name: str,
+    timeout: float = 300.0,
+) -> LLMResponse:
+    """
+    Shared tool-use loop for OpenAI-compatible APIs.
+
+    Sends the request with tool definitions. If the model responds with
+    tool_calls, executes them locally, appends results, and re-sends.
+    Repeats until the model responds with text or hits the iteration limit.
+    """
+    # Add tools to the request body
+    body["tools"] = TOOLS_OPENAI
+    body["tool_choice"] = "auto"
+
+    messages = body["messages"]
+    total_input = 0
+    total_output = 0
+    used_tools = False
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for iteration in range(MAX_TOOL_ITERATIONS):
+            try:
+                resp = await client.post(url, headers=headers, json=body)
+                data = resp.json()
+            except Exception as e:
+                return LLMResponse(
+                    text="", model=model, provider=provider_name,
+                    error=f"{provider_name} request failed: {e}",
+                )
+
+            if resp.status_code != 200:
+                error_obj = data.get("error", {})
+                if isinstance(error_obj, dict):
+                    error_msg = error_obj.get("message", str(data))
+                else:
+                    error_msg = str(error_obj)
+                return LLMResponse(
+                    text="", model=model, provider=provider_name,
+                    error=f"{provider_name} error ({model}): {error_msg}",
+                )
+
+            # Track token usage
+            usage = data.get("usage", {})
+            total_input += usage.get("prompt_tokens", 0)
+            total_output += usage.get("completion_tokens", 0)
+
+            choices = data.get("choices", [])
+            if not choices:
+                return LLMResponse(
+                    text="", model=model, provider=provider_name,
+                    error=f"{provider_name} returned no choices",
+                )
+
+            choice = choices[0]
+            message = choice.get("message", {})
+            finish_reason = choice.get("finish_reason", "")
+
+            # Check if the model wants to call tools
+            tool_calls = message.get("tool_calls")
+            if tool_calls and finish_reason in ("tool_calls", "stop"):
+                used_tools = True
+
+                # Append the assistant message with tool_calls to conversation
+                assistant_msg = {"role": "assistant", "content": message.get("content") or None}
+                assistant_msg["tool_calls"] = tool_calls
+                messages.append(assistant_msg)
+
+                # Execute each tool call and append results
+                for tc in tool_calls:
+                    tc_id = tc.get("id", "")
+                    func = tc.get("function", {})
+                    func_name = func.get("name", "")
+                    try:
+                        func_args = json.loads(func.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        func_args = {}
+
+                    logger.info(f"[{provider_name}] Tool call: {func_name}({json.dumps(func_args)[:200]})")
+                    result = await execute_tool(func_name, func_args)
+                    logger.info(f"[{provider_name}] Tool result: {result[:200]}")
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": result,
+                    })
+
+                # Update body with extended messages and loop
+                body["messages"] = messages
+                continue
+
+            # No tool calls — this is the final text response
+            text = message.get("content", "") or ""
+            return LLMResponse(
+                text=text, model=model, provider=provider_name,
+                input_tokens=total_input, output_tokens=total_output,
+                tool_use=used_tools,
+            )
+
+    # Hit iteration limit
+    return LLMResponse(
+        text="I reached the maximum number of tool-use steps. Here's what I accomplished so far. Please send a follow-up message to continue.",
+        model=model, provider=provider_name,
+        tool_use=True,
+    )
+
+
 class OpenAIProvider(LLMProvider):
-    """OpenAI-compatible API."""
+    """OpenAI-compatible API with tool-use support."""
 
     def __init__(self, model: str, api_key: str = "", base_url: str = "https://api.openai.com/v1"):
         super().__init__(model, api_key)
@@ -439,32 +564,17 @@ class OpenAIProvider(LLMProvider):
                 *[{"role": m.role, "content": m.content} for m in messages],
             ],
         }
-        try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                resp = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=body)
-                data = resp.json()
-                if resp.status_code != 200:
-                    error_msg = data.get("error", {}).get("message", str(data))
-                    return LLMResponse(
-                        text="", model=self.model, provider=self.provider_name,
-                        error=f"OpenAI API error: {error_msg}"
-                    )
-                text = data["choices"][0]["message"]["content"]
-                usage = data.get("usage", {})
-                return LLMResponse(
-                    text=text, model=self.model, provider=self.provider_name,
-                    input_tokens=usage.get("prompt_tokens", 0),
-                    output_tokens=usage.get("completion_tokens", 0),
-                )
-        except Exception as e:
-            return LLMResponse(
-                text="", model=self.model, provider=self.provider_name,
-                error=f"OpenAI request failed: {e}"
-            )
+        return await _openai_tool_loop(
+            url=f"{self.base_url}/chat/completions",
+            headers=headers,
+            body=body,
+            model=self.model,
+            provider_name=self.provider_name,
+        )
 
 
 class OpenRouterProvider(LLMProvider):
-    """OpenRouter API — routes to many models via a single API key."""
+    """OpenRouter API — routes to many models via a single API key. Tool-use enabled."""
 
     BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -477,7 +587,7 @@ class OpenRouterProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        return True  # Most OpenRouter models support vision
+        return True
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
@@ -495,40 +605,17 @@ class OpenRouterProvider(LLMProvider):
                 *[{"role": m.role, "content": m.content} for m in messages],
             ],
         }
-        try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                resp = await client.post(f"{self.BASE_URL}/chat/completions", headers=headers, json=body)
-                data = resp.json()
-                if resp.status_code != 200:
-                    error_obj = data.get("error", {})
-                    error_msg = error_obj.get("message", str(data)) if isinstance(error_obj, dict) else str(error_obj)
-                    # Include model info for debugging
-                    return LLMResponse(
-                        text="", model=self.model, provider=self.provider_name,
-                        error=f"OpenRouter error ({self.model}): {error_msg}"
-                    )
-                choices = data.get("choices", [])
-                if not choices:
-                    return LLMResponse(
-                        text="", model=self.model, provider=self.provider_name,
-                        error=f"OpenRouter returned no choices for model {self.model}"
-                    )
-                text = choices[0].get("message", {}).get("content", "")
-                usage = data.get("usage", {})
-                return LLMResponse(
-                    text=text, model=self.model, provider=self.provider_name,
-                    input_tokens=usage.get("prompt_tokens", 0),
-                    output_tokens=usage.get("completion_tokens", 0),
-                )
-        except Exception as e:
-            return LLMResponse(
-                text="", model=self.model, provider=self.provider_name,
-                error=f"OpenRouter request failed: {e}"
-            )
+        return await _openai_tool_loop(
+            url=f"{self.BASE_URL}/chat/completions",
+            headers=headers,
+            body=body,
+            model=self.model,
+            provider_name=self.provider_name,
+        )
 
 
 class GeminiProvider(LLMProvider):
-    """Google Gemini API."""
+    """Google Gemini API with function-calling / tool-use support."""
 
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -542,10 +629,13 @@ class GeminiProvider(LLMProvider):
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         url = f"{self.API_URL}/{self.model}:generateContent?key={self.api_key}"
+
+        # Build Gemini conversation format
         contents = []
         for m in messages:
             role = "user" if m.role == "user" else "model"
             contents.append({"role": role, "parts": [{"text": m.content}]})
+
         body = {
             "contents": contents,
             "systemInstruction": {"parts": [{"text": system_prompt}]},
@@ -553,40 +643,104 @@ class GeminiProvider(LLMProvider):
                 "maxOutputTokens": max_tokens,
                 "temperature": temperature,
             },
+            "tools": TOOLS_GEMINI,
         }
-        try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                resp = await client.post(url, json=body)
-                data = resp.json()
+
+        total_input = 0
+        total_output = 0
+        used_tools = False
+
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for iteration in range(MAX_TOOL_ITERATIONS):
+                try:
+                    resp = await client.post(url, json=body)
+                    data = resp.json()
+                except Exception as e:
+                    return LLMResponse(
+                        text="", model=self.model, provider=self.provider_name,
+                        error=f"Gemini request failed: {e}",
+                    )
+
                 if resp.status_code != 200:
                     error_msg = data.get("error", {}).get("message", str(data))
                     return LLMResponse(
                         text="", model=self.model, provider=self.provider_name,
-                        error=f"Gemini API error: {error_msg}"
+                        error=f"Gemini API error: {error_msg}",
                     )
+
+                # Track usage
+                usage = data.get("usageMetadata", {})
+                total_input += usage.get("promptTokenCount", 0)
+                total_output += usage.get("candidatesTokenCount", 0)
+
                 candidates = data.get("candidates", [])
                 if not candidates:
                     return LLMResponse(
                         text="", model=self.model, provider=self.provider_name,
-                        error="Gemini returned no candidates"
+                        error="Gemini returned no candidates",
                     )
+
                 parts = candidates[0].get("content", {}).get("parts", [])
-                text = "".join(p.get("text", "") for p in parts)
-                usage = data.get("usageMetadata", {})
+
+                # Check for function calls in the response parts
+                function_calls = [p for p in parts if "functionCall" in p]
+                text_parts = [p.get("text", "") for p in parts if "text" in p]
+
+                if function_calls:
+                    used_tools = True
+
+                    # Append the model's response (with function calls) to contents
+                    contents.append({
+                        "role": "model",
+                        "parts": parts,
+                    })
+
+                    # Execute each function call and build response parts
+                    response_parts = []
+                    for fc_part in function_calls:
+                        fc = fc_part["functionCall"]
+                        func_name = fc.get("name", "")
+                        func_args = fc.get("args", {})
+
+                        logger.info(f"[gemini] Tool call: {func_name}({json.dumps(func_args)[:200]})")
+                        result = await execute_tool(func_name, func_args)
+                        logger.info(f"[gemini] Tool result: {result[:200]}")
+
+                        response_parts.append({
+                            "functionResponse": {
+                                "name": func_name,
+                                "response": {"result": result},
+                            }
+                        })
+
+                    # Append function responses as a user turn
+                    contents.append({
+                        "role": "user",
+                        "parts": response_parts,
+                    })
+
+                    # Update body and loop
+                    body["contents"] = contents
+                    continue
+
+                # No function calls — this is the final text response
+                text = "".join(text_parts)
                 return LLMResponse(
                     text=text, model=self.model, provider=self.provider_name,
-                    input_tokens=usage.get("promptTokenCount", 0),
-                    output_tokens=usage.get("candidatesTokenCount", 0),
+                    input_tokens=total_input, output_tokens=total_output,
+                    tool_use=used_tools,
                 )
-        except Exception as e:
-            return LLMResponse(
-                text="", model=self.model, provider=self.provider_name,
-                error=f"Gemini request failed: {e}"
-            )
+
+        # Hit iteration limit
+        return LLMResponse(
+            text="I reached the maximum number of tool-use steps. Please send a follow-up message to continue.",
+            model=self.model, provider=self.provider_name,
+            tool_use=True,
+        )
 
 
 class OllamaProvider(LLMProvider):
-    """Ollama local models."""
+    """Ollama local models with tool-use support."""
 
     def __init__(self, model: str, api_key: str = "", base_url: str = "http://localhost:11434"):
         super().__init__(model, api_key)
@@ -597,12 +751,41 @@ class OllamaProvider(LLMProvider):
         return "ollama"
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
+        # Ollama supports OpenAI-compatible /v1/chat/completions endpoint
+        # which includes tool-use support
+        headers = {"Content-Type": "application/json"}
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ],
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": temperature,
+            },
+        }
+
+        # Try OpenAI-compatible endpoint first (supports tool-use)
+        try:
+            return await _openai_tool_loop(
+                url=f"{self.base_url}/v1/chat/completions",
+                headers=headers,
+                body=body,
+                model=self.model,
+                provider_name=self.provider_name,
+                timeout=600.0,
+            )
+        except Exception as e:
+            logger.warning(f"Ollama OpenAI-compat endpoint failed, falling back to native: {e}")
+
+        # Fallback to native Ollama API (no tool-use)
         url = f"{self.base_url}/api/chat"
         ollama_messages = [
             {"role": "system", "content": system_prompt},
             *[{"role": m.role, "content": m.content} for m in messages],
         ]
-        body = {
+        native_body = {
             "model": self.model,
             "messages": ollama_messages,
             "stream": False,
@@ -613,7 +796,7 @@ class OllamaProvider(LLMProvider):
         }
         try:
             async with httpx.AsyncClient(timeout=600.0) as client:
-                resp = await client.post(url, json=body)
+                resp = await client.post(url, json=native_body)
                 data = resp.json()
                 if resp.status_code != 200:
                     return LLMResponse(

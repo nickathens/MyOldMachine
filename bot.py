@@ -239,81 +239,86 @@ async def recover_pending_messages(bot):
 # --- System prompt builder ---
 
 def build_system_prompt(user_id: int) -> str:
-    """Build the system prompt with user context, skills, memories, and instructions."""
+    """Build the system prompt with user context, skills, memories, and instructions.
+
+    All providers now have tool-use capability (either native via Claude CLI,
+    or through our function-calling execution layer for API providers).
+    """
     profile = get_user_profile(user_id)
     user_name = profile.get("name", "User")
     user_role = profile.get("role", "user")
     blocked_skills = profile.get("blocked_skills", [])
-    has_tool_use = _llm_provider and _llm_provider.supports_tool_use
+    is_claude_cli = isinstance(_llm_provider, ClaudeCLIProvider)
 
     parts = []
 
-    # Bot identity
+    # Bot identity — all providers can control the machine now
     bot_name = get_bot_name()
-    if has_tool_use:
-        parts.append(f"You are {bot_name}, an AI assistant that controls this machine.")
-        parts.append("You have full access to the operating system. You can install software, "
-                     "manage files, run commands, and configure services.")
-        parts.append("If the user asks for something and you're missing a tool, install it.")
-    else:
-        parts.append(f"You are {bot_name}, an AI assistant on Telegram.")
-        parts.append("You are a text-only assistant. You CANNOT run commands, access files, "
-                     "or execute code. Do NOT write out shell commands, tool calls, or code blocks "
-                     "pretending to execute them. Just answer questions conversationally.")
-        parts.append("If the user asks you to do something that requires running commands or "
-                     "accessing the filesystem, explain that this requires the Claude CLI provider "
-                     "and suggest they switch providers in ~/.env.")
+    parts.append(f"You are {bot_name}, an AI assistant that controls this machine.")
+    parts.append("You have full access to the operating system through tool calls. "
+                 "You can run commands, read and write files, install software, "
+                 "manage files, and configure services.")
+    if not is_claude_cli:
+        parts.append(
+            "You have 4 tools available: run_command (execute shell commands), "
+            "read_file (read file contents), write_file (create/overwrite files), "
+            "and list_directory (list files in a directory). "
+            "Use these tools to accomplish tasks. Do NOT write out commands as text — "
+            "actually call the tools to execute them."
+        )
+    parts.append("If the user asks for something and you're missing a tool, install it.")
     parts.append(f"The user's name is {user_name}. Their role is: {user_role}.")
     parts.append(f"User's Telegram ID: {user_id}")
     parts.append("")
 
-    if has_tool_use:
-        parts.append(f"Sudo password is stored at ~/.sudo_pass — use it for privileged commands.")
+    parts.append(f"Sudo password is stored at ~/.sudo_pass — use it for privileged commands.")
+    if not is_claude_cli:
+        parts.append("For sudo: run_command('cat ~/.sudo_pass | sudo -S <your_command>')")
+    parts.append("")
+
+    # Telegram capabilities
+    parts.append("### Sending Files to User:")
+    parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --photo /path/to/image.png")
+    parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --video /path/to/video.mp4")
+    parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --document /path/to/file.pdf")
+    parts.append("  Add --caption 'description' for captions.")
+    parts.append("")
+    parts.append(f"User attachments directory: {get_attachments_dir(user_id)}")
+    parts.append("")
+
+    # Service restart policy (admin)
+    if user_role == "admin":
+        parts.append("### Service Restart Policy:")
+        parts.append("Do NOT restart the bot service directly — it will kill you mid-response.")
+        parts.append("If changes require a restart, ask the user to send /restart.")
         parts.append("")
 
-        # Telegram capabilities (only useful with tool-use)
-        parts.append("### Sending Files to User:")
-        parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --photo /path/to/image.png")
-        parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --video /path/to/video.mp4")
-        parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --document /path/to/file.pdf")
-        parts.append("  Add --caption 'description' for captions.")
-        parts.append("")
-        parts.append(f"User attachments directory: {get_attachments_dir(user_id)}")
-        parts.append("")
+    # Scheduler instructions
+    parts.append("### Reminders and Scheduling:")
+    parts.append("When the user asks to set a reminder, use the scheduler CLI:")
+    parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"YYYY-MM-DD HH:MM\" --message \"text\"")
+    parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"in 30 minutes\" --message \"text\"")
+    parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py list --user {user_id}")
+    parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py remove --id <job_id> --user {user_id}")
+    parts.append("NEVER use crontab. The scheduler handles everything.")
+    parts.append("")
 
-        # Service restart policy (admin)
-        if user_role == "admin":
-            parts.append("### Service Restart Policy:")
-            parts.append("Do NOT restart the bot service directly — it will kill you mid-response.")
-            parts.append("If changes require a restart, ask the user to send /restart.")
-            parts.append("")
-
-        # Scheduler instructions
-        parts.append("### Reminders and Scheduling:")
-        parts.append("When the user asks to set a reminder, use the scheduler CLI:")
-        parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"YYYY-MM-DD HH:MM\" --message \"text\"")
-        parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"in 30 minutes\" --message \"text\"")
-        parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py list --user {user_id}")
-        parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py remove --id <job_id> --user {user_id}")
-        parts.append("NEVER use crontab. The scheduler handles everything.")
-        parts.append("")
-
-        # Memory system
-        memory_dir = DATA_DIR / "memory"
-        parts.append("### Memory System:")
-        parts.append("Use memory proactively, not just when asked.")
-        parts.append("")
-        parts.append("**Projects:**")
-        parts.append(f"  python {BOT_DIR}/utils/project_manager.py create \"Name\" \"Summary\" \"/path\"")
-        parts.append(f"  Project state: {memory_dir}/projects/<slug>/state.json")
-        parts.append("")
-        parts.append("**Topic Memories:**")
-        parts.append(f"  Write domain knowledge to {memory_dir}/topics/<topic>.md")
-        parts.append("")
-        parts.append("**Decision Logs:**")
-        parts.append(f"  Log significant decisions to {memory_dir}/decisions/YYYY-MM-DD_description.md")
-        parts.append(f"  Include: what was decided, options considered, rationale")
-        parts.append("")
+    # Memory system
+    memory_dir = DATA_DIR / "memory"
+    parts.append("### Memory System:")
+    parts.append("Use memory proactively, not just when asked.")
+    parts.append("")
+    parts.append("**Projects:**")
+    parts.append(f"  python {BOT_DIR}/utils/project_manager.py create \"Name\" \"Summary\" \"/path\"")
+    parts.append(f"  Project state: {memory_dir}/projects/<slug>/state.json")
+    parts.append("")
+    parts.append("**Topic Memories:**")
+    parts.append(f"  Write domain knowledge to {memory_dir}/topics/<topic>.md")
+    parts.append("")
+    parts.append("**Decision Logs:**")
+    parts.append(f"  Log significant decisions to {memory_dir}/decisions/YYYY-MM-DD_description.md")
+    parts.append(f"  Include: what was decided, options considered, rationale")
+    parts.append("")
 
     # Custom instructions file
     instructions_file = DATA_DIR / "instructions.md"
@@ -322,23 +327,21 @@ def build_system_prompt(user_id: int) -> str:
         parts.append(instructions_file.read_text())
         parts.append("")
 
-    if has_tool_use:
-        # CLAUDE.md instructions (if exists in home) — contains tool-use instructions
-        claude_md = Path.home() / "CLAUDE.md"
-        if claude_md.exists():
-            parts.append("### Global Instructions (CLAUDE.md):")
-            parts.append(claude_md.read_text())
-            parts.append("")
+    # CLAUDE.md instructions (if exists in home)
+    claude_md = Path.home() / "CLAUDE.md"
+    if claude_md.exists():
+        parts.append("### Global Instructions (CLAUDE.md):")
+        parts.append(claude_md.read_text())
+        parts.append("")
 
-        # SYSTEM-CONTEXT.md
-        system_context = Path.home() / "SYSTEM-CONTEXT.md"
-        if system_context.exists() and user_role == "admin":
-            parts.append("### System Context:")
-            parts.append(system_context.read_text())
-            parts.append("")
+    # SYSTEM-CONTEXT.md
+    system_context = Path.home() / "SYSTEM-CONTEXT.md"
+    if system_context.exists() and user_role == "admin":
+        parts.append("### System Context:")
+        parts.append(system_context.read_text())
+        parts.append("")
 
-    # Active projects from memory (useful for all providers)
-    memory_dir = DATA_DIR / "memory"
+    # Active projects from memory
     projects_dir = memory_dir / "projects"
     if projects_dir.exists():
         project_lines = []
@@ -372,11 +375,8 @@ def build_system_prompt(user_id: int) -> str:
     if topics_dir.exists():
         topics = [f.stem for f in topics_dir.glob("*.md")]
         if topics:
-            if has_tool_use:
-                parts.append(f"Available topic memories: {', '.join(topics)}")
-                parts.append(f"(Read with: {topics_dir}/<topic>.md)")
-            else:
-                parts.append(f"Known topics: {', '.join(topics)}")
+            parts.append(f"Available topic memories: {', '.join(topics)}")
+            parts.append(f"(Read with: {topics_dir}/<topic>.md)")
             parts.append("")
 
     # Conversation summary (from compaction)
@@ -395,8 +395,8 @@ def build_system_prompt(user_id: int) -> str:
             parts.append(f"- {mem['content']}")
         parts.append("")
 
-    # Skills (only useful with tool-use)
-    if has_tool_use and _skill_manager:
+    # Skills
+    if _skill_manager:
         skills_ctx = _skill_manager.build_context(exclude=blocked_skills)
         if skills_ctx:
             parts.append(skills_ctx)
@@ -943,7 +943,10 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     branch = get_current_branch(BOT_DIR)
     skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
     provider = get_llm_provider()
-    tool_use = "Yes (Claude CLI)" if isinstance(_llm_provider, ClaudeCLIProvider) else "No (API only)"
+    if isinstance(_llm_provider, ClaudeCLIProvider):
+        tool_use = "Yes (Claude CLI — native)"
+    else:
+        tool_use = "Yes (function calling)"
     text = (
         f"MyOldMachine System Info\n\n"
         f"Version: {version} ({branch})\n"
