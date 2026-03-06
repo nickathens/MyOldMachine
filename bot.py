@@ -31,6 +31,8 @@ from core.llm import create_provider, Message, LLMResponse
 from core.skill_loader import SkillManager
 from core.session import SessionManager
 from core.scheduler import Scheduler, parse_natural_time
+from core.health import build_health_report, check_critical
+from core.updater import check_for_updates, full_update, get_current_version, get_current_branch
 
 from telegram import Update
 from telegram.ext import (
@@ -105,9 +107,12 @@ def build_system_prompt(user_id: int) -> str:
 
     # Bot identity
     bot_name = get_bot_name()
-    parts.append(f"You are {bot_name}, a helpful AI assistant running as a Telegram bot.")
+    parts.append(f"You are {bot_name}, an AI assistant that controls this machine.")
+    parts.append(f"You have full access to the operating system. You can install software, manage files, run commands, and configure services.")
+    parts.append(f"If the user asks for something and you're missing a tool, install it using the system package manager.")
     parts.append(f"The user's name is {user_name}. Their role is: {user_role}.")
     parts.append(f"User's Telegram ID: {user_id}")
+    parts.append(f"Sudo password is stored at ~/.sudo_pass — use it for privileged commands.")
     parts.append("")
 
     # File sending instructions
@@ -262,17 +267,17 @@ def split_message(text: str, max_length: int = 4000) -> list[str]:
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_name = get_bot_name()
+    import platform
+    version = get_current_version(BOT_DIR)
+    skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
     await update.message.reply_text(
         f"Connected to {bot_name}.\n\n"
-        f"Provider: {get_llm_provider()} / {get_llm_model()}\n\n"
-        "/clear - Reset conversation\n"
-        "/status - Bot status\n"
-        "/remember <fact> - Save a memory\n"
-        "/memories - Show memories\n"
-        "/forget <n> - Delete memory by number\n"
-        "/remind <time> <message> - Set a reminder\n"
-        "/reminders - Show reminders\n"
-        "/cancel <id> - Cancel a reminder"
+        f"Provider: {get_llm_provider()} / {get_llm_model()}\n"
+        f"OS: {platform.system()} {platform.release()}\n"
+        f"Skills: {skills_count}\n"
+        f"Version: {version}\n\n"
+        "Send /help for all commands.\n"
+        "Just send me a message — I'm ready."
     )
 
 
@@ -415,6 +420,88 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     _scheduler.remove_job(text)
     await update.message.reply_text(f"Reminder '{text}' cancelled.")
+
+
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+    report = build_health_report(BOT_DIR)
+    await update.message.reply_text(report)
+
+
+async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+    await update.message.reply_text("Checking for updates...")
+    try:
+        result = full_update(BOT_DIR)
+        await update.message.reply_text(result)
+    except Exception as e:
+        await update.message.reply_text(f"Update failed: {e}")
+
+
+async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+    import platform
+    version = get_current_version(BOT_DIR)
+    branch = get_current_branch(BOT_DIR)
+    skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
+    text = (
+        f"MyOldMachine System Info\n\n"
+        f"Version: {version} ({branch})\n"
+        f"Provider: {get_llm_provider()} / {get_llm_model()}\n"
+        f"Skills: {skills_count}\n"
+        f"OS: {platform.system()} {platform.release()}\n"
+        f"Python: {platform.python_version()}\n"
+        f"Bot dir: {BOT_DIR}"
+    )
+    await update.message.reply_text(text)
+
+
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+    from core.updater import restart_service
+    await update.message.reply_text("Restarting...")
+    success, msg = restart_service()
+    if not success:
+        await update.message.reply_text(f"Restart failed: {msg}")
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bot_name = get_bot_name()
+    text = (
+        f"{bot_name} Commands\n\n"
+        "General:\n"
+        "  /start - Connect and show info\n"
+        "  /help - Show this help\n"
+        "  /clear - Reset conversation\n"
+        "  /status - Bot status\n\n"
+        "Memory:\n"
+        "  /remember <fact> - Save a memory\n"
+        "  /memories - Show memories\n"
+        "  /forget <n> - Delete memory by number\n\n"
+        "Reminders:\n"
+        "  /remind <time> <message> - Set a reminder\n"
+        "  /reminders - Show reminders\n"
+        "  /cancel <id> - Cancel a reminder\n\n"
+        "Admin:\n"
+        "  /health - System health report\n"
+        "  /system - System info\n"
+        "  /update - Update to latest version\n"
+        "  /restart - Restart the bot\n\n"
+        "Just send a message to chat. Send files for processing."
+    )
+    await update.message.reply_text(text)
 
 
 async def download_attachments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> list[tuple[Path, str]]:
@@ -635,6 +722,11 @@ def main():
     app.add_handler(CommandHandler("remind", remind_command))
     app.add_handler(CommandHandler("reminders", reminders_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CommandHandler("health", health_command))
+    app.add_handler(CommandHandler("system", system_command))
+    app.add_handler(CommandHandler("update", update_command))
+    app.add_handler(CommandHandler("restart", restart_command))
+    app.add_handler(CommandHandler("help", help_command))
 
     # Message handler
     app.add_handler(MessageHandler(

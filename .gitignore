@@ -3,6 +3,9 @@
 *.pyc
 __pycache__/
 
+# Virtual environment
+.venv/
+
 # Data (user-specific, not committed)
 data/*
 !data/.gitkeep
@@ -14,3 +17,9 @@ data/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+
+# Sudo password (never commit)
+.sudo_pass

@@ -1,0 +1,6 @@
+{
+  "pip": ["httpx>=0.27"],
+  "check": {
+    "httpx": "python3 -c \"import httpx\""
+  }
+}

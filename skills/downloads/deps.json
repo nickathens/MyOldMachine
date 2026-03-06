@@ -1,0 +1,7 @@
+{
+  "apt": ["aria2"],
+  "brew": ["aria2"],
+  "check": {
+    "aria2c": "aria2c --version"
+  }
+}
