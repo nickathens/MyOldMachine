@@ -114,14 +114,31 @@ def restart_service() -> tuple[bool, str]:
     elif system == "Darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / "com.myoldmachine.bot.plist"
         if plist.exists():
-            subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, timeout=10)
+            # Try atomic restart via kickstart (macOS 10.10+)
+            # kickstart -k kills and restarts in one operation — avoids the
+            # unload/load race where unload kills us before load runs.
+            uid_result = subprocess.run(
+                ["id", "-u"], capture_output=True, text=True, timeout=5
+            )
+            uid = uid_result.stdout.strip()
             result = subprocess.run(
-                ["launchctl", "load", "-w", str(plist)],
+                ["launchctl", "kickstart", "-k", f"gui/{uid}/com.myoldmachine.bot"],
                 capture_output=True, text=True, timeout=10
             )
             if result.returncode == 0:
                 return True, "Service restarting..."
-            return False, f"Restart failed: {result.stderr[:200]}"
+            # Fallback: spawn a detached process that waits for us to die,
+            # then reloads the plist.
+            logger.info("kickstart failed, falling back to detached reload")
+            subprocess.Popen(
+                f'sleep 3 && launchctl load -w "{plist}"',
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            subprocess.run(["launchctl", "unload", str(plist)], capture_output=True, timeout=10)
+            return True, "Service restarting..."
         return False, "LaunchAgent plist not found"
 
     return False, f"Unsupported OS: {system}"
