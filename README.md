@@ -109,18 +109,18 @@ User (Telegram) → Bot (Python) → LLM (any provider) → System (full access)
 
 | Provider | Tool Use | Local | Free | Notes |
 |----------|----------|-------|------|-------|
-| **Claude CLI** | Full (bash, files, web) | No | No | Runs `claude` subprocess with dangerously-skip-permissions. Most capable. |
-| **Claude API** | No | No | No | Direct Anthropic API. Fast, reliable. |
-| **OpenAI** | No | No | No | GPT-4o, GPT-4, etc. |
-| **Gemini** | No | No | No | Google's models. |
-| **Ollama** | No | Yes | Yes | Run any model locally. No API key needed. |
-| **OpenRouter** | No | No | Varies | Access 100+ models through one API. |
+| **claude** | Full (bash, files, web) | No | No | Claude Code CLI — runs `claude` subprocess. Most capable. Requires `claude login`. |
+| **claude-api** | No | No | No | Direct Anthropic API. Text-only, fast, reliable. |
+| **openai** | No | No | No | GPT-4o, GPT-4, etc. |
+| **gemini** | No | No | No | Google's models. Free tier available. |
+| **ollama** | No | Yes | Yes | Run any model locally. No API key needed. |
+| **openrouter** | No | No | Varies | Access 100+ models through one API. |
 
 Set your provider in `.env`:
 ```
-LLM_PROVIDER=claude_cli   # or: claude_api, openai, gemini, ollama, openrouter
+LLM_PROVIDER=claude       # or: claude-api, openai, gemini, ollama, openrouter
 LLM_MODEL=claude-sonnet-4-20250514
-LLM_API_KEY=your-key-here
+LLM_API_KEY=              # Not needed for claude (CLI) or ollama
 ```
 
 ## Session Management
@@ -273,4 +273,4 @@ Docker mode is a lighter deployment — no machine takeover, no system provision
 
 ## License
 
-Private. Not yet open source.
+MIT

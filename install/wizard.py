@@ -244,20 +244,25 @@ def detect_machine_specs():
 
 
 LLM_PROVIDERS = [
-    ("claude", "Anthropic Claude — best reasoning, requires API key ($)"),
-    ("openai", "OpenAI GPT — widely used, requires API key ($)"),
-    ("gemini", "Google Gemini — fast, requires API key (free tier available)"),
+    ("claude", "Claude Code CLI — full machine control via tool-use (requires Node.js + claude CLI)"),
+    ("claude-api", "Anthropic Claude API — text-only, no tool-use, requires API key ($)"),
+    ("openai", "OpenAI GPT — text-only, requires API key ($)"),
+    ("gemini", "Google Gemini — text-only, requires API key (free tier available)"),
     ("ollama", "Ollama — free, runs locally on your machine (no API key)"),
     ("openrouter", "OpenRouter — many models, one API key ($)"),
 ]
 
 DEFAULT_MODELS = {
     "claude": "claude-sonnet-4-20250514",
+    "claude-api": "claude-sonnet-4-20250514",
     "openai": "gpt-4o",
     "gemini": "gemini-2.0-flash",
     "ollama": "llama3.1:8b",
     "openrouter": "anthropic/claude-sonnet-4-20250514",
 }
+
+# Providers that need an API key
+API_KEY_PROVIDERS = {"claude-api", "openai", "gemini", "openrouter"}
 
 
 def write_env(repo_dir: Path, config: dict):
@@ -443,6 +448,30 @@ def main():
     else:
         ok("Provisioning (cached)")
 
+    # --- Claude CLI install (if provider is claude) ---
+    if config.get("llm_provider") == "claude" and not checkpoint_done("claude_cli"):
+        import shutil as _shutil
+        if _shutil.which("claude"):
+            ok("Claude Code CLI already installed")
+            checkpoint_set("claude_cli")
+        elif _shutil.which("npm"):
+            info("Installing Claude Code CLI...")
+            result = subprocess.run(
+                ["npm", "install", "-g", "@anthropic-ai/claude-code"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                ok("Claude Code CLI installed")
+                print(f"  {YELLOW}Run 'claude login' to authenticate before starting the bot.{NC}")
+                checkpoint_set("claude_cli")
+            else:
+                warn(f"Could not install Claude Code CLI: {result.stderr[:200]}")
+                warn("Install manually after setup: npm install -g @anthropic-ai/claude-code")
+                warn("Then run: claude login")
+        else:
+            warn("npm not found — cannot install Claude Code CLI automatically.")
+            warn("Install manually: npm install -g @anthropic-ai/claude-code && claude login")
+
     # --- Service setup ---
     if not checkpoint_done("service"):
         result = subprocess.run(
@@ -520,6 +549,8 @@ def _run_wizard_steps(detected_os: str) -> dict:
     # Step 3: LLM Provider
     print(f"\n{BOLD}Step 3: AI Provider{NC}")
     print("  Choose which AI model will power your assistant.")
+    print("  'Claude Code CLI' gives the bot full machine control (bash, files, web).")
+    print("  All other providers are text-only chat (no tool-use).")
     print()
     config["llm_provider"] = ask_choice(
         "Pick your provider:", LLM_PROVIDERS, default="claude",
@@ -528,12 +559,19 @@ def _run_wizard_steps(detected_os: str) -> dict:
     default_model = DEFAULT_MODELS.get(config["llm_provider"], "")
     config["llm_model"] = ask(f"Model", default=default_model)
 
-    if config["llm_provider"] != "ollama":
-        config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
-    else:
+    if config["llm_provider"] == "claude":
+        # Claude CLI — no API key, but needs claude CLI installed
+        config["llm_api_key"] = ""
+        print(f"  {YELLOW}Claude Code CLI will be installed automatically (requires Node.js).{NC}")
+        print(f"  {YELLOW}After install, run: claude login{NC}")
+    elif config["llm_provider"] == "ollama":
         config["llm_api_key"] = ""
         config["ollama_url"] = ask("Ollama URL", default="http://localhost:11434", required=False)
         print(f"  {YELLOW}Make sure Ollama is running: ollama serve{NC}")
+    elif config["llm_provider"] in API_KEY_PROVIDERS:
+        config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
+    else:
+        config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
 
     # Step 4: Bot name
     print(f"\n{BOLD}Step 4: Personalization{NC}")
