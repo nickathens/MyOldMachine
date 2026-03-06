@@ -267,7 +267,7 @@ fi
 # ─────────────────────────────────────────────────────────
 
 find_python() {
-    # Check common python binary names for 3.10+
+    # Check common python binary names for 3.10+ in PATH
     for candidate in python3.12 python3.11 python3.10 python3; do
         if command -v "$candidate" &>/dev/null; then
             local ver
@@ -281,6 +281,23 @@ find_python() {
             fi
         fi
     done
+
+    # Check Homebrew-specific locations directly (brew may not have linked into PATH)
+    for brew_python in \
+        /usr/local/opt/python@3.12/bin/python3.12 \
+        /opt/homebrew/opt/python@3.12/bin/python3.12 \
+        /usr/local/opt/python@3.11/bin/python3.11 \
+        /opt/homebrew/opt/python@3.11/bin/python3.11 \
+        /usr/local/Cellar/python@3.12/*/bin/python3.12 \
+        /opt/homebrew/Cellar/python@3.12/*/bin/python3.12 \
+        /usr/local/bin/python3.12 \
+        /opt/homebrew/bin/python3.12; do
+        if [ -x "$brew_python" ] 2>/dev/null; then
+            echo "$brew_python"
+            return 0
+        fi
+    done
+
     return 1
 }
 
@@ -297,14 +314,61 @@ ensure_python() {
     else
         # macOS — need Homebrew for modern Python
         ensure_homebrew
-        brew install python@3.12
+
+        # brew install may return non-zero even on success (e.g. "post-install step did not complete"
+        # on old macOS where bottles aren't available and it compiles from source).
+        # We don't bail on failure — we check if python actually works afterward.
+        brew install python@3.12 || warn "brew install returned an error (may still be OK — checking...)"
+
+        # On old macOS, brew may not link python into PATH automatically.
+        # Try to link it explicitly, ignoring errors if already linked.
+        brew link --overwrite python@3.12 2>/dev/null || true
+
+        # Ensure Homebrew's bin dirs are in PATH for this session
+        # (Intel Mac: /usr/local/bin, Apple Silicon: /opt/homebrew/bin)
+        for brew_bin in /usr/local/bin /opt/homebrew/bin /usr/local/opt/python@3.12/bin /opt/homebrew/opt/python@3.12/bin; do
+            if [ -d "$brew_bin" ]; then
+                case ":$PATH:" in
+                    *":$brew_bin:"*) ;;
+                    *) export PATH="$brew_bin:$PATH" ;;
+                esac
+            fi
+        done
+
+        # Also check Homebrew's Cellar for the python binary directly
+        for cellar_python in /usr/local/Cellar/python@3.12/*/bin/python3.12 /opt/homebrew/Cellar/python@3.12/*/bin/python3.12; do
+            if [ -x "$cellar_python" ] 2>/dev/null; then
+                cellar_bin=$(dirname "$cellar_python")
+                case ":$PATH:" in
+                    *":$cellar_bin:"*) ;;
+                    *) export PATH="$cellar_bin:$PATH" ;;
+                esac
+            fi
+        done
     fi
 
     # Re-check after install
     py=$(find_python) && { echo "$py"; return 0; }
 
+    # Last resort: search for any python3 binary in common locations
+    for search_path in /usr/local/bin/python3* /opt/homebrew/bin/python3* /usr/local/Cellar/python*/*/bin/python3*; do
+        if [ -x "$search_path" ] 2>/dev/null; then
+            local ver
+            ver=$("$search_path" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0")
+            local major minor
+            major=$(echo "$ver" | cut -d. -f1)
+            minor=$(echo "$ver" | cut -d. -f2)
+            if [ "$major" -ge 3 ] 2>/dev/null && [ "$minor" -ge 10 ] 2>/dev/null; then
+                echo "$search_path"
+                return 0
+            fi
+        fi
+    done
+
     error "Could not find or install Python 3.10+.
-  Install it manually and re-run this script."
+  Homebrew may have installed Python but it's not in PATH.
+  Try running: brew link --overwrite python@3.12
+  Then re-run this installer."
 }
 
 ensure_homebrew() {

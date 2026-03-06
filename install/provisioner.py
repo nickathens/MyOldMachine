@@ -477,21 +477,35 @@ def _install_macos_deps(os_info: OSInfo, password=None):
 
     info("Installing packages via Homebrew...")
 
-    # Install packages one by one so a single failure doesn't block everything
+    # Install packages one by one so a single failure doesn't block everything.
+    # On old macOS (e.g. Catalina), brew may compile from source and return non-zero
+    # even though the package installed fine ("post-install step did not complete").
+    # So we verify success by checking if the package is actually present afterward.
     installed_count = 0
     failed = []
     for pkg in MACOS_BREW_PACKAGES:
         log_action("brew_install", pkg)
         result = run(f"{brew} install {pkg} 2>&1")
-        if result.returncode != 0:
-            # Check if it's already installed (brew returns error for "already installed")
-            if "already installed" in result.stderr or "already installed" in result.stdout:
+        combined_output = (result.stdout or "") + (result.stderr or "")
+
+        if result.returncode == 0:
+            installed_count += 1
+        elif "already installed" in combined_output:
+            installed_count += 1
+        else:
+            # Non-zero exit — but did the package actually install?
+            # Check with brew list (more reliable than exit codes on old macOS)
+            verify = run(f"{brew} list {pkg} 2>/dev/null")
+            if verify.returncode == 0:
+                # Package is there despite the error — post-install warning, etc.
+                warn(f"{pkg}: brew returned an error but package is installed (likely a post-install warning)")
                 installed_count += 1
             else:
-                warn(f"Failed to install {pkg}: {result.stderr[:100]}")
+                warn(f"Failed to install {pkg}: {combined_output[:150]}")
                 failed.append(pkg)
-        else:
-            installed_count += 1
+
+    # Try to link all installed packages (ensures binaries are in PATH)
+    run(f"{brew} link --overwrite python@3.12 2>/dev/null")
 
     if failed:
         warn(f"Failed to install: {', '.join(failed)}")
