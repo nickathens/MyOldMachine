@@ -398,7 +398,7 @@ def main():
     config["timezone"] = ask("Timezone", default=detected_tz)
 
     # --- Step 6: Takeover level ---
-    print(f"\n{BOLD}Step 5: Takeover Level{NC}")
+    print(f"\n{BOLD}Step 6: Takeover Level{NC}")
     if detected_os == "macos":
         config["takeover"] = ask_choice(
             "How much control should the bot have?",
@@ -413,7 +413,7 @@ def main():
         config["takeover"] = "full"
 
     # --- Step 7: Sudo password ---
-    print(f"\n{BOLD}Step 6: System Access{NC}")
+    print(f"\n{BOLD}Step 7: System Access{NC}")
     print("  The bot needs sudo access to install software and manage services.")
     print("  Your password is stored locally at ~/.sudo_pass (readable only by you).")
     sudo_pass = ask("Sudo/admin password", secret=True)

@@ -75,10 +75,10 @@ def pull_updates(bot_dir: Path) -> tuple[bool, str]:
     result = _run("git pull --ff-only", cwd=str(bot_dir))
 
     if result.returncode != 0:
-        # Try with rebase as fallback
-        result = _run("git pull --rebase", cwd=str(bot_dir))
-        if result.returncode != 0:
-            return False, f"Git pull failed: {result.stderr[:200]}"
+        return False, (
+            f"Git pull --ff-only failed (local changes?): {result.stderr[:200]}\n"
+            f"Fix manually: cd {bot_dir} && git stash && git pull"
+        )
 
     new = get_current_version(bot_dir)
 

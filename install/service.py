@@ -120,6 +120,7 @@ def setup_macos_service(repo_dir: Path, os_info=None):
     content = content.replace("{{BOT_PY}}", str(repo_dir / "bot.py"))
     content = content.replace("{{LOG_DIR}}", str(repo_dir / "data" / "logs"))
     content = content.replace("{{ENV_FILE}}", str(repo_dir / ".env"))
+    content = content.replace("{{VENV_BIN}}", str(repo_dir / ".venv" / "bin"))
 
     # Ensure log directory exists
     (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)

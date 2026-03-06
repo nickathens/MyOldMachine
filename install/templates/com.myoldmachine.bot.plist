@@ -30,6 +30,8 @@
     <dict>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{{VENV_BIN}}</string>
     </dict>
 </dict>
 </plist>

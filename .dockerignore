@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.sudo_pass
+.venv
+data
+*.log
+*.pyc
+__pycache__
+.DS_Store
+.vscode
+.idea
+README.md
+install/

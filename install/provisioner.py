@@ -127,7 +127,8 @@ def sudo_write_file(path, content, password=None):
     with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
         f.write(content)
         tmp_path = f.name
-    sudo_run(f"cp {tmp_path} {path}", password)
+    import shlex
+    sudo_run(f"cp {shlex.quote(tmp_path)} {shlex.quote(str(path))}", password)
     os.unlink(tmp_path)
     log_action(f"write_file: {path}", f"{len(content)} bytes")
 
@@ -190,12 +191,18 @@ def provision_linux_full(os_info: OSInfo, password):
 
     to_remove = [pkg for pkg in LINUX_REMOVE_PACKAGES if pkg in installed]
     if to_remove:
-        pkgs = " ".join(to_remove)
         info(f"Removing {len(to_remove)} packages: {', '.join(to_remove[:10])}{'...' if len(to_remove) > 10 else ''}")
         log_action("remove_packages", ", ".join(to_remove))
-        sudo_run(f"apt-get remove -y --purge {pkgs} 2>/dev/null", password)
+        # Remove one by one so a single failure doesn't block everything
+        removed_count = 0
+        for pkg in to_remove:
+            result = sudo_run(f"apt-get remove -y --purge {pkg} 2>/dev/null", password)
+            if result.returncode == 0:
+                removed_count += 1
+            else:
+                warn(f"Failed to remove {pkg}")
         sudo_run("apt-get autoremove -y 2>/dev/null", password)
-        ok(f"Removed {len(to_remove)} packages")
+        ok(f"Removed {removed_count}/{len(to_remove)} packages")
     else:
         ok("No bloat packages found to remove")
 
@@ -235,12 +242,18 @@ def _install_linux_deps(os_info: OSInfo, password):
         ok("System packages installed")
 
     # Node.js (for browser/scraper skills) — use Node 22 LTS
-    node_check = subprocess.run("which node", shell=True, capture_output=True, timeout=10)
-    if node_check.returncode != 0:
+    import shutil as _shutil
+    if not _shutil.which("node"):
         info("Installing Node.js 22 LTS...")
-        sudo_run("curl -fsSL https://deb.nodesource.com/setup_22.x | bash -", password)
-        sudo_run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs", password)
-        ok("Node.js installed")
+        # Download setup script first, then execute (don't pipe curl to sudo)
+        dl_result = run("curl -fsSL -o /tmp/nodesource_setup.sh https://deb.nodesource.com/setup_22.x")
+        if dl_result.returncode == 0:
+            sudo_run("bash /tmp/nodesource_setup.sh", password)
+            sudo_run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs", password)
+            run("rm -f /tmp/nodesource_setup.sh")
+            ok("Node.js installed")
+        else:
+            warn("Failed to download Node.js setup script")
     else:
         ok("Node.js already installed")
 
@@ -650,23 +663,14 @@ def _configure_screen_sharing(os_info: OSInfo, password):
             warn("Enable Screen Sharing manually:")
             warn("  System Preferences → Sharing → Screen Sharing")
 
-    # Also enable VNC password access (works alongside Screen Sharing)
-    # This sets a VNC-only password so standard VNC clients can connect
+    # Enable VNC access (works alongside Screen Sharing)
     info("Configuring VNC access...")
-    # On macOS, the built-in VNC is part of Screen Sharing
-    # We just need to ensure it accepts VNC viewer connections
-    if os_info._mac_version_gte(13):
-        # Ventura+: vnc settings in new location
-        sudo_run(
-            "defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true",
-            password
-        )
-    else:
-        sudo_run(
-            "defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true",
-            password
-        )
+    sudo_run(
+        "defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true",
+        password
+    )
     ok("VNC configured")
+    warn("Note: No VNC password has been set. Set one in Screen Sharing preferences for security.")
 
 
 def provision(os_info: OSInfo, takeover: str):

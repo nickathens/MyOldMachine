@@ -10,6 +10,7 @@ import logging
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 # Cache of verified dependencies so we don't check every invocation
 _verified_cache: set[str] = set()
+
+# Resolve venv pip/python once
+_VENV_PIP = Path(sys.executable).parent / "pip"
+_VENV_PYTHON = sys.executable
 
 
 def get_sudo_password() -> Optional[str]:
@@ -60,7 +65,8 @@ def check_binary(name: str) -> bool:
 def check_pip_package(package: str) -> bool:
     """Check if a pip package is installed in the current venv."""
     name = package.split(">=")[0].split("==")[0].split("<")[0].strip()
-    result = _run(f"pip show {name} 2>/dev/null")
+    pip = str(_VENV_PIP) if _VENV_PIP.exists() else "pip"
+    result = _run(f"{pip} show {name} 2>/dev/null")
     return result.returncode == 0
 
 
@@ -177,24 +183,28 @@ def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
             logger.error(f"Failed to install system packages: {result.stderr[:200]}")
             failed.extend(system_missing)
 
-    # Pip packages
+    # Pip packages — use venv pip explicitly
     pip_missing = [m.split(":", 1)[1] for m in missing if m.startswith("pip:")]
     if pip_missing:
         pkgs = " ".join(pip_missing)
-        logger.info(f"Installing via pip: {pkgs}")
-        result = _run(f"pip install {pkgs}")
+        pip = str(_VENV_PIP) if _VENV_PIP.exists() else "pip"
+        logger.info(f"Installing via pip ({pip}): {pkgs}")
+        result = _run(f"{pip} install {pkgs}")
         if result.returncode == 0:
             installed.extend(pip_missing)
         else:
             logger.error(f"Failed to install pip packages: {result.stderr[:200]}")
             failed.extend(pip_missing)
 
-    # Npm packages
+    # Npm packages — on Linux, global npm install needs sudo
     npm_missing = [m.split(":", 1)[1] for m in missing if m.startswith("npm:")]
     if npm_missing:
         pkgs = " ".join(npm_missing)
         logger.info(f"Installing via npm: {pkgs}")
-        result = _run(f"npm install -g {pkgs}")
+        if _is_linux():
+            result = _sudo_run(f"npm install -g {pkgs}", password)
+        else:
+            result = _run(f"npm install -g {pkgs}")
         if result.returncode == 0:
             installed.extend(npm_missing)
         else:

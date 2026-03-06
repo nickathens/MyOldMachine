@@ -35,7 +35,7 @@ detect_os() {
         Linux*)
             if [ -f /etc/os-release ]; then
                 . /etc/os-release
-                if [[ "$ID" == "ubuntu" || "$ID" == "debian" || "$ID_LIKE" == *"debian"* ]]; then
+                if [[ "$ID" == "ubuntu" || "$ID" == "debian" || "${ID_LIKE:-}" == *"debian"* ]]; then
                     echo "linux"
                 else
                     error "Unsupported Linux distribution: $ID. Only Ubuntu/Debian are supported."
