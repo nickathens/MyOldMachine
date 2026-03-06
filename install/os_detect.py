@@ -123,7 +123,7 @@ class OSInfo:
             return False
         return self._mac_version_lt(10, 14)
 
-    def _mac_version_lt(self, major: int, minor: int) -> bool:
+    def _mac_version_lt(self, major: int, minor: int = 0) -> bool:
         """Compare macOS version. Handles both 10.x and 11+ numbering."""
         if self.version_major < major:
             return True
