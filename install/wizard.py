@@ -258,17 +258,19 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o",
     "gemini": "gemini-2.0-flash",
     "ollama": "llama3.1:8b",
-    "openrouter": "google/gemini-2.0-flash-001",
+    "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
 }
 
 # Free models available on OpenRouter (no billing required)
-# Updated March 2026 — verified against openrouter.ai/collections/free-models
+# Updated March 7 2026 — verified against openrouter.ai/models?q=free
+# IMPORTANT: Only models with tool-use/function-calling support are listed.
+# MyOldMachine needs tool-use to control the machine.
 OPENROUTER_FREE_MODELS = [
-    ("google/gemini-2.0-flash-001", "Gemini 2.0 Flash — fast, capable, free (recommended)"),
-    ("google/gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite — latest Google, lightweight"),
-    ("openai/gpt-4o-mini", "GPT-4o Mini — OpenAI's free compact model"),
-    ("deepseek/deepseek-v3.2-20251201", "DeepSeek V3.2 — strong reasoning, free"),
-    ("qwen/qwen3-235b-a22b-thinking-2507", "Qwen3 235B — large, good for complex tasks"),
+    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — strong all-rounder, tool-use (recommended)"),
+    ("qwen/qwen3-235b-a22b-thinking-2507", "Qwen3 235B — large reasoning model, tool-use"),
+    ("mistralai/mistral-small-3.1-24b-instruct:free", "Mistral Small 3.1 24B — fast, vision + tool-use"),
+    ("google/gemma-3-27b-it:free", "Gemma 3 27B — Google, vision + tool-use"),
+    ("nvidia/nemotron-3-nano-30b-a3b:free", "Nemotron Nano 30B — NVIDIA, tool-use"),
 ]
 
 # Providers that need an API key

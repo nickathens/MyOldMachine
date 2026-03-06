@@ -493,7 +493,7 @@ async def _openai_tool_loop(
                 used_tools = True
 
                 # Append the assistant message with tool_calls to conversation
-                assistant_msg = {"role": "assistant", "content": message.get("content") or None}
+                assistant_msg = {"role": "assistant", "content": message.get("content") or ""}
                 assistant_msg["tool_calls"] = tool_calls
                 messages.append(assistant_msg)
 
@@ -510,6 +510,10 @@ async def _openai_tool_loop(
                     logger.info(f"[{provider_name}] Tool call: {func_name}({json.dumps(func_args)[:200]})")
                     result = await execute_tool(func_name, func_args)
                     logger.info(f"[{provider_name}] Tool result: {result[:200]}")
+
+                    # Truncate to avoid context overflow on smaller models
+                    if len(result) > 30000:
+                        result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
 
                     messages.append({
                         "role": "tool",
@@ -702,11 +706,15 @@ class GeminiProvider(LLMProvider):
                     for fc_part in function_calls:
                         fc = fc_part["functionCall"]
                         func_name = fc.get("name", "")
-                        func_args = fc.get("args", {})
+                        func_args = fc.get("args") or {}
 
                         logger.info(f"[gemini] Tool call: {func_name}({json.dumps(func_args)[:200]})")
                         result = await execute_tool(func_name, func_args)
                         logger.info(f"[gemini] Tool result: {result[:200]}")
+
+                        # Truncate result for Gemini's request size limits
+                        if len(result) > 30000:
+                            result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
 
                         response_parts.append({
                             "functionResponse": {

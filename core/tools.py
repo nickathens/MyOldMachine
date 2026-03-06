@@ -269,8 +269,8 @@ SAFE_ENV_VARS = {
     "COLORTERM", "LS_COLORS", "HOSTNAME",
     "http_proxy", "https_proxy", "no_proxy",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-    # Python
-    "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV",
+    # Python (not PYTHONHOME — it can break spawned Python processes)
+    "PYTHONPATH",
     # Node
     "NODE_PATH", "NODE_ENV", "NPM_CONFIG_PREFIX",
     # Homebrew
@@ -357,14 +357,15 @@ def _build_command_env() -> dict:
 
 # Commands that should never be executed
 BLOCKED_PATTERNS = [
-    r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/\s*$",
+    r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/\s*($|[;&|])",
     r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/\*",
-    r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/[a-z]+\s*$",
+    r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/(bin|boot|dev|etc|home|lib|lib64|opt|proc|root|run|sbin|srv|sys|tmp|usr|var)\s*($|[;&|])",
+    r"rm\s+.*--no-preserve-root",
     r"mkfs\.",
     r"dd\s+if=.*of=/dev/[sh]d",
     r"dd\s+if=.*of=/dev/nvme",
     r">\s*/dev/[sh]d",
-    r"chmod\s+(-R\s+)?777\s+/\s*$",
+    r"chmod\s+(-R\s+)?777\s+/\s*($|[;&|])",
     r":\(\)\s*\{.*\|.*&\s*\}\s*;\s*:",
     r">\s*/dev/sda",
     r"mv\s+/\s",
@@ -381,10 +382,13 @@ BLOCKED_WRITE_PATHS = [
 ]
 
 
+_COMPILED_BLOCKED = [re.compile(p) for p in BLOCKED_PATTERNS]
+
+
 def _is_command_blocked(command: str) -> str | None:
     """Return a reason string if the command is blocked, else None."""
-    for pattern in BLOCKED_PATTERNS:
-        if re.search(pattern, command):
+    for pattern in _COMPILED_BLOCKED:
+        if pattern.search(command):
             return f"Blocked: dangerous command pattern detected"
     return None
 
@@ -428,9 +432,11 @@ class ManagedProcess:
     def full_output(self) -> str:
         return "".join(self.output_chunks)
 
-    @property
-    def new_output(self) -> str:
-        """Output the LLM hasn't seen yet."""
+    def consume_new_output(self) -> str:
+        """Return output the LLM hasn't seen yet, advancing the read offset.
+
+        This mutates state — call once per check, not in logging.
+        """
         full = self.full_output
         new = full[self._read_offset:]
         self._read_offset = len(full)
@@ -638,9 +644,12 @@ async def _stream_process_output(managed: ManagedProcess, timeout: float):
         try:
             while True:
                 try:
+                    remaining = timeout - (time.time() - start_time)
+                    if remaining <= 0:
+                        return  # Overall timeout reached
                     line = await asyncio.wait_for(
                         stream.readline(),
-                        timeout=min(STREAM_CHUNK_INTERVAL, timeout - (time.time() - start_time))
+                        timeout=min(STREAM_CHUNK_INTERVAL, remaining)
                     )
                 except asyncio.TimeoutError:
                     if time.time() - start_time >= timeout:
@@ -750,7 +759,7 @@ async def _run_command(command: str, background: bool = False,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(Path.home()),
             env=_build_command_env(),
-            preexec_fn=os.setsid if platform.system() != "Windows" else None,
+            start_new_session=(platform.system() != "Windows"),
         )
 
         # Register in process registry
@@ -758,7 +767,13 @@ async def _run_command(command: str, background: bool = False,
 
         if background:
             # Start streaming in background, return immediately with process ID
-            asyncio.create_task(_stream_process_output(managed, effective_timeout))
+            task = asyncio.create_task(_stream_process_output(managed, effective_timeout))
+
+            def _bg_done(t):
+                if not t.cancelled() and t.exception():
+                    logger.error(f"Background stream error for {managed.process_id}: {t.exception()}")
+
+            task.add_done_callback(_bg_done)
             return (
                 f"Background process started.\n"
                 f"Process ID: {managed.process_id}\n"
@@ -809,7 +824,7 @@ async def _check_process(process_id: str, action: str = "status") -> str:
         return await _registry.kill(process_id)
 
     # Status check — return new output since last check
-    new_output = managed.new_output
+    new_output = managed.consume_new_output()
     status = managed.status_summary()
 
     result = f"Process {process_id}: {status}\n"
@@ -849,6 +864,27 @@ def _read_file(path: str) -> str:
     if not p.is_file():
         return f"Error: Not a file: {path}"
 
+    # Check file size before reading
+    try:
+        size = p.stat().st_size
+    except OSError as e:
+        return f"Error: Cannot stat file: {e}"
+
+    if size > 5 * 1024 * 1024:  # 5MB limit
+        return f"Error: File too large ({size / (1024*1024):.1f}MB). Max is 5MB for read_file."
+
+    # Detect likely binary files
+    binary_extensions = {
+        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
+        '.mp3', '.mp4', '.wav', '.flac', '.ogg', '.avi', '.mkv', '.mov',
+        '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar',
+        '.exe', '.dll', '.so', '.dylib', '.o', '.pyc', '.pyo',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+        '.sqlite', '.db', '.sqlite3',
+    }
+    if p.suffix.lower() in binary_extensions:
+        return f"Error: {p.name} appears to be a binary file ({p.suffix}). Use run_command to inspect it (e.g., file, hexdump, strings)."
+
     try:
         content = p.read_text(errors="replace")
         if len(content) > MAX_OUTPUT_CHARS:
@@ -868,6 +904,9 @@ def _write_file(path: str, content: str) -> str:
     blocked = _is_write_blocked(path)
     if blocked:
         return blocked
+
+    if len(content) > 1024 * 1024:  # 1MB write limit
+        return f"Error: Content too large ({len(content) / 1024:.0f}KB). Max write size is 1MB."
 
     p = Path(path).expanduser()
 
