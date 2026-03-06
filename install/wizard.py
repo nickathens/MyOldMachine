@@ -419,20 +419,30 @@ def main():
 
     # --- Step 7: Sudo password ---
     print(f"\n{BOLD}Step 7: System Access{NC}")
-    print("  The bot needs sudo access to install software and manage services.")
-    print("  Your password is stored locally at ~/.sudo_pass (readable only by you).")
+    print("  The bot needs your password stored locally so it can install software on its own.")
+    print("  Stored at ~/.sudo_pass (readable only by you, never sent anywhere).")
+
+    # Check if sudo is already cached from install.sh
+    sudo_cached = subprocess.run(
+        ["sudo", "-n", "true"],
+        capture_output=True, timeout=5
+    ).returncode == 0
+
+    if sudo_cached:
+        ok("Administrator access already active (from installer)")
+        print("  Enter your password below so the bot can use it later.")
     sudo_pass = ask("Sudo/admin password", secret=True)
 
-    # Verify sudo password works
-    info("Verifying sudo access...")
+    # Verify the password is correct
+    info("Verifying password...")
     verify = subprocess.run(
         ["sudo", "-S", "echo", "ok"],
         input=sudo_pass + "\n",
         capture_output=True, text=True, timeout=10
     )
     if verify.returncode != 0:
-        error("Sudo password verification failed. Check your password and try again.")
-    ok("Sudo access verified")
+        error("Password verification failed. Check your password and try again.")
+    ok("Password verified")
 
     # --- Detect machine specs ---
     info("Detecting machine specs...")
@@ -452,7 +462,7 @@ def main():
     store_sudo_password(sudo_pass)
 
     # --- Run provisioner ---
-    print(f"\n{BOLD}Step 7: System Provisioning{NC}")
+    print(f"\n{BOLD}Step 8: System Provisioning{NC}")
     print("  The installer will now configure your machine.")
     if config["takeover"] == "full":
         print("  This will remove unnecessary software and install the bot's dependencies.")
