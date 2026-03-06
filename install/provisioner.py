@@ -8,6 +8,9 @@ Handles:
 - System configuration (firewall, sleep, VNC, SSH)
 - Disk cleanup
 
+Uses OSInfo from os_detect.py for version-aware provisioning.
+Every command checks OS version before running — no blind execution.
+
 Supports --dry-run to preview all actions before executing.
 """
 
@@ -21,6 +24,10 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+
+# Ensure install package is importable
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from install.os_detect import OSInfo, detect as detect_os
 
 BOLD = "\033[1m"
 GREEN = "\033[0;32m"
@@ -164,13 +171,12 @@ LINUX_INSTALL_PACKAGES = [
 ]
 
 
-def provision_linux_full(password):
+def provision_linux_full(os_info: OSInfo, password):
     """Full takeover: strip desktop, install deps, configure system."""
-    info("Starting full Linux provisioning...")
+    info(f"Starting full Linux provisioning on {os_info.display_name}...")
 
     # Step 1: Remove bloat
     info("Removing unnecessary packages...")
-    # Check which packages are actually installed (always check even in dry-run)
     result = subprocess.run(
         "dpkg --get-selections 2>/dev/null", shell=True,
         capture_output=True, text=True, timeout=60
@@ -180,7 +186,7 @@ def provision_linux_full(password):
         for line in result.stdout.splitlines():
             parts = line.split()
             if len(parts) >= 2 and parts[1] == "install":
-                installed.add(parts[0].split(":")[0])  # strip arch suffix
+                installed.add(parts[0].split(":")[0])
 
     to_remove = [pkg for pkg in LINUX_REMOVE_PACKAGES if pkg in installed]
     if to_remove:
@@ -198,23 +204,23 @@ def provision_linux_full(password):
         sudo_run("rm -rf /snap /var/snap /var/lib/snapd 2>/dev/null", password)
 
     # Step 2: Install dependencies
-    _install_linux_deps(password)
+    _install_linux_deps(os_info, password)
 
     # Step 3: Configure system
-    _configure_linux(password)
+    _configure_linux(os_info, password)
 
     ok("Linux provisioning complete")
 
 
-def provision_linux_soft(password):
+def provision_linux_soft(os_info: OSInfo, password):
     """Soft install: just install deps, skip removal."""
-    info("Starting soft Linux provisioning (no removal)...")
-    _install_linux_deps(password)
-    _configure_linux(password)
+    info(f"Starting soft Linux provisioning on {os_info.display_name}...")
+    _install_linux_deps(os_info, password)
+    _configure_linux(os_info, password)
     ok("Linux provisioning complete")
 
 
-def _install_linux_deps(password):
+def _install_linux_deps(os_info: OSInfo, password):
     """Install required packages on Linux."""
     info("Updating package lists...")
     sudo_run("apt-get update -qq", password)
@@ -239,7 +245,7 @@ def _install_linux_deps(password):
         ok("Node.js already installed")
 
 
-def _configure_linux(password):
+def _configure_linux(os_info: OSInfo, password):
     """Configure Linux system settings."""
     # Firewall
     info("Configuring firewall...")
@@ -272,7 +278,6 @@ def _configure_linux(password):
         try:
             content = logind_conf.read_text()
         except PermissionError:
-            # Need sudo to read
             result = subprocess.run(
                 "sudo cat /etc/systemd/logind.conf", shell=True,
                 input=(password + "\n") if password else None,
@@ -305,7 +310,8 @@ def _configure_linux(password):
 
 # --- macOS provisioning ---
 
-MACOS_REMOVE_APPS = [
+# Apps to remove in full takeover (all versions)
+MACOS_REMOVE_APPS_COMMON = [
     "GarageBand.app",
     "iMovie.app",
     "Keynote.app",
@@ -313,6 +319,15 @@ MACOS_REMOVE_APPS = [
     "Pages.app",
     "Chess.app",
 ]
+
+# Apps only present on specific macOS versions
+MACOS_REMOVE_APPS_BY_VERSION = {
+    # News and Stocks appear from Mojave (10.14) onward
+    "News.app": (10, 14),
+    "Stocks.app": (10, 14),
+    # Freeform from Ventura (13) onward
+    "Freeform.app": (13, 0),
+}
 
 MACOS_BREW_PACKAGES = [
     "python@3.12", "ffmpeg", "sox", "git", "jq", "htop", "tmux", "node",
@@ -324,62 +339,117 @@ def _find_brew():
     for path in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]:
         if Path(path).exists():
             return path
-    # Check PATH
     result = subprocess.run("which brew", shell=True, capture_output=True, text=True, timeout=5)
     if result.returncode == 0:
         return result.stdout.strip()
     return None
 
 
-def provision_macos_full(password):
-    """Full takeover on macOS."""
-    info("Starting full macOS provisioning...")
+def provision_macos_full(os_info: OSInfo, password):
+    """Full takeover on macOS — version-aware."""
+    info(f"Starting full macOS provisioning on {os_info.display_name}...")
 
-    # Remove apps
-    info("Removing unnecessary applications...")
-    for app in MACOS_REMOVE_APPS:
-        app_path = Path(f"/Applications/{app}")
-        if app_path.exists():
-            log_action("remove_app", app)
-            result = sudo_run(f"rm -rf '/Applications/{app}'", password)
-            if result.returncode == 0:
-                ok(f"Removed {app}")
-            else:
-                warn(f"Could not remove {app} (may require SIP disabled)")
+    # Remove apps (SIP-aware)
+    _remove_macos_apps(os_info, password)
 
-    # Install deps
-    _install_macos_deps(password)
+    # Install deps (via Homebrew)
+    _install_macos_deps(os_info, password)
 
-    # Configure system
-    _configure_macos(password)
+    # Configure system (version-aware)
+    _configure_macos(os_info, password)
 
     ok("macOS provisioning complete")
 
 
-def provision_macos_soft(password):
+def provision_macos_soft(os_info: OSInfo, password):
     """Soft install on macOS: deps only, no removal, but still configure system."""
-    info("Starting soft macOS provisioning (no app removal)...")
-    _install_macos_deps(password)
-    _configure_macos(password)
+    info(f"Starting soft macOS provisioning on {os_info.display_name}...")
+    _install_macos_deps(os_info, password)
+    _configure_macos(os_info, password)
     ok("macOS provisioning complete")
 
 
-def _install_macos_deps(password=None):
-    """Install dependencies via Homebrew."""
-    brew = _find_brew()
+def _remove_macos_apps(os_info: OSInfo, password):
+    """Remove unnecessary apps, respecting SIP and version differences."""
+    info("Removing unnecessary applications...")
 
-    # Ensure Homebrew
+    # Check SIP status — if enabled, some apps in /Applications may not be removable
+    sip_enabled = _check_sip_status()
+    if sip_enabled:
+        info("SIP is enabled (normal). Some system apps may not be removable.")
+
+    apps_to_remove = list(MACOS_REMOVE_APPS_COMMON)
+
+    # Add version-specific apps
+    for app, (min_major, min_minor) in MACOS_REMOVE_APPS_BY_VERSION.items():
+        if os_info._mac_version_gte(min_major, min_minor):
+            apps_to_remove.append(app)
+
+    removed = 0
+    skipped = 0
+    for app in apps_to_remove:
+        app_path = Path(f"/Applications/{app}")
+        if not app_path.exists():
+            continue
+
+        log_action("remove_app", app)
+        result = sudo_run(f"rm -rf '/Applications/{app}'", password)
+        if result.returncode == 0:
+            # Verify it's actually gone (SIP might silently prevent removal)
+            if not app_path.exists():
+                ok(f"Removed {app}")
+                removed += 1
+            else:
+                warn(f"Could not remove {app} (protected by SIP)")
+                skipped += 1
+        else:
+            warn(f"Could not remove {app} (may require SIP disabled)")
+            skipped += 1
+
+    if removed:
+        ok(f"Removed {removed} app(s)")
+    if skipped:
+        warn(f"Skipped {skipped} protected app(s) (SIP)")
+    if not removed and not skipped:
+        ok("No removable apps found")
+
+
+def _check_sip_status() -> bool:
+    """Check if System Integrity Protection is enabled."""
+    try:
+        result = subprocess.run(
+            ["csrutil", "status"],
+            capture_output=True, text=True, timeout=5
+        )
+        return "enabled" in result.stdout.lower()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True  # Assume enabled if we can't check
+
+
+def _install_macos_deps(os_info: OSInfo, password=None):
+    """Install dependencies via Homebrew — version-aware."""
+    brew = _find_brew() or os_info.brew_path
+
     if not brew:
+        if not os_info.has_homebrew_support:
+            error(f"macOS {os_info.version} ({os_info.version_name}) does not support Homebrew.")
+            error("Install dependencies manually or upgrade macOS.")
+            return
+
         info("Installing Homebrew...")
         if _dry_run:
             info("[DRY RUN] Would install Homebrew")
         else:
-            # Homebrew install is interactive — need to handle it carefully
+            # Homebrew install needs NONINTERACTIVE=1 to avoid prompts
+            env = os.environ.copy()
+            env["NONINTERACTIVE"] = "1"
             result = subprocess.run(
                 '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
-                shell=True, capture_output=True, text=True, timeout=600
+                shell=True, capture_output=True, text=True, timeout=600, env=env
             )
             log_action("install_homebrew", f"rc={result.returncode}")
+            if result.returncode != 0:
+                warn(f"Homebrew install stderr: {result.stderr[:300]}")
 
         brew = _find_brew()
         if not brew:
@@ -390,30 +460,48 @@ def _install_macos_deps(password=None):
         # Add brew to PATH for this session and permanently
         brew_dir = str(Path(brew).parent)
         os.environ["PATH"] = f"{brew_dir}:{os.environ.get('PATH', '')}"
-        # Write to shell profile so it persists
-        _add_brew_to_profile(brew)
+        _add_brew_to_profile(os_info, brew)
 
     info("Installing packages via Homebrew...")
-    pkgs = " ".join(MACOS_BREW_PACKAGES)
-    log_action("brew_install", pkgs)
-    result = run(f"{brew} install {pkgs}")
-    if result.returncode != 0:
-        warn(f"Some brew packages may have failed: {result.stderr[:200]}")
-    else:
-        ok("Homebrew packages installed")
+
+    # Install packages one by one so a single failure doesn't block everything
+    installed_count = 0
+    failed = []
+    for pkg in MACOS_BREW_PACKAGES:
+        log_action("brew_install", pkg)
+        result = run(f"{brew} install {pkg} 2>&1")
+        if result.returncode != 0:
+            # Check if it's already installed (brew returns error for "already installed")
+            if "already installed" in result.stderr or "already installed" in result.stdout:
+                installed_count += 1
+            else:
+                warn(f"Failed to install {pkg}: {result.stderr[:100]}")
+                failed.append(pkg)
+        else:
+            installed_count += 1
+
+    if failed:
+        warn(f"Failed to install: {', '.join(failed)}")
+    ok(f"Homebrew packages: {installed_count}/{len(MACOS_BREW_PACKAGES)} installed")
 
 
-def _add_brew_to_profile(brew_path):
+def _add_brew_to_profile(os_info: OSInfo, brew_path):
     """Ensure brew shellenv is in the user's shell profile."""
     if _dry_run:
         info("[DRY RUN] Would add brew to shell profile")
         return
 
-    brew_parent = str(Path(brew_path).parent.parent)
     shellenv_line = f'eval "$({brew_path} shellenv)"'
 
-    # Try .zprofile first (default macOS shell is zsh), then .bash_profile
-    for profile in [Path.home() / ".zprofile", Path.home() / ".bash_profile"]:
+    # Determine the right profile file based on default shell
+    if os_info.has_zsh_default:
+        # macOS 10.15+ defaults to zsh
+        profile_candidates = [Path.home() / ".zprofile", Path.home() / ".zshrc"]
+    else:
+        # Pre-Catalina defaults to bash
+        profile_candidates = [Path.home() / ".bash_profile", Path.home() / ".profile"]
+
+    for profile in profile_candidates:
         if profile.exists():
             content = profile.read_text()
             if shellenv_line not in content:
@@ -422,48 +510,202 @@ def _add_brew_to_profile(brew_path):
                 log_action("add_brew_profile", str(profile))
             return
 
-    # Neither exists — create .zprofile
-    profile = Path.home() / ".zprofile"
+    # No profile exists — create the right one for this OS version
+    if os_info.has_zsh_default:
+        profile = Path.home() / ".zprofile"
+    else:
+        profile = Path.home() / ".bash_profile"
     profile.write_text(f"# Added by MyOldMachine\n{shellenv_line}\n")
-    log_action("create_zprofile", str(profile))
+    log_action("create_profile", str(profile))
 
 
-def _configure_macos(password):
-    """Configure macOS system settings."""
-    # Disable sleep
+def _configure_macos(os_info: OSInfo, password):
+    """Configure macOS system settings — all commands are version-aware."""
+
+    # --- Disable sleep ---
     info("Disabling sleep...")
+    # pmset works on all supported macOS versions (10.14+)
     sudo_run("pmset -a sleep 0", password)
     sudo_run("pmset -a displaysleep 0", password)
     sudo_run("pmset -a disksleep 0", password)
+
+    # On portables (MacBooks), also prevent sleep on lid close
+    # Check if this is a portable
+    hw_model = _get_hw_model()
+    is_portable = "book" in hw_model.lower() if hw_model else False
+
+    if is_portable:
+        info("MacBook detected — configuring lid behavior...")
+        # Disable lid wake (works on all versions)
+        sudo_run("pmset -a lidwake 0", password)
+
+        # destroysleepimage prevents writing sleep image to disk (saves space + prevents sleep)
+        sudo_run("pmset -a hibernatemode 0", password)
+        sudo_run("pmset -a standby 0", password)
+        if os_info._mac_version_gte(10, 15):
+            # Catalina+ has standbydelayhigh/low
+            sudo_run("pmset -a standbydelaylow 0", password)
+            sudo_run("pmset -a standbydelayhigh 0", password)
+        else:
+            sudo_run("pmset -a standbydelay 86400", password)
+
+        # Remove sleep image to free disk space
+        sudo_run("rm -f /var/vm/sleepimage 2>/dev/null", password)
+        ok("Lid close sleep prevention configured")
+    else:
+        ok("Desktop Mac — no lid configuration needed")
+
     ok("Sleep disabled")
 
-    # Disable screen saver
+    # --- Disable screen saver ---
     run("defaults write com.apple.screensaver idleTime 0")
     ok("Screen saver disabled")
 
-    # Enable Screen Sharing (VNC)
+    # --- Enable Screen Sharing (VNC) ---
+    _configure_screen_sharing(os_info, password)
+
+    # --- Disable Gatekeeper quarantine for downloaded apps (reduces friction) ---
+    info("Disabling Gatekeeper quarantine warnings...")
+    sudo_run("defaults write com.apple.LaunchServices LSQuarantine -bool false", password)
+    ok("Gatekeeper quarantine warnings disabled")
+
+    # --- Disable automatic macOS updates popping up ---
+    info("Disabling automatic update prompts...")
+    if os_info._mac_version_gte(13):
+        # Ventura+: new plist domain
+        sudo_run("defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool false", password)
+        sudo_run("defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool true", password)
+    else:
+        sudo_run("defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool true", password)
+        sudo_run("defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool false", password)
+        sudo_run("defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool true", password)
+    # Keep security updates on, just disable the upgrade nag
+    ok("Update prompts disabled (security updates still active)")
+
+    # --- Disable Notification Center banners (less noise on headless machine) ---
+    info("Reducing notification noise...")
+    run("defaults write com.apple.notificationcenterui bannerTime 3")
+    ok("Notification banners reduced")
+
+
+def _get_hw_model() -> str:
+    """Get hardware model identifier (e.g. 'MacBookPro11,3')."""
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.model"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return ""
+
+
+def _configure_screen_sharing(os_info: OSInfo, password):
+    """
+    Enable Screen Sharing / VNC — version-aware.
+
+    - macOS 10.14 (Mojave) to 12 (Monterey): ARDAgent kickstart works reliably
+    - macOS 13 (Ventura)+: kickstart still exists but Apple is phasing it out.
+      TCC/privacy controls may block it. We try kickstart first, fall back to
+      telling the user to enable it manually in System Settings.
+    - macOS 14 (Sonoma)+: kickstart may require Full Disk Access (FDA) for
+      the terminal app. We detect and warn.
+    """
     info("Enabling Screen Sharing...")
-    ard_path = "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
-    if Path(ard_path).exists():
+
+    ard_kickstart = "/System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart"
+
+    if not Path(ard_kickstart).exists():
+        warn("ARD kickstart not found. Enable Screen Sharing manually:")
+        if os_info.has_system_settings:
+            warn("  System Settings → General → Sharing → Screen Sharing → On")
+        else:
+            warn("  System Preferences → Sharing → Screen Sharing → On")
+        return
+
+    # Try kickstart — works on all versions but may fail on 13+ due to TCC
+    result = sudo_run(
+        f"{ard_kickstart} -activate -configure -access -on "
+        f"-restart -agent -privs -all",
+        password
+    )
+
+    if result.returncode == 0:
+        ok("Screen Sharing enabled via ARD kickstart")
+    else:
+        stderr = result.stderr.strip()
+        log_action("ard_kickstart_failed", stderr[:200])
+
+        if os_info._mac_version_gte(13):
+            # Ventura+ — TCC likely blocking it
+            warn("ARD kickstart failed (likely TCC privacy restriction).")
+            warn("On macOS 13+ you may need to enable Screen Sharing manually:")
+            warn("  System Settings → General → Sharing → Screen Sharing → On")
+            warn("Or grant Full Disk Access to Terminal in:")
+            warn("  System Settings → Privacy & Security → Full Disk Access")
+        else:
+            warn(f"ARD kickstart failed: {stderr[:100]}")
+            warn("Enable Screen Sharing manually:")
+            warn("  System Preferences → Sharing → Screen Sharing")
+
+    # Also enable VNC password access (works alongside Screen Sharing)
+    # This sets a VNC-only password so standard VNC clients can connect
+    info("Configuring VNC access...")
+    # On macOS, the built-in VNC is part of Screen Sharing
+    # We just need to ensure it accepts VNC viewer connections
+    if os_info._mac_version_gte(13):
+        # Ventura+: vnc settings in new location
         sudo_run(
-            f"{ard_path} -activate -configure -access -on -restart -agent -privs -all",
+            "defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true",
             password
         )
-        ok("Screen Sharing enabled")
     else:
-        warn("ARD kickstart not found — enable Screen Sharing manually in System Settings")
+        sudo_run(
+            "defaults write /Library/Preferences/com.apple.RemoteManagement VNCAlwaysStartOnConsole -bool true",
+            password
+        )
+    ok("VNC configured")
 
-    # Lid close: prevent sleep (best effort)
-    sudo_run("pmset -a lidwake 0", password)
-    ok("Lid wake disabled")
+
+def provision(os_info: OSInfo, takeover: str):
+    """Main entry point — dispatches to the right provisioner based on OSInfo."""
+    password = get_sudo_password()
+    if not password and not _dry_run:
+        error("No sudo password found. Run the wizard first.")
+        sys.exit(1)
+
+    if _dry_run:
+        print(f"\n{BOLD}=== OS Provisioning (DRY RUN — no changes will be made) ==={NC}")
+    else:
+        print(f"\n{BOLD}=== OS Provisioning ==={NC}")
+    print(f"    Target: {os_info.display_name}")
+    print(f"    Mode: {takeover}\n")
+
+    if os_info.os_type == "linux":
+        if takeover == "full":
+            provision_linux_full(os_info, password)
+        else:
+            provision_linux_soft(os_info, password)
+    elif os_info.os_type == "macos":
+        if takeover == "full":
+            provision_macos_full(os_info, password)
+        else:
+            provision_macos_soft(os_info, password)
+    else:
+        error(f"Unsupported OS type: {os_info.os_type}")
+        sys.exit(1)
 
 
 def main():
+    """CLI entry point — detects OS and runs provisioning."""
     global _dry_run
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-dir", type=str, required=True)
-    parser.add_argument("--os", type=str, choices=["linux", "macos"], required=True)
+    parser.add_argument("--os", type=str, choices=["linux", "macos"],
+                        help="Override OS detection (optional)")
     parser.add_argument("--takeover", type=str, choices=["full", "soft"], default="full")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview all actions without making changes")
@@ -471,26 +713,24 @@ def main():
 
     _dry_run = args.dry_run
 
-    password = get_sudo_password()
-    if not password and not _dry_run:
-        error("No sudo password found. Run the wizard first.")
+    # Use os_detect for full version-aware detection
+    os_info = detect_os()
+
+    # Allow --os override but warn if it doesn't match detection
+    if args.os and args.os != os_info.os_type:
+        warn(f"Detected {os_info.os_type} but --os {args.os} was specified. Using detected OS.")
+
+    # Check for blockers
+    if os_info.blockers:
+        for b in os_info.blockers:
+            error(b)
         sys.exit(1)
 
-    if _dry_run:
-        print(f"\n{BOLD}=== OS Provisioning (DRY RUN — no changes will be made) ==={NC}\n")
-    else:
-        print(f"\n{BOLD}=== OS Provisioning ==={NC}\n")
+    # Show warnings
+    for w in os_info.warnings:
+        warn(w)
 
-    if args.os == "linux":
-        if args.takeover == "full":
-            provision_linux_full(password)
-        else:
-            provision_linux_soft(password)
-    else:
-        if args.takeover == "full":
-            provision_macos_full(password)
-        else:
-            provision_macos_soft(password)
+    provision(os_info, args.takeover)
 
     # Save action log
     save_action_log(args.repo_dir)

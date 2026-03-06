@@ -325,6 +325,27 @@ def main():
 
     config = {}
 
+    # --- OS Detection (before anything else) ---
+    from install.os_detect import detect as detect_os_info, print_detection_summary
+    os_info = detect_os_info()
+    print(f"\n{BOLD}Detected System{NC}")
+    print_detection_summary(os_info)
+
+    if os_info.blockers:
+        print()
+        for b in os_info.blockers:
+            error(b)
+        # error() calls sys.exit(1)
+
+    if os_info.warnings:
+        print()
+        proceed = input("  Continue despite warnings? (Y/n): ").strip().lower()
+        if proceed == "n":
+            info("Aborted. Address the warnings above and try again.")
+            sys.exit(0)
+
+    print()
+
     # --- Step 1: User identity ---
     print(f"\n{BOLD}Step 1: About You{NC}")
     config["user_name"] = ask("What's your name?")
@@ -442,7 +463,6 @@ def main():
             [
                 sys.executable, str(repo_dir / "install" / "provisioner.py"),
                 "--repo-dir", str(repo_dir),
-                "--os", detected_os,
                 "--takeover", config["takeover"],
                 "--dry-run",
             ],
@@ -454,27 +474,25 @@ def main():
 
     if proceed == "n":
         ok("Configuration saved. Run the provisioner later with:")
-        print(f"  python {repo_dir}/install/provisioner.py --repo-dir {repo_dir} --os {detected_os} --takeover {config['takeover']}")
+        print(f"  python {repo_dir}/install/provisioner.py --repo-dir {repo_dir} --takeover {config['takeover']}")
         sys.exit(0)
 
-    # Launch provisioner
+    # Launch provisioner (it does its own OS detection via os_detect.py)
     result = subprocess.run(
         [
             sys.executable, str(repo_dir / "install" / "provisioner.py"),
             "--repo-dir", str(repo_dir),
-            "--os", detected_os,
             "--takeover", config["takeover"],
         ],
     )
     if result.returncode != 0:
         error("Provisioning failed. Check the output above for errors.")
 
-    # Launch service installer
+    # Launch service installer (it does its own OS detection)
     result = subprocess.run(
         [
             sys.executable, str(repo_dir / "install" / "service.py"),
             "--repo-dir", str(repo_dir),
-            "--os", detected_os,
         ],
     )
     if result.returncode != 0:

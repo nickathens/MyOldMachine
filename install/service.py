@@ -4,6 +4,8 @@ MyOldMachine Service Installer — Register as system service.
 
 Creates and enables a systemd unit (Linux) or launchd plist (macOS)
 so the bot starts on boot and restarts on crash.
+
+Uses OSInfo from os_detect.py for version-aware service setup.
 """
 
 import argparse
@@ -11,6 +13,9 @@ import getpass
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from install.os_detect import detect as detect_os
 
 BOLD = "\033[1m"
 GREEN = "\033[0;32m"
@@ -98,8 +103,8 @@ def setup_linux_service(repo_dir: Path):
     ok(f"Systemd service installed at {service_path}")
 
 
-def setup_macos_service(repo_dir: Path):
-    """Create and load launchd plist."""
+def setup_macos_service(repo_dir: Path, os_info=None):
+    """Create and load launchd plist — version-aware."""
     username = getpass.getuser()
     venv_python = repo_dir / ".venv" / "bin" / "python"
 
@@ -125,20 +130,38 @@ def setup_macos_service(repo_dir: Path):
     plist_path = plist_dir / "com.myoldmachine.bot.plist"
     plist_path.write_text(content)
 
-    # Unload if already loaded
+    # Unload if already loaded (ignore errors if not loaded)
     subprocess.run(
         ["launchctl", "unload", str(plist_path)],
         capture_output=True, timeout=10
     )
 
-    # Load
+    # Load the service
+    # launchctl load/unload works on all macOS versions we support (10.14+)
+    # launchctl bootstrap/bootout is the "modern" API (10.10+) but load still works
     info("Loading launchd service...")
     result = subprocess.run(
         ["launchctl", "load", "-w", str(plist_path)],
         capture_output=True, text=True, timeout=10
     )
     if result.returncode != 0:
-        warn(f"launchctl load warning: {result.stderr}")
+        # On Ventura+ launchctl may warn about deprecated load syntax
+        if os_info and os_info._mac_version_gte(13):
+            info("Trying modern launchctl bootstrap syntax...")
+            uid_result = subprocess.run(
+                ["id", "-u"], capture_output=True, text=True, timeout=5
+            )
+            uid = uid_result.stdout.strip()
+            result2 = subprocess.run(
+                ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
+                capture_output=True, text=True, timeout=10
+            )
+            if result2.returncode != 0:
+                warn(f"launchctl bootstrap warning: {result2.stderr}")
+            else:
+                ok("Service loaded via bootstrap")
+        else:
+            warn(f"launchctl load warning: {result.stderr}")
 
     ok(f"LaunchAgent installed at {plist_path}")
     ok("Service will start on boot and restart on crash")
@@ -147,16 +170,26 @@ def setup_macos_service(repo_dir: Path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-dir", type=str, required=True)
-    parser.add_argument("--os", type=str, choices=["linux", "macos"], required=True)
+    parser.add_argument("--os", type=str, choices=["linux", "macos"],
+                        help="Override OS detection (optional)")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir)
-    print(f"\n{BOLD}=== Service Setup ==={NC}\n")
 
-    if args.os == "linux":
+    # Detect OS
+    os_info = detect_os()
+    os_type = args.os if args.os else os_info.os_type
+
+    print(f"\n{BOLD}=== Service Setup ==={NC}\n")
+    info(f"Setting up service for {os_info.display_name}")
+
+    if os_type == "linux":
         setup_linux_service(repo_dir)
+    elif os_type == "macos":
+        setup_macos_service(repo_dir, os_info)
     else:
-        setup_macos_service(repo_dir)
+        error(f"Unsupported OS: {os_type}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
