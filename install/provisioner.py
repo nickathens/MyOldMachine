@@ -80,7 +80,7 @@ def get_sudo_password():
     return None
 
 
-def sudo_run(cmd, password=None, check=False):
+def sudo_run(cmd, password=None, check=False, timeout=600):
     """Run a command with sudo, passing password safely via stdin (not shell echo)."""
     if _dry_run:
         info(f"[DRY RUN] sudo: {cmd}")
@@ -92,7 +92,7 @@ def sudo_run(cmd, password=None, check=False):
     result = subprocess.run(
         full_cmd, shell=True,
         input=stdin_data,
-        capture_output=True, text=True, timeout=600
+        capture_output=True, text=True, timeout=timeout
     )
     log_action(f"sudo: {cmd}", f"rc={result.returncode}")
     if check and result.returncode != 0:
@@ -101,7 +101,7 @@ def sudo_run(cmd, password=None, check=False):
     return result
 
 
-def run(cmd, check=False):
+def run(cmd, check=False, timeout=600):
     """Run a command without sudo."""
     if _dry_run:
         info(f"[DRY RUN] run: {cmd}")
@@ -110,10 +110,49 @@ def run(cmd, check=False):
 
     result = subprocess.run(
         cmd, shell=True,
-        capture_output=True, text=True, timeout=600
+        capture_output=True, text=True, timeout=timeout
     )
     if check and result.returncode != 0:
         error(f"Command failed: {cmd}")
+    return result
+
+
+def run_streaming(cmd, label=""):
+    """Run a command with real-time output streaming. Used for long-running tasks like brew compile.
+    Returns a result-like object with returncode, stdout, stderr."""
+    if _dry_run:
+        info(f"[DRY RUN] run: {cmd}")
+        log_action("dry_run", cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    if label:
+        info(f"{label}...")
+
+    process = subprocess.Popen(
+        cmd, shell=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1
+    )
+
+    stdout_lines = []
+    try:
+        for line in process.stdout:
+            line = line.rstrip('\n')
+            stdout_lines.append(line)
+            # Print compilation progress so user sees it's working
+            print(f"    {line}")
+        process.wait()
+    except KeyboardInterrupt:
+        process.kill()
+        process.wait()
+        raise
+
+    result = type("R", (), {
+        "returncode": process.returncode,
+        "stdout": "\n".join(stdout_lines),
+        "stderr": ""
+    })()
+    log_action(f"run_streaming: {cmd}", f"rc={process.returncode}")
     return result
 
 
@@ -454,15 +493,14 @@ def _install_macos_deps(os_info: OSInfo, password=None):
             info("[DRY RUN] Would install Homebrew")
         else:
             # Homebrew install needs NONINTERACTIVE=1 to avoid prompts
-            env = os.environ.copy()
-            env["NONINTERACTIVE"] = "1"
-            result = subprocess.run(
+            os.environ["NONINTERACTIVE"] = "1"
+            result = run_streaming(
                 '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
-                shell=True, capture_output=True, text=True, timeout=600, env=env
+                label="Installing Homebrew"
             )
             log_action("install_homebrew", f"rc={result.returncode}")
             if result.returncode != 0:
-                warn(f"Homebrew install stderr: {result.stderr[:300]}")
+                warn(f"Homebrew install may have had issues (check output above)")
 
         brew = _find_brew()
         if not brew:
@@ -476,26 +514,43 @@ def _install_macos_deps(os_info: OSInfo, password=None):
         _add_brew_to_profile(os_info, brew)
 
     info("Installing packages via Homebrew...")
+    info("(On older macOS, Homebrew compiles from source — this can take a while)")
 
     # Install packages one by one so a single failure doesn't block everything.
     # On old macOS (e.g. Catalina), brew may compile from source and return non-zero
     # even though the package installed fine ("post-install step did not complete").
     # So we verify success by checking if the package is actually present afterward.
+    #
+    # We use run_streaming() instead of run() for brew install — this streams compiler
+    # output to the terminal in real time so the user can see progress instead of
+    # staring at a blank screen for 30+ minutes while ffmpeg compiles.
     installed_count = 0
     failed = []
-    for pkg in MACOS_BREW_PACKAGES:
+    for i, pkg in enumerate(MACOS_BREW_PACKAGES, 1):
+        # Check if already installed first (fast, avoids unnecessary compilation)
+        already = run(f"{brew} list {pkg} 2>/dev/null", timeout=30)
+        if already.returncode == 0:
+            ok(f"[{i}/{len(MACOS_BREW_PACKAGES)}] {pkg} already installed")
+            installed_count += 1
+            continue
+
         log_action("brew_install", pkg)
-        result = run(f"{brew} install {pkg} 2>&1")
+        result = run_streaming(
+            f"{brew} install {pkg} 2>&1",
+            label=f"[{i}/{len(MACOS_BREW_PACKAGES)}] Installing {pkg}"
+        )
         combined_output = (result.stdout or "") + (result.stderr or "")
 
         if result.returncode == 0:
             installed_count += 1
+            ok(f"{pkg} installed")
         elif "already installed" in combined_output:
             installed_count += 1
+            ok(f"{pkg} already installed")
         else:
             # Non-zero exit — but did the package actually install?
             # Check with brew list (more reliable than exit codes on old macOS)
-            verify = run(f"{brew} list {pkg} 2>/dev/null")
+            verify = run(f"{brew} list {pkg} 2>/dev/null", timeout=30)
             if verify.returncode == 0:
                 # Package is there despite the error — post-install warning, etc.
                 warn(f"{pkg}: brew returned an error but package is installed (likely a post-install warning)")
