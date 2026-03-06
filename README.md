@@ -123,6 +123,21 @@ LLM_MODEL=claude-sonnet-4-20250514
 LLM_API_KEY=              # Not needed for claude (CLI) or ollama
 ```
 
+### Changing Provider After Install
+
+Edit `~/MyOldMachine/.env` on the machine and change the `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY` values. Then restart the bot:
+
+```bash
+# Linux
+sudo systemctl restart myoldmachine
+
+# macOS
+launchctl unload ~/Library/LaunchAgents/com.myoldmachine.bot.plist
+launchctl load ~/Library/LaunchAgents/com.myoldmachine.bot.plist
+```
+
+Or send `/restart` from Telegram.
+
 ## Session Management
 
 Each user gets isolated conversation state:
@@ -270,6 +285,30 @@ Docker mode is a lighter deployment — no machine takeover, no system provision
 - `.env` and `data/` are gitignored
 - Atomic file writes prevent data corruption on crash
 - No credentials are transmitted — all API keys stay on the machine
+
+## Troubleshooting
+
+### "Quota exceeded" error with Gemini
+
+Google's free tier may have zero quota for some models (especially `gemini-2.0-flash`). Options:
+
+1. **Try a different model** — edit `.env` and set `LLM_MODEL=gemini-1.5-flash`
+2. **Enable billing** on your Google AI project at [ai.google.dev](https://ai.google.dev)
+3. **Switch provider** — see [Changing Provider After Install](#changing-provider-after-install)
+
+### Install hangs during Homebrew (macOS)
+
+On older Macs (Catalina and earlier), Homebrew compiles packages from source instead of using pre-built bottles. ffmpeg in particular can take 30-60 minutes. As long as the terminal shows output, it's working. If you need to restart the install, just run `./install.sh` again — it resumes from where it left off.
+
+### "Post-install step did not complete successfully" (Homebrew)
+
+This is a known Homebrew issue on older macOS versions. The install script handles this automatically — it runs `brew link --overwrite` to fix the symlinks. If you see this warning, let the script continue.
+
+### Bot not responding on Telegram
+
+1. Check the bot is running: `sudo systemctl status myoldmachine` (Linux) or `launchctl list | grep myoldmachine` (macOS)
+2. Check logs: `journalctl -u myoldmachine -n 50` (Linux) or `cat ~/MyOldMachine/data/logs/bot.log` (macOS)
+3. Verify your Telegram user ID matches `ALLOWED_USERS` in `.env` (empty means anyone can use it)
 
 ## License
 
