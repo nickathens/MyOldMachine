@@ -41,20 +41,36 @@ def _is_macos() -> bool:
 
 
 def _run(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
-    """Run a shell command."""
-    return subprocess.run(
-        cmd, shell=True, capture_output=True, text=True, timeout=timeout
-    )
+    """Run a shell command. Returns a result object even on timeout/error."""
+    try:
+        return subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Command timed out after {timeout}s: {cmd}")
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": f"Timed out after {timeout}s"})()
+    except Exception as e:
+        logger.warning(f"Command error: {cmd}: {e}")
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
+
 
 
 def _sudo_run(cmd: str, password: Optional[str] = None, timeout: int = 300) -> subprocess.CompletedProcess:
     """Run a command with sudo, passing password safely via stdin."""
     full_cmd = f"sudo -S {cmd}" if password else f"sudo {cmd}"
     stdin_data = (password + "\n") if password else None
-    return subprocess.run(
-        full_cmd, shell=True, input=stdin_data,
-        capture_output=True, text=True, timeout=timeout
-    )
+    try:
+        return subprocess.run(
+            full_cmd, shell=True, input=stdin_data,
+            capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f"sudo command timed out after {timeout}s: {cmd}")
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": f"Timed out after {timeout}s"})()
+    except Exception as e:
+        logger.warning(f"sudo command error: {cmd}: {e}")
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
+
 
 
 def check_binary(name: str) -> bool:

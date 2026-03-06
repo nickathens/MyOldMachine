@@ -5,6 +5,9 @@ MyOldMachine Setup Wizard — Interactive configuration.
 Walks the user through setup: name, Telegram token, LLM provider,
 takeover level, sudo password, timezone. Writes .env and user profile.
 Then hands off to the provisioner for system-level changes.
+
+Supports checkpoint resume — if the script is interrupted and re-run,
+already-completed steps are skipped automatically.
 """
 
 import argparse
@@ -21,6 +24,25 @@ from pathlib import Path
 # Add repo root to path
 REPO_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_DIR))
+
+
+# --- Checkpoint system ---
+
+CHECKPOINT_FILE = os.environ.get("MYOLDMACHINE_CHECKPOINT_FILE",
+                                  str(Path.home() / ".myoldmachine_install_checkpoints"))
+
+
+def checkpoint_done(name: str) -> bool:
+    try:
+        with open(CHECKPOINT_FILE) as f:
+            return name in [line.strip() for line in f]
+    except FileNotFoundError:
+        return False
+
+
+def checkpoint_set(name: str):
+    with open(CHECKPOINT_FILE, "a") as f:
+        f.write(name + "\n")
 
 
 # --- Terminal UI helpers ---
@@ -54,10 +76,13 @@ def ask(prompt, default=None, required=True, secret=False):
     """Ask a question with optional default."""
     suffix = f" [{default}]" if default else ""
     while True:
-        if secret:
-            value = getpass.getpass(f"  {prompt}{suffix}: ")
-        else:
-            value = input(f"  {prompt}{suffix}: ").strip()
+        try:
+            if secret:
+                value = getpass.getpass(f"  {prompt}{suffix}: ")
+            else:
+                value = input(f"  {prompt}{suffix}: ").strip()
+        except EOFError:
+            error("Input stream closed. Can't read user input.")
         if not value and default:
             return default
         if not value and required:
@@ -73,12 +98,14 @@ def ask_choice(prompt, options, default=None):
         marker = " (default)" if key == default else ""
         print(f"    {i}. {key} — {desc}{marker}")
     while True:
-        raw = input(f"  Choice [{default or ''}]: ").strip()
+        try:
+            raw = input(f"  Choice [{default or ''}]: ").strip()
+        except EOFError:
+            error("Input stream closed.")
         if not raw and default:
             return default
         if raw.isdigit() and 1 <= int(raw) <= len(options):
             return options[int(raw) - 1][0]
-        # Try matching by name
         for key, _ in options:
             if raw.lower() == key.lower():
                 return key
@@ -92,7 +119,6 @@ def detect_timezone():
         return str(tzlocal.get_localzone())
     except ImportError:
         pass
-    # Fallback: read /etc/timezone or systemd timedatectl
     try:
         tz = Path("/etc/timezone").read_text().strip()
         if tz:
@@ -108,27 +134,25 @@ def detect_timezone():
             return result.stdout.strip()
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    # macOS — read /etc/localtime symlink (works without sudo)
+    # macOS — /etc/localtime symlink
     try:
         localtime = Path("/etc/localtime")
         if localtime.is_symlink():
             target = str(localtime.resolve())
-            # /var/db/timezone/zoneinfo/America/New_York or /usr/share/zoneinfo/...
-            for marker in ["/zoneinfo/", "/zoneinfo/"]:
+            for marker in ["/zoneinfo/"]:
                 if marker in target:
                     tz = target.split(marker, 1)[1]
-                    if "/" in tz:  # e.g. "America/New_York"
+                    if "/" in tz:
                         return tz
     except Exception:
         pass
-    # macOS fallback — systemsetup (may need sudo on newer macOS)
+    # macOS fallback
     try:
         result = subprocess.run(
             ["systemsetup", "-gettimezone"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
-            # Output: "Time Zone: America/New_York"
             match = re.search(r":\s*(.+)", result.stdout)
             if match:
                 return match.group(1).strip()
@@ -191,7 +215,7 @@ def detect_machine_specs():
         specs["disk_gb"] = 0
         specs["disk_free_gb"] = 0
 
-    # GPU (best effort)
+    # GPU
     specs["gpu"] = None
     try:
         result = subprocess.run(
@@ -253,7 +277,6 @@ def write_env(repo_dir: Path, config: dict):
 
     env_file = repo_dir / ".env"
     env_file.write_text("\n".join(lines) + "\n")
-    # Restrict permissions — .env contains API keys
     env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
     ok(f"Configuration saved to {env_file}")
 
@@ -264,7 +287,6 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
     users_dir = data_dir / "users" / str(config["telegram_user_id"])
     users_dir.mkdir(parents=True, exist_ok=True)
 
-    # users.json
     profiles = {
         str(config["telegram_user_id"]): {
             "name": config["user_name"],
@@ -278,7 +300,6 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
     profiles_file = data_dir / "users.json"
     profiles_file.write_text(json.dumps(profiles, indent=2) + "\n")
 
-    # Initial memories
     memories = [
         {
             "content": f"User's name is {config['user_name']}",
@@ -295,7 +316,7 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
     memories_file = users_dir / "memories.json"
     memories_file.write_text(json.dumps(memories, indent=2) + "\n")
 
-    # Create memory directory structure
+    # Memory directory structure
     memory_dir = data_dir / "memory"
     for subdir in ["projects", "topics", "decisions"]:
         (memory_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -320,206 +341,123 @@ def main():
     repo_dir = Path(args.repo_dir)
     detected_os = args.os
 
-    # Check if already configured
-    if (repo_dir / ".env").exists():
-        warn(".env already exists.")
-        reconfigure = input("  Reconfigure? (y/N): ").strip().lower()
-        if reconfigure != "y":
-            info("Skipping wizard. Run the provisioner manually if needed.")
-            sys.exit(0)
+    # --- OS Detection ---
+    if not checkpoint_done("wizard_os_detect"):
+        from install.os_detect import detect as detect_os_info, print_detection_summary
+        os_info = detect_os_info()
+        print(f"\n{BOLD}Detected System{NC}")
+        print_detection_summary(os_info)
 
-    config = {}
+        if os_info.blockers:
+            print()
+            for b in os_info.blockers:
+                error(b)
 
-    # --- OS Detection (before anything else) ---
-    from install.os_detect import detect as detect_os_info, print_detection_summary
-    os_info = detect_os_info()
-    print(f"\n{BOLD}Detected System{NC}")
-    print_detection_summary(os_info)
+        if os_info.warnings:
+            print()
+            proceed = input("  Continue despite warnings? (Y/n): ").strip().lower()
+            if proceed == "n":
+                info("Aborted. Address the warnings above and try again.")
+                sys.exit(0)
 
-    if os_info.blockers:
+        checkpoint_set("wizard_os_detect")
         print()
-        for b in os_info.blockers:
-            error(b)
-        # error() calls sys.exit(1)
+    else:
+        ok("OS detection (cached)")
 
-    if os_info.warnings:
+    # Check if configuration already done (resume case)
+    if (repo_dir / ".env").exists() and checkpoint_done("wizard_config"):
+        info(".env already exists, skipping configuration steps")
+        config = _load_config_from_env(repo_dir)
+    else:
+        config = _run_wizard_steps(detected_os)
+        # Detect machine specs
+        info("Detecting machine specs...")
+        machine_specs = detect_machine_specs()
+        print(f"  Hostname: {machine_specs.get('hostname', '?')}")
+        print(f"  CPU: {machine_specs.get('cpu', '?')}")
+        print(f"  RAM: {machine_specs.get('ram_gb', '?')} GB")
+        print(f"  Disk: {machine_specs.get('disk_free_gb', '?')} GB free / {machine_specs.get('disk_gb', '?')} GB total")
+        if machine_specs.get("gpu"):
+            print(f"  GPU: {machine_specs['gpu']}")
         print()
-        proceed = input("  Continue despite warnings? (Y/n): ").strip().lower()
+
+        info("Saving configuration...")
+        write_env(repo_dir, config)
+        write_user_profile(repo_dir, config, machine_specs)
+        store_sudo_password(config["sudo_pass"])
+        checkpoint_set("wizard_config")
+
+    # --- Provisioning ---
+    if not checkpoint_done("provisioning"):
+        print(f"\n{BOLD}System Provisioning{NC}")
+        takeover = config.get("takeover", "full")
+        print("  The installer will now configure your machine.")
+        if takeover == "full":
+            print("  This will remove unnecessary software and install the bot's dependencies.")
+        else:
+            print("  This will install the bot's dependencies without removing existing software.")
+        print()
+
+        dry_run_first = input("  Preview changes first (dry run)? (Y/n): ").strip().lower()
+        if dry_run_first != "n":
+            info("Running dry run — no changes will be made...")
+            result = subprocess.run(
+                [sys.executable, str(repo_dir / "install" / "provisioner.py"),
+                 "--repo-dir", str(repo_dir), "--takeover", takeover, "--dry-run"],
+            )
+            if result.returncode != 0:
+                warn("Dry run finished with warnings (see output above)")
+            print()
+            proceed = input("  Proceed with actual provisioning? (Y/n): ").strip().lower()
+        else:
+            proceed = input("  Continue? (Y/n): ").strip().lower()
+
         if proceed == "n":
-            info("Aborted. Address the warnings above and try again.")
+            ok("Configuration saved. Run the provisioner later with:")
+            print(f"  python {repo_dir}/install/provisioner.py --repo-dir {repo_dir} --takeover {takeover}")
             sys.exit(0)
 
-    print()
-
-    # --- Step 1: User identity ---
-    print(f"\n{BOLD}Step 1: About You{NC}")
-    config["user_name"] = ask("What's your name?")
-
-    # --- Step 2: Telegram ---
-    print(f"\n{BOLD}Step 2: Telegram Bot{NC}")
-    print("  You need a Telegram bot token. Here's how to get one:")
-    print("    1. Open Telegram and search for @BotFather")
-    print("    2. Send /newbot and follow the prompts")
-    print("    3. Copy the token it gives you")
-    print()
-    config["telegram_token"] = ask("Paste your bot token")
-
-    print()
-    print("  Now you need your Telegram user ID:")
-    print("    1. Search for @userinfobot on Telegram")
-    print("    2. Send /start — it will reply with your ID")
-    print()
-    raw_id = ask("Your Telegram user ID")
-    if not raw_id.isdigit():
-        error("Telegram user ID must be a number.")
-    config["telegram_user_id"] = raw_id
-
-    # --- Step 3: LLM Provider ---
-    print(f"\n{BOLD}Step 3: AI Provider{NC}")
-    print("  Choose which AI model will power your assistant.")
-    print()
-    config["llm_provider"] = ask_choice(
-        "Pick your provider:",
-        LLM_PROVIDERS,
-        default="claude",
-    )
-
-    default_model = DEFAULT_MODELS.get(config["llm_provider"], "")
-    config["llm_model"] = ask(f"Model", default=default_model)
-
-    if config["llm_provider"] != "ollama":
-        config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
-    else:
-        config["llm_api_key"] = ""
-        config["ollama_url"] = ask("Ollama URL", default="http://localhost:11434", required=False)
-        print(f"  {YELLOW}Make sure Ollama is running: ollama serve{NC}")
-
-    # --- Step 4: Bot name ---
-    print(f"\n{BOLD}Step 4: Personalization{NC}")
-    config["bot_name"] = ask("What should your bot call itself?", default="MyOldMachine")
-
-    # --- Step 5: Timezone ---
-    detected_tz = detect_timezone()
-    config["timezone"] = ask("Timezone", default=detected_tz)
-
-    # --- Step 6: Takeover level ---
-    print(f"\n{BOLD}Step 6: Takeover Level{NC}")
-    if detected_os == "macos":
-        config["takeover"] = ask_choice(
-            "How much control should the bot have?",
-            [
-                ("full", "Full takeover — remove unused apps, disable sleep, headless mode"),
-                ("soft", "Soft install — bot runs in background, your apps stay"),
-            ],
-            default="full",
+        result = subprocess.run(
+            [sys.executable, str(repo_dir / "install" / "provisioner.py"),
+             "--repo-dir", str(repo_dir), "--takeover", takeover],
         )
+        if result.returncode != 0:
+            warn("Provisioning had some issues (see output above). Continuing with service setup.")
+        else:
+            ok("Provisioning complete")
+
+        checkpoint_set("provisioning")
     else:
-        print("  Linux: Full takeover (strip desktop environment, disable sleep, server mode)")
-        config["takeover"] = "full"
+        ok("Provisioning (cached)")
 
-    # --- Step 7: Sudo password ---
-    print(f"\n{BOLD}Step 7: System Access{NC}")
-    print("  The bot needs your password stored locally so it can install software on its own.")
-    print("  Stored at ~/.sudo_pass (readable only by you, never sent anywhere).")
-
-    # Check if sudo is already cached from install.sh
-    sudo_cached = subprocess.run(
-        ["sudo", "-n", "true"],
-        capture_output=True, timeout=5
-    ).returncode == 0
-
-    if sudo_cached:
-        ok("Administrator access already active (from installer)")
-        print("  Enter your password below so the bot can use it later.")
-    sudo_pass = ask("Sudo/admin password", secret=True)
-
-    # Verify the password is correct
-    info("Verifying password...")
-    verify = subprocess.run(
-        ["sudo", "-S", "echo", "ok"],
-        input=sudo_pass + "\n",
-        capture_output=True, text=True, timeout=10
-    )
-    if verify.returncode != 0:
-        error("Password verification failed. Check your password and try again.")
-    ok("Password verified")
-
-    # --- Detect machine specs ---
-    info("Detecting machine specs...")
-    machine_specs = detect_machine_specs()
-    print(f"  Hostname: {machine_specs.get('hostname', '?')}")
-    print(f"  CPU: {machine_specs.get('cpu', '?')}")
-    print(f"  RAM: {machine_specs.get('ram_gb', '?')} GB")
-    print(f"  Disk: {machine_specs.get('disk_free_gb', '?')} GB free / {machine_specs.get('disk_gb', '?')} GB total")
-    if machine_specs.get("gpu"):
-        print(f"  GPU: {machine_specs['gpu']}")
-    print()
-
-    # --- Write everything ---
-    info("Saving configuration...")
-    write_env(repo_dir, config)
-    write_user_profile(repo_dir, config, machine_specs)
-    store_sudo_password(sudo_pass)
-
-    # --- Run provisioner ---
-    print(f"\n{BOLD}Step 8: System Provisioning{NC}")
-    print("  The installer will now configure your machine.")
-    if config["takeover"] == "full":
-        print("  This will remove unnecessary software and install the bot's dependencies.")
-    else:
-        print("  This will install the bot's dependencies without removing existing software.")
-    print()
-
-    # Offer dry-run first
-    dry_run_first = input("  Preview changes first (dry run)? (Y/n): ").strip().lower()
-    if dry_run_first != "n":
-        info("Running dry run — no changes will be made...")
-        subprocess.run(
-            [
-                sys.executable, str(repo_dir / "install" / "provisioner.py"),
-                "--repo-dir", str(repo_dir),
-                "--takeover", config["takeover"],
-                "--dry-run",
-            ],
+    # --- Service setup ---
+    if not checkpoint_done("service"):
+        result = subprocess.run(
+            [sys.executable, str(repo_dir / "install" / "service.py"),
+             "--repo-dir", str(repo_dir)],
         )
-        print()
-        proceed = input("  Proceed with actual provisioning? (Y/n): ").strip().lower()
+        if result.returncode != 0:
+            warn("Service setup had issues (see output above).")
+            warn("You can start the bot manually: cd " + str(repo_dir) + " && .venv/bin/python bot.py")
+        else:
+            ok("Service registered")
+
+        checkpoint_set("service")
     else:
-        proceed = input("  Continue? (Y/n): ").strip().lower()
+        ok("Service setup (cached)")
 
-    if proceed == "n":
-        ok("Configuration saved. Run the provisioner later with:")
-        print(f"  python {repo_dir}/install/provisioner.py --repo-dir {repo_dir} --takeover {config['takeover']}")
-        sys.exit(0)
+    # --- Done — clean up checkpoints ---
+    checkpoint_file = Path(CHECKPOINT_FILE)
+    if checkpoint_file.exists():
+        checkpoint_file.unlink()
 
-    # Launch provisioner (it does its own OS detection via os_detect.py)
-    result = subprocess.run(
-        [
-            sys.executable, str(repo_dir / "install" / "provisioner.py"),
-            "--repo-dir", str(repo_dir),
-            "--takeover", config["takeover"],
-        ],
-    )
-    if result.returncode != 0:
-        error("Provisioning failed. Check the output above for errors.")
-
-    # Launch service installer (it does its own OS detection)
-    result = subprocess.run(
-        [
-            sys.executable, str(repo_dir / "install" / "service.py"),
-            "--repo-dir", str(repo_dir),
-        ],
-    )
-    if result.returncode != 0:
-        error("Service setup failed. Check the output above for errors.")
-
-    # --- Done ---
     print()
     print(f"{BOLD}╔══════════════════════════════════════╗{NC}")
     print(f"{BOLD}║         Setup Complete!              ║{NC}")
     print(f"{BOLD}╚══════════════════════════════════════╝{NC}")
     print()
-    print(f"  Your bot ({config['bot_name']}) is now running.")
+    print(f"  Your bot ({config.get('bot_name', 'MyOldMachine')}) is now running.")
     print(f"  Open Telegram and send /start to your bot.")
     print()
     print(f"  Useful commands:")
@@ -538,6 +476,140 @@ def main():
         print(f"    launchctl list | grep myoldmachine")
         print(f"    tail -f {repo_dir}/data/logs/bot.log")
     print()
+
+
+def _run_wizard_steps(detected_os: str) -> dict:
+    """Run the interactive wizard steps and return config dict."""
+    config = {}
+
+    # Step 1: User identity
+    print(f"\n{BOLD}Step 1: About You{NC}")
+    config["user_name"] = ask("What's your name?")
+
+    # Step 2: Telegram
+    print(f"\n{BOLD}Step 2: Telegram Bot{NC}")
+    print("  You need a Telegram bot token. Here's how to get one:")
+    print("    1. Open Telegram and search for @BotFather")
+    print("    2. Send /newbot and follow the prompts")
+    print("    3. Copy the token it gives you")
+    print()
+    config["telegram_token"] = ask("Paste your bot token")
+
+    print()
+    print("  Now you need your Telegram user ID:")
+    print("    1. Search for @userinfobot on Telegram")
+    print("    2. Send /start — it will reply with your ID")
+    print()
+    raw_id = ask("Your Telegram user ID")
+    if not raw_id.isdigit():
+        error("Telegram user ID must be a number.")
+    config["telegram_user_id"] = raw_id
+
+    # Step 3: LLM Provider
+    print(f"\n{BOLD}Step 3: AI Provider{NC}")
+    print("  Choose which AI model will power your assistant.")
+    print()
+    config["llm_provider"] = ask_choice(
+        "Pick your provider:", LLM_PROVIDERS, default="claude",
+    )
+
+    default_model = DEFAULT_MODELS.get(config["llm_provider"], "")
+    config["llm_model"] = ask(f"Model", default=default_model)
+
+    if config["llm_provider"] != "ollama":
+        config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
+    else:
+        config["llm_api_key"] = ""
+        config["ollama_url"] = ask("Ollama URL", default="http://localhost:11434", required=False)
+        print(f"  {YELLOW}Make sure Ollama is running: ollama serve{NC}")
+
+    # Step 4: Bot name
+    print(f"\n{BOLD}Step 4: Personalization{NC}")
+    config["bot_name"] = ask("What should your bot call itself?", default="MyOldMachine")
+
+    # Step 5: Timezone
+    detected_tz = detect_timezone()
+    config["timezone"] = ask("Timezone", default=detected_tz)
+
+    # Step 6: Takeover level
+    print(f"\n{BOLD}Step 6: Takeover Level{NC}")
+    if detected_os == "macos":
+        config["takeover"] = ask_choice(
+            "How much control should the bot have?",
+            [
+                ("full", "Full takeover — remove unused apps, disable sleep, headless mode"),
+                ("soft", "Soft install — bot runs in background, your apps stay"),
+            ],
+            default="full",
+        )
+    else:
+        print("  Linux: Full takeover (strip desktop environment, disable sleep, server mode)")
+        config["takeover"] = "full"
+
+    # Step 7: Sudo password
+    print(f"\n{BOLD}Step 7: System Access{NC}")
+    print("  The bot needs your password stored locally so it can install software on its own.")
+    print("  Stored at ~/.sudo_pass (readable only by you, never sent anywhere).")
+
+    sudo_cached = False
+    try:
+        sudo_cached = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True, timeout=5
+        ).returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    if sudo_cached:
+        ok("Administrator access already active (from installer)")
+        print("  Enter your password below so the bot can use it later.")
+
+    sudo_pass = ask("Sudo/admin password", secret=True)
+
+    info("Verifying password...")
+    try:
+        verify = subprocess.run(
+            ["sudo", "-S", "echo", "ok"],
+            input=sudo_pass + "\n",
+            capture_output=True, text=True, timeout=10
+        )
+        if verify.returncode != 0:
+            error("Password verification failed. Check your password and try again.")
+    except subprocess.TimeoutExpired:
+        error("Password verification timed out.")
+    ok("Password verified")
+
+    config["sudo_pass"] = sudo_pass
+    return config
+
+
+def _load_config_from_env(repo_dir: Path) -> dict:
+    """Load config from existing .env file for resume."""
+    config = {}
+    env_file = repo_dir / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key == "TELEGRAM_BOT_TOKEN":
+                    config["telegram_token"] = value
+                elif key == "LLM_PROVIDER":
+                    config["llm_provider"] = value
+                elif key == "LLM_MODEL":
+                    config["llm_model"] = value
+                elif key == "LLM_API_KEY":
+                    config["llm_api_key"] = value
+                elif key == "ALLOWED_USERS":
+                    config["telegram_user_id"] = value
+                elif key == "BOT_NAME":
+                    config["bot_name"] = value
+                elif key == "TIMEZONE":
+                    config["timezone"] = value
+    config.setdefault("takeover", "full")
+    config.setdefault("bot_name", "MyOldMachine")
+    return config
 
 
 if __name__ == "__main__":

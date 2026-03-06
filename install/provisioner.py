@@ -89,15 +89,25 @@ def sudo_run(cmd, password=None, check=False, timeout=600):
 
     full_cmd = f"sudo -S {cmd}" if password else f"sudo {cmd}"
     stdin_data = (password + "\n") if password else None
-    result = subprocess.run(
-        full_cmd, shell=True,
-        input=stdin_data,
-        capture_output=True, text=True, timeout=timeout
-    )
+    try:
+        result = subprocess.run(
+            full_cmd, shell=True,
+            input=stdin_data,
+            capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        warn(f"Command timed out after {timeout}s: {cmd}")
+        log_action(f"sudo_timeout: {cmd}", f"timeout={timeout}")
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": f"Timed out after {timeout}s"})()
+    except Exception as e:
+        warn(f"Command error: {cmd}: {e}")
+        log_action(f"sudo_error: {cmd}", str(e))
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
     log_action(f"sudo: {cmd}", f"rc={result.returncode}")
     if check and result.returncode != 0:
-        error(f"Command failed: {cmd}")
-        error(f"stderr: {result.stderr}")
+        warn(f"Command failed (rc={result.returncode}): {cmd}")
+        if result.stderr:
+            warn(f"  stderr: {result.stderr[:200]}")
     return result
 
 
@@ -108,18 +118,27 @@ def run(cmd, check=False, timeout=600):
         log_action("dry_run", cmd)
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    result = subprocess.run(
-        cmd, shell=True,
-        capture_output=True, text=True, timeout=timeout
-    )
+    try:
+        result = subprocess.run(
+            cmd, shell=True,
+            capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        warn(f"Command timed out after {timeout}s: {cmd}")
+        log_action(f"timeout: {cmd}", f"timeout={timeout}")
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": f"Timed out after {timeout}s"})()
+    except Exception as e:
+        warn(f"Command error: {cmd}: {e}")
+        log_action(f"error: {cmd}", str(e))
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
     if check and result.returncode != 0:
-        error(f"Command failed: {cmd}")
+        warn(f"Command failed (rc={result.returncode}): {cmd}")
     return result
 
 
 def run_streaming(cmd, label=""):
     """Run a command with real-time output streaming. Used for long-running tasks like brew compile.
-    Returns a result-like object with returncode, stdout, stderr."""
+    Returns a result-like object with returncode, stdout, stderr. No timeout — runs until done."""
     if _dry_run:
         info(f"[DRY RUN] run: {cmd}")
         log_action("dry_run", cmd)
@@ -128,24 +147,37 @@ def run_streaming(cmd, label=""):
     if label:
         info(f"{label}...")
 
-    process = subprocess.Popen(
-        cmd, shell=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1
-    )
+    try:
+        process = subprocess.Popen(
+            cmd, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1
+        )
+    except Exception as e:
+        warn(f"Failed to start: {cmd}: {e}")
+        log_action(f"popen_error: {cmd}", str(e))
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
 
     stdout_lines = []
     try:
         for line in process.stdout:
             line = line.rstrip('\n')
             stdout_lines.append(line)
-            # Print compilation progress so user sees it's working
             print(f"    {line}")
         process.wait()
     except KeyboardInterrupt:
         process.kill()
         process.wait()
         raise
+    except Exception as e:
+        warn(f"Error reading output from: {cmd}: {e}")
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        except Exception:
+            pass
+        log_action(f"stream_error: {cmd}", str(e))
+        return type("R", (), {"returncode": 1, "stdout": "\n".join(stdout_lines), "stderr": str(e)})()
 
     result = type("R", (), {
         "returncode": process.returncode,
@@ -742,12 +774,12 @@ def _configure_screen_sharing(os_info: OSInfo, password):
     warn("Note: No VNC password has been set. Set one in Screen Sharing preferences for security.")
 
 
-def provision(os_info: OSInfo, takeover: str):
-    """Main entry point — dispatches to the right provisioner based on OSInfo."""
+def provision(os_info: OSInfo, takeover: str) -> bool:
+    """Main entry point — dispatches to the right provisioner based on OSInfo. Returns True on success."""
     password = get_sudo_password()
     if not password and not _dry_run:
         error("No sudo password found. Run the wizard first.")
-        sys.exit(1)
+        return False
 
     if _dry_run:
         print(f"\n{BOLD}=== OS Provisioning (DRY RUN — no changes will be made) ==={NC}")
@@ -756,19 +788,28 @@ def provision(os_info: OSInfo, takeover: str):
     print(f"    Target: {os_info.display_name}")
     print(f"    Mode: {takeover}\n")
 
-    if os_info.os_type == "linux":
-        if takeover == "full":
-            provision_linux_full(os_info, password)
+    try:
+        if os_info.os_type == "linux":
+            if takeover == "full":
+                provision_linux_full(os_info, password)
+            else:
+                provision_linux_soft(os_info, password)
+        elif os_info.os_type == "macos":
+            if takeover == "full":
+                provision_macos_full(os_info, password)
+            else:
+                provision_macos_soft(os_info, password)
         else:
-            provision_linux_soft(os_info, password)
-    elif os_info.os_type == "macos":
-        if takeover == "full":
-            provision_macos_full(os_info, password)
-        else:
-            provision_macos_soft(os_info, password)
-    else:
-        error(f"Unsupported OS type: {os_info.os_type}")
-        sys.exit(1)
+            error(f"Unsupported OS type: {os_info.os_type}")
+            return False
+    except KeyboardInterrupt:
+        warn("Provisioning interrupted by user")
+        return False
+    except Exception as e:
+        error(f"Provisioning failed: {e}")
+        return False
+
+    return True
 
 
 def main():
@@ -803,10 +844,13 @@ def main():
     for w in os_info.warnings:
         warn(w)
 
-    provision(os_info, args.takeover)
+    success = provision(os_info, args.takeover)
 
     # Save action log
     save_action_log(args.repo_dir)
+
+    if not success:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
