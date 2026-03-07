@@ -844,6 +844,18 @@ def _run_wizard_steps(detected_os: str) -> dict:
         config["llm_api_key"] = ""
         print(f"  {YELLOW}Claude Code CLI will be installed automatically (requires Node.js).{NC}")
         print(f"  {YELLOW}After install, run: claude login{NC}")
+    elif config["llm_provider"] == "claude-api":
+        print()
+        print(f"  You need an Anthropic API key:")
+        print(f"    1. Go to https://console.anthropic.com/settings/keys")
+        print(f"    2. Sign up or log in")
+        print(f"    3. Click 'Create Key' and copy it")
+        print(f"    4. Paste it below")
+        print()
+        print(f"  {YELLOW}Note: Claude API requires a paid account with credits.{NC}")
+        print(f"  {YELLOW}New accounts get $5 free credits.{NC}")
+        print()
+        config["llm_api_key"] = ask("Anthropic API key", secret=True)
     elif config["llm_provider"] == "grok":
         print(f"  {GREEN}xAI Grok — $25 free credits on signup.{NC}")
         print(f"  {GREEN}Opt into data sharing for $150/month additional free credits.{NC}")
@@ -853,7 +865,18 @@ def _run_wizard_steps(detected_os: str) -> dict:
         print(f"    2. Create an API key")
         print(f"    3. Paste it below")
         print()
-        config["llm_api_key"] = ask(f"xAI API key", secret=True)
+        config["llm_api_key"] = ask("xAI API key", secret=True)
+    elif config["llm_provider"] == "gemini":
+        print()
+        print(f"  You need a Google AI API key:")
+        print(f"    1. Go to https://aistudio.google.com/apikey")
+        print(f"    2. Sign in with your Google account")
+        print(f"    3. Click 'Create API key' and copy it")
+        print(f"    4. Paste it below")
+        print()
+        print(f"  {YELLOW}Note: Free tier exists but may have zero quota depending on region.{NC}")
+        print()
+        config["llm_api_key"] = ask("Google AI API key", secret=True)
     elif config["llm_provider"] == "ollama":
         config["llm_api_key"] = ""
         config["ollama_url"] = "http://localhost:11434"
@@ -877,12 +900,12 @@ def _run_wizard_steps(detected_os: str) -> dict:
         is_free = config["llm_model"] in free_model_ids or config["llm_model"].endswith(":free")
         if is_free:
             print(f"  {GREEN}Free model selected — no billing required.{NC}")
-        print(f"  You need an OpenRouter API key (free to create).")
+        print(f"  You need an OpenRouter API key (free to create):")
         print(f"    1. Go to https://openrouter.ai and sign up")
         print(f"    2. Go to Keys → Create Key")
         print(f"    3. Paste it below")
         print()
-        config["llm_api_key"] = ask(f"OpenRouter API key", secret=True)
+        config["llm_api_key"] = ask("OpenRouter API key", secret=True)
     elif config["llm_provider"] in API_KEY_PROVIDERS:
         config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
     else:
