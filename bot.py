@@ -1015,6 +1015,266 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Restart failed: {msg}")
 
 
+async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch LLM provider and/or model without restarting."""
+    global _llm_provider
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+
+    text = update.message.text.replace("/provider", "").strip()
+
+    # Default models per provider
+    default_models = {
+        "claude": "claude-sonnet-4-20250514",
+        "claude-cli": "claude-sonnet-4-20250514",
+        "claude-api": "claude-sonnet-4-20250514",
+        "openai": "gpt-4o",
+        "grok": "grok-3-mini",
+        "gemini": "gemini-2.0-flash",
+        "ollama": "llama3.1:8b",
+        "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
+    }
+
+    if not text:
+        # Show current state and available providers
+        current = get_llm_provider()
+        model = get_llm_model()
+        has_key = bool(get_llm_api_key())
+        tool_use = "Yes" if _llm_provider.supports_tool_use else "No"
+        msg = (
+            f"Current provider: {current}\n"
+            f"Current model: {model}\n"
+            f"API key set: {'Yes' if has_key else 'No'}\n"
+            f"Tool-use: {tool_use}\n\n"
+            f"Available providers:\n"
+        )
+        for p, default_m in default_models.items():
+            if p in ("claude-cli", "claude-api"):
+                continue
+            marker = " (active)" if p == current else ""
+            msg += f"  {p} — default: {default_m}{marker}\n"
+        msg += (
+            f"\nUsage:\n"
+            f"  /provider <name> — switch provider (uses default model)\n"
+            f"  /provider <name> <model> — switch provider + model\n"
+            f"  /model <model> — change model only\n"
+            f"  /apikey <key> — set API key for current provider\n\n"
+            f"Example:\n"
+            f"  /provider openrouter google/gemini-2.0-flash-001\n"
+            f"  /provider grok\n"
+            f"  /model gpt-4o-mini"
+        )
+        await update.message.reply_text(msg)
+        return
+
+    # Parse: first word is provider, rest is model (optional)
+    parts = text.split(None, 1)
+    new_provider = parts[0].lower()
+    new_model = parts[1].strip() if len(parts) > 1 else None
+
+    # Validate provider
+    valid_providers = set(default_models.keys())
+    if new_provider not in valid_providers:
+        await update.message.reply_text(
+            f"Unknown provider: {new_provider}\n"
+            f"Valid: {', '.join(sorted(p for p in valid_providers if p not in ('claude-cli', 'claude-api')))}"
+        )
+        return
+
+    if not new_model:
+        new_model = default_models.get(new_provider, "")
+
+    # Check if API key is needed but missing
+    needs_key = new_provider in ("openai", "grok", "gemini", "openrouter", "claude-api")
+    current_key = get_llm_api_key()
+    if needs_key and not current_key:
+        await update.message.reply_text(
+            f"Provider '{new_provider}' requires an API key.\n"
+            f"Set one first: /apikey <your-key>\n"
+            f"Then try switching again."
+        )
+        return
+
+    # Update .env file
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        lines = env_file.read_text().splitlines()
+        new_lines = []
+        found_provider = False
+        found_model = False
+        for line in lines:
+            if line.startswith("LLM_PROVIDER="):
+                new_lines.append(f"LLM_PROVIDER={new_provider}")
+                found_provider = True
+            elif line.startswith("LLM_MODEL="):
+                new_lines.append(f"LLM_MODEL={new_model}")
+                found_model = True
+            else:
+                new_lines.append(line)
+        if not found_provider:
+            new_lines.append(f"LLM_PROVIDER={new_provider}")
+        if not found_model:
+            new_lines.append(f"LLM_MODEL={new_model}")
+        env_file.write_text("\n".join(new_lines) + "\n")
+    else:
+        await update.message.reply_text("Error: .env file not found.")
+        return
+
+    # Update environment variables so get_llm_provider/get_llm_model return new values
+    os.environ["LLM_PROVIDER"] = new_provider
+    os.environ["LLM_MODEL"] = new_model
+
+    # Reload provider in memory
+    api_key = get_llm_api_key()
+    kwargs = {}
+    if new_provider == "ollama":
+        kwargs["base_url"] = get_ollama_base_url()
+    try:
+        _llm_provider = create_provider(new_provider, new_model, api_key, **kwargs)
+        if isinstance(_llm_provider, ClaudeCLIProvider):
+            _llm_provider.on_progress_save = save_task_progress
+            _llm_provider.on_progress_clear = clear_task_progress
+        logger.info(f"Provider switched to {new_provider}/{new_model} by user {user_id}")
+        tool_use = "Yes" if _llm_provider.supports_tool_use else "No"
+        await update.message.reply_text(
+            f"Switched to {new_provider} / {new_model}\n"
+            f"Tool-use: {tool_use}\n\n"
+            f"No restart needed. Send a message to test."
+        )
+    except Exception as e:
+        logger.error(f"Failed to switch provider: {e}")
+        await update.message.reply_text(f"Failed to create provider: {e}")
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Change the model for the current provider without switching providers."""
+    global _llm_provider
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+
+    text = update.message.text.replace("/model", "").strip()
+    if not text:
+        await update.message.reply_text(
+            f"Current model: {get_llm_model()}\n"
+            f"Provider: {get_llm_provider()}\n\n"
+            f"Usage: /model <model-name>\n"
+            f"Example: /model google/gemini-2.0-flash-001"
+        )
+        return
+
+    new_model = text.strip()
+    current_provider = get_llm_provider()
+
+    # Update .env
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        lines = env_file.read_text().splitlines()
+        new_lines = []
+        found = False
+        for line in lines:
+            if line.startswith("LLM_MODEL="):
+                new_lines.append(f"LLM_MODEL={new_model}")
+                found = True
+            else:
+                new_lines.append(line)
+        if not found:
+            new_lines.append(f"LLM_MODEL={new_model}")
+        env_file.write_text("\n".join(new_lines) + "\n")
+
+    os.environ["LLM_MODEL"] = new_model
+
+    # Reload provider
+    api_key = get_llm_api_key()
+    kwargs = {}
+    if current_provider == "ollama":
+        kwargs["base_url"] = get_ollama_base_url()
+    try:
+        _llm_provider = create_provider(current_provider, new_model, api_key, **kwargs)
+        if isinstance(_llm_provider, ClaudeCLIProvider):
+            _llm_provider.on_progress_save = save_task_progress
+            _llm_provider.on_progress_clear = clear_task_progress
+        logger.info(f"Model switched to {new_model} by user {user_id}")
+        await update.message.reply_text(
+            f"Model changed to: {new_model}\n"
+            f"Provider: {current_provider}\n\n"
+            f"No restart needed."
+        )
+    except Exception as e:
+        logger.error(f"Failed to switch model: {e}")
+        await update.message.reply_text(f"Failed: {e}")
+
+
+async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set or update the API key for the current provider."""
+    global _llm_provider
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+
+    text = update.message.text.replace("/apikey", "").strip()
+    if not text:
+        has_key = bool(get_llm_api_key())
+        await update.message.reply_text(
+            f"Provider: {get_llm_provider()}\n"
+            f"API key set: {'Yes' if has_key else 'No'}\n\n"
+            f"Usage: /apikey <your-api-key>\n\n"
+            f"The key is stored in .env (local only, never sent anywhere)."
+        )
+        return
+
+    new_key = text.strip()
+
+    # Update .env
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        lines = env_file.read_text().splitlines()
+        new_lines = []
+        found = False
+        for line in lines:
+            if line.startswith("LLM_API_KEY="):
+                new_lines.append(f"LLM_API_KEY={new_key}")
+                found = True
+            else:
+                new_lines.append(line)
+        if not found:
+            new_lines.append(f"LLM_API_KEY={new_key}")
+        env_file.write_text("\n".join(new_lines) + "\n")
+
+    os.environ["LLM_API_KEY"] = new_key
+
+    # Reload provider with new key
+    current_provider = get_llm_provider()
+    current_model = get_llm_model()
+    kwargs = {}
+    if current_provider == "ollama":
+        kwargs["base_url"] = get_ollama_base_url()
+    try:
+        _llm_provider = create_provider(current_provider, current_model, new_key, **kwargs)
+        if isinstance(_llm_provider, ClaudeCLIProvider):
+            _llm_provider.on_progress_save = save_task_progress
+            _llm_provider.on_progress_clear = clear_task_progress
+        logger.info(f"API key updated for {current_provider} by user {user_id}")
+
+        # Delete the user's message to avoid the key sitting in chat history
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+        await update.message.chat.send_message(
+            f"API key updated for {current_provider}.\n"
+            f"(Your message with the key was deleted for security.)"
+        )
+    except Exception as e:
+        logger.error(f"Failed to update API key: {e}")
+        await update.message.reply_text(f"Failed: {e}")
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_name = get_bot_name()
     text = (
@@ -1040,6 +1300,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Recovery:\n"
         "  /recover - Show interrupted task\n"
         "  /clear_recovery - Delete recovery data\n\n"
+        "AI Provider:\n"
+        "  /provider - Show/switch AI provider\n"
+        "  /model - Show/change model\n"
+        "  /apikey - Set API key\n\n"
         "Admin:\n"
         "  /health - System health report\n"
         "  /cleanup - Clean old attachments and logs\n"
@@ -1356,6 +1620,9 @@ def main():
     app.add_handler(CommandHandler("system", system_command))
     app.add_handler(CommandHandler("update", update_command))
     app.add_handler(CommandHandler("restart", restart_command))
+    app.add_handler(CommandHandler("provider", provider_command))
+    app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler("apikey", apikey_command))
     app.add_handler(CommandHandler("help", help_command))
 
     # Message handler (text, photos, documents, audio, video, voice, stickers)
