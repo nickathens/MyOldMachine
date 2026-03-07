@@ -109,22 +109,23 @@ def save_task_progress(user_id: int, original_message: str, partial_text: str,
                        status: str, tool: str = None):
     """Save current task progress for recovery after restart."""
     progress_file = get_progress_file(user_id)
+    started = datetime.now().isoformat()
+    if progress_file.exists():
+        try:
+            with open(progress_file) as f:
+                existing = json.load(f)
+                started = existing.get("started", started)
+        except Exception:
+            pass
     data = {
         "user_id": user_id,
         "original_message": original_message[:500],
         "partial_text": partial_text,
         "status": status,
         "current_tool": tool,
-        "started": datetime.now().isoformat() if not progress_file.exists() else None,
+        "started": started,
         "updated": datetime.now().isoformat(),
     }
-    if progress_file.exists():
-        try:
-            with open(progress_file) as f:
-                existing = json.load(f)
-                data["started"] = existing.get("started")
-        except Exception:
-            pass
     with open(progress_file, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -617,6 +618,9 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(user_id)
     if session.conversation_file.exists():
         archive = session.user_dir / f"conversation_{datetime.now():%Y%m%d_%H%M%S}.json"
+        # Avoid collision if two clears happen in the same second
+        if archive.exists():
+            archive = session.user_dir / f"conversation_{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}.json"
         session.conversation_file.rename(archive)
     # Also clear the compaction summary — stale summary from a cleared conversation
     # would contaminate the new conversation's context
@@ -1522,7 +1526,10 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lock = _get_user_lock(user_id)
 
     if lock.locked():
-        await update.message.reply_text("Still working on your previous request. Your message is queued.")
+        try:
+            await update.message.reply_text("Still working on your previous request. Your message is queued.")
+        except Exception:
+            pass
 
     async with lock:
         # Daily reset check

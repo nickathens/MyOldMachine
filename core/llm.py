@@ -152,9 +152,9 @@ class ClaudeCLIProvider(LLMProvider):
 
         typing_task = None
         process = None
-        last_activity = asyncio.get_event_loop().time()
-        last_progress_message = asyncio.get_event_loop().time()
-        last_progress_save = asyncio.get_event_loop().time()
+        last_activity = asyncio.get_running_loop().time()
+        last_progress_message = asyncio.get_running_loop().time()
+        last_progress_save = asyncio.get_running_loop().time()
         final_result = None
         partial_text = ""
         current_status = "thinking"
@@ -181,13 +181,22 @@ class ClaudeCLIProvider(LLMProvider):
             if chat:
                 typing_task = asyncio.create_task(send_typing_periodically())
 
+            # Claude CLI needs a mostly-complete environment but we still strip
+            # dangerous env vars (other provider API keys, DB passwords, etc.)
+            cli_env = {k: v for k, v in os.environ.items()
+                       if k not in {"OPENAI_API_KEY", "OPENROUTER_API_KEY",
+                                    "GOOGLE_API_KEY", "DATABASE_URL",
+                                    "DATABASE_PASSWORD", "REDIS_URL",
+                                    "REDIS_PASSWORD"}}
+            cli_env["HOME"] = str(Path.home())
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._bot_dir),
-                env={**os.environ, "HOME": str(Path.home())},
+                env=cli_env,
                 limit=10 * 1024 * 1024,  # 10MB buffer
             )
             self._active_processes.add(process)
@@ -200,7 +209,7 @@ class ClaudeCLIProvider(LLMProvider):
 
             # Read output line by line with activity-based timeout
             while True:
-                current_time = asyncio.get_event_loop().time()
+                current_time = asyncio.get_running_loop().time()
                 time_since_activity = current_time - last_activity
 
                 if time_since_activity > self.IDLE_TIMEOUT:
@@ -240,7 +249,7 @@ class ClaudeCLIProvider(LLMProvider):
                 line = await read_line_with_timeout(process.stdout, timeout=read_timeout)
 
                 if line:
-                    last_activity = asyncio.get_event_loop().time()
+                    last_activity = asyncio.get_running_loop().time()
                     line_str = line.decode().strip()
                     if line_str:
                         try:
@@ -268,7 +277,7 @@ class ClaudeCLIProvider(LLMProvider):
                                 final_result = data["result"]
 
                             # Save progress periodically
-                            current_time = asyncio.get_event_loop().time()
+                            current_time = asyncio.get_running_loop().time()
                             if current_time - last_progress_save >= 30:
                                 if self.on_progress_save and user_id:
                                     self.on_progress_save(user_id, original_message,

@@ -16,8 +16,10 @@ def _env(key: str, default: str = "") -> str:
 
 
 def _env_int(key: str, default: int = 0) -> int:
-    val = os.environ.get(key, "")
-    return int(val) if val.isdigit() else default
+    val = os.environ.get(key, "").strip()
+    if val.lstrip('-').isdigit() and val.count('-') <= 1 and val:
+        return int(val)
+    return default
 
 
 def _env_list(key: str) -> list[int]:

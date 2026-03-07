@@ -20,8 +20,10 @@ from datetime import datetime, time
 from pathlib import Path
 from typing import Optional
 
-# Add utils to path for safe_json
-sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+# Import safe_json from utils
+_utils_dir = str(Path(__file__).parent.parent / "utils")
+if _utils_dir not in sys.path:
+    sys.path.insert(0, _utils_dir)
 from safe_json import load_json, save_json
 
 logger = logging.getLogger(__name__)

@@ -941,11 +941,21 @@ async def _stream_process_output(managed: ManagedProcess, timeout: float):
                     await process.wait()
                 managed.output_chunks.append(f"\n[Timed out after {timeout}s]\n")
 
-    # Wait for process to finish
-    try:
-        await asyncio.wait_for(process.wait(), timeout=10)
-    except asyncio.TimeoutError:
-        pass
+    # Wait for process to finish (or kill if it's still alive after timeout)
+    if process.returncode is None:
+        try:
+            await asyncio.wait_for(process.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            # Process is stuck — kill it
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                process.kill()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
+            managed.output_chunks.append(f"\n[Process killed after timeout]\n")
 
     managed.return_code = process.returncode
     managed.finished_at = time.time()
