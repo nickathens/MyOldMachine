@@ -100,12 +100,14 @@ def parse_natural_time(text: str) -> Optional[datetime]:
         return tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
     # "at HH:MM" or "at Ham/pm" — requires "at" keyword, HH:MM format, or am/pm suffix
+    # All patterns normalized to 3 groups: (hour, minute_or_None, ampm_or_None)
     at_pattern = re.match(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
     if not at_pattern:
         # Match "3pm", "10am", "10:30am" (bare number requires am/pm or colon)
         at_pattern = re.match(r'(\d{1,2}):(\d{2})\s*(am|pm)?$', text)
     if not at_pattern:
-        at_pattern = re.match(r'(\d{1,2})\s*(am|pm)', text)
+        # Match "3pm", "10am" — only 2 groups, so add a non-capturing minute group
+        at_pattern = re.match(r'(\d{1,2})()\s*(am|pm)', text)
     if at_pattern:
         hour = int(at_pattern.group(1))
         minute = int(at_pattern.group(2) or 0)

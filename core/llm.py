@@ -398,7 +398,13 @@ class ClaudeAPIProvider(LLMProvider):
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
                 resp = await client.post(self.API_URL, headers=headers, json=body)
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except Exception:
+                    return LLMResponse(
+                        text="", model=self.model, provider=self.provider_name,
+                        error=f"Claude API returned non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}"
+                    )
                 if resp.status_code != 200:
                     error_msg = data.get("error", {}).get("message", str(data))
                     return LLMResponse(
@@ -459,11 +465,18 @@ async def _openai_tool_loop(
         for iteration in range(MAX_TOOL_ITERATIONS):
             try:
                 resp = await client.post(url, headers=headers, json=body)
-                data = resp.json()
             except Exception as e:
                 return LLMResponse(
                     text="", model=model, provider=provider_name,
                     error=f"{provider_name} request failed: {e}",
+                )
+
+            try:
+                data = resp.json()
+            except Exception:
+                return LLMResponse(
+                    text="", model=model, provider=provider_name,
+                    error=f"{provider_name} returned non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}",
                 )
 
             if resp.status_code != 200:
@@ -720,11 +733,18 @@ class GeminiProvider(LLMProvider):
             for iteration in range(MAX_TOOL_ITERATIONS):
                 try:
                     resp = await client.post(url, headers=headers, json=body)
-                    data = resp.json()
                 except Exception as e:
                     return LLMResponse(
                         text="", model=self.model, provider=self.provider_name,
                         error=f"Gemini request failed: {e}",
+                    )
+
+                try:
+                    data = resp.json()
+                except Exception:
+                    return LLMResponse(
+                        text="", model=self.model, provider=self.provider_name,
+                        error=f"Gemini returned non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}",
                     )
 
                 if resp.status_code != 200:
@@ -973,7 +993,13 @@ class OllamaProvider(LLMProvider):
             try:
                 async with httpx.AsyncClient(timeout=600.0) as client:
                     resp = await client.post(url, json=native_body)
-                    data = resp.json()
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        return LLMResponse(
+                            text="", model=self.model, provider=self.provider_name,
+                            error=f"Ollama returned non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}",
+                        )
                     if resp.status_code != 200:
                         return LLMResponse(
                             text="", model=self.model, provider=self.provider_name,

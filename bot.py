@@ -618,6 +618,10 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if session.conversation_file.exists():
         archive = session.user_dir / f"conversation_{datetime.now():%Y%m%d_%H%M%S}.json"
         session.conversation_file.rename(archive)
+    # Also clear the compaction summary — stale summary from a cleared conversation
+    # would contaminate the new conversation's context
+    if session.summary_file.exists():
+        session.summary_file.unlink()
     await update.message.reply_text("Conversation cleared.")
     logger.info(f"Context cleared by user {user_id}")
 
@@ -1043,7 +1047,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current = get_llm_provider()
         model = get_llm_model()
         has_key = bool(get_llm_api_key())
-        tool_use = "Yes" if _llm_provider.supports_tool_use else "No"
+        tool_use = "Yes" if _llm_provider and _llm_provider.supports_tool_use else "No"
         msg = (
             f"Current provider: {current}\n"
             f"Current model: {model}\n"
@@ -1458,6 +1462,12 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
             pass
 
     async with lock:
+        # Daily reset check (same as _process_single)
+        session = get_session(user_id)
+        if session.should_daily_reset():
+            session.perform_daily_reset()
+            logger.info(f"Daily reset performed for user {user_id}")
+
         all_attachments = []
         caption = ""
         for idx, upd in enumerate(updates):
@@ -1490,7 +1500,7 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
 
             response = await call_llm(user_id, user_message, chat=chat)
 
-            _save_and_send(user_id, user_message, response, session=None, chat=chat)
+            _save_and_send(user_id, user_message, response, session=session, chat=chat)
 
             for chunk in split_message(response):
                 try:

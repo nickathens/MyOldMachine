@@ -840,7 +840,8 @@ def _parse_func_args(raw: str) -> dict | None:
     # Parse key=value pairs
     args = {}
     # Match key="value" or key='value' or key=value patterns
-    kv_pattern = re.compile(r'(\w+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'|(\S+))')
+    # Unquoted values use [^\s,)]+ to avoid capturing trailing commas/parens
+    kv_pattern = re.compile(r'(\w+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'|([^\s,)]+))')
     for match in kv_pattern.finditer(raw):
         key = match.group(1)
         value = match.group(2) if match.group(2) is not None else (
@@ -876,6 +877,9 @@ async def _stream_process_output(managed: ManagedProcess, timeout: float):
 
     start_time = time.time()
 
+    # Track total output length incrementally to avoid O(n^2) from repeated joins
+    output_length = [0]
+
     async def read_stream(stream, prefix=""):
         """Read from a stream line by line and store chunks."""
         try:
@@ -895,10 +899,12 @@ async def _stream_process_output(managed: ManagedProcess, timeout: float):
 
                 if line:
                     text = line.decode(errors="replace")
-                    managed.output_chunks.append(prefix + text)
+                    chunk = prefix + text
+                    managed.output_chunks.append(chunk)
+                    output_length[0] += len(chunk)
 
                     # Check total output size
-                    if len(managed.full_output) > MAX_OUTPUT_CHARS:
+                    if output_length[0] > MAX_OUTPUT_CHARS:
                         managed.output_chunks.append(
                             f"\n[Output truncated at {MAX_OUTPUT_CHARS} chars]\n"
                         )

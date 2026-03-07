@@ -138,6 +138,11 @@ class SessionManager:
             archive_path = self.user_dir / archive_name
             self.conversation_file.rename(archive_path)
             logger.info(f"Daily reset: archived conversation to {archive_name}")
+        # Clear the compaction summary — stale summary from yesterday's conversation
+        # should not bleed into today's fresh session
+        if self.summary_file.exists():
+            self.summary_file.unlink()
+            logger.info("Daily reset: cleared conversation summary")
         meta = self.load_session_meta()
         meta["last_reset"] = datetime.now().isoformat()
         meta["message_count"] = 0
