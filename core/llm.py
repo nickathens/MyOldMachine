@@ -25,7 +25,9 @@ from core.tools import (
     get_tools_openai,
     get_tools_gemini,
     MAX_TOOL_ITERATIONS,
+    MAX_FALLBACK_ATTEMPTS,
     execute_tool,
+    extract_tool_calls_from_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -437,6 +439,11 @@ async def _openai_tool_loop(
     Sends the request with tool definitions. If the model responds with
     tool_calls, executes them locally, appends results, and re-sends.
     Repeats until the model responds with text or hits the iteration limit.
+
+    Includes a fallback parser: if the model writes tool calls as text
+    (code blocks, function-call syntax) instead of using structured
+    tool_calls, we extract and execute them anyway. This handles weak
+    models that don't reliably use function calling.
     """
     # Add tools to the request body
     body["tools"] = get_tools_openai()
@@ -446,6 +453,7 @@ async def _openai_tool_loop(
     total_input = 0
     total_output = 0
     used_tools = False
+    fallback_attempts = 0
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -525,8 +533,54 @@ async def _openai_tool_loop(
                 body["messages"] = messages
                 continue
 
-            # No tool calls — this is the final text response
+            # No structured tool calls — check if the model wrote them as text
             text = message.get("content", "") or ""
+
+            if text and fallback_attempts < MAX_FALLBACK_ATTEMPTS:
+                extracted = extract_tool_calls_from_text(text)
+                if extracted:
+                    fallback_attempts += 1
+                    used_tools = True
+                    logger.info(
+                        f"[{provider_name}] Fallback: extracted {len(extracted)} tool call(s) "
+                        f"from text response (attempt {fallback_attempts}/{MAX_FALLBACK_ATTEMPTS})"
+                    )
+
+                    # Add the model's text as an assistant message
+                    messages.append({"role": "assistant", "content": text})
+
+                    # Execute each extracted tool call and add results
+                    results_text = []
+                    for tc in extracted:
+                        tc_name = tc["name"]
+                        tc_args = tc["arguments"]
+                        logger.info(f"[{provider_name}] Fallback exec: {tc_name}({json.dumps(tc_args)[:200]})")
+                        result = await execute_tool(tc_name, tc_args)
+                        logger.info(f"[{provider_name}] Fallback result: {result[:200]}")
+
+                        if len(result) > 30000:
+                            result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
+
+                        results_text.append(f"[Tool result for {tc_name}]:\n{result}")
+
+                    # Add results as a user message (since we can't use tool role
+                    # without a matching tool_call_id from the model)
+                    combined_results = "\n\n".join(results_text)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"I executed the tool calls you wrote in your message. "
+                            f"Here are the results:\n\n{combined_results}\n\n"
+                            f"Now respond to the user based on these results. "
+                            f"Do NOT write the commands again — they have already been executed. "
+                            f"Just report the outcome naturally."
+                        ),
+                    })
+
+                    body["messages"] = messages
+                    continue
+
+            # No tool calls (structured or text) — this is the final response
             return LLMResponse(
                 text=text, model=model, provider=provider_name,
                 input_tokens=total_input, output_tokens=total_output,
@@ -655,6 +709,7 @@ class GeminiProvider(LLMProvider):
         total_input = 0
         total_output = 0
         used_tools = False
+        fallback_attempts = 0
 
         async with httpx.AsyncClient(timeout=300.0) as client:
             for iteration in range(MAX_TOOL_ITERATIONS):
@@ -733,8 +788,55 @@ class GeminiProvider(LLMProvider):
                     body["contents"] = contents
                     continue
 
-                # No function calls — this is the final text response
+                # No function calls — check if model wrote them as text
                 text = "".join(text_parts)
+
+                if text and fallback_attempts < MAX_FALLBACK_ATTEMPTS:
+                    extracted = extract_tool_calls_from_text(text)
+                    if extracted:
+                        fallback_attempts += 1
+                        used_tools = True
+                        logger.info(
+                            f"[gemini] Fallback: extracted {len(extracted)} tool call(s) "
+                            f"from text response (attempt {fallback_attempts}/{MAX_FALLBACK_ATTEMPTS})"
+                        )
+
+                        # Add model's text response
+                        contents.append({
+                            "role": "model",
+                            "parts": [{"text": text}],
+                        })
+
+                        # Execute and build results
+                        results_text = []
+                        for tc in extracted:
+                            tc_name = tc["name"]
+                            tc_args = tc["arguments"]
+                            logger.info(f"[gemini] Fallback exec: {tc_name}({json.dumps(tc_args)[:200]})")
+                            result = await execute_tool(tc_name, tc_args)
+                            logger.info(f"[gemini] Fallback result: {result[:200]}")
+
+                            if len(result) > 30000:
+                                result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
+
+                            results_text.append(f"[Tool result for {tc_name}]:\n{result}")
+
+                        combined_results = "\n\n".join(results_text)
+                        contents.append({
+                            "role": "user",
+                            "parts": [{"text": (
+                                f"I executed the tool calls you wrote in your message. "
+                                f"Here are the results:\n\n{combined_results}\n\n"
+                                f"Now respond to the user based on these results. "
+                                f"Do NOT write the commands again — they have already been executed. "
+                                f"Just report the outcome naturally."
+                            )}],
+                        })
+
+                        body["contents"] = contents
+                        continue
+
+                # No tool calls (structured or text) — final response
                 return LLMResponse(
                     text=text, model=self.model, provider=self.provider_name,
                     input_tokens=total_input, output_tokens=total_output,

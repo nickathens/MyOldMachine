@@ -165,6 +165,11 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def get_tool_names() -> set[str]:
+    """Return the set of available tool names."""
+    return {t["name"] for t in TOOL_DEFINITIONS}
+
+
 def get_tools_openai() -> list[dict]:
     """Transform unified tool definitions to OpenAI-compatible format."""
     tools = []
@@ -624,7 +629,188 @@ def _preflight_validate(path: str, content: str) -> Optional[str]:
 
 
 # ============================================================================
-# 6. OUTPUT STREAMING
+# 6. FALLBACK TOOL-CALL PARSER
+# ============================================================================
+# When weak models (small Ollama, free OpenRouter) write tool calls as text
+# instead of using structured function calling, this parser extracts them
+# from the response text and executes them. This is a safety net — the
+# primary path is always structured tool_calls.
+
+# Patterns that match code blocks containing tool-like invocations
+_TOOL_CODE_BLOCK_RE = re.compile(
+    r"```(?:tool_code|bash|shell|sh|python|json|)?\s*\n(.*?)```",
+    re.DOTALL,
+)
+
+# Pattern for JSON-style tool calls: {"name": "run_command", "arguments": {...}}
+_JSON_TOOL_CALL_RE = re.compile(
+    r'\{\s*"(?:name|function)"\s*:\s*"(\w+)"\s*,\s*"(?:arguments|parameters|params)"\s*:\s*(\{[^}]*\})\s*\}',
+    re.DOTALL,
+)
+
+# Pattern for function-call style: run_command(command="ls -la")
+_FUNC_CALL_RE = re.compile(
+    r'\b(run_command|read_file|write_file|list_directory|check_process)\s*\(([^)]*)\)',
+)
+
+# Max fallback attempts per response to prevent infinite loops
+MAX_FALLBACK_ATTEMPTS = 5
+
+
+def extract_tool_calls_from_text(text: str) -> list[dict]:
+    """Extract tool calls that a weak model wrote as text instead of structured calls.
+
+    Returns a list of dicts with 'name' and 'arguments' keys, or empty list
+    if no tool calls were found in the text.
+
+    This handles three common patterns:
+    1. Code blocks with shell commands (```bash\npython scheduler_cli.py ...```)
+    2. JSON-style tool calls ({"name": "run_command", "arguments": {...}})
+    3. Function-call syntax (run_command(command="ls -la"))
+    """
+    tool_names = get_tool_names()
+    calls = []
+
+    # Strategy 1: Look for JSON-style tool calls in text
+    for match in _JSON_TOOL_CALL_RE.finditer(text):
+        name = match.group(1)
+        if name not in tool_names:
+            continue
+        try:
+            args = json.loads(match.group(2))
+            calls.append({"name": name, "arguments": args})
+            logger.info(f"[fallback] Extracted JSON tool call: {name}")
+        except json.JSONDecodeError:
+            continue
+
+    if calls:
+        return calls
+
+    # Strategy 2: Look for function-call syntax
+    for match in _FUNC_CALL_RE.finditer(text):
+        name = match.group(1)
+        raw_args = match.group(2).strip()
+        if name not in tool_names:
+            continue
+
+        args = _parse_func_args(raw_args)
+        if args is not None:
+            calls.append({"name": name, "arguments": args})
+            logger.info(f"[fallback] Extracted function-call: {name}")
+
+    if calls:
+        return calls
+
+    # Strategy 3: Look for code blocks containing shell commands
+    for match in _TOOL_CODE_BLOCK_RE.finditer(text):
+        block_content = match.group(1).strip()
+        if not block_content:
+            continue
+
+        # Skip blocks that are clearly just output/examples (multi-line with no commands)
+        lines = [l.strip() for l in block_content.split("\n") if l.strip()]
+        if not lines:
+            continue
+
+        # Check if it looks like a command to execute
+        # Must start with a recognizable command pattern
+        first_line = lines[0]
+
+        # Skip if it's clearly documentation/output (starts with #, //, or is a table)
+        if first_line.startswith(("#!", "#!/")):
+            # Shebang — this is a script, treat the whole block as a script to run
+            calls.append({"name": "run_command", "arguments": {"command": block_content}})
+            logger.info(f"[fallback] Extracted script from code block")
+            break
+
+        if first_line.startswith("#") or first_line.startswith("//"):
+            continue
+
+        # Common command prefixes that indicate executable commands
+        command_indicators = [
+            "python ", "python3 ", "pip ", "pip3 ",
+            "apt ", "apt-get ", "brew ",
+            "sudo ", "cd ", "ls ", "cat ", "echo ",
+            "mkdir ", "cp ", "mv ", "rm ",
+            "curl ", "wget ",
+            "git ", "npm ", "node ",
+            "systemctl ", "launchctl ",
+            "docker ", "docker-compose ",
+            "./", "bash ", "sh ",
+        ]
+
+        is_command = any(first_line.startswith(prefix) or first_line.startswith(f"$ {prefix}")
+                        for prefix in command_indicators)
+
+        # Also check if it references any path or looks like a shell pipeline
+        if not is_command:
+            is_command = (
+                first_line.startswith("/") or
+                "|" in first_line or
+                "&&" in first_line or
+                first_line.startswith("$ ")
+            )
+
+        if is_command:
+            # Strip leading "$ " if present
+            cmd = block_content
+            if cmd.startswith("$ "):
+                cmd = cmd[2:]
+            # For multi-line blocks, join with && if they look like sequential commands
+            cmd_lines = [l.lstrip("$ ") for l in lines if l.strip() and not l.strip().startswith("#")]
+            if len(cmd_lines) > 1:
+                cmd = " && ".join(cmd_lines)
+            else:
+                cmd = cmd_lines[0] if cmd_lines else cmd
+
+            calls.append({"name": "run_command", "arguments": {"command": cmd}})
+            logger.info(f"[fallback] Extracted shell command from code block: {cmd[:80]}")
+            break  # Only extract one command block to avoid running unrelated examples
+
+    return calls
+
+
+def _parse_func_args(raw: str) -> dict | None:
+    """Parse function-call style arguments like: command="ls -la", background=true
+
+    Returns a dict or None if parsing fails.
+    """
+    if not raw:
+        return {}
+
+    # Try as JSON first (some models write run_command({"command": "ls"}))
+    raw_stripped = raw.strip()
+    if raw_stripped.startswith("{"):
+        try:
+            return json.loads(raw_stripped)
+        except json.JSONDecodeError:
+            pass
+
+    # Parse key=value pairs
+    args = {}
+    # Match key="value" or key='value' or key=value patterns
+    kv_pattern = re.compile(r'(\w+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'|(\S+))')
+    for match in kv_pattern.finditer(raw):
+        key = match.group(1)
+        value = match.group(2) if match.group(2) is not None else (
+            match.group(3) if match.group(3) is not None else match.group(4)
+        )
+        if value is None:
+            continue
+        # Convert boolean strings
+        if value.lower() == "true":
+            value = True
+        elif value.lower() == "false":
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        args[key] = value
+
+    return args if args else None
+
+
+# ============================================================================
+# 7. OUTPUT STREAMING
 # ============================================================================
 
 async def _stream_process_output(managed: ManagedProcess, timeout: float):
