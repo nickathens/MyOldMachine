@@ -84,7 +84,7 @@ MAX_CONTEXT_MESSAGES = 40
 
 # Health check interval (seconds)
 _HEALTH_CHECK_INTERVAL = 4 * 3600  # 4 hours
-_last_health_check = 0.0
+_last_health_check: float | None = None  # None = not yet checked
 
 
 # --- Alias helpers ---
@@ -127,6 +127,21 @@ _RESERVED_COMMANDS = {
     "topics", "schedule", "jobs", "health", "cleanup", "system", "update",
     "restart", "provider", "model", "apikey", "alias",
 }
+
+
+def _atomic_env_write(env_file: Path, new_content: str):
+    """Write .env file atomically via temp file + rename, preserving 0600 permissions."""
+    tmp = env_file.with_suffix(".env.tmp")
+    try:
+        with open(tmp, "w") as f:
+            f.write(new_content)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        tmp.rename(env_file)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # --- User data helpers ---
@@ -1201,8 +1216,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_lines.append(f"LLM_PROVIDER={new_provider}")
         if not found_model:
             new_lines.append(f"LLM_MODEL={new_model}")
-        env_file.write_text("\n".join(new_lines) + "\n")
-        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
+        _atomic_env_write(env_file, "\n".join(new_lines) + "\n")
     else:
         await update.message.reply_text("Error: .env file not found.")
         return
@@ -1268,8 +1282,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_lines.append(line)
         if not found:
             new_lines.append(f"LLM_MODEL={new_model}")
-        env_file.write_text("\n".join(new_lines) + "\n")
-        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
+        _atomic_env_write(env_file, "\n".join(new_lines) + "\n")
 
     os.environ["LLM_MODEL"] = new_model
 
@@ -1329,8 +1342,7 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_lines.append(line)
         if not found:
             new_lines.append(f"LLM_API_KEY={new_key}")
-        env_file.write_text("\n".join(new_lines) + "\n")
-        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
+        _atomic_env_write(env_file, "\n".join(new_lines) + "\n")
 
     os.environ["LLM_API_KEY"] = new_key
 
@@ -1794,7 +1806,7 @@ async def _health_monitor_loop(scheduler):
     while True:
         try:
             now = asyncio.get_event_loop().time()
-            if now - _last_health_check >= _HEALTH_CHECK_INTERVAL:
+            if _last_health_check is None or now - _last_health_check >= _HEALTH_CHECK_INTERVAL:
                 _last_health_check = now
                 admin_ids = [
                     uid for uid in get_allowed_users()

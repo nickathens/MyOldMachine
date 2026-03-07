@@ -722,6 +722,7 @@ class Scheduler:
         meta_ids = {m["job_id"] for m in metas}
         aps_ids = {j.id for j in self._aps.get_jobs()}
 
+        now = datetime.now()
         for meta in metas:
             if meta["job_id"] not in aps_ids:
                 try:
@@ -729,7 +730,14 @@ class Scheduler:
                     if run_at_str:
                         run_at = datetime.fromisoformat(run_at_str)
                     else:
-                        run_at = datetime.now() + timedelta(minutes=1)
+                        run_at = now + timedelta(minutes=1)
+
+                    # For one-shot jobs whose run_at is in the past, schedule them
+                    # to fire in a few seconds instead of using the past time.
+                    # Using a past DateTrigger causes APScheduler to silently drop
+                    # jobs outside misfire_grace_time.
+                    if not meta.get("repeat") and run_at < now:
+                        run_at = now + timedelta(seconds=5)
 
                     trigger = self._build_trigger(run_at, meta.get("repeat"), meta.get("weekdays"))
                     executor_fn = _JOB_EXECUTORS.get(meta.get("job_type", "reminder"), _execute_reminder)
