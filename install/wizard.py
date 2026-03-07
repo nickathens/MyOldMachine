@@ -280,6 +280,30 @@ OPENROUTER_FREE_MODELS = [
 API_KEY_PROVIDERS = {"claude-api", "openai", "grok", "gemini", "openrouter"}
 
 
+def _select_model_for_provider(config: dict, provider: str):
+    """Ask user to select a model for the given provider. Updates config in place."""
+    if provider == "openrouter":
+        print()
+        print(f"  {BOLD}Free models (no billing required):{NC}")
+        for i, (model_id, desc) in enumerate(OPENROUTER_FREE_MODELS, 1):
+            print(f"    {i}. {desc}")
+            print(f"       ID: {model_id}")
+        print()
+        print(f"  Or enter any OpenRouter model ID (see openrouter.ai/models)")
+        print()
+        default_model = DEFAULT_MODELS["openrouter"]
+        raw = ask(f"Model (number or ID)", default=default_model)
+        if raw.isdigit() and 1 <= int(raw) <= len(OPENROUTER_FREE_MODELS):
+            config["llm_model"] = OPENROUTER_FREE_MODELS[int(raw) - 1][0]
+        else:
+            config["llm_model"] = raw
+    elif provider == "claude":
+        config["llm_model"] = DEFAULT_MODELS["claude"]
+    else:
+        default_model = DEFAULT_MODELS.get(provider, "")
+        config["llm_model"] = ask(f"Model", default=default_model)
+
+
 def write_env(repo_dir: Path, config: dict):
     """Write configuration to .env file."""
     lines = [
@@ -667,21 +691,7 @@ def _run_wizard_steps(detected_os: str) -> dict:
     )
 
     if config["llm_provider"] == "openrouter":
-        # Show free model options for OpenRouter
-        print()
-        print(f"  {BOLD}Free models (no billing required):{NC}")
-        for i, (model_id, desc) in enumerate(OPENROUTER_FREE_MODELS, 1):
-            print(f"    {i}. {desc}")
-            print(f"       ID: {model_id}")
-        print()
-        print(f"  Or enter any OpenRouter model ID (see openrouter.ai/models)")
-        print()
-        default_model = DEFAULT_MODELS["openrouter"]
-        raw = ask(f"Model (number or ID)", default=default_model)
-        if raw.isdigit() and 1 <= int(raw) <= len(OPENROUTER_FREE_MODELS):
-            config["llm_model"] = OPENROUTER_FREE_MODELS[int(raw) - 1][0]
-        else:
-            config["llm_model"] = raw
+        _select_model_for_provider(config, "openrouter")
     elif config["llm_provider"] == "ollama":
         # Check compatibility first — Ollama requires macOS 12+ (Monterey)
         from install.ollama_setup import check_ollama_compatibility
@@ -692,30 +702,15 @@ def _run_wizard_steps(detected_os: str) -> dict:
             for line in reason.split("\n"):
                 warn(f"  {line.strip()}")
             print()
-            warn("Switching to OpenRouter (free models available, no billing required).")
+            print(f"  {GREEN}Tip: OpenRouter has free models that don't require billing.{NC}")
             print()
-            config["llm_provider"] = "openrouter"
-            config["llm_model"] = DEFAULT_MODELS["openrouter"]
-            print(f"  {BOLD}Free models (no billing required):{NC}")
-            for i, (model_id, desc) in enumerate(OPENROUTER_FREE_MODELS, 1):
-                print(f"    {i}. {desc}")
-                print(f"       ID: {model_id}")
-            print()
-            print(f"  Or enter any OpenRouter model ID (see openrouter.ai/models)")
-            print()
-            default_model = DEFAULT_MODELS["openrouter"]
-            raw = ask(f"Model (number or ID)", default=default_model)
-            if raw.isdigit() and 1 <= int(raw) <= len(OPENROUTER_FREE_MODELS):
-                config["llm_model"] = OPENROUTER_FREE_MODELS[int(raw) - 1][0]
-            else:
-                config["llm_model"] = raw
-            # Need API key for OpenRouter
-            print(f"  You need an OpenRouter API key (free to create).")
-            print(f"    1. Go to https://openrouter.ai and sign up")
-            print(f"    2. Go to Keys → Create Key")
-            print(f"    3. Paste it below")
-            print()
-            config["llm_api_key"] = ask(f"OpenRouter API key", secret=True)
+            # Remove ollama from the list and let user pick again
+            providers_without_ollama = [p for p in LLM_PROVIDERS if p[0] != "ollama"]
+            config["llm_provider"] = ask_choice(
+                "Pick a different provider:", providers_without_ollama, default="openrouter",
+            )
+            # Handle model selection for the newly chosen provider
+            _select_model_for_provider(config, config["llm_provider"])
         else:
             # Auto-detect hardware and pick the best model — no user input needed
             print()
@@ -758,8 +753,7 @@ def _run_wizard_steps(detected_os: str) -> dict:
                 config["llm_model"] = DEFAULT_MODELS.get("ollama", "llama3.1:8b")
             print()
     else:
-        default_model = DEFAULT_MODELS.get(config["llm_provider"], "")
-        config["llm_model"] = ask(f"Model", default=default_model)
+        _select_model_for_provider(config, config["llm_provider"])
 
     if config["llm_provider"] == "claude":
         # Claude CLI — no API key, but needs claude CLI installed
