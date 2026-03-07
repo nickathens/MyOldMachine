@@ -170,6 +170,16 @@ Every LLM provider (except text-only Claude API) can execute commands on the mac
 8. Loop repeats until the LLM returns text (not a tool call)
 9. Final text response sent to user via Telegram
 
+### Fallback Tool-Call Parser
+
+Some models (especially free/small ones via OpenRouter or Ollama) don't emit structured tool calls — they output them as markdown code blocks or plain text instead. The tool layer includes a fallback parser (`extract_tool_calls_from_text()`) with three strategies:
+
+1. **JSON-style** — detects `{"name": "run_command", "arguments": {...}}`
+2. **Function-call syntax** — detects `run_command(command="ls")`
+3. **Code block detection** — extracts tool calls from fenced code blocks
+
+This means tool-use works even with models that don't natively support function calling — as long as the model is smart enough to follow the instructions in the system prompt.
+
 ### Process Management
 
 - `ProcessRegistry` tracks every spawned process by UUID
@@ -239,15 +249,26 @@ Note: OpenRouter's free tier is 50 requests/day. With tool-use, a single convers
 
 ### Changing Provider After Install
 
-Edit `~/MyOldMachine/.env` on the machine and change the `LLM_PROVIDER`, `LLM_MODEL`, and `LLM_API_KEY` values. Then restart the bot:
+The easiest way is directly from Telegram — no SSH, no file editing, no restart:
+
+```
+/provider                                    — show current state + all options
+/provider grok                               — switch provider (uses default model)
+/provider openrouter google/gemini-2.0-flash-001  — switch provider + model
+/model gpt-4o-mini                           — change model only
+/apikey sk-abc123...                         — set API key (message auto-deleted)
+```
+
+All three commands update `.env` on disk and reload the provider in memory instantly. Admin-only.
+
+Alternatively, edit `~/MyOldMachine/.env` directly and restart:
 
 ```bash
 # Linux
 sudo systemctl restart myoldmachine
 
 # macOS
-launchctl unload ~/Library/LaunchAgents/com.myoldmachine.bot.plist
-launchctl load ~/Library/LaunchAgents/com.myoldmachine.bot.plist
+launchctl stop com.myoldmachine.bot && launchctl start com.myoldmachine.bot
 ```
 
 Or send `/restart` from Telegram.
@@ -299,6 +320,9 @@ python utils/project_manager.py update my-project --status active --next "Do thi
 | `/remind <time> <msg>` | Set a reminder (natural language time) |
 | `/reminders` | Show active reminders |
 | `/cancel <id>` | Cancel a reminder |
+| `/provider` | Show current provider or switch: `/provider grok`, `/provider openrouter google/gemini-2.0-flash-001` |
+| `/model` | Change model without switching provider: `/model gpt-4o-mini` |
+| `/apikey` | Set API key from chat (auto-deletes your message): `/apikey sk-abc123...` |
 | `/cleanup` | Run maintenance — clean old files, rotate logs |
 | `/update` | Check for and pull updates |
 | `/restart` | Restart the bot service |
