@@ -246,10 +246,10 @@ def detect_machine_specs():
 
 _ALL_LLM_PROVIDERS = [
     ("claude", "Claude Code CLI — uses your Pro/Max plan (no API key needed), full machine control"),
-    ("claude-api", "Anthropic Claude API — requires paid API credits ($), text-only, no machine control"),
-    ("openai", "OpenAI GPT — requires API key ($), machine control via function calling"),
+    ("claude-api", "Anthropic Claude API — requires paid API credits ($), chat only, no machine control"),
+    ("openai", "OpenAI — requires API key ($), machine control via function calling"),
     ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
-    ("gemini", "Google Gemini — requires API key ($), machine control (free tier may have zero quota)"),
+    ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
     ("openrouter", "OpenRouter — many models, one API key (free models available), machine control"),
 ]
@@ -264,51 +264,67 @@ def _get_available_providers() -> list:
     return list(_ALL_LLM_PROVIDERS)
 
 DEFAULT_MODELS = {
-    "claude": "claude-sonnet-4-20250514",
-    "claude-api": "claude-sonnet-4-20250514",
-    "openai": "gpt-4o",
-    "grok": "grok-3-mini",
-    "gemini": "gemini-2.0-flash",
+    "claude": "claude-sonnet-4-6",
+    "claude-api": "claude-sonnet-4-6",
+    "openai": "gpt-4.1",
+    "grok": "grok-4-1-fast-non-reasoning",
+    "gemini": "gemini-2.5-flash",
     "ollama": "llama3.1:8b",
-    "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
+    "openrouter": "openai/gpt-oss-120b:free",
 }
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
+# Last updated: March 7, 2026
 PROVIDER_MODELS = {
+    "claude": [
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning (recommended)"),
+        ("claude-opus-4-6", "Claude Opus 4.6 — most capable, complex tasks"),
+    ],
     "claude-api": [
-        ("claude-sonnet-4-20250514", "Claude Sonnet 4 — fast, strong tool-use (recommended)"),
-        ("claude-opus-4-20250514", "Claude Opus 4 — most capable, slower, higher cost"),
-        ("claude-haiku-3-5-20241022", "Claude Haiku 3.5 — fastest, cheapest, good for simple tasks"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning, $3/$15 per MTok (recommended)"),
+        ("claude-opus-4-6", "Claude Opus 4.6 — most capable, $15/$75 per MTok"),
+        ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, $0.80/$4 per MTok"),
     ],
     "openai": [
-        ("gpt-4o", "GPT-4o — multimodal, fast, strong tool-use (recommended)"),
-        ("gpt-4o-mini", "GPT-4o Mini — cheaper, faster, good for simple tasks"),
-        ("gpt-4-turbo", "GPT-4 Turbo — older but reliable"),
-        ("o3-mini", "o3-mini — reasoning model, slower but very capable"),
+        ("gpt-4.1", "GPT-4.1 — strong coding + instruction following, 1M context (recommended)"),
+        ("gpt-4.1-mini", "GPT-4.1 Mini — faster, cheaper, good for most tasks"),
+        ("gpt-4.1-nano", "GPT-4.1 Nano — fastest, cheapest, simple tasks"),
+        ("o4-mini", "o4-mini — reasoning model, great for hard problems"),
     ],
     "grok": [
-        ("grok-3-mini", "Grok 3 Mini — fast, good tool-use (recommended)"),
-        ("grok-3", "Grok 3 — most capable, higher cost"),
-        ("grok-2", "Grok 2 — older, still capable"),
+        ("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast — cheapest, $0.20/$0.50 per MTok (recommended)"),
+        ("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning — with chain-of-thought, $0.20/$0.50"),
+        ("grok-code-fast-1", "Grok Code Fast — optimized for coding, $0.20/$1.50 per MTok"),
+        ("grok-4-0709", "Grok 4 — flagship, most capable, $3/$15 per MTok"),
     ],
     "gemini": [
-        ("gemini-2.0-flash", "Gemini 2.0 Flash — fast, good tool-use (recommended)"),
-        ("gemini-2.5-pro-preview-05-06", "Gemini 2.5 Pro — most capable, slower"),
-        ("gemini-2.0-flash-lite", "Gemini 2.0 Flash Lite — fastest, cheapest"),
+        ("gemini-2.5-flash", "Gemini 2.5 Flash — fast, free tier (10 RPM / 250 RPD), $0.30/$2.50 (recommended)"),
+        ("gemini-2.5-pro", "Gemini 2.5 Pro — best reasoning, free tier (5 RPM / 100 RPD), $1.25/$10"),
+        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — cheapest, free tier (15 RPM / 1000 RPD), $0.10/$0.40"),
     ],
 }
 
 # Free models available on OpenRouter (no billing required)
-# Updated March 7 2026 — verified against openrouter.ai/models?q=free
+# Updated March 7, 2026 — verified against costgoat.com/pricing/openrouter-free-models
 # IMPORTANT: Only models with tool-use/function-calling support are listed.
 # MyOldMachine needs tool-use to control the machine.
+# Rate limits: 20 requests/minute, 200 requests/day.
 OPENROUTER_FREE_MODELS = [
-    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — strong all-rounder, tool-use (recommended)"),
-    ("qwen/qwen3-235b-a22b-thinking-2507", "Qwen3 235B — large reasoning model, tool-use"),
+    ("openai/gpt-oss-120b:free", "GPT-OSS 120B — OpenAI open-source, strong tool-use (recommended)"),
+    ("openai/gpt-oss-20b:free", "GPT-OSS 20B — OpenAI open-source, fast, tool-use"),
+    ("qwen/qwen3-coder:free", "Qwen3 Coder 480B — Alibaba, coding + tool-use, 262K ctx"),
+    ("qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3 Next 80B — large MoE, tool-use, 262K ctx"),
+    ("arcee-ai/trinity-large-preview:free", "Arcee Trinity Large — strong reasoning + tool-use"),
+    ("stepfun/step-3.5-flash:free", "Step 3.5 Flash — StepFun, reasoning + tool-use, 256K ctx"),
+    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — Meta, solid all-rounder, tool-use"),
     ("mistralai/mistral-small-3.1-24b-instruct:free", "Mistral Small 3.1 24B — fast, vision + tool-use"),
     ("google/gemma-3-27b-it:free", "Gemma 3 27B — Google, vision + tool-use"),
-    ("nvidia/nemotron-3-nano-30b-a3b:free", "Nemotron Nano 30B — NVIDIA, tool-use"),
+    ("nvidia/nemotron-3-nano-30b-a3b:free", "Nemotron Nano 30B — NVIDIA, tool-use, 256K ctx"),
+    ("nvidia/nemotron-nano-12b-v2-vl:free", "Nemotron Nano 12B VL — NVIDIA, vision + tool-use"),
+    ("z-ai/glm-4.5-air:free", "GLM 4.5 Air — Zhipu AI, tool-use"),
+    ("arcee-ai/trinity-mini:free", "Trinity Mini — Arcee AI, tool-use, 131K ctx"),
+    ("qwen/qwen3-4b:free", "Qwen3 4B — lightweight, tool-use"),
 ]
 
 # Providers that need an API key
@@ -332,8 +348,6 @@ def _select_model_for_provider(config: dict, provider: str):
             config["llm_model"] = OPENROUTER_FREE_MODELS[int(raw) - 1][0]
         else:
             config["llm_model"] = raw
-    elif provider == "claude":
-        config["llm_model"] = DEFAULT_MODELS["claude"]
     elif provider in PROVIDER_MODELS:
         models = PROVIDER_MODELS[provider]
         print()
@@ -788,13 +802,13 @@ def _run_wizard_steps(detected_os: str) -> dict:
     print(f"  {GREEN}FREE options:{NC}")
     print(f"    - Claude Code CLI — uses your existing Anthropic Pro/Max subscription")
     print(f"    - Ollama — runs a local model on this machine (no internet needed)")
-    print(f"    - OpenRouter — has free models (rate-limited)")
+    print(f"    - OpenRouter — has free models (20 RPM, 200 req/day)")
+    print(f"    - Gemini — free tier with real quota (5-15 RPM, 100-1000 RPD)")
     print(f"    - Grok — $25 free credits on signup")
     print()
     print(f"  {YELLOW}PAID options:{NC}")
     print(f"    - Claude API — requires Anthropic API credits (separate from Pro/Max plan)")
     print(f"    - OpenAI — requires OpenAI API credits")
-    print(f"    - Gemini — free tier exists but may have zero quota")
     print()
     available_providers = _get_available_providers()
     # Default to first available provider (claude if present, otherwise claude-api)
@@ -803,7 +817,9 @@ def _run_wizard_steps(detected_os: str) -> dict:
         "Pick your provider:", available_providers, default=default_provider,
     )
 
-    if config["llm_provider"] == "openrouter":
+    if config["llm_provider"] == "claude":
+        _select_model_for_provider(config, "claude")
+    elif config["llm_provider"] == "openrouter":
         _select_model_for_provider(config, "openrouter")
     elif config["llm_provider"] == "ollama":
         # Check compatibility first — Ollama requires macOS 12+ (Monterey)
@@ -895,13 +911,15 @@ def _run_wizard_steps(detected_os: str) -> dict:
         print()
         config["llm_api_key"] = ask("Anthropic API key", secret=True)
     elif config["llm_provider"] == "grok":
+        print()
         print(f"  {GREEN}xAI Grok — $25 free credits on signup.{NC}")
         print(f"  {GREEN}Opt into data sharing for $150/month additional free credits.{NC}")
         print()
         print(f"  You need an xAI API key:")
-        print(f"    1. Go to https://console.x.ai and sign up")
-        print(f"    2. Create an API key")
-        print(f"    3. Paste it below")
+        print(f"    1. Go to https://console.x.ai/team/default/api-keys")
+        print(f"    2. Sign up or log in")
+        print(f"    3. Click 'Create API Key' and copy it")
+        print(f"    4. Paste it below")
         print()
         config["llm_api_key"] = ask("xAI API key", secret=True)
     elif config["llm_provider"] == "gemini":
@@ -912,7 +930,10 @@ def _run_wizard_steps(detected_os: str) -> dict:
         print(f"    3. Click 'Create API key' and copy it")
         print(f"    4. Paste it below")
         print()
-        print(f"  {YELLOW}Note: Free tier exists but may have zero quota depending on region.{NC}")
+        print(f"  {GREEN}Free tier available — no credit card required:{NC}")
+        print(f"    Gemini 2.5 Pro:        5 RPM,  100 req/day")
+        print(f"    Gemini 2.5 Flash:     10 RPM,  250 req/day")
+        print(f"    Gemini 2.5 Flash-Lite: 15 RPM, 1000 req/day")
         print()
         config["llm_api_key"] = ask("Google AI API key", secret=True)
     elif config["llm_provider"] == "ollama":
@@ -944,9 +965,18 @@ def _run_wizard_steps(detected_os: str) -> dict:
         print(f"    3. Paste it below")
         print()
         config["llm_api_key"] = ask("OpenRouter API key", secret=True)
+    elif config["llm_provider"] == "openai":
+        print()
+        print(f"  You need an OpenAI API key:")
+        print(f"    1. Go to https://platform.openai.com/api-keys")
+        print(f"    2. Sign up or log in")
+        print(f"    3. Click 'Create new secret key' and copy it")
+        print(f"    4. Paste it below")
+        print()
+        print(f"  {YELLOW}Note: OpenAI API requires a paid account with credits.{NC}")
+        print()
+        config["llm_api_key"] = ask("OpenAI API key", secret=True)
     elif config["llm_provider"] in API_KEY_PROVIDERS:
-        config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
-    else:
         config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
 
     # Step 4: Bot name

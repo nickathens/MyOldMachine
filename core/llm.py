@@ -99,7 +99,7 @@ class ClaudeCLIProvider(LLMProvider):
     IDLE_TIMEOUT = 3600  # 1 hour of no output = stuck
     PROGRESS_INTERVAL = 300  # Send progress message every 5 min
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str = ""):
+    def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
         self._active_processes: set = set()
@@ -904,7 +904,7 @@ class GrokProvider(LLMProvider):
     @property
     def supports_vision(self) -> bool:
         # Grok 2+ models support vision, as do explicit vision variants
-        return "vision" in self.model or "grok-2" in self.model or "grok-3" in self.model
+        return "vision" in self.model or "grok-2" in self.model or "grok-3" in self.model or "grok-4" in self.model
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {

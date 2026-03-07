@@ -1047,16 +1047,16 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.replace("/provider", "").strip()
 
-    # Default models per provider
+    # Default models per provider — keep in sync with install/wizard.py DEFAULT_MODELS
     default_models = {
-        "claude": "claude-sonnet-4-20250514",
-        "claude-cli": "claude-sonnet-4-20250514",
-        "claude-api": "claude-sonnet-4-20250514",
-        "openai": "gpt-4o",
-        "grok": "grok-3-mini",
-        "gemini": "gemini-2.0-flash",
+        "claude": "claude-sonnet-4-6",
+        "claude-cli": "claude-sonnet-4-6",
+        "claude-api": "claude-sonnet-4-6",
+        "openai": "gpt-4.1",
+        "grok": "grok-4-1-fast-non-reasoning",
+        "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
-        "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
+        "openrouter": "openai/gpt-oss-120b:free",
     }
 
     if not text:
