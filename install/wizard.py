@@ -244,7 +244,7 @@ def detect_machine_specs():
     return specs
 
 
-LLM_PROVIDERS = [
+_ALL_LLM_PROVIDERS = [
     ("claude", "Claude Code CLI — full machine control via native tool-use (requires Node.js + claude CLI)"),
     ("claude-api", "Anthropic Claude API — text-only, no machine control, requires API key ($)"),
     ("openai", "OpenAI GPT — machine control via function calling, requires API key ($)"),
@@ -253,6 +253,23 @@ LLM_PROVIDERS = [
     ("ollama", "Ollama — machine control via function calling, free, runs locally (auto-installs if needed)"),
     ("openrouter", "OpenRouter — machine control via function calling, many models, one API key (free models available)"),
 ]
+
+
+def _get_available_providers() -> list:
+    """Return LLM providers that can actually work on this machine.
+
+    Claude CLI requires Node.js + npm. If neither is present, hide the option
+    to prevent users from selecting a provider that will immediately fail.
+    """
+    import shutil as _shutil
+    providers = []
+    for key, desc in _ALL_LLM_PROVIDERS:
+        if key == "claude":
+            # Claude CLI needs npm to install, or claude already in PATH
+            if not _shutil.which("claude") and not _shutil.which("npm"):
+                continue  # Hide — can't install or run
+        providers.append((key, desc))
+    return providers
 
 DEFAULT_MODELS = {
     "claude": "claude-sonnet-4-20250514",
@@ -508,21 +525,29 @@ def main():
             checkpoint_set("claude_cli")
         elif _shutil.which("npm"):
             info("Installing Claude Code CLI...")
-            result = subprocess.run(
-                ["npm", "install", "-g", "@anthropic-ai/claude-code"],
-                capture_output=True, text=True, timeout=120,
-            )
-            if result.returncode == 0:
+            try:
+                result = subprocess.run(
+                    ["npm", "install", "-g", "@anthropic-ai/claude-code"],
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                result = None
+            if result and result.returncode == 0 and _shutil.which("claude"):
                 ok("Claude Code CLI installed")
                 print(f"  {YELLOW}Run 'claude login' to authenticate before starting the bot.{NC}")
                 checkpoint_set("claude_cli")
             else:
-                warn(f"Could not install Claude Code CLI: {result.stderr[:200]}")
-                warn("Install manually after setup: npm install -g @anthropic-ai/claude-code")
-                warn("Then run: claude login")
+                warn("Claude Code CLI installation failed.")
+                warn("The bot cannot work without it. Options:")
+                print(f"    1. Install manually: npm install -g @anthropic-ai/claude-code && claude login")
+                print(f"    2. Re-run installer and pick a different provider (OpenRouter is free)")
+                sys.exit(1)
         else:
-            warn("npm not found — cannot install Claude Code CLI automatically.")
-            warn("Install manually: npm install -g @anthropic-ai/claude-code && claude login")
+            warn("npm not found — cannot install Claude Code CLI.")
+            warn("The bot cannot work without it. Options:")
+            print(f"    1. Install Node.js + npm first, then re-run")
+            print(f"    2. Re-run installer and pick a different provider (OpenRouter is free)")
+            sys.exit(1)
 
     # --- Ollama install (if provider is ollama) ---
     if config.get("llm_provider") == "ollama" and not checkpoint_done("ollama_setup"):
@@ -700,8 +725,11 @@ def _run_wizard_steps(detected_os: str) -> dict:
     print("  Other providers use function calling for machine control (run commands, read/write files).")
     print("  'Claude API' is text-only (no machine control).")
     print()
+    available_providers = _get_available_providers()
+    # Default to first available provider (claude if present, otherwise claude-api)
+    default_provider = available_providers[0][0] if available_providers else "openrouter"
     config["llm_provider"] = ask_choice(
-        "Pick your provider:", LLM_PROVIDERS, default="claude",
+        "Pick your provider:", available_providers, default=default_provider,
     )
 
     if config["llm_provider"] == "openrouter":
@@ -719,7 +747,7 @@ def _run_wizard_steps(detected_os: str) -> dict:
             print(f"  {GREEN}Tip: OpenRouter has free models that don't require billing.{NC}")
             print()
             # Remove ollama from the list and let user pick again
-            providers_without_ollama = [p for p in LLM_PROVIDERS if p[0] != "ollama"]
+            providers_without_ollama = [p for p in available_providers if p[0] != "ollama"]
             config["llm_provider"] = ask_choice(
                 "Pick a different provider:", providers_without_ollama, default="openrouter",
             )

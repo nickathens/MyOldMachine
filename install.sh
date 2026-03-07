@@ -77,10 +77,12 @@ if [ -f "$CHECKPOINT_FILE" ]; then
     if [ "$resume_choice" != "2" ]; then
         info "Starting fresh install..."
         rm -f "$CHECKPOINT_FILE"
-        # Also remove stale .env so wizard doesn't skip
-        # Check both possible repo locations
-        for env_loc in "$HOME/MyOldMachine/.env" "${BASH_SOURCE[0]:+$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/.env}"; do
-            [ -n "$env_loc" ] && [ -f "$env_loc" ] && rm -f "$env_loc"
+        # Remove stale .env from ALL possible repo locations so wizard runs from scratch
+        for env_loc in \
+            "$HOME/MyOldMachine/.env" \
+            "${BASH_SOURCE[0]:+$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/.env}" \
+            "$(pwd)/.env"; do
+            [ -n "$env_loc" ] && [ -f "$env_loc" ] && rm -f "$env_loc" && info "Removed stale $env_loc"
         done
     else
         info "Resuming installation (${completed} step(s) already completed)"
