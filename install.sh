@@ -97,16 +97,7 @@ fi
 detect_os() {
     case "$(uname -s)" in
         Linux*)
-            if [ -f /etc/os-release ]; then
-                . /etc/os-release
-                if [[ "$ID" == "ubuntu" || "$ID" == "debian" || "${ID_LIKE:-}" == *"debian"* ]]; then
-                    echo "linux"
-                else
-                    die "Unsupported Linux distribution: $ID. Only Ubuntu/Debian are supported."
-                fi
-            else
-                die "Cannot detect Linux distribution."
-            fi
+            echo "linux"
             ;;
         Darwin*)
             echo "macos"
@@ -202,8 +193,22 @@ if ! checkpoint_done "git"; then
     else
         if [ "$OS" = "linux" ]; then
             info "Installing git..."
-            sudo apt-get update -qq 2>/dev/null || warn "apt-get update had warnings"
-            sudo apt-get install -y -qq git || die "Failed to install git"
+            if command -v apt-get &>/dev/null; then
+                sudo apt-get update -qq 2>/dev/null || warn "apt-get update had warnings"
+                sudo apt-get install -y -qq git || die "Failed to install git"
+            elif command -v dnf &>/dev/null; then
+                sudo dnf install -y git || die "Failed to install git"
+            elif command -v yum &>/dev/null; then
+                sudo yum install -y git || die "Failed to install git"
+            elif command -v pacman &>/dev/null; then
+                sudo pacman -Sy --noconfirm git || die "Failed to install git"
+            elif command -v zypper &>/dev/null; then
+                sudo zypper install -y git || die "Failed to install git"
+            elif command -v apk &>/dev/null; then
+                sudo apk add git || die "Failed to install git"
+            else
+                die "No supported package manager found. Install git manually and re-run."
+            fi
         else
             # macOS — Xcode Command Line Tools
             if xcode-select -p &>/dev/null; then
@@ -351,10 +356,30 @@ if ! checkpoint_done "python"; then
         info "Python 3.10+ not found. Installing..."
 
         if [ "$OS" = "linux" ]; then
-            sudo apt-get update -qq 2>/dev/null || warn "apt-get update had warnings"
-            sudo apt-get install -y -qq python3.12 python3.12-venv python3-pip 2>/dev/null || \
-            sudo apt-get install -y -qq python3 python3-venv python3-pip || \
-                die "Failed to install Python"
+            if command -v apt-get &>/dev/null; then
+                sudo apt-get update -qq 2>/dev/null || warn "apt-get update had warnings"
+                sudo apt-get install -y -qq python3.12 python3.12-venv python3-pip 2>/dev/null || \
+                sudo apt-get install -y -qq python3 python3-venv python3-pip || \
+                    die "Failed to install Python"
+            elif command -v dnf &>/dev/null; then
+                sudo dnf install -y python3 python3-pip python3-venv 2>/dev/null || \
+                sudo dnf install -y python3 python3-pip || \
+                    die "Failed to install Python"
+            elif command -v yum &>/dev/null; then
+                sudo yum install -y python3 python3-pip || \
+                    die "Failed to install Python"
+            elif command -v pacman &>/dev/null; then
+                sudo pacman -Sy --noconfirm python python-pip || \
+                    die "Failed to install Python"
+            elif command -v zypper &>/dev/null; then
+                sudo zypper install -y python3 python3-pip python3-virtualenv || \
+                    die "Failed to install Python"
+            elif command -v apk &>/dev/null; then
+                sudo apk add python3 py3-pip py3-virtualenv || \
+                    die "Failed to install Python"
+            else
+                die "No supported package manager found. Install Python 3.10+ manually and re-run."
+            fi
         else
             ensure_homebrew
 
@@ -439,7 +464,10 @@ if ! checkpoint_done "venv"; then
     if [ ! -d "$REPO_DIR/.venv" ]; then
         info "Creating virtual environment..."
         $PYTHON -m venv "$REPO_DIR/.venv" || die "Failed to create virtual environment.
-  On Ubuntu, try: sudo apt install python3-venv"
+  Ubuntu/Debian: sudo apt install python3-venv
+  Fedora/RHEL:   sudo dnf install python3-virtualenv
+  Arch:          sudo pacman -S python-virtualenv
+  Alpine:        sudo apk add py3-virtualenv"
     fi
 
     source "$REPO_DIR/.venv/bin/activate" || die "Failed to activate virtual environment"

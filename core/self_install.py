@@ -40,6 +40,83 @@ def _is_macos() -> bool:
     return platform.system() == "Darwin"
 
 
+def _detect_linux_pkg_manager() -> str:
+    """Detect the Linux package manager at runtime."""
+    for mgr, binary in [
+        ("apt", "apt-get"),
+        ("dnf", "dnf"),
+        ("yum", "yum"),
+        ("pacman", "pacman"),
+        ("zypper", "zypper"),
+        ("apk", "apk"),
+    ]:
+        if shutil.which(binary):
+            return mgr
+    return ""
+
+
+# Lazily cached package manager
+_linux_pkg_manager: Optional[str] = None
+
+
+def _get_linux_pkg_manager() -> str:
+    """Get cached Linux package manager."""
+    global _linux_pkg_manager
+    if _linux_pkg_manager is None:
+        _linux_pkg_manager = _detect_linux_pkg_manager()
+    return _linux_pkg_manager
+
+
+# Maps apt package names to equivalents on other package managers.
+# Only needed for packages where the name differs. If a package has the same
+# name across managers, it doesn't need an entry here.
+_APT_TO_PKG = {
+    "dnf": {
+        "python3-pip": "python3-pip",
+        "ffmpeg": "ffmpeg-free",
+        "openssh-server": "openssh-server",
+        "tesseract-ocr": "tesseract",
+        "poppler-utils": "poppler-utils",
+        "espeak-ng": "espeak-ng",
+    },
+    "yum": {
+        "tesseract-ocr": "tesseract",
+        "poppler-utils": "poppler-utils",
+        "espeak-ng": "espeak-ng",
+    },
+    "pacman": {
+        "python3-pip": "python-pip",
+        "ffmpeg": "ffmpeg",
+        "tesseract-ocr": "tesseract",
+        "poppler-utils": "poppler",
+        "espeak-ng": "espeak-ng",
+        "openssh-server": "openssh",
+    },
+    "zypper": {
+        "tesseract-ocr": "tesseract-ocr",
+        "poppler-utils": "poppler-tools",
+        "espeak-ng": "espeak-ng",
+        "openssh-server": "openssh",
+    },
+    "apk": {
+        "python3-pip": "py3-pip",
+        "ffmpeg": "ffmpeg",
+        "tesseract-ocr": "tesseract-ocr",
+        "poppler-utils": "poppler-utils",
+        "espeak-ng": "espeak-ng",
+        "openssh-server": "openssh",
+    },
+}
+
+
+def _translate_pkg_name(apt_name: str, mgr: str) -> str:
+    """Translate an apt package name to the equivalent for the given manager."""
+    if mgr == "apt":
+        return apt_name
+    mapping = _APT_TO_PKG.get(mgr, {})
+    return mapping.get(apt_name, apt_name)  # Fall back to same name
+
+
 def _run(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
     """Run a shell command. Returns a result object even on timeout/error."""
     try:
@@ -81,7 +158,7 @@ def check_binary(name: str) -> bool:
 def check_pip_package(package: str) -> bool:
     """Check if a pip package is installed in the current venv."""
     name = package.split(">=")[0].split("==")[0].split("<")[0].strip()
-    pip = str(_VENV_PIP) if _VENV_PIP.exists() else "pip"
+    pip = str(_VENV_PIP) if _VENV_PIP.exists() else f"{_VENV_PYTHON} -m pip"
     result = _run(f"{pip} show {name} 2>/dev/null")
     return result.returncode == 0
 
@@ -120,24 +197,48 @@ def check_skill_deps(skill_path: Path) -> list[str]:
 
     missing = []
 
-    # Check custom verification commands first
+    # Check custom verification commands first.
+    # Prepend the venv's bin dir so "python3" resolves to the venv Python,
+    # ensuring module checks work for packages installed in the venv.
+    venv_bin = str(Path(sys.executable).parent)
     checks = deps.get("check", {})
     for name, cmd in checks.items():
-        result = _run(cmd)
+        result = _run(f"PATH={venv_bin}:$PATH {cmd}")
         if result.returncode != 0:
             missing.append(f"system:{name}")
 
-    # System packages — only check those not already verified by custom checks
+    # System packages — only check those not already verified by custom checks.
+    # deps.json can have "apt", "dnf", "pacman", "zypper", "apk", "brew" keys.
+    # Fall back to "apt" key and translate package names if a manager-specific key
+    # isn't present.
     checked_names = set(checks.keys())
-    pkg_key = "brew" if _is_macos() else "apt"
+    if _is_macos():
+        pkg_key = "brew"
+    elif _is_linux():
+        mgr = _get_linux_pkg_manager()
+        # Use manager-specific key if present, otherwise fall back to "apt"
+        pkg_key = mgr if mgr in deps else "apt"
+    else:
+        pkg_key = "apt"
     for pkg in deps.get(pkg_key, []):
         if pkg in checked_names or f"system:{pkg}" in missing:
             continue
-        # Use dpkg (Linux) or brew list (macOS) for reliable package checking
-        if _is_linux():
-            result = _run(f"dpkg -l {pkg} 2>/dev/null | grep -q '^ii'")
-        elif _is_macos():
+        if _is_macos():
             result = _run(f"brew list {pkg} 2>/dev/null")
+        elif _is_linux():
+            mgr = _get_linux_pkg_manager()
+            translated = _translate_pkg_name(pkg, mgr)
+            if mgr == "apt":
+                result = _run(f"dpkg -l {translated} 2>/dev/null | grep -q '^ii'")
+            elif mgr in ("dnf", "yum", "zypper"):
+                result = _run(f"rpm -q {translated} 2>/dev/null")
+            elif mgr == "pacman":
+                result = _run(f"pacman -Q {translated} 2>/dev/null")
+            elif mgr == "apk":
+                result = _run(f"apk info -e {translated} 2>/dev/null")
+            else:
+                # No package manager — check if the binary exists directly
+                result = type("R", (), {"returncode": 0 if shutil.which(pkg) else 1})()
         else:
             continue
         if result.returncode != 0:
@@ -186,10 +287,26 @@ def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
             logger.info(f"Installing via brew: {pkgs}")
             result = _run(f"brew install {pkgs}")
         elif _is_linux():
-            pkgs = " ".join(system_missing)
-            logger.info(f"Installing via apt: {pkgs}")
-            _sudo_run("apt-get update -qq", password)
-            result = _sudo_run(f"apt-get install -y -qq {pkgs}", password)
+            mgr = _get_linux_pkg_manager()
+            translated = [_translate_pkg_name(p, mgr) for p in system_missing]
+            pkgs = " ".join(translated)
+            logger.info(f"Installing via {mgr}: {pkgs}")
+            if mgr == "apt":
+                _sudo_run("apt-get update -qq", password)
+                result = _sudo_run(f"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkgs}", password)
+            elif mgr == "dnf":
+                result = _sudo_run(f"dnf install -y {pkgs}", password)
+            elif mgr == "yum":
+                result = _sudo_run(f"yum install -y {pkgs}", password)
+            elif mgr == "pacman":
+                result = _sudo_run(f"pacman -S --noconfirm --needed {pkgs}", password)
+            elif mgr == "zypper":
+                result = _sudo_run(f"zypper install -y {pkgs}", password)
+            elif mgr == "apk":
+                result = _sudo_run(f"apk add {pkgs}", password)
+            else:
+                logger.warning(f"No supported package manager found ({mgr})")
+                result = type("R", (), {"returncode": 1, "stderr": f"Unknown package manager: {mgr}"})()
         else:
             result = type("R", (), {"returncode": 1, "stderr": "Unsupported OS"})()
 
@@ -203,7 +320,7 @@ def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
     pip_missing = [m.split(":", 1)[1] for m in missing if m.startswith("pip:")]
     if pip_missing:
         pkgs = " ".join(pip_missing)
-        pip = str(_VENV_PIP) if _VENV_PIP.exists() else "pip"
+        pip = str(_VENV_PIP) if _VENV_PIP.exists() else f"{_VENV_PYTHON} -m pip"
         logger.info(f"Installing via pip ({pip}): {pkgs}")
         result = _run(f"{pip} install {pkgs}")
         if result.returncode == 0:
@@ -235,12 +352,28 @@ def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
         env_prefix = f"PATH={venv_bin}:$PATH"
         for cmd in cmds:
             logger.info(f"Running post-install: {cmd}")
-            # install-deps needs sudo on Linux (installs system libraries)
-            if "install-deps" in cmd and _is_linux():
+            # install-deps needs sudo on Linux (installs system libraries).
+            # On non-apt Linux, playwright install-deps will fail because it
+            # only supports Ubuntu/Debian. Treat this as a warning, not a failure —
+            # the user can install Chromium deps manually with the bot's help.
+            is_install_deps = "install-deps" in cmd
+            if is_install_deps and _is_linux():
                 result = _sudo_run(f"{env_prefix} {cmd}", password, timeout=300)
             else:
                 result = _run(f"{env_prefix} {cmd}", timeout=300)
             if result.returncode != 0:
+                if is_install_deps and _is_linux():
+                    mgr = _get_linux_pkg_manager()
+                    if mgr != "apt":
+                        # Playwright install-deps only works on apt-based distros.
+                        # Log as warning, not failure — Chromium may still work
+                        # if the user has the right system libs already.
+                        logger.warning(
+                            f"Post-install '{cmd}' failed (expected on {mgr}-based systems). "
+                            f"Browser skill may need manual system library installation."
+                        )
+                        installed.append(f"post:{cmd} (skipped — non-apt)")
+                        continue
                 logger.error(f"Post-install failed: {cmd}: {result.stderr[:200]}")
                 failed.append(f"post:{cmd}")
             else:

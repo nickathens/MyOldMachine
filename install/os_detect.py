@@ -105,7 +105,7 @@ class OSInfo:
             name = f"{self.distro.title()} {self.version}"
             if self.version_name:
                 name += f" ({self.version_name})"
-            name += f" [{self.arch}]"
+            name += f" [{self.arch}, {self.package_manager or 'unknown pkg mgr'}]"
             return name
         return f"{self.os_type} {self.version}"
 
@@ -338,10 +338,51 @@ def _check_disk_space(info: OSInfo):
         )
 
 
+def _detect_package_manager() -> str:
+    """Detect the system package manager. Returns the manager name or empty string."""
+    for mgr, binary in [
+        ("apt", "apt-get"),
+        ("dnf", "dnf"),
+        ("yum", "yum"),
+        ("pacman", "pacman"),
+        ("zypper", "zypper"),
+        ("apk", "apk"),
+    ]:
+        try:
+            result = subprocess.run(
+                ["which", binary],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                return mgr
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return ""
+
+
+# Map distro IDs and ID_LIKE values to their package manager
+_DISTRO_PACKAGE_MANAGERS = {
+    # Debian family
+    "ubuntu": "apt", "debian": "apt", "linuxmint": "apt", "pop": "apt",
+    "elementary": "apt", "zorin": "apt", "kali": "apt", "raspbian": "apt",
+    "neon": "apt",
+    # Red Hat family
+    "fedora": "dnf", "rhel": "dnf", "centos": "dnf", "rocky": "dnf",
+    "almalinux": "dnf", "ol": "dnf", "amzn": "dnf",
+    # Arch family
+    "arch": "pacman", "manjaro": "pacman", "endeavouros": "pacman",
+    "garuda": "pacman",
+    # SUSE family
+    "opensuse-tumbleweed": "zypper", "opensuse-leap": "zypper",
+    "sles": "zypper", "opensuse": "zypper",
+    # Alpine
+    "alpine": "apk",
+}
+
+
 def _detect_linux(info: OSInfo):
     """Populate OSInfo for Linux."""
     info.os_type = "linux"
-    info.package_manager = "apt"
 
     # Read /etc/os-release
     os_release = Path("/etc/os-release")
@@ -364,31 +405,48 @@ def _detect_linux(info: OSInfo):
             except (ValueError, IndexError):
                 pass
 
-        # Check if this is a supported distro
+        # Determine package manager from distro ID, then ID_LIKE, then runtime detection
         id_like = data.get("ID_LIKE", "")
-        if info.distro not in ("ubuntu", "debian") and "debian" not in id_like:
-            info.blockers.append(
-                f"Unsupported Linux distribution: {info.distro}. "
-                f"Only Ubuntu/Debian (and derivatives like Linux Mint, Pop!_OS) are supported."
+        pkg_mgr = _DISTRO_PACKAGE_MANAGERS.get(info.distro, "")
+        if not pkg_mgr:
+            for like_id in id_like.split():
+                pkg_mgr = _DISTRO_PACKAGE_MANAGERS.get(like_id, "")
+                if pkg_mgr:
+                    break
+        if not pkg_mgr:
+            pkg_mgr = _detect_package_manager()
+        info.package_manager = pkg_mgr
+
+        if not pkg_mgr:
+            info.warnings.append(
+                f"Could not detect package manager for {info.distro}. "
+                f"Dependency installation may require manual intervention."
             )
     else:
         info.warnings.append(
-            "Could not read /etc/os-release. Assuming Debian-based system."
+            "Could not read /etc/os-release. Will attempt to detect package manager at runtime."
         )
         info.distro = "unknown"
+        info.package_manager = _detect_package_manager()
 
-    # Check if apt is actually available
-    try:
-        result = subprocess.run(
-            ["which", "apt-get"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode != 0:
-            info.blockers.append(
-                "apt-get not found. This installer requires a Debian-based system with apt."
-            )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    # Verify the detected package manager binary exists
+    if info.package_manager:
+        binary_map = {"apt": "apt-get", "dnf": "dnf", "yum": "yum",
+                      "pacman": "pacman", "zypper": "zypper", "apk": "apk"}
+        binary = binary_map.get(info.package_manager, "")
+        if binary:
+            try:
+                result = subprocess.run(
+                    ["which", binary],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode != 0:
+                    info.warnings.append(
+                        f"Detected package manager '{info.package_manager}' but "
+                        f"'{binary}' not found in PATH."
+                    )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
 
     # Check disk space (same function used for macOS)
     _check_disk_space(info)

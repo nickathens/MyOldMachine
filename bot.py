@@ -36,6 +36,7 @@ from core.session import SessionManager, get_session_manager
 from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
 from core.health import build_health_report, check_critical, run_health_check
 from core.updater import check_for_updates, full_update, get_current_version, get_current_branch
+from core.system_probe import probe_system, get_caps_summary
 
 from telegram import Update
 from telegram.ext import (
@@ -1034,6 +1035,12 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Checking for updates...")
     try:
         result = full_update(BOT_DIR)
+        # Re-run system probe to detect newly installed tools
+        try:
+            probe_system(DATA_DIR)
+            result += "\n\nSystem capabilities re-probed."
+        except Exception:
+            pass
         await update.message.reply_text(result)
     except Exception as e:
         await update.message.reply_text(f"Update failed: {e}")
@@ -1055,13 +1062,14 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tool_use = "Yes (function calling)"
     else:
         tool_use = "No (text-only)"
+    caps_summary = get_caps_summary(DATA_DIR)
     text = (
         f"MyOldMachine System Info\n\n"
         f"Version: {version} ({branch})\n"
         f"Provider: {provider} / {get_llm_model()}\n"
         f"Tool-use: {tool_use}\n"
         f"Skills: {skills_count}\n"
-        f"OS: {platform.system()} {platform.release()}\n"
+        f"{caps_summary}\n"
         f"Python: {platform.python_version()}\n"
         f"Bot dir: {BOT_DIR}"
     )
@@ -1878,6 +1886,11 @@ def main():
     # Catch-all for unrecognized /commands — check aliases before rejecting
     async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle unknown commands — check if they're aliases."""
+        # Auth check — same as handle_message
+        user_id = update.effective_user.id
+        allowed = get_allowed_users()
+        if allowed and user_id not in allowed:
+            return
         if await _try_alias(update, context):
             await _process_single(update, context)
         # If not an alias, silently ignore (don't spam "unknown command")
@@ -1903,18 +1916,28 @@ def main():
         # Start proactive health monitoring
         asyncio.create_task(_health_monitor_loop(scheduler))
 
+        # System capability probe — runs once on first boot
+        caps_file = DATA_DIR / "system_caps.json"
+        if not caps_file.exists():
+            logger.info("Running first-boot system capability probe...")
+            try:
+                caps = probe_system(DATA_DIR)
+                logger.info(f"Probe result: {caps.get('summary', {})}")
+            except Exception as e:
+                logger.warning(f"System probe failed: {e}")
+
         # First boot message — sent once after install
         first_boot_marker = DATA_DIR / ".first_boot_sent"
         if not first_boot_marker.exists():
             allowed = get_allowed_users()
             if allowed:
-                import platform
                 bot_name = get_bot_name()
                 skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
                 version = get_current_version(BOT_DIR)
+                caps_summary = get_caps_summary(DATA_DIR)
                 msg = (
                     f"{bot_name} is online.\n\n"
-                    f"OS: {platform.system()} {platform.release()}\n"
+                    f"{caps_summary}\n"
                     f"Provider: {get_llm_provider()} / {get_llm_model()}\n"
                     f"Skills: {skills_count}\n"
                     f"Version: {version}\n\n"

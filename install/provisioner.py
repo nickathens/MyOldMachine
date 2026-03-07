@@ -206,10 +206,13 @@ def sudo_write_file(path, content, password=None):
 
 # --- Linux provisioning ---
 
+# Package names vary by package manager. Keys are apt names.
+# Each dict maps: apt_name -> {mgr: pkg_name, ...}. None means not available.
 LINUX_REMOVE_PACKAGES = [
     # Desktop environments
     "gnome-shell", "gnome-session", "gnome-desktop3-data", "gnome-control-center",
-    "gdm3", "lightdm", "sddm",
+    "gdm3", "gdm",  # gdm3 = Debian/Ubuntu, gdm = Fedora/Arch/SUSE
+    "lightdm", "sddm",
     "ubuntu-desktop", "ubuntu-desktop-minimal",
     "kde-plasma-desktop", "plasma-desktop",
     "xfce4", "lxde", "cinnamon-desktop-environment",
@@ -232,54 +235,180 @@ LINUX_REMOVE_PACKAGES = [
     "yelp",
 ]
 
-LINUX_INSTALL_PACKAGES = [
-    "python3-pip", "python3-venv",
-    "git", "curl", "wget", "jq",
-    "ffmpeg", "sox",
-    "htop", "tmux",
-    "openssh-server",
-    "ufw", "fail2ban",
-    "unattended-upgrades",
-]
+# Package lists per package manager. Each list contains packages for that manager.
+# We install what's available — individual failures are tolerated.
+LINUX_INSTALL_PACKAGES = {
+    "apt": [
+        "python3-pip", "python3-venv",
+        "git", "curl", "wget", "jq",
+        "ffmpeg", "sox",
+        "htop", "tmux",
+        "openssh-server",
+        "ufw", "fail2ban",
+        "unattended-upgrades",
+    ],
+    "dnf": [
+        "python3-pip", "python3-virtualenv",
+        "git", "curl", "wget", "jq",
+        "ffmpeg-free", "sox",
+        "htop", "tmux",
+        "openssh-server",
+        "firewalld", "fail2ban",
+    ],
+    "yum": [
+        "python3-pip",
+        "git", "curl", "wget", "jq",
+        "sox",
+        "htop", "tmux",
+        "openssh-server",
+        "firewalld", "fail2ban",
+    ],
+    "pacman": [
+        "python-pip", "python-virtualenv",
+        "git", "curl", "wget", "jq",
+        "ffmpeg", "sox",
+        "htop", "tmux",
+        "openssh",
+        "ufw", "fail2ban",
+    ],
+    "zypper": [
+        "python3-pip", "python3-virtualenv",
+        "git", "curl", "wget", "jq",
+        "ffmpeg", "sox",
+        "htop", "tmux",
+        "openssh",
+        "firewalld", "fail2ban",
+    ],
+    "apk": [
+        "py3-pip", "py3-virtualenv",
+        "git", "curl", "wget", "jq",
+        "ffmpeg", "sox",
+        "htop", "tmux",
+        "openssh",
+    ],
+}
+
+# Commands to install packages per package manager
+_PKG_INSTALL_CMDS = {
+    "apt": "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkgs}",
+    "dnf": "dnf install -y {pkgs}",
+    "yum": "yum install -y {pkgs}",
+    "pacman": "pacman -S --noconfirm --needed {pkgs}",
+    "zypper": "zypper install -y {pkgs}",
+    "apk": "apk add {pkgs}",
+}
+
+# Commands to update package lists per package manager
+_PKG_UPDATE_CMDS = {
+    "apt": "apt-get update -qq",
+    "dnf": "dnf check-update -q || true",
+    "yum": "yum check-update -q || true",
+    "pacman": "pacman -Sy",
+    "zypper": "zypper refresh -q",
+    "apk": "apk update",
+}
+
+# Commands to remove packages per package manager
+_PKG_REMOVE_CMDS = {
+    "apt": "apt-get remove -y --purge {pkg} 2>/dev/null",
+    "dnf": "dnf remove -y {pkg} 2>/dev/null",
+    "yum": "yum remove -y {pkg} 2>/dev/null",
+    "pacman": "pacman -Rns --noconfirm {pkg} 2>/dev/null",
+    "zypper": "zypper remove -y {pkg} 2>/dev/null",
+    "apk": "apk del {pkg} 2>/dev/null",
+}
+
+# Commands to clean up after removal per package manager
+_PKG_AUTOREMOVE_CMDS = {
+    "apt": "apt-get autoremove -y 2>/dev/null",
+    "dnf": "dnf autoremove -y 2>/dev/null",
+    "yum": "yum autoremove -y 2>/dev/null",
+    "pacman": "pacman -Qdtq | pacman -Rns --noconfirm - 2>/dev/null || true",
+    "zypper": "",
+    "apk": "",
+}
+
+
+def _get_installed_packages(os_info: OSInfo) -> set:
+    """Get list of installed packages using the appropriate package manager."""
+    mgr = os_info.package_manager
+    if mgr == "apt":
+        result = subprocess.run(
+            "dpkg --get-selections 2>/dev/null", shell=True,
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            pkgs = set()
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == "install":
+                    pkgs.add(parts[0].split(":")[0])
+            return pkgs
+    elif mgr == "dnf" or mgr == "yum":
+        result = subprocess.run(
+            "rpm -qa --qf '%{NAME}\n' 2>/dev/null", shell=True,
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            return set(result.stdout.strip().splitlines())
+    elif mgr == "pacman":
+        result = subprocess.run(
+            "pacman -Qq 2>/dev/null", shell=True,
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            return set(result.stdout.strip().splitlines())
+    elif mgr == "zypper":
+        result = subprocess.run(
+            "rpm -qa --qf '%{NAME}\n' 2>/dev/null", shell=True,
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            return set(result.stdout.strip().splitlines())
+    elif mgr == "apk":
+        result = subprocess.run(
+            "apk info -q 2>/dev/null", shell=True,
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            return set(result.stdout.strip().splitlines())
+    return set()
 
 
 def provision_linux_full(os_info: OSInfo, password):
     """Full takeover: strip desktop, install deps, configure system."""
     info(f"Starting full Linux provisioning on {os_info.display_name}...")
+    mgr = os_info.package_manager
 
-    # Step 1: Remove bloat
-    info("Removing unnecessary packages...")
-    result = subprocess.run(
-        "dpkg --get-selections 2>/dev/null", shell=True,
-        capture_output=True, text=True, timeout=60
-    )
-    installed = set()
-    if result.returncode == 0:
-        for line in result.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 2 and parts[1] == "install":
-                installed.add(parts[0].split(":")[0])
-
-    to_remove = [pkg for pkg in LINUX_REMOVE_PACKAGES if pkg in installed]
-    if to_remove:
-        info(f"Removing {len(to_remove)} packages: {', '.join(to_remove[:10])}{'...' if len(to_remove) > 10 else ''}")
-        log_action("remove_packages", ", ".join(to_remove))
-        # Remove one by one so a single failure doesn't block everything
-        removed_count = 0
-        for pkg in to_remove:
-            result = sudo_run(f"apt-get remove -y --purge {pkg} 2>/dev/null", password)
-            if result.returncode == 0:
-                removed_count += 1
-            else:
-                warn(f"Failed to remove {pkg}")
-        sudo_run("apt-get autoremove -y 2>/dev/null", password)
-        ok(f"Removed {removed_count}/{len(to_remove)} packages")
+    if not mgr:
+        warn("No package manager detected — skipping package removal")
     else:
-        ok("No bloat packages found to remove")
+        # Step 1: Remove bloat
+        info("Removing unnecessary packages...")
+        installed = _get_installed_packages(os_info)
+        remove_cmd_tpl = _PKG_REMOVE_CMDS.get(mgr, "")
+        autoremove_cmd = _PKG_AUTOREMOVE_CMDS.get(mgr, "")
 
-    # Clean up snap remnants
-    if "snapd" in installed:
-        sudo_run("rm -rf /snap /var/snap /var/lib/snapd 2>/dev/null", password)
+        to_remove = [pkg for pkg in LINUX_REMOVE_PACKAGES if pkg in installed]
+        if to_remove and remove_cmd_tpl:
+            info(f"Removing {len(to_remove)} packages: {', '.join(to_remove[:10])}{'...' if len(to_remove) > 10 else ''}")
+            log_action("remove_packages", ", ".join(to_remove))
+            removed_count = 0
+            for pkg in to_remove:
+                result = sudo_run(remove_cmd_tpl.format(pkg=pkg), password)
+                if result.returncode == 0:
+                    removed_count += 1
+                else:
+                    warn(f"Failed to remove {pkg}")
+            if autoremove_cmd:
+                sudo_run(autoremove_cmd, password)
+            ok(f"Removed {removed_count}/{len(to_remove)} packages")
+        else:
+            ok("No bloat packages found to remove")
+
+        # Clean up snap remnants (Debian/Ubuntu specific)
+        if "snapd" in installed:
+            sudo_run("rm -rf /snap /var/snap /var/lib/snapd 2>/dev/null", password)
 
     # Step 2: Install dependencies
     _install_linux_deps(os_info, password)
@@ -299,61 +428,147 @@ def provision_linux_soft(os_info: OSInfo, password):
 
 
 def _install_linux_deps(os_info: OSInfo, password):
-    """Install required packages on Linux."""
-    info("Updating package lists...")
-    sudo_run("apt-get update -qq", password)
+    """Install required packages on Linux using the detected package manager."""
+    mgr = os_info.package_manager
 
-    info("Installing dependencies...")
-    pkgs = " ".join(LINUX_INSTALL_PACKAGES)
-    log_action("install_packages", pkgs)
-    result = sudo_run(f"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkgs}", password)
+    if not mgr:
+        warn("No package manager detected. Installing what we can via binary fallbacks...")
+        _install_linux_deps_fallback(os_info, password)
+        return
+
+    # Update package lists
+    update_cmd = _PKG_UPDATE_CMDS.get(mgr, "")
+    if update_cmd:
+        info(f"Updating package lists ({mgr})...")
+        sudo_run(update_cmd, password)
+
+    # Get the package list for this manager
+    packages = LINUX_INSTALL_PACKAGES.get(mgr, LINUX_INSTALL_PACKAGES["apt"])
+    install_cmd_tpl = _PKG_INSTALL_CMDS.get(mgr, "")
+
+    if not install_cmd_tpl:
+        warn(f"No install command template for '{mgr}'")
+        return
+
+    info(f"Installing dependencies via {mgr}...")
+    pkgs = " ".join(packages)
+    log_action("install_packages", f"{mgr}: {pkgs}")
+    result = sudo_run(install_cmd_tpl.format(pkgs=pkgs), password)
     if result.returncode != 0:
-        warn(f"Some packages may have failed: {result.stderr[:200]}")
+        # Try one by one — some packages may not exist on this distro
+        warn(f"Batch install had issues. Installing packages individually...")
+        installed_count = 0
+        for pkg in packages:
+            r = sudo_run(install_cmd_tpl.format(pkgs=pkg), password)
+            if r.returncode == 0:
+                installed_count += 1
+            else:
+                warn(f"  {pkg} — not available or failed")
+        ok(f"Installed {installed_count}/{len(packages)} packages")
     else:
         ok("System packages installed")
 
-    # Node.js (for browser/scraper skills) — use Node 22 LTS
+    # For dnf/yum: ffmpeg may need RPM Fusion. Try installing, note if missing.
     import shutil as _shutil
+    if mgr in ("dnf", "yum") and not _shutil.which("ffmpeg"):
+        warn("ffmpeg not available via default repos. On Fedora/RHEL, enable RPM Fusion:")
+        warn("  sudo dnf install https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm")
+        warn("  sudo dnf install ffmpeg")
+        warn("The bot can help you with this after install.")
+
+    # Node.js — needed for Claude CLI and browser skill
     if not _shutil.which("node"):
-        info("Installing Node.js 22 LTS...")
-        # Download setup script first, then execute (don't pipe curl to sudo)
-        dl_result = run("curl -fsSL -o /tmp/nodesource_setup.sh https://deb.nodesource.com/setup_22.x")
-        if dl_result.returncode == 0:
-            sudo_run("bash /tmp/nodesource_setup.sh", password)
-            sudo_run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs", password)
-            run("rm -f /tmp/nodesource_setup.sh")
+        info("Installing Node.js...")
+        if mgr == "apt":
+            dl_result = run("curl -fsSL -o /tmp/nodesource_setup.sh https://deb.nodesource.com/setup_22.x")
+            if dl_result.returncode == 0:
+                sudo_run("bash /tmp/nodesource_setup.sh", password)
+                sudo_run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs", password)
+                run("rm -f /tmp/nodesource_setup.sh")
+        elif mgr == "dnf":
+            sudo_run("dnf module enable nodejs:22 -y 2>/dev/null || true", password)
+            sudo_run("dnf install -y nodejs npm", password)
+        elif mgr == "yum":
+            dl_result = run("curl -fsSL -o /tmp/nodesource_setup.sh https://rpm.nodesource.com/setup_22.x")
+            if dl_result.returncode == 0:
+                sudo_run("bash /tmp/nodesource_setup.sh", password)
+                sudo_run("yum install -y nodejs", password)
+                run("rm -f /tmp/nodesource_setup.sh")
+        elif mgr == "pacman":
+            sudo_run("pacman -S --noconfirm --needed nodejs npm", password)
+        elif mgr == "zypper":
+            sudo_run("zypper install -y nodejs22 npm22 || zypper install -y nodejs npm", password)
+        elif mgr == "apk":
+            sudo_run("apk add nodejs npm", password)
+
+        if _shutil.which("node"):
             ok("Node.js installed")
         else:
-            warn("Failed to download Node.js setup script")
+            warn("Node.js could not be installed. Claude CLI and browser skill won't work.")
+            warn("The bot can help install Node.js after setup.")
     else:
         ok("Node.js already installed")
 
 
+def _install_linux_deps_fallback(os_info: OSInfo, password):
+    """Last-resort binary checks when no package manager is available."""
+    import shutil as _shutil
+    critical = {"git": "git", "curl": "curl", "python3": "python3"}
+    for name, binary in critical.items():
+        if _shutil.which(binary):
+            ok(f"{name} available")
+        else:
+            warn(f"{name} not found — install manually")
+
+
 def _configure_linux(os_info: OSInfo, password):
-    """Configure Linux system settings."""
-    # Firewall
-    info("Configuring firewall...")
-    sudo_run("ufw default deny incoming", password)
-    sudo_run("ufw default allow outgoing", password)
-    sudo_run("ufw allow ssh", password)
-    sudo_run("ufw --force enable", password)
-    ok("Firewall configured (SSH + outbound only)")
+    """Configure Linux system settings — works across distros."""
+    mgr = os_info.package_manager
+    import shutil as _shutil
 
-    # Fail2ban
-    info("Enabling fail2ban...")
-    sudo_run("systemctl enable fail2ban 2>/dev/null", password)
-    sudo_run("systemctl start fail2ban 2>/dev/null", password)
-    ok("fail2ban enabled")
+    # Firewall — use ufw (Debian/Arch) or firewalld (RHEL/SUSE)
+    if _shutil.which("ufw"):
+        info("Configuring firewall (ufw)...")
+        sudo_run("ufw default deny incoming", password)
+        sudo_run("ufw default allow outgoing", password)
+        sudo_run("ufw allow ssh", password)
+        sudo_run("ufw --force enable", password)
+        ok("Firewall configured (SSH + outbound only)")
+    elif _shutil.which("firewall-cmd"):
+        info("Configuring firewall (firewalld)...")
+        sudo_run("systemctl enable firewalld 2>/dev/null", password)
+        sudo_run("systemctl start firewalld 2>/dev/null", password)
+        sudo_run("firewall-cmd --permanent --add-service=ssh 2>/dev/null", password)
+        sudo_run("firewall-cmd --reload 2>/dev/null", password)
+        ok("Firewall configured (SSH only)")
+    else:
+        warn("No firewall tool found (ufw or firewalld). Configure manually.")
 
-    # Unattended upgrades — non-interactive
-    info("Enabling automatic security updates...")
-    sudo_run("DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -plow unattended-upgrades 2>/dev/null", password)
-    ok("Automatic security updates enabled")
+    # Fail2ban — works on all distros with systemd
+    if _shutil.which("fail2ban-server") or _shutil.which("fail2ban-client"):
+        info("Enabling fail2ban...")
+        sudo_run("systemctl enable fail2ban 2>/dev/null", password)
+        sudo_run("systemctl start fail2ban 2>/dev/null", password)
+        ok("fail2ban enabled")
 
-    # Disable sleep/suspend
-    info("Disabling sleep and suspend...")
-    sudo_run("systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null", password)
-    ok("Sleep/suspend disabled")
+    # Automatic security updates
+    if mgr == "apt" and _shutil.which("unattended-upgrades"):
+        info("Enabling automatic security updates...")
+        sudo_run("DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -plow unattended-upgrades 2>/dev/null", password)
+        ok("Automatic security updates enabled")
+    elif mgr == "dnf" and _shutil.which("dnf-automatic"):
+        info("Enabling dnf-automatic...")
+        sudo_run("systemctl enable dnf-automatic-install.timer 2>/dev/null", password)
+        sudo_run("systemctl start dnf-automatic-install.timer 2>/dev/null", password)
+        ok("Automatic security updates enabled")
+    else:
+        info("Automatic security updates: configure manually for your distro")
+
+    # Disable sleep/suspend (works on all systemd distros)
+    if _shutil.which("systemctl"):
+        info("Disabling sleep and suspend...")
+        sudo_run("systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target 2>/dev/null", password)
+        ok("Sleep/suspend disabled")
 
     # Laptop lid close → do nothing
     logind_conf = Path("/etc/systemd/logind.conf")
@@ -385,10 +600,10 @@ def _configure_linux(os_info: OSInfo, password):
             sudo_run("systemctl restart systemd-logind 2>/dev/null", password)
             ok("Lid close configured (do nothing)")
 
-    # Enable SSH
+    # Enable SSH — service name varies by distro
     info("Enabling SSH server...")
-    sudo_run("systemctl enable ssh 2>/dev/null", password)
-    sudo_run("systemctl start ssh 2>/dev/null", password)
+    sudo_run("systemctl enable sshd 2>/dev/null || systemctl enable ssh 2>/dev/null", password)
+    sudo_run("systemctl start sshd 2>/dev/null || systemctl start ssh 2>/dev/null", password)
     ok("SSH server enabled")
 
 
@@ -634,6 +849,11 @@ def _install_macos_deps(os_info: OSInfo, password=None):
                 if _install_node_direct(os_info):
                     installed_count += 1
                     continue
+            if pkg == "ffmpeg" and not _shutil.which("ffmpeg"):
+                info("Homebrew failed for ffmpeg — trying static binary install...")
+                if _install_ffmpeg_direct(os_info):
+                    installed_count += 1
+                    continue
             # For other packages, check if they appeared in PATH after all
             if binary and _shutil.which(binary):
                 ok(f"{pkg} available ({_shutil.which(binary)})")
@@ -717,6 +937,94 @@ def _install_node_direct(os_info: OSInfo) -> bool:
             return True
 
     warn("Node.js binary was extracted but 'node' not found in PATH")
+    return False
+
+
+def _install_ffmpeg_direct(os_info: OSInfo) -> bool:
+    """Install ffmpeg from evermeet.cx static builds when Homebrew fails.
+
+    evermeet.cx provides static ffmpeg builds for macOS that have no dependencies.
+    This is the standard fallback used by many macOS tools when Homebrew can't build ffmpeg.
+    """
+    import shutil as _shutil
+
+    arch = platform.machine()
+    # evermeet.cx only provides x86_64 builds (Intel). For ARM, the binary runs via Rosetta.
+    # On truly old Macs (all Intel), this works directly.
+    info("Downloading ffmpeg static build from evermeet.cx...")
+    tmp_dir = Path(tempfile.mkdtemp(prefix="myoldmachine_ffmpeg_"))
+    zip_path = tmp_dir / "ffmpeg.zip"
+
+    # Download the latest ffmpeg binary
+    dl_result = run(
+        f"curl -fsSL -o '{zip_path}' 'https://evermeet.cx/ffmpeg/getrelease/zip'",
+        timeout=120
+    )
+    if dl_result.returncode != 0:
+        warn(f"Failed to download ffmpeg: {dl_result.stderr[:200]}")
+        # Cleanup
+        try:
+            import shutil
+            shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        except Exception:
+            pass
+        return False
+
+    # Extract and install to /usr/local/bin
+    password = get_sudo_password()
+    run(f"unzip -o '{zip_path}' -d '{tmp_dir}'", timeout=30)
+    ffmpeg_bin = tmp_dir / "ffmpeg"
+
+    if not ffmpeg_bin.exists():
+        # Try finding it in any subdirectory
+        for f in tmp_dir.rglob("ffmpeg"):
+            if f.is_file():
+                ffmpeg_bin = f
+                break
+
+    if ffmpeg_bin.exists():
+        import shlex
+        sudo_run(f"cp {shlex.quote(str(ffmpeg_bin))} /usr/local/bin/ffmpeg", password)
+        sudo_run("chmod +x /usr/local/bin/ffmpeg", password)
+
+        # Also download ffprobe (needed by many audio/video skills)
+        probe_zip = tmp_dir / "ffprobe.zip"
+        dl2 = run(
+            f"curl -fsSL -o '{probe_zip}' 'https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip'",
+            timeout=120
+        )
+        if dl2.returncode == 0:
+            run(f"unzip -o '{probe_zip}' -d '{tmp_dir}'", timeout=30)
+            probe_bin = tmp_dir / "ffprobe"
+            if not probe_bin.exists():
+                for f in tmp_dir.rglob("ffprobe"):
+                    if f.is_file():
+                        probe_bin = f
+                        break
+            if probe_bin.exists():
+                sudo_run(f"cp {shlex.quote(str(probe_bin))} /usr/local/bin/ffprobe", password)
+                sudo_run("chmod +x /usr/local/bin/ffprobe", password)
+
+    # Cleanup
+    try:
+        import shutil
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+    except Exception:
+        pass
+
+    # Ensure /usr/local/bin is in PATH
+    if "/usr/local/bin" not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"/usr/local/bin:{os.environ.get('PATH', '')}"
+
+    if _shutil.which("ffmpeg"):
+        verify = run("ffmpeg -version", timeout=10)
+        if verify.returncode == 0:
+            version_line = verify.stdout.split("\n")[0] if verify.stdout else "unknown"
+            ok(f"ffmpeg installed: {version_line}")
+            log_action("install_ffmpeg_direct", version_line)
+            return True
+
+    warn("ffmpeg binary was installed but could not be verified")
     return False
 
 

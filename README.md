@@ -22,14 +22,25 @@ This is not a polished consumer product. It's a toolkit. You shape it.
 
 ## Supported platforms
 
-- **Ubuntu / Debian** (full support — systemd service)
-- **macOS 10.14+** (full or soft takeover — launchd service)
+### Linux (systemd service)
+- **Debian / Ubuntu** — apt
+- **Fedora / RHEL / CentOS / Amazon Linux** — dnf / yum
+- **Arch / Manjaro / EndeavourOS** — pacman
+- **openSUSE** — zypper
+- **Alpine** — apk
+
+Any Linux distribution with one of these package managers will work. The installer auto-detects your distro and uses the right package manager.
+
+### macOS (launchd service)
+- **macOS 10.14+** — Homebrew preferred, with direct-download fallbacks for ffmpeg and Node.js when Homebrew fails or builds from source are too slow
+
+### Other
 - **Windows** (planned)
 
-Some things depend on your hardware and OS version:
-- Ollama (local AI) requires macOS 12+ or modern Linux
-- Playwright (browser skill) needs enough RAM for Chromium
-- Older macOS versions may need workarounds for Homebrew
+### Hardware notes
+- Ollama (local AI) requires macOS 12+ or a modern Linux kernel
+- Playwright (browser skill) needs enough RAM for Chromium — on non-Debian systems, you may need to install browser dependencies manually
+- On first boot, the bot probes the system and reports which skills are ready vs. which need dependencies installed
 
 When something doesn't work, the bot is your first line of support. Tell it what happened. It has the context, the logs, and the ability to fix things on the machine.
 
@@ -233,11 +244,15 @@ Alerts have a 4-hour cooldown — you won't get spammed. You can also check manu
 
 The bot is your primary troubleshooting tool. But here are common issues:
 
-**Homebrew slow/broken on old macOS:** Homebrew compiles from source on older systems. This is normal and can be slow. The installer works around common failures.
+**Homebrew slow/broken on old macOS:** Homebrew compiles from source on older systems. This is normal and can be slow. The installer downloads ffmpeg and Node.js directly when Homebrew fails.
 
 **"Ollama is not compatible":** Ollama needs macOS 12+. On older Macs, use OpenRouter (free) or another cloud provider.
 
 **Bot not responding:** Check service status — `sudo systemctl status myoldmachine` (Linux) or `launchctl list | grep myoldmachine` (macOS). Check logs in `data/logs/bot.log`.
+
+**Non-Debian Linux — browser skill not working:** Playwright's `install-deps` only supports apt-based systems. On Fedora, Arch, etc., install Chromium through your package manager (`dnf install chromium`, `pacman -S chromium`), then the browser skill should work.
+
+**Skills showing "not ready":** Run `/update` to re-probe system capabilities. The bot detects which tools and libraries are installed. Missing dependencies install automatically on first skill use, or you can install them manually and re-probe.
 
 **Tool-use not working with small models:** Models under 7B parameters are unreliable at structured tool calls. Use OpenRouter's free tier for cloud models if your machine can only run small local ones.
 
