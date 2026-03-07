@@ -612,6 +612,10 @@ def main():
     print(f"  Your bot ({config.get('bot_name', 'MyOldMachine')}) is now running.")
     print(f"  Open Telegram and send /start to your bot.")
     print()
+    print(f"  {GREEN}The bot is registered as a system service.{NC}")
+    print(f"  It will start automatically on boot and restart on crash.")
+    print(f"  You can close this terminal — the bot keeps running.")
+    print()
     print(f"  Useful commands:")
     print(f"    /status  — Check bot status")
     print(f"    /health  — System health report")
@@ -742,12 +746,17 @@ def _run_wizard_steps(detected_os: str) -> dict:
 
     # Step 6: Takeover level
     print(f"\n{BOLD}Step 6: Takeover Level{NC}")
+    print(f"  Both options register the bot as a system service that:")
+    print(f"    - Starts automatically on boot")
+    print(f"    - Restarts automatically on crash")
+    print(f"    - Runs 24/7 without you touching a terminal")
+    print()
     if detected_os == "macos":
         config["takeover"] = ask_choice(
             "How much control should the bot have?",
             [
-                ("full", "Full takeover — remove unused apps, disable sleep, headless mode"),
-                ("soft", "Soft install — bot runs in background, your apps stay"),
+                ("full", "Full takeover — remove unused apps, disable sleep, headless mode (recommended for dedicated machines)"),
+                ("soft", "Soft install — bot runs as background service, your apps and settings stay untouched"),
             ],
             default="full",
         )
