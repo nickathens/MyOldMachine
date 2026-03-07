@@ -410,9 +410,22 @@ def main():
         ok("OS detection (cached)")
 
     # Check if configuration already done (resume case)
+    env_valid = False
     if (repo_dir / ".env").exists() and checkpoint_done("wizard_config"):
-        info(".env already exists, skipping configuration steps")
         config = _load_config_from_env(repo_dir)
+        # Validate critical fields exist — stale .env from a previous install
+        # may have wrong provider, missing token, etc.
+        required_fields = ["telegram_token", "telegram_user_id", "llm_provider", "llm_model"]
+        missing = [f for f in required_fields if not config.get(f)]
+        if missing:
+            warn(f"Existing config is missing: {', '.join(missing)}")
+            warn("Running wizard again to get correct values...")
+        else:
+            info(".env already exists, skipping configuration steps")
+            env_valid = True
+
+    if env_valid:
+        pass  # config already loaded above
     else:
         config = _run_wizard_steps(detected_os)
         # Detect machine specs

@@ -63,10 +63,28 @@ echo -e "${BOLD}║  Turn any machine into an AI helper  ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════╝${NC}"
 echo ""
 
-# Show resume info if checkpoints exist
+# Handle existing checkpoints — ask fresh install or resume
 if [ -f "$CHECKPOINT_FILE" ]; then
     completed=$(wc -l < "$CHECKPOINT_FILE" | tr -d ' ')
-    info "Resuming installation (${completed} step(s) already completed)"
+    echo -e "  ${YELLOW}Previous installation detected (${completed} step(s) completed).${NC}"
+    echo ""
+    echo "  1. Fresh install — start from scratch (recommended if changing provider)"
+    echo "  2. Resume — continue where you left off"
+    echo ""
+    printf "  Choice [1]: "
+    read -r resume_choice < "$TTY_INPUT"
+    resume_choice="${resume_choice:-1}"
+    if [ "$resume_choice" != "2" ]; then
+        info "Starting fresh install..."
+        rm -f "$CHECKPOINT_FILE"
+        # Also remove stale .env so wizard doesn't skip
+        # Check both possible repo locations
+        for env_loc in "$HOME/MyOldMachine/.env" "${BASH_SOURCE[0]:+$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/.env}"; do
+            [ -n "$env_loc" ] && [ -f "$env_loc" ] && rm -f "$env_loc"
+        done
+    else
+        info "Resuming installation (${completed} step(s) already completed)"
+    fi
     echo ""
 fi
 
