@@ -548,6 +548,22 @@ def _install_macos_deps(os_info: OSInfo, password=None):
     info("Installing packages via Homebrew...")
     info("(On older macOS, Homebrew compiles from source — this can take a while)")
 
+    # Map brew package names to the binary they provide (for PATH-based fallback check).
+    # On old macOS (Catalina etc.), brew install often fails for packages that are
+    # already present via older brew installs or Xcode CLT. If the binary works,
+    # skip the brew install entirely — don't break what's working.
+    import shutil as _shutil
+    _pkg_to_binary = {
+        "python@3.12": "python3",
+        "ffmpeg": "ffmpeg",
+        "sox": "sox",
+        "git": "git",
+        "jq": "jq",
+        "htop": "htop",
+        "tmux": "tmux",
+        "node": "node",
+    }
+
     # Install packages one by one so a single failure doesn't block everything.
     # On old macOS (e.g. Catalina), brew may compile from source and return non-zero
     # even though the package installed fine ("post-install step did not complete").
@@ -559,10 +575,19 @@ def _install_macos_deps(os_info: OSInfo, password=None):
     installed_count = 0
     failed = []
     for i, pkg in enumerate(MACOS_BREW_PACKAGES, 1):
-        # Check if already installed first (fast, avoids unnecessary compilation)
+        # Check if already installed via brew
         already = run(f"{brew} list {pkg} 2>/dev/null", timeout=30)
         if already.returncode == 0:
             ok(f"[{i}/{len(MACOS_BREW_PACKAGES)}] {pkg} already installed")
+            installed_count += 1
+            continue
+
+        # Fallback: check if the binary is available in PATH (e.g. from Xcode CLT
+        # or an older brew install that's still functional). On old macOS, brew
+        # frequently fails to reinstall/upgrade packages that are already working.
+        binary = _pkg_to_binary.get(pkg)
+        if binary and _shutil.which(binary):
+            ok(f"[{i}/{len(MACOS_BREW_PACKAGES)}] {pkg} available ({_shutil.which(binary)})")
             installed_count += 1
             continue
 
@@ -586,6 +611,10 @@ def _install_macos_deps(os_info: OSInfo, password=None):
             if verify.returncode == 0:
                 # Package is there despite the error — post-install warning, etc.
                 warn(f"{pkg}: brew returned an error but package is installed (likely a post-install warning)")
+                installed_count += 1
+            elif binary and _shutil.which(binary):
+                # Binary appeared in PATH even though brew claims failure
+                ok(f"[{i}/{len(MACOS_BREW_PACKAGES)}] {pkg} available after install ({_shutil.which(binary)})")
                 installed_count += 1
             else:
                 warn(f"Failed to install {pkg}: {combined_output[:150]}")

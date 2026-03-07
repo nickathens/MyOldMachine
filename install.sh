@@ -445,4 +445,4 @@ echo ""
 
 # Pass checkpoint file path so wizard and provisioner can use it
 export MYOLDMACHINE_CHECKPOINT_FILE="$CHECKPOINT_FILE"
-exec python "$REPO_DIR/install/wizard.py" --repo-dir "$REPO_DIR" --os "$OS" < "$TTY_INPUT"
+exec "$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/wizard.py" --repo-dir "$REPO_DIR" --os "$OS" < "$TTY_INPUT"

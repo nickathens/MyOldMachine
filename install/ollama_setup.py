@@ -278,11 +278,80 @@ def is_ollama_installed() -> bool:
     return shutil.which("ollama") is not None
 
 
+def get_macos_version() -> tuple[int, int]:
+    """Get macOS major.minor version. Returns (0, 0) on non-macOS or failure."""
+    if platform.system() != "Darwin":
+        return (0, 0)
+    try:
+        result = subprocess.run(
+            ["sw_vers", "-productVersion"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            parts = result.stdout.strip().split(".")
+            return (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+    except Exception:
+        pass
+    return (0, 0)
+
+
+def check_ollama_compatibility() -> tuple[bool, str]:
+    """Check if Ollama can run on this system.
+
+    Ollama's Go toolchain requires macOS 12+ (Monterey).
+    The prebuilt binary targets macOS 14+ (Sonoma).
+    On Catalina (10.15) and earlier, Ollama will crash with dyld errors.
+
+    Returns (is_compatible, reason).
+    """
+    if platform.system() != "Darwin":
+        return (True, "")  # Linux is always compatible
+
+    major, minor = get_macos_version()
+    if major == 0:
+        return (True, "")  # Can't detect, let it try
+
+    # macOS 12+ (Monterey) is the minimum for Ollama's Go dependency
+    if major >= 12:
+        return (True, "")
+    if major == 10 and minor >= 15:
+        # Catalina, Big Sur (11.x handled above)
+        return (False,
+                f"Ollama requires macOS 12 (Monterey) or later. "
+                f"This Mac runs macOS {major}.{minor} which is too old.\n"
+                f"  The Ollama binary uses C++ symbols not available on this OS.\n"
+                f"  Options:\n"
+                f"    1. Use a cloud provider instead (OpenRouter has free models)\n"
+                f"    2. Use Grok ($25 free credits on signup)\n"
+                f"    3. Upgrade macOS if your hardware supports it")
+    if major == 11:
+        return (False,
+                f"Ollama requires macOS 12 (Monterey) or later. "
+                f"This Mac runs macOS {major}.{minor} (Big Sur).\n"
+                f"  Upgrade macOS or use a cloud provider instead.")
+    # Pre-Catalina
+    return (False,
+            f"Ollama requires macOS 12 (Monterey) or later. "
+            f"This Mac runs macOS {major}.{minor} which is far too old.")
+
+
 def install_ollama() -> bool:
     """Install Ollama on Linux or macOS. Returns True on success."""
     if is_ollama_installed():
+        # Verify it actually works (binary might be incompatible)
+        compatible, reason = check_ollama_compatibility()
+        if not compatible:
+            error(f"Ollama is installed but cannot run on this system.")
+            print(f"  {reason}")
+            return False
         ok("Ollama is already installed")
         return True
+
+    # Check compatibility before attempting install
+    compatible, reason = check_ollama_compatibility()
+    if not compatible:
+        error(reason)
+        return False
 
     system = platform.system()
 
@@ -350,6 +419,12 @@ def install_ollama() -> bool:
 
 def ensure_ollama_running() -> bool:
     """Make sure Ollama service is running. Returns True if running."""
+    # First check if the binary is compatible with this OS
+    compatible, reason = check_ollama_compatibility()
+    if not compatible:
+        error(f"Ollama binary is incompatible with this system: {reason.splitlines()[0]}")
+        return False
+
     try:
         result = subprocess.run(
             ["ollama", "list"],

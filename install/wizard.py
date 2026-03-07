@@ -683,46 +683,80 @@ def _run_wizard_steps(detected_os: str) -> dict:
         else:
             config["llm_model"] = raw
     elif config["llm_provider"] == "ollama":
-        # Auto-detect hardware and pick the best model — no user input needed
-        print()
-        info("Detecting hardware to pick the best local model...")
-        try:
-            benchmark_result = subprocess.run(
-                [sys.executable, str(REPO_DIR / "install" / "ollama_setup.py"),
-                 "--json"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if benchmark_result.returncode == 0 and benchmark_result.stdout.strip():
-                bench_data = json.loads(benchmark_result.stdout.strip())
-                specs = bench_data.get("specs", {})
-                recommended = bench_data.get("recommended_model")
-                explanation = bench_data.get("explanation", "")
-
-                print(f"  CPU:  {specs.get('cpu_name', '?')} ({specs.get('cpu_cores', '?')} cores)")
-                print(f"  RAM:  {specs.get('ram_gb', '?')} GB")
-                print(f"  Disk: {specs.get('disk_free_gb', '?')} GB free")
-                gpu = specs.get("gpu", {})
-                if gpu.get("name"):
-                    print(f"  GPU:  {gpu['name']} [{gpu['type']}]")
-                print()
-
-                if recommended:
-                    config["llm_model"] = recommended
-                    ok(f"Selected model: {recommended}")
-                    # Strip ANSI for clean display
-                    clean_exp = re.sub(r'\033\[[0-9;]*m', '', explanation)
-                    print(f"  {clean_exp}")
-                else:
-                    warn("Hardware doesn't meet minimum requirements for local models.")
-                    warn("Falling back to smallest available model.")
-                    config["llm_model"] = "qwen2.5:0.5b"
+        # Check compatibility first — Ollama requires macOS 12+ (Monterey)
+        from install.ollama_setup import check_ollama_compatibility
+        compatible, reason = check_ollama_compatibility()
+        if not compatible:
+            print()
+            warn("Ollama cannot run on this machine:")
+            for line in reason.split("\n"):
+                warn(f"  {line.strip()}")
+            print()
+            warn("Switching to OpenRouter (free models available, no billing required).")
+            print()
+            config["llm_provider"] = "openrouter"
+            config["llm_model"] = DEFAULT_MODELS["openrouter"]
+            print(f"  {BOLD}Free models (no billing required):{NC}")
+            for i, (model_id, desc) in enumerate(OPENROUTER_FREE_MODELS, 1):
+                print(f"    {i}. {desc}")
+                print(f"       ID: {model_id}")
+            print()
+            print(f"  Or enter any OpenRouter model ID (see openrouter.ai/models)")
+            print()
+            default_model = DEFAULT_MODELS["openrouter"]
+            raw = ask(f"Model (number or ID)", default=default_model)
+            if raw.isdigit() and 1 <= int(raw) <= len(OPENROUTER_FREE_MODELS):
+                config["llm_model"] = OPENROUTER_FREE_MODELS[int(raw) - 1][0]
             else:
-                warn("Benchmark returned no data. Using default model.")
+                config["llm_model"] = raw
+            # Need API key for OpenRouter
+            print(f"  You need an OpenRouter API key (free to create).")
+            print(f"    1. Go to https://openrouter.ai and sign up")
+            print(f"    2. Go to Keys → Create Key")
+            print(f"    3. Paste it below")
+            print()
+            config["llm_api_key"] = ask(f"OpenRouter API key", secret=True)
+        else:
+            # Auto-detect hardware and pick the best model — no user input needed
+            print()
+            info("Detecting hardware to pick the best local model...")
+            try:
+                benchmark_result = subprocess.run(
+                    [sys.executable, str(REPO_DIR / "install" / "ollama_setup.py"),
+                     "--json"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if benchmark_result.returncode == 0 and benchmark_result.stdout.strip():
+                    bench_data = json.loads(benchmark_result.stdout.strip())
+                    specs = bench_data.get("specs", {})
+                    recommended = bench_data.get("recommended_model")
+                    explanation = bench_data.get("explanation", "")
+
+                    print(f"  CPU:  {specs.get('cpu_name', '?')} ({specs.get('cpu_cores', '?')} cores)")
+                    print(f"  RAM:  {specs.get('ram_gb', '?')} GB")
+                    print(f"  Disk: {specs.get('disk_free_gb', '?')} GB free")
+                    gpu = specs.get("gpu", {})
+                    if gpu.get("name"):
+                        print(f"  GPU:  {gpu['name']} [{gpu['type']}]")
+                    print()
+
+                    if recommended:
+                        config["llm_model"] = recommended
+                        ok(f"Selected model: {recommended}")
+                        # Strip ANSI for clean display
+                        clean_exp = re.sub(r'\033\[[0-9;]*m', '', explanation)
+                        print(f"  {clean_exp}")
+                    else:
+                        warn("Hardware doesn't meet minimum requirements for local models.")
+                        warn("Falling back to smallest available model.")
+                        config["llm_model"] = "qwen2.5:0.5b"
+                else:
+                    warn("Benchmark returned no data. Using default model.")
+                    config["llm_model"] = DEFAULT_MODELS.get("ollama", "llama3.1:8b")
+            except (subprocess.TimeoutExpired, Exception) as e:
+                warn(f"Hardware detection failed ({e}). Using default model.")
                 config["llm_model"] = DEFAULT_MODELS.get("ollama", "llama3.1:8b")
-        except (subprocess.TimeoutExpired, Exception) as e:
-            warn(f"Hardware detection failed ({e}). Using default model.")
-            config["llm_model"] = DEFAULT_MODELS.get("ollama", "llama3.1:8b")
-        print()
+            print()
     else:
         default_model = DEFAULT_MODELS.get(config["llm_provider"], "")
         config["llm_model"] = ask(f"Model", default=default_model)
@@ -747,7 +781,15 @@ def _run_wizard_steps(detected_os: str) -> dict:
         config["ollama_url"] = "http://localhost:11434"
         import shutil as _shutil
         if _shutil.which("ollama"):
-            ok("Ollama is already installed")
+            # Verify the installed binary actually works on this OS
+            from install.ollama_setup import check_ollama_compatibility
+            compat, compat_reason = check_ollama_compatibility()
+            if compat:
+                ok("Ollama is already installed")
+            else:
+                warn(f"Ollama is installed but incompatible: {compat_reason.splitlines()[0]}")
+                print(f"  {GREEN}Will attempt reinstall during setup.{NC}")
+                config["ollama_auto_install"] = True
         else:
             print(f"  {GREEN}Ollama will be installed automatically.{NC}")
             config["ollama_auto_install"] = True
