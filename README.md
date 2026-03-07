@@ -23,6 +23,7 @@ You have an old machine collecting dust. MyOldMachine converts it into a persona
 
 - **Ubuntu / Debian** (full support — systemd service)
 - **macOS 10.14+** (full or soft takeover — launchd service)
+  - Note: Ollama requires macOS 12+ (Monterey). Older Macs can use OpenRouter, Grok, or other cloud providers.
 - **Windows** (planned)
 
 ## Quick Start
@@ -52,7 +53,7 @@ The installer walks you through setup:
 7. Takeover level (full or soft)
 8. Sudo password (stored locally, never transmitted)
 
-If you pick **Ollama**, the installer runs a hardware benchmark, recommends the best model your machine can handle, installs Ollama, and pulls the model automatically.
+If you pick **Ollama**, the installer checks compatibility (macOS 12+ required), runs a hardware benchmark, recommends the best model your machine can handle, installs Ollama, pulls the model, and verifies it responds — fully automated. If Ollama is incompatible with your system, the installer lets you pick a different provider.
 
 After setup, the bot sends you a welcome message on Telegram with machine specs and loaded skills. You're done.
 
@@ -217,7 +218,7 @@ LLM_API_KEY=              # Not needed for claude (CLI) or ollama
 
 ### Free Options (no credit card required)
 
-**Ollama** — runs locally, completely free, no API key. The installer benchmarks your hardware and recommends the best model:
+**Ollama** — runs locally, completely free, no API key. Requires **macOS 12+** (Monterey) or any modern Linux. The installer benchmarks your hardware and recommends the best model:
 ```
 LLM_PROVIDER=ollama
 LLM_MODEL=llama3.1:8b
@@ -462,6 +463,15 @@ This is a known Homebrew issue on older macOS versions. The install script handl
 1. Check the bot is running: `sudo systemctl status myoldmachine` (Linux) or `launchctl list | grep myoldmachine` (macOS)
 2. Check logs: `journalctl -u myoldmachine -n 50` (Linux) or `cat ~/MyOldMachine/data/logs/bot.log` (macOS)
 3. Verify your Telegram user ID matches `ALLOWED_USERS` in `.env` (empty means anyone can use it)
+
+### "Ollama is not compatible with this version of macOS"
+
+Ollama requires macOS 12 (Monterey) or later. On older Macs (Catalina, Big Sur), the Ollama binary crashes with `dyld: Symbol not found` because the system C++ library is too old. Homebrew can't build it either — Ollama's Go dependency requires macOS 12+. This is a hard incompatibility with no workaround.
+
+The installer detects this automatically and lets you pick a different provider. Recommended alternatives:
+1. **OpenRouter** (free models, no billing required) — best option for old Macs
+2. **Grok** ($25 free credits on signup)
+3. **OpenAI** or **Gemini** (if you have an API key)
 
 ### Tool-use not working with Ollama
 
