@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -1139,6 +1140,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not found_model:
             new_lines.append(f"LLM_MODEL={new_model}")
         env_file.write_text("\n".join(new_lines) + "\n")
+        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
     else:
         await update.message.reply_text("Error: .env file not found.")
         return
@@ -1205,6 +1207,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not found:
             new_lines.append(f"LLM_MODEL={new_model}")
         env_file.write_text("\n".join(new_lines) + "\n")
+        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
 
     os.environ["LLM_MODEL"] = new_model
 
@@ -1265,6 +1268,7 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not found:
             new_lines.append(f"LLM_API_KEY={new_key}")
         env_file.write_text("\n".join(new_lines) + "\n")
+        env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
 
     os.environ["LLM_API_KEY"] = new_key
 

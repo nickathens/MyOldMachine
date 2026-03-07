@@ -10,8 +10,10 @@ Uses OSInfo from os_detect.py for version-aware service setup.
 
 import argparse
 import getpass
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -93,15 +95,17 @@ def setup_linux_service(repo_dir: Path) -> bool:
 
     # Write service file via temp file + sudo cp
     service_path = "/etc/systemd/system/myoldmachine.service"
-    tmp_path = Path("/tmp/myoldmachine.service")
+    import shlex
+    fd, tmp_name = tempfile.mkstemp(suffix=".service", prefix="myoldmachine_")
     try:
-        tmp_path.write_text(content)
-        result = sudo_run(f"cp /tmp/myoldmachine.service {service_path}", password)
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        result = sudo_run(f"cp {shlex.quote(tmp_name)} {service_path}", password)
         if result.returncode != 0:
             error(f"Failed to install service file: {result.stderr}")
             return False
     finally:
-        tmp_path.unlink(missing_ok=True)
+        Path(tmp_name).unlink(missing_ok=True)
 
     # Enable and start
     info("Enabling systemd service...")

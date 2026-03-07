@@ -599,6 +599,7 @@ def main():
                 else:
                     new_lines.append(line)
             env_file.write_text("\n".join(new_lines) + "\n")
+            env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
         print()
 
     # --- Service setup ---
