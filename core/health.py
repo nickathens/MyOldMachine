@@ -204,6 +204,11 @@ def build_health_report(bot_dir: Optional[Path] = None) -> str:
     mem = get_memory_usage()
     lines.append(f"RAM: {mem['used_gb']}/{mem['total_gb']} GB ({mem['percent']}%)")
 
+    # Swap
+    swap = get_swap_usage()
+    if swap["total_gb"] > 0:
+        lines.append(f"Swap: {swap['used_gb']:.1f}/{swap['total_gb']:.1f} GB ({swap['percent']}%)")
+
     # Disk
     disk = get_disk_usage("/")
     lines.append(f"Disk: {disk['used_gb']}/{disk['total_gb']} GB ({disk['percent']}%)")
@@ -233,6 +238,54 @@ def build_health_report(bot_dir: Optional[Path] = None) -> str:
     return "\n".join(lines)
 
 
+def get_swap_usage() -> dict:
+    """Get swap usage stats."""
+    try:
+        if platform.system() == "Darwin":
+            result = subprocess.run(
+                ["sysctl", "-n", "vm.swapusage"],
+                capture_output=True, text=True, timeout=5
+            )
+            # Parse: "total = 2048.00M  used = 1024.00M  free = 1024.00M"
+            import re
+            total = used = free = 0.0
+            m = re.search(r"total\s*=\s*([\d.]+)M", result.stdout)
+            if m:
+                total = float(m.group(1)) / 1024  # Convert to GB
+            m = re.search(r"used\s*=\s*([\d.]+)M", result.stdout)
+            if m:
+                used = float(m.group(1)) / 1024
+            m = re.search(r"free\s*=\s*([\d.]+)M", result.stdout)
+            if m:
+                free = float(m.group(1)) / 1024
+            return {
+                "total_gb": round(total, 2),
+                "used_gb": round(used, 2),
+                "free_gb": round(free, 2),
+                "percent": round(used / total * 100, 1) if total > 0 else 0,
+            }
+        else:
+            with open("/proc/meminfo") as f:
+                info = {}
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        key = parts[0].strip()
+                        val = int(parts[1].strip().split()[0])  # in kB
+                        info[key] = val
+            total = info.get("SwapTotal", 0) * 1024
+            free = info.get("SwapFree", 0) * 1024
+            used = total - free
+            return {
+                "total_gb": round(total / (1024**3), 2),
+                "used_gb": round(used / (1024**3), 2),
+                "free_gb": round(free / (1024**3), 2),
+                "percent": round(used / total * 100, 1) if total > 0 else 0,
+            }
+    except Exception:
+        return {"total_gb": 0, "used_gb": 0, "free_gb": 0, "percent": 0}
+
+
 def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
     """
     Check for critical conditions that should trigger alerts.
@@ -249,8 +302,68 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
     mem = get_memory_usage()
     if mem["percent"] > 95:
         alerts.append(f"CRITICAL: RAM at {mem['percent']}% — {mem['free_gb']} GB free")
+    elif mem["percent"] > 90:
+        alerts.append(f"WARNING: RAM at {mem['percent']}% — {mem['free_gb']} GB free")
+
+    swap = get_swap_usage()
+    if swap["total_gb"] > 0 and swap["percent"] > 80:
+        alerts.append(f"WARNING: Swap at {swap['percent']}% — {swap['used_gb']:.1f}/{swap['total_gb']:.1f} GB")
+
+    cpu = get_cpu_usage()
+    if cpu is not None and cpu > 95:
+        load = get_load_average() or "unknown"
+        alerts.append(f"WARNING: CPU load sustained at {cpu}% (load: {load})")
 
     if not get_network_status():
         alerts.append("WARNING: No internet connectivity")
 
     return alerts
+
+
+# ---------------------------------------------------------------------------
+# Proactive health alerting
+# ---------------------------------------------------------------------------
+
+# Track which alerts have been sent to avoid repeated notifications.
+# Key: alert message prefix (e.g. "CRITICAL: Disk"), Value: timestamp last sent.
+_alert_cooldowns: dict[str, float] = {}
+_ALERT_COOLDOWN_SECONDS = 4 * 3600  # Don't repeat the same alert for 4 hours
+
+
+def _alert_key(alert_msg: str) -> str:
+    """Extract a stable key from an alert message for cooldown tracking."""
+    # Use the part before the dash for grouping: "CRITICAL: Disk almost full"
+    parts = alert_msg.split("—")
+    return parts[0].strip() if parts else alert_msg
+
+
+async def run_health_check(send_fn, admin_user_ids: list[int],
+                           bot_dir: Optional[Path] = None):
+    """
+    Run a health check and send alerts to admin users if any issues found.
+
+    send_fn: async function(user_id: int, text: str) -> bool
+    admin_user_ids: list of Telegram user IDs to alert
+    """
+    alerts = check_critical(bot_dir)
+    if not alerts:
+        return
+
+    now = time.time()
+    new_alerts = []
+    for alert in alerts:
+        key = _alert_key(alert)
+        last_sent = _alert_cooldowns.get(key, 0)
+        if now - last_sent >= _ALERT_COOLDOWN_SECONDS:
+            new_alerts.append(alert)
+            _alert_cooldowns[key] = now
+
+    if not new_alerts:
+        return
+
+    message = "Health Alert\n\n" + "\n".join(new_alerts)
+    for uid in admin_user_ids:
+        try:
+            await send_fn(uid, message)
+        except Exception as e:
+            logger.error(f"Failed to send health alert to {uid}: {e}")

@@ -166,6 +166,35 @@ User (Telegram) → bot.py → core/llm.py (provider factory)
                     └────────────────────┘
 ```
 
+## Custom shortcuts
+
+Define personal aliases for common tasks:
+
+```
+/alias set disk Check disk usage and alert if above 80%
+/alias set backup Run my backup script at ~/backup.sh
+/alias set weather What's the weather in Athens?
+```
+
+Then just type `/disk`, `/backup`, or `/weather`. The alias text is sent to the AI as if you typed it — so it works with full tool-use.
+
+Manage shortcuts:
+- `/alias` — list all your shortcuts
+- `/alias set <name> <text>` — create or update
+- `/alias remove <name>` — delete
+
+## Health monitoring
+
+The bot checks system health every 4 hours and alerts you via Telegram if:
+
+- Disk space drops below 5 GB (warning) or 2 GB (critical)
+- RAM usage exceeds 90% (warning) or 95% (critical)
+- Swap usage exceeds 80%
+- CPU load is sustained above 95%
+- Internet connectivity is lost
+
+Alerts have a 4-hour cooldown — you won't get spammed. You can also check manually with `/health`, which shows disk, RAM, swap, CPU, network, and uptime.
+
 ## Telegram commands
 
 | Command | Description |
@@ -173,7 +202,7 @@ User (Telegram) → bot.py → core/llm.py (provider factory)
 | `/start` | Connect and show system info |
 | `/help` | List all commands |
 | `/status` | Messages, memories, skills, uptime |
-| `/health` | Disk, RAM, CPU, network |
+| `/health` | Disk, RAM, swap, CPU, network |
 | `/system` | Version, OS, provider, tool-use status |
 | `/clear` | Reset conversation |
 | `/remember <fact>` | Save a persistent memory |
@@ -182,6 +211,7 @@ User (Telegram) → bot.py → core/llm.py (provider factory)
 | `/remind <time> <msg>` | Set a reminder |
 | `/reminders` | Show active reminders |
 | `/cancel <id>` | Cancel a reminder |
+| `/alias` | Manage custom command shortcuts |
 | `/provider` | Show/switch LLM provider |
 | `/model` | Change model |
 | `/apikey` | Set API key (auto-deletes message) |

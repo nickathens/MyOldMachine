@@ -34,7 +34,7 @@ from core.tools import get_process_registry
 from core.skill_loader import SkillManager
 from core.session import SessionManager, get_session_manager
 from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
-from core.health import build_health_report, check_critical
+from core.health import build_health_report, check_critical, run_health_check
 from core.updater import check_for_updates, full_update, get_current_version, get_current_branch
 
 from telegram import Update
@@ -80,6 +80,52 @@ _llm_provider = None
 _skill_manager = None
 
 MAX_CONTEXT_MESSAGES = 40
+
+# Health check interval (seconds)
+_HEALTH_CHECK_INTERVAL = 4 * 3600  # 4 hours
+_last_health_check = 0.0
+
+
+# --- Alias helpers ---
+
+def _get_aliases_file(user_id: int) -> Path:
+    return get_user_dir(user_id) / "aliases.json"
+
+
+def _load_aliases(user_id: int) -> dict[str, str]:
+    """Load user's command aliases. Returns {name: expansion}."""
+    path = _get_aliases_file(user_id)
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def _save_aliases(user_id: int, aliases: dict[str, str]):
+    """Save user's command aliases."""
+    path = _get_aliases_file(user_id)
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(aliases, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(path)
+    except Exception as e:
+        logger.warning(f"Failed to save aliases for {user_id}: {e}")
+        tmp.unlink(missing_ok=True)
+
+
+# Built-in command names that cannot be used as aliases
+_RESERVED_COMMANDS = {
+    "start", "help", "clear", "status", "remember", "memories", "forget",
+    "remind", "reminders", "cancel", "recover", "clear_recovery", "topic",
+    "topics", "schedule", "jobs", "health", "cleanup", "system", "update",
+    "restart", "provider", "model", "apikey", "alias",
+}
 
 
 # --- User data helpers ---
@@ -441,6 +487,14 @@ def build_system_prompt(user_id: int) -> str:
         skills_ctx = _skill_manager.build_context(exclude=blocked_skills)
         if skills_ctx:
             parts.append(skills_ctx)
+
+    # User aliases
+    aliases = _load_aliases(user_id)
+    if aliases:
+        parts.append("### User Shortcuts:")
+        for name, expansion in sorted(aliases.items()):
+            parts.append(f"  /{name} → {expansion}")
+        parts.append("")
 
     return "\n".join(parts)
 
@@ -1339,6 +1393,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /provider - Show/switch AI provider\n"
         "  /model - Show/change model\n"
         "  /apikey - Set API key\n\n"
+        "Shortcuts:\n"
+        "  /alias - List your shortcuts\n"
+        "  /alias set <name> <text> - Create a shortcut\n"
+        "  /alias remove <name> - Delete a shortcut\n\n"
         "Admin:\n"
         "  /health - System health report\n"
         "  /cleanup - Clean old attachments and logs\n"
@@ -1348,6 +1406,87 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Just send a message to chat. Send files for processing."
     )
     await update.message.reply_text(text)
+
+
+async def alias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manage custom command shortcuts."""
+    user_id = update.effective_user.id
+    text = update.message.text.replace("/alias", "").strip()
+
+    aliases = _load_aliases(user_id)
+
+    if not text:
+        # List all aliases
+        if not aliases:
+            await update.message.reply_text(
+                "No shortcuts set.\n\n"
+                "Usage:\n"
+                "  /alias set <name> <text>\n"
+                "  /alias remove <name>\n\n"
+                "Example:\n"
+                "  /alias set disk Check disk usage\n"
+                "Then send /disk to run it."
+            )
+            return
+        lines = ["Your shortcuts:\n"]
+        for name, expansion in sorted(aliases.items()):
+            preview = expansion[:60] + ("..." if len(expansion) > 60 else "")
+            lines.append(f"  /{name} → {preview}")
+        lines.append(f"\nTotal: {len(aliases)}")
+        lines.append("Use /alias remove <name> to delete.")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    parts = text.split(None, 1)
+    action = parts[0].lower()
+
+    if action == "set":
+        if len(parts) < 2:
+            await update.message.reply_text("Usage: /alias set <name> <text>")
+            return
+        rest = parts[1].split(None, 1)
+        if len(rest) < 2:
+            await update.message.reply_text("Usage: /alias set <name> <text to send to bot>")
+            return
+        name = rest[0].lower().lstrip("/")
+        expansion = rest[1]
+
+        if name in _RESERVED_COMMANDS:
+            await update.message.reply_text(f"'{name}' is a built-in command and cannot be used as a shortcut.")
+            return
+        if not re.match(r'^[a-z0-9_]+$', name):
+            await update.message.reply_text("Shortcut names can only contain lowercase letters, numbers, and underscores.")
+            return
+        if len(name) > 32:
+            await update.message.reply_text("Shortcut name too long (max 32 characters).")
+            return
+        if len(aliases) >= 50:
+            await update.message.reply_text("Maximum 50 shortcuts. Remove some first.")
+            return
+
+        aliases[name] = expansion
+        _save_aliases(user_id, aliases)
+        await update.message.reply_text(f"Shortcut set: /{name} → {expansion[:100]}")
+
+    elif action == "remove" or action == "delete":
+        if len(parts) < 2:
+            await update.message.reply_text("Usage: /alias remove <name>")
+            return
+        name = parts[1].strip().lower().lstrip("/")
+        if name not in aliases:
+            await update.message.reply_text(f"No shortcut named '{name}'.")
+            return
+        del aliases[name]
+        _save_aliases(user_id, aliases)
+        await update.message.reply_text(f"Shortcut '/{name}' removed.")
+
+    else:
+        await update.message.reply_text(
+            "Usage:\n"
+            "  /alias - list shortcuts\n"
+            "  /alias set <name> <text>\n"
+            "  /alias remove <name>"
+        )
 
 
 # --- Attachment handling ---
@@ -1425,6 +1564,29 @@ async def download_attachments(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # --- Message handling ---
+
+async def _try_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if the message is an alias command. If so, expand and process it. Returns True if handled."""
+    msg_text = update.message.text or ""
+    if not msg_text.startswith("/"):
+        return False
+    # Extract command name (strip the leading / and any @botname suffix)
+    cmd = msg_text.split()[0][1:].split("@")[0].lower()
+    if cmd in _RESERVED_COMMANDS:
+        return False
+    user_id = update.effective_user.id
+    aliases = _load_aliases(user_id)
+    if cmd not in aliases:
+        return False
+    # Expand: replace the /cmd with the alias text, keep any extra args
+    rest = msg_text[len(msg_text.split()[0]):].strip()
+    expanded = aliases[cmd]
+    if rest:
+        expanded = f"{expanded} {rest}"
+    # Monkey-patch the message text so _process_single sees the expansion
+    update.message.text = expanded
+    return True
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1616,6 +1778,31 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clear_pending_message(user_id)
 
 
+async def _health_monitor_loop(scheduler):
+    """Periodically check system health and alert admins if issues found."""
+    global _last_health_check
+    # Wait 60 seconds after startup before first check
+    await asyncio.sleep(60)
+    while True:
+        try:
+            now = asyncio.get_event_loop().time()
+            if now - _last_health_check >= _HEALTH_CHECK_INTERVAL:
+                _last_health_check = now
+                admin_ids = [
+                    uid for uid in get_allowed_users()
+                    if is_admin(uid)
+                ]
+                if admin_ids:
+                    await run_health_check(
+                        scheduler.send_message,
+                        admin_ids,
+                        BOT_DIR,
+                    )
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+        await asyncio.sleep(300)  # Check eligibility every 5 minutes
+
+
 # --- Main ---
 
 def main():
@@ -1686,6 +1873,16 @@ def main():
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("apikey", apikey_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("alias", alias_command))
+
+    # Catch-all for unrecognized /commands — check aliases before rejecting
+    async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle unknown commands — check if they're aliases."""
+        if await _try_alias(update, context):
+            await _process_single(update, context)
+        # If not an alias, silently ignore (don't spam "unknown command")
+
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
     # Message handler (text, photos, documents, audio, video, voice, stickers)
     app.add_handler(MessageHandler(
@@ -1695,13 +1892,16 @@ def main():
         handle_message,
     ))
 
-    # Startup: initialize scheduler, recover pending messages, send first boot
+    # Startup: initialize scheduler, recover pending messages, health monitor, send first boot
     async def post_init(application):
         scheduler = init_scheduler(token, api_base)
         scheduler.set_claude_handler(call_llm)
         scheduler.start()
         logger.info("Scheduler started with Claude handler")
         await recover_pending_messages(application.bot)
+
+        # Start proactive health monitoring
+        asyncio.create_task(_health_monitor_loop(scheduler))
 
         # First boot message — sent once after install
         first_boot_marker = DATA_DIR / ".first_boot_sent"
