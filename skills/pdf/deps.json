@@ -1,0 +1,9 @@
+{
+  "apt": ["ocrmypdf", "tesseract-ocr"],
+  "brew": ["ocrmypdf", "tesseract"],
+  "pip": ["pypdf"],
+  "check": {
+    "ocrmypdf": "ocrmypdf --version",
+    "tesseract": "tesseract --version"
+  }
+}

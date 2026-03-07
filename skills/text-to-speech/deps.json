@@ -1,0 +1,7 @@
+{
+  "apt": ["espeak-ng"],
+  "brew": ["espeak-ng"],
+  "check": {
+    "espeak-ng": "espeak-ng --version"
+  }
+}

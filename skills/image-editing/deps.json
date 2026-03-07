@@ -1,0 +1,6 @@
+{
+  "pip": ["Pillow"],
+  "check": {
+    "pillow": "python3 -c 'from PIL import Image; print(Image.__version__)'"
+  }
+}

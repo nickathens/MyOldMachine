@@ -1,0 +1,8 @@
+{
+  "apt": ["ffmpeg"],
+  "brew": ["ffmpeg"],
+  "pip": ["moviepy"],
+  "check": {
+    "ffmpeg": "ffmpeg -version"
+  }
+}

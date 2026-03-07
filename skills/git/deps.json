@@ -1,0 +1,7 @@
+{
+  "apt": ["git"],
+  "brew": ["git", "gh"],
+  "check": {
+    "git": "git --version"
+  }
+}

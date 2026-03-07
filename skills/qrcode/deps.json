@@ -1,0 +1,6 @@
+{
+  "pip": ["qrcode[pil]"],
+  "check": {
+    "qr": "qr --version"
+  }
+}

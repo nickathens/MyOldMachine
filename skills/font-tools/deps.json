@@ -1,0 +1,6 @@
+{
+  "pip": ["fonttools", "brotli"],
+  "check": {
+    "pyftsubset": "pyftsubset --help"
+  }
+}

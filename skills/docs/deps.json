@@ -1,0 +1,6 @@
+{
+  "pip": ["markitdown"],
+  "check": {
+    "markitdown": "markitdown --help"
+  }
+}

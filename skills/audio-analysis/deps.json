@@ -1,0 +1,8 @@
+{
+  "apt": ["ffmpeg"],
+  "brew": ["ffmpeg"],
+  "pip": ["librosa", "matplotlib", "numpy", "soundfile"],
+  "check": {
+    "ffmpeg": "ffmpeg -version"
+  }
+}
