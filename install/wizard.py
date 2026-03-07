@@ -245,31 +245,23 @@ def detect_machine_specs():
 
 
 _ALL_LLM_PROVIDERS = [
-    ("claude", "Claude Code CLI — full machine control via native tool-use (requires Node.js + claude CLI)"),
-    ("claude-api", "Anthropic Claude API — text-only, no machine control, requires API key ($)"),
-    ("openai", "OpenAI GPT — machine control via function calling, requires API key ($)"),
-    ("grok", "xAI Grok — machine control via function calling, $25 free credits + $150/mo with data sharing"),
-    ("gemini", "Google Gemini — machine control via function calling, requires API key (free tier may have zero quota)"),
-    ("ollama", "Ollama — machine control via function calling, free, runs locally (auto-installs if needed)"),
-    ("openrouter", "OpenRouter — machine control via function calling, many models, one API key (free models available)"),
+    ("claude", "Claude Code CLI — uses your Pro/Max plan (no API key needed), full machine control"),
+    ("claude-api", "Anthropic Claude API — requires paid API credits ($), text-only, no machine control"),
+    ("openai", "OpenAI GPT — requires API key ($), machine control via function calling"),
+    ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
+    ("gemini", "Google Gemini — requires API key ($), machine control (free tier may have zero quota)"),
+    ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
+    ("openrouter", "OpenRouter — many models, one API key (free models available), machine control"),
 ]
 
 
 def _get_available_providers() -> list:
-    """Return LLM providers that can actually work on this machine.
+    """Return LLM providers available on this machine.
 
-    Claude CLI requires Node.js + npm. If neither is present, hide the option
-    to prevent users from selecting a provider that will immediately fail.
+    Claude CLI requires Node.js — if not present, it will be installed
+    automatically during provisioning. Never hide it from the user.
     """
-    import shutil as _shutil
-    providers = []
-    for key, desc in _ALL_LLM_PROVIDERS:
-        if key == "claude":
-            # Claude CLI needs npm to install, or claude already in PATH
-            if not _shutil.which("claude") and not _shutil.which("npm"):
-                continue  # Hide — can't install or run
-        providers.append((key, desc))
-    return providers
+    return list(_ALL_LLM_PROVIDERS)
 
 DEFAULT_MODELS = {
     "claude": "claude-sonnet-4-20250514",
@@ -562,34 +554,63 @@ def main():
     # --- Claude CLI install (if provider is claude) ---
     if config.get("llm_provider") == "claude" and not checkpoint_done("claude_cli"):
         import shutil as _shutil
+
+        # After provisioning, npm/node may be installed but not yet in this
+        # process's PATH. Search common locations as a fallback.
+        def _find_npm():
+            npm = _shutil.which("npm")
+            if npm:
+                return npm
+            for candidate in [
+                "/usr/local/bin/npm",
+                "/opt/homebrew/bin/npm",
+                str(Path.home() / ".nvm/current/bin/npm"),
+            ]:
+                if Path(candidate).exists():
+                    return candidate
+            return None
+
         if _shutil.which("claude"):
             ok("Claude Code CLI already installed")
+            print(f"  {YELLOW}Run 'claude login' to authenticate with your Anthropic plan.{NC}")
             checkpoint_set("claude_cli")
-        elif _shutil.which("npm"):
+        else:
+            npm_path = _find_npm()
+            if not npm_path:
+                warn("npm not found — Node.js may not have been installed by the provisioner.")
+                warn("Install Node.js manually, then re-run the installer:")
+                if platform.system() == "Darwin":
+                    print(f"    brew install node")
+                else:
+                    print(f"    sudo apt-get install -y nodejs")
+                print(f"  Then re-run: ./install.sh")
+                sys.exit(1)
+
             info("Installing Claude Code CLI...")
             try:
                 result = subprocess.run(
-                    ["npm", "install", "-g", "@anthropic-ai/claude-code"],
-                    timeout=120,
+                    [npm_path, "install", "-g", "@anthropic-ai/claude-code"],
+                    timeout=180,
                 )
             except subprocess.TimeoutExpired:
                 result = None
-            if result and result.returncode == 0 and _shutil.which("claude"):
+            if result and result.returncode == 0:
                 ok("Claude Code CLI installed")
-                print(f"  {YELLOW}Run 'claude login' to authenticate before starting the bot.{NC}")
+                print()
+                print(f"  {BOLD}IMPORTANT: You need to authenticate before the bot can work.{NC}")
+                print(f"  {YELLOW}Run this command now:{NC}")
+                print(f"    claude login")
+                print(f"  {YELLOW}This opens your browser to sign in with your Anthropic account.{NC}")
+                print(f"  {YELLOW}Your Pro/Max plan covers usage — no API credits needed.{NC}")
+                print()
                 checkpoint_set("claude_cli")
             else:
                 warn("Claude Code CLI installation failed.")
-                warn("The bot cannot work without it. Options:")
-                print(f"    1. Install manually: npm install -g @anthropic-ai/claude-code && claude login")
-                print(f"    2. Re-run installer and pick a different provider (OpenRouter is free)")
+                warn("Try manually:")
+                print(f"    {npm_path} install -g @anthropic-ai/claude-code")
+                print(f"    claude login")
+                print(f"  Or re-run the installer and pick a different provider.")
                 sys.exit(1)
-        else:
-            warn("npm not found — cannot install Claude Code CLI.")
-            warn("The bot cannot work without it. Options:")
-            print(f"    1. Install Node.js + npm first, then re-run")
-            print(f"    2. Re-run installer and pick a different provider (OpenRouter is free)")
-            sys.exit(1)
 
     # --- Ollama install (if provider is ollama) ---
     if config.get("llm_provider") == "ollama" and not checkpoint_done("ollama_setup"):
@@ -763,9 +784,17 @@ def _run_wizard_steps(detected_os: str) -> dict:
     # Step 3: LLM Provider
     print(f"\n{BOLD}Step 3: AI Provider{NC}")
     print("  Choose which AI model will power your assistant.")
-    print("  'Claude Code CLI' has native tool-use (bash, files, web) — most powerful.")
-    print("  Other providers use function calling for machine control (run commands, read/write files).")
-    print("  'Claude API' is text-only (no machine control).")
+    print()
+    print(f"  {GREEN}FREE options:{NC}")
+    print(f"    - Claude Code CLI — uses your existing Anthropic Pro/Max subscription")
+    print(f"    - Ollama — runs a local model on this machine (no internet needed)")
+    print(f"    - OpenRouter — has free models (rate-limited)")
+    print(f"    - Grok — $25 free credits on signup")
+    print()
+    print(f"  {YELLOW}PAID options:{NC}")
+    print(f"    - Claude API — requires Anthropic API credits (separate from Pro/Max plan)")
+    print(f"    - OpenAI — requires OpenAI API credits")
+    print(f"    - Gemini — free tier exists but may have zero quota")
     print()
     available_providers = _get_available_providers()
     # Default to first available provider (claude if present, otherwise claude-api)
@@ -840,10 +869,19 @@ def _run_wizard_steps(detected_os: str) -> dict:
         _select_model_for_provider(config, config["llm_provider"])
 
     if config["llm_provider"] == "claude":
-        # Claude CLI — no API key, but needs claude CLI installed
+        # Claude CLI — authenticates via 'claude login' using existing Pro/Max plan.
+        # No API key. Node.js is installed during provisioning if missing.
         config["llm_api_key"] = ""
-        print(f"  {YELLOW}Claude Code CLI will be installed automatically (requires Node.js).{NC}")
+        import shutil as _shutil
+        print()
+        print(f"  {GREEN}Claude Code CLI uses your existing Anthropic Pro or Max plan.{NC}")
+        print(f"  {GREEN}No API key or credits needed — it authenticates via your browser.{NC}")
+        if not _shutil.which("claude"):
+            if not _shutil.which("npm") and not _shutil.which("node"):
+                print(f"  {YELLOW}Node.js will be installed automatically during system provisioning.{NC}")
+            print(f"  {YELLOW}Claude Code CLI will be installed automatically after provisioning.{NC}")
         print(f"  {YELLOW}After install, run: claude login{NC}")
+        print(f"  {YELLOW}This opens your browser to authenticate — no key to copy-paste.{NC}")
     elif config["llm_provider"] == "claude-api":
         print()
         print(f"  You need an Anthropic API key:")
