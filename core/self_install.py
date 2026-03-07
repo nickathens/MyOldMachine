@@ -227,6 +227,25 @@ def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
             logger.error(f"Failed to install npm packages: {result.stderr[:200]}")
             failed.extend(npm_missing)
 
+    # Post-install commands (e.g. "playwright install chromium")
+    post_install = deps.get("post_install")
+    if post_install and not failed:
+        cmds = [post_install] if isinstance(post_install, str) else post_install
+        venv_bin = str(Path(sys.executable).parent)
+        env_prefix = f"PATH={venv_bin}:$PATH"
+        for cmd in cmds:
+            logger.info(f"Running post-install: {cmd}")
+            # install-deps needs sudo on Linux (installs system libraries)
+            if "install-deps" in cmd and _is_linux():
+                result = _sudo_run(f"{env_prefix} {cmd}", password, timeout=300)
+            else:
+                result = _run(f"{env_prefix} {cmd}", timeout=300)
+            if result.returncode != 0:
+                logger.error(f"Post-install failed: {cmd}: {result.stderr[:200]}")
+                failed.append(f"post:{cmd}")
+            else:
+                installed.append(f"post:{cmd}")
+
     if not failed:
         _verified_cache.add(skill_path.name)
 

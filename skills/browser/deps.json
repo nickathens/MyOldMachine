@@ -1,0 +1,10 @@
+{
+  "pip": ["playwright"],
+  "post_install": [
+    "playwright install chromium",
+    "playwright install-deps chromium"
+  ],
+  "check": {
+    "playwright": "python3 -c 'import playwright; print(\"ok\")'"
+  }
+}
