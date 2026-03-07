@@ -688,7 +688,7 @@ class GeminiProvider(LLMProvider):
         return True
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
-        url = f"{self.API_URL}/{self.model}:generateContent?key={self.api_key}"
+        url = f"{self.API_URL}/{self.model}:generateContent"
 
         # Build Gemini conversation format
         contents = []
@@ -711,10 +711,15 @@ class GeminiProvider(LLMProvider):
         used_tools = False
         fallback_attempts = 0
 
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+
         async with httpx.AsyncClient(timeout=300.0) as client:
             for iteration in range(MAX_TOOL_ITERATIONS):
                 try:
-                    resp = await client.post(url, json=body)
+                    resp = await client.post(url, headers=headers, json=body)
                     data = resp.json()
                 except Exception as e:
                     return LLMResponse(

@@ -241,6 +241,9 @@ class SessionManager:
         NON-BLOCKING: immediately returns trimmed history and schedules
         summarization in the background. The summary will be available
         for the next message.
+
+        If `claude` CLI is not available, skips compaction entirely to avoid
+        losing messages without a summary.
         """
         if not self.config.get("compaction_enabled", True):
             return history, ""
@@ -249,6 +252,13 @@ class SessionManager:
         batch_size = self.config["compaction_batch_size"]
 
         if len(history) <= threshold:
+            return history, ""
+
+        # Check if claude CLI is available — without it we can't summarize,
+        # and trimming without summarizing would lose context permanently
+        import shutil
+        if not shutil.which("claude"):
+            logger.info("Compaction skipped — claude CLI not available")
             return history, ""
 
         # Load existing summary

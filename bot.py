@@ -538,7 +538,7 @@ async def call_llm(user_id: int, message: str, chat=None) -> str:
     return text
 
 
-def _save_and_send(user_id: int, user_message: str, response: str, session=None, chat=None):
+def _save_and_send(user_id: int, user_message: str, response: str, session=None, **_kwargs):
     """Save conversation turn and trigger compaction if needed.
 
     Note: response is expected to be already sanitized by call_llm().
@@ -1483,21 +1483,28 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
         save_pending_message(user_id, user_message, first_msg_id)
 
         try:
-            await chat.send_action("typing")
-        except Exception:
-            pass
-
-        response = await call_llm(user_id, user_message, chat=chat)
-
-        _save_and_send(user_id, user_message, response, session=None, chat=chat)
-
-        for chunk in split_message(response):
             try:
-                await chat.send_message(chunk)
-            except Exception as e:
-                logger.error(f"Failed to send to user {user_id}: {e}")
+                await chat.send_action("typing")
+            except Exception:
+                pass
 
-        clear_pending_message(user_id)
+            response = await call_llm(user_id, user_message, chat=chat)
+
+            _save_and_send(user_id, user_message, response, session=None, chat=chat)
+
+            for chunk in split_message(response):
+                try:
+                    await chat.send_message(chunk)
+                except Exception as e:
+                    logger.error(f"Failed to send to user {user_id}: {e}")
+        except Exception as e:
+            logger.exception(f"Error processing media group for user {user_id}")
+            try:
+                await chat.send_message(f"Error processing your message: {str(e)[:200]}")
+            except Exception:
+                pass
+        finally:
+            clear_pending_message(user_id)
 
 
 async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1549,20 +1556,31 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_pending_message(user_id, user_message, update.message.message_id)
 
         try:
-            await update.message.chat.send_action("typing")
-        except Exception:
-            pass
+            try:
+                await update.message.chat.send_action("typing")
+            except Exception:
+                pass
 
-        response = await call_llm(user_id, user_message, chat=update.message.chat)
+            response = await call_llm(user_id, user_message, chat=update.message.chat)
 
-        # Save to current session (topic or main) with compaction
-        _save_and_send(user_id, user_message, response, session=session)
+            # Save to current session (topic or main) with compaction
+            _save_and_send(user_id, user_message, response, session=session)
 
-        for chunk in split_message(response):
-            await update.message.reply_text(chunk)
+            for chunk in split_message(response):
+                try:
+                    await update.message.reply_text(chunk)
+                except Exception as e:
+                    logger.error(f"Failed to send reply to {user_id}: {e}")
 
-        clear_pending_message(user_id)
-        logger.info(f"Responded to {user_id}: {len(response)} chars")
+            logger.info(f"Responded to {user_id}: {len(response)} chars")
+        except Exception as e:
+            logger.exception(f"Error processing message for user {user_id}")
+            try:
+                await update.message.reply_text(f"Error processing your message: {str(e)[:200]}")
+            except Exception:
+                pass
+        finally:
+            clear_pending_message(user_id)
 
 
 # --- Main ---

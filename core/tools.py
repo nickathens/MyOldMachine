@@ -853,7 +853,7 @@ def _parse_func_args(raw: str) -> dict | None:
             value = True
         elif value.lower() == "false":
             value = False
-        elif value.isdigit():
+        elif value.lstrip('-').isdigit() and value.count('-') <= 1:
             value = int(value)
         args[key] = value
 
