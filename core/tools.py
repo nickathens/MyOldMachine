@@ -335,12 +335,13 @@ def _build_command_env() -> dict:
     current_path = env.get("PATH", "")
     path_parts = current_path.split(":") if current_path else []
 
-    # Remove bot's venv from PATH — commands should use system Python
-    venv = os.environ.get("VIRTUAL_ENV", "")
-    if venv:
-        path_parts = [p for p in path_parts if not p.startswith(venv)]
-        # Don't pass VIRTUAL_ENV either
-        env.pop("VIRTUAL_ENV", None)
+    # Strip VIRTUAL_ENV marker but keep the venv's bin dir in PATH.
+    # Bot utility scripts and skill scripts need venv packages (httpx,
+    # playwright, apscheduler, etc.). Removing the venv from PATH breaks
+    # every skill that imports venv-installed packages. We still strip the
+    # VIRTUAL_ENV env var so spawned processes don't think they're "in"
+    # the venv (and won't accidentally modify it with pip install).
+    env.pop("VIRTUAL_ENV", None)
 
     # Add standard paths that are missing
     for sp in standard_paths:

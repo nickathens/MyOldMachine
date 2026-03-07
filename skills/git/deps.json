@@ -1,6 +1,9 @@
 {
-  "apt": ["git"],
+  "apt": ["git", "gh"],
   "brew": ["git", "gh"],
+  "dnf": ["git", "gh"],
+  "pacman": ["git", "github-cli"],
+  "zypper": ["git", "gh"],
   "check": {
     "git": "git --version"
   }

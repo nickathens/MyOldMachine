@@ -117,9 +117,9 @@ if [ "$OS" = "macos" ]; then
 
     MACOS_MAJOR=$(echo "$MACOS_VER" | cut -d. -f1)
     MACOS_MINOR=$(echo "$MACOS_VER" | cut -d. -f2)
-    if [ "${MACOS_MAJOR:-0}" -eq 10 ] 2>/dev/null && [ "${MACOS_MINOR:-0}" -lt 13 ] 2>/dev/null; then
-        die "macOS $MACOS_VER is too old. Minimum supported version is 10.13 (High Sierra).
-  Consider installing Linux on this machine instead."
+    if [ "${MACOS_MAJOR:-0}" -eq 10 ] 2>/dev/null && [ "${MACOS_MINOR:-0}" -lt 14 ] 2>/dev/null; then
+        die "macOS $MACOS_VER is too old. Minimum supported version is 10.14 (Mojave).
+  Homebrew requires macOS 10.14 or later. Consider installing Linux on this machine instead."
     fi
 else
     if [ -f /etc/os-release ]; then

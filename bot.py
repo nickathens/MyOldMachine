@@ -376,11 +376,15 @@ def build_system_prompt(user_id: int) -> str:
 
     # Tool-use-only sections (skip for text-only providers)
     if has_tool_use:
+        # Use the venv Python for bot utility scripts — they need packages
+        # from the venv (httpx, apscheduler, etc.).
+        venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
+
         # Telegram capabilities
         parts.append("### Sending Files to User:")
-        parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --photo /path/to/image.png")
-        parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --video /path/to/video.mp4")
-        parts.append(f"  python {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --document /path/to/file.pdf")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --photo /path/to/image.png")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --video /path/to/video.mp4")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/send_to_telegram.py --user {user_id} --document /path/to/file.pdf")
         parts.append("  Add --caption 'description' for captions.")
         parts.append("")
         parts.append(f"User attachments directory: {get_attachments_dir(user_id)}")
@@ -396,10 +400,10 @@ def build_system_prompt(user_id: int) -> str:
         # Scheduler instructions
         parts.append("### Reminders and Scheduling:")
         parts.append("When the user asks to set a reminder, use the scheduler CLI:")
-        parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"YYYY-MM-DD HH:MM\" --message \"text\"")
-        parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"in 30 minutes\" --message \"text\"")
-        parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py list --user {user_id}")
-        parts.append(f"  python {BOT_DIR}/utils/scheduler_cli.py remove --id <job_id> --user {user_id}")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"YYYY-MM-DD HH:MM\" --message \"text\"")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"in 30 minutes\" --message \"text\"")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py list --user {user_id}")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py remove --id <job_id> --user {user_id}")
         parts.append("NEVER use crontab. The scheduler handles everything.")
         parts.append("")
 
@@ -409,7 +413,7 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("Use memory proactively, not just when asked.")
         parts.append("")
         parts.append("**Projects:**")
-        parts.append(f"  python {BOT_DIR}/utils/project_manager.py create \"Name\" \"Summary\" \"/path\"")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/project_manager.py create \"Name\" \"Summary\" \"/path\"")
         parts.append(f"  Project state: {memory_dir}/projects/<slug>/state.json")
         parts.append("")
         parts.append("**Topic Memories:**")
