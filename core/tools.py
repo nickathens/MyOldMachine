@@ -637,8 +637,9 @@ def _preflight_validate(path: str, content: str) -> Optional[str]:
 # primary path is always structured tool_calls.
 
 # Patterns that match code blocks containing tool-like invocations
+# Group 1 = language tag, Group 2 = block content
 _TOOL_CODE_BLOCK_RE = re.compile(
-    r"```(?:tool_code|bash|shell|sh|python|json|)?\s*\n(.*?)```",
+    r"```(tool_code|bash|shell|sh|python|json|)\s*\n(.*?)```",
     re.DOTALL,
 )
 
@@ -703,9 +704,13 @@ def extract_tool_calls_from_text(text: str) -> list[dict]:
 
     # Strategy 3: Look for code blocks containing shell commands
     for match in _TOOL_CODE_BLOCK_RE.finditer(text):
-        block_content = match.group(1).strip()
+        block_content = match.group(2).strip()
         if not block_content:
             continue
+
+        # Check the language tag — tool_code is a strong signal from weak models
+        lang_tag = (match.group(1) or "").strip().lower()
+        is_tool_code_tag = lang_tag == "tool_code"
 
         # Skip blocks that are clearly just output/examples (multi-line with no commands)
         lines = [l.strip() for l in block_content.split("\n") if l.strip()]
@@ -724,44 +729,90 @@ def extract_tool_calls_from_text(text: str) -> list[dict]:
             break
 
         if first_line.startswith("#") or first_line.startswith("//"):
-            continue
+            # If it's tagged as tool_code, skip comment lines but don't skip the block
+            if not is_tool_code_tag:
+                continue
 
-        # Common command prefixes that indicate executable commands
-        command_indicators = [
-            "python ", "python3 ", "pip ", "pip3 ",
-            "apt ", "apt-get ", "brew ",
-            "sudo ", "cd ", "ls ", "cat ", "echo ",
-            "mkdir ", "cp ", "mv ", "rm ",
-            "curl ", "wget ",
-            "git ", "npm ", "node ",
-            "systemctl ", "launchctl ",
-            "docker ", "docker-compose ",
-            "./", "bash ", "sh ",
+        # Reconstruct the full command line: if the model split the command
+        # across multiple lines (e.g., "python\n/path/to/script.py --args"),
+        # join them into a single command before checking indicators.
+        full_line = " ".join(lines)
+
+        # Common command names (checked with and without trailing space/args)
+        command_names = [
+            "python", "python3", "pip", "pip3",
+            "apt", "apt-get", "brew",
+            "sudo", "cd", "ls", "cat", "echo",
+            "mkdir", "cp", "mv", "rm",
+            "curl", "wget",
+            "git", "npm", "node",
+            "systemctl", "launchctl",
+            "docker", "docker-compose",
+            "bash", "sh",
         ]
 
-        is_command = any(first_line.startswith(prefix) or first_line.startswith(f"$ {prefix}")
-                        for prefix in command_indicators)
+        # Check both the first line and the reconstructed full line
+        is_command = False
 
-        # Also check if it references any path or looks like a shell pipeline
+        # Check for command names — match with or without trailing space
+        for name in command_names:
+            for check_line in (first_line, full_line):
+                cl = check_line.lstrip("$ ")
+                if cl == name or cl.startswith(name + " ") or cl.startswith(name + "\t"):
+                    is_command = True
+                    break
+            if is_command:
+                break
+
+        # Also check for paths, pipelines, ./ prefix
         if not is_command:
-            is_command = (
-                first_line.startswith("/") or
-                "|" in first_line or
-                "&&" in first_line or
-                first_line.startswith("$ ")
-            )
+            for check_line in (first_line, full_line):
+                cl = check_line.lstrip("$ ")
+                if (cl.startswith("/") or cl.startswith("./") or
+                        "|" in cl or "&&" in cl):
+                    is_command = True
+                    break
+
+        # Also check for $ prefix
+        if not is_command and first_line.startswith("$ "):
+            is_command = True
+
+        # tool_code language tag is a strong signal — if the block contains
+        # anything that looks remotely executable, treat it as a command
+        if not is_command and is_tool_code_tag:
+            # If tagged tool_code and has any content at all, it's meant to be executed
+            non_comment = [l for l in lines if not l.startswith("#")]
+            if non_comment:
+                is_command = True
+                logger.info(f"[fallback] tool_code tag detected, treating as command")
+
+        # Skip blocks that look like documentation/code examples (not commands)
+        # Only skip if NOT tagged as tool_code and has import/def/class patterns
+        if is_command and not is_tool_code_tag:
+            doc_patterns = ["import ", "from ", "def ", "class ", "function ", "const ", "let ", "var "]
+            if any(first_line.startswith(p) for p in doc_patterns):
+                is_command = False
 
         if is_command:
-            # Strip leading "$ " if present
-            cmd = block_content
-            if cmd.startswith("$ "):
-                cmd = cmd[2:]
-            # For multi-line blocks, join with && if they look like sequential commands
+            # Build the command from the block content
             cmd_lines = [l.lstrip("$ ") for l in lines if l.strip() and not l.strip().startswith("#")]
-            if len(cmd_lines) > 1:
+
+            if not cmd_lines:
+                continue
+
+            # Detect if this is a single command split across lines (e.g., "python\n/path/to/script.py")
+            # vs multiple sequential commands (e.g., "cd /tmp\npython script.py")
+            # Heuristic: if the first line is just a bare command name, join with space (single command)
+            # Otherwise join with && (sequential commands)
+            first_cmd = cmd_lines[0].strip()
+            if len(cmd_lines) > 1 and first_cmd in command_names:
+                # Single command split across lines — join with space
+                cmd = " ".join(cmd_lines)
+            elif len(cmd_lines) > 1:
+                # Multiple sequential commands — join with &&
                 cmd = " && ".join(cmd_lines)
             else:
-                cmd = cmd_lines[0] if cmd_lines else cmd
+                cmd = cmd_lines[0]
 
             calls.append({"name": "run_command", "arguments": {"command": cmd}})
             logger.info(f"[fallback] Extracted shell command from code block: {cmd[:80]}")
