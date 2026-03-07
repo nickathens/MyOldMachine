@@ -623,9 +623,101 @@ def _install_macos_deps(os_info: OSInfo, password=None):
     # Try to link all installed packages (ensures binaries are in PATH)
     run(f"{brew} link --overwrite python@3.12 2>/dev/null")
 
+    # For packages that failed via brew, try direct binary install as fallback.
+    # On old macOS (Catalina), Homebrew's dependency chains are broken beyond repair.
+    if failed:
+        still_failed = []
+        for pkg in failed:
+            binary = _pkg_to_binary.get(pkg)
+            if pkg == "node" and not _shutil.which("node"):
+                info("Homebrew failed for node — trying direct binary install...")
+                if _install_node_direct(os_info):
+                    installed_count += 1
+                    continue
+            # For other packages, check if they appeared in PATH after all
+            if binary and _shutil.which(binary):
+                ok(f"{pkg} available ({_shutil.which(binary)})")
+                installed_count += 1
+            else:
+                still_failed.append(pkg)
+        failed = still_failed
+
     if failed:
         warn(f"Failed to install: {', '.join(failed)}")
     ok(f"Homebrew packages: {installed_count}/{len(MACOS_BREW_PACKAGES)} installed")
+
+
+def _install_node_direct(os_info: OSInfo) -> bool:
+    """Install Node.js from official binary tarball when Homebrew fails.
+
+    Downloads from nodejs.org and extracts to /usr/local (Intel) or /opt/homebrew (AS).
+    Node 20 LTS supports macOS 10.15+ (Catalina). This bypasses Homebrew's broken
+    dependency chains on old macOS.
+    """
+    import shutil as _shutil
+
+    # Node 20 LTS — last major version to support macOS 10.15 (Catalina).
+    # Node 22+ requires macOS 11+, Node 24+ requires macOS 13.5+.
+    node_version = "20.20.1"
+    arch = platform.machine()
+    if arch == "x86_64":
+        node_arch = "x64"
+    elif arch == "arm64":
+        node_arch = "arm64"
+    else:
+        warn(f"Unsupported architecture for Node.js direct install: {arch}")
+        return False
+
+    tarball = f"node-v{node_version}-darwin-{node_arch}.tar.gz"
+    url = f"https://nodejs.org/dist/v{node_version}/{tarball}"
+    tmp_dir = Path(tempfile.mkdtemp(prefix="myoldmachine_node_"))
+    tmp_tar = tmp_dir / tarball
+
+    info(f"Downloading Node.js {node_version} ({node_arch})...")
+    dl_result = run(f"curl -fsSL -o '{tmp_tar}' '{url}'", timeout=120)
+    if dl_result.returncode != 0:
+        warn(f"Failed to download Node.js: {dl_result.stderr[:200]}")
+        return False
+
+    # Extract to /usr/local so node/npm are in a standard PATH location
+    install_prefix = "/usr/local"
+    info(f"Installing Node.js to {install_prefix}...")
+    password = get_sudo_password()
+
+    # Extract with --strip-components=1 to put bin/lib/etc directly into prefix
+    extract_result = sudo_run(
+        f"tar -xzf '{tmp_tar}' -C '{install_prefix}' --strip-components=1",
+        password, timeout=60
+    )
+
+    # Clean up temp
+    try:
+        import shutil
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+    except Exception:
+        pass
+
+    if extract_result.returncode != 0:
+        warn(f"Failed to extract Node.js: {extract_result.stderr[:200]}")
+        return False
+
+    # Verify node and npm are now available
+    # Update PATH for this process in case /usr/local/bin isn't in it
+    if "/usr/local/bin" not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"/usr/local/bin:{os.environ.get('PATH', '')}"
+
+    node_path = _shutil.which("node")
+    npm_path = _shutil.which("npm")
+    if node_path and npm_path:
+        # Verify it actually runs
+        verify = run(f"'{node_path}' --version", timeout=10)
+        if verify.returncode == 0:
+            ok(f"Node.js installed: {verify.stdout.strip()} ({node_path})")
+            log_action("install_node_direct", f"v{node_version} {node_arch}")
+            return True
+
+    warn("Node.js binary was extracted but 'node' not found in PATH")
+    return False
 
 
 def _add_brew_to_profile(os_info: OSInfo, brew_path):

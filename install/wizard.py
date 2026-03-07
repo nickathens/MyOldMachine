@@ -584,6 +584,59 @@ def main():
                     return candidate
             return None
 
+        def _switch_provider_fallback():
+            """Claude CLI failed — let user pick a different provider without restarting."""
+            print()
+            warn("Claude CLI requires Node.js and npm, which could not be installed.")
+            print()
+            print(f"  {GREEN}You can switch to a different provider now.{NC}")
+            print(f"  {GREEN}Tip: OpenRouter has free models and doesn't need Node.js.{NC}")
+            print()
+            providers_without_cli = [p for p in _ALL_LLM_PROVIDERS if p[0] != "claude"]
+            new_provider = ask_choice(
+                "Pick a different provider:", providers_without_cli, default="openrouter",
+            )
+            config["llm_provider"] = new_provider
+            _select_model_for_provider(config, new_provider)
+
+            # Handle API key for the new provider
+            if new_provider in API_KEY_PROVIDERS:
+                if new_provider == "openrouter":
+                    free_ids = {m[0] for m in OPENROUTER_FREE_MODELS}
+                    is_free = config["llm_model"] in free_ids or config["llm_model"].endswith(":free")
+                    if is_free:
+                        print(f"  {GREEN}Free model selected — no billing required.{NC}")
+                    print(f"  You need an OpenRouter API key (free to create):")
+                    print(f"    1. Go to https://openrouter.ai and sign up")
+                    print(f"    2. Go to Keys → Create Key")
+                    print(f"    3. Paste it below")
+                    print()
+                elif new_provider == "gemini":
+                    print(f"  You need a Google AI API key:")
+                    print(f"    1. Go to https://aistudio.google.com/apikey")
+                    print(f"    2. Sign in and click 'Create API key'")
+                    print()
+                elif new_provider == "grok":
+                    print(f"  You need an xAI API key:")
+                    print(f"    1. Go to https://console.x.ai/team/default/api-keys")
+                    print()
+                elif new_provider == "openai":
+                    print(f"  You need an OpenAI API key:")
+                    print(f"    1. Go to https://platform.openai.com/api-keys")
+                    print()
+                elif new_provider == "claude-api":
+                    print(f"  You need an Anthropic API key:")
+                    print(f"    1. Go to https://console.anthropic.com/settings/keys")
+                    print()
+                config["llm_api_key"] = ask(f"API key for {new_provider}", secret=True)
+            else:
+                config["llm_api_key"] = ""
+
+            # Rewrite .env with new provider
+            write_env(repo_dir, config)
+            ok(f"Switched to {new_provider} ({config['llm_model']})")
+            checkpoint_set("claude_cli")  # Mark as done — no CLI needed anymore
+
         if _shutil.which("claude"):
             ok("Claude Code CLI already installed")
             print(f"  {YELLOW}Run 'claude login' to authenticate with your Anthropic plan.{NC}")
@@ -591,40 +644,28 @@ def main():
         else:
             npm_path = _find_npm()
             if not npm_path:
-                warn("npm not found — Node.js may not have been installed by the provisioner.")
-                warn("Install Node.js manually, then re-run the installer:")
-                if platform.system() == "Darwin":
-                    print(f"    brew install node")
-                else:
-                    print(f"    sudo apt-get install -y nodejs")
-                print(f"  Then re-run: ./install.sh")
-                sys.exit(1)
-
-            info("Installing Claude Code CLI...")
-            try:
-                result = subprocess.run(
-                    [npm_path, "install", "-g", "@anthropic-ai/claude-code"],
-                    timeout=180,
-                )
-            except subprocess.TimeoutExpired:
-                result = None
-            if result and result.returncode == 0:
-                ok("Claude Code CLI installed")
-                print()
-                print(f"  {BOLD}IMPORTANT: You need to authenticate before the bot can work.{NC}")
-                print(f"  {YELLOW}Run this command now:{NC}")
-                print(f"    claude login")
-                print(f"  {YELLOW}This opens your browser to sign in with your Anthropic account.{NC}")
-                print(f"  {YELLOW}Your Pro/Max plan covers usage — no API credits needed.{NC}")
-                print()
-                checkpoint_set("claude_cli")
+                _switch_provider_fallback()
             else:
-                warn("Claude Code CLI installation failed.")
-                warn("Try manually:")
-                print(f"    {npm_path} install -g @anthropic-ai/claude-code")
-                print(f"    claude login")
-                print(f"  Or re-run the installer and pick a different provider.")
-                sys.exit(1)
+                info("Installing Claude Code CLI...")
+                try:
+                    result = subprocess.run(
+                        [npm_path, "install", "-g", "@anthropic-ai/claude-code"],
+                        timeout=180,
+                    )
+                except subprocess.TimeoutExpired:
+                    result = None
+                if result and result.returncode == 0:
+                    ok("Claude Code CLI installed")
+                    print()
+                    print(f"  {BOLD}IMPORTANT: You need to authenticate before the bot can work.{NC}")
+                    print(f"  {YELLOW}Run this command now:{NC}")
+                    print(f"    claude login")
+                    print(f"  {YELLOW}This opens your browser to sign in with your Anthropic account.{NC}")
+                    print(f"  {YELLOW}Your Pro/Max plan covers usage — no API credits needed.{NC}")
+                    print()
+                    checkpoint_set("claude_cli")
+                else:
+                    _switch_provider_fallback()
 
     # --- Ollama install (if provider is ollama) ---
     if config.get("llm_provider") == "ollama" and not checkpoint_done("ollama_setup"):
