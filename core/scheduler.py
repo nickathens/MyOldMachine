@@ -99,8 +99,13 @@ def parse_natural_time(text: str) -> Optional[datetime]:
         tomorrow = now + timedelta(days=1)
         return tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    # "at HH:MM" or "at Ham/pm"
-    at_pattern = re.match(r'(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
+    # "at HH:MM" or "at Ham/pm" — requires "at" keyword, HH:MM format, or am/pm suffix
+    at_pattern = re.match(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
+    if not at_pattern:
+        # Match "3pm", "10am", "10:30am" (bare number requires am/pm or colon)
+        at_pattern = re.match(r'(\d{1,2}):(\d{2})\s*(am|pm)?$', text)
+    if not at_pattern:
+        at_pattern = re.match(r'(\d{1,2})\s*(am|pm)', text)
     if at_pattern:
         hour = int(at_pattern.group(1))
         minute = int(at_pattern.group(2) or 0)
@@ -427,11 +432,13 @@ async def _execute_command(job_id: str):
     try:
         logger.info(f"Running command job {job_id} ({meta['name']}): {command[:80]}...")
 
+        # Use sanitized environment (strips API keys/tokens)
+        from core.tools import _build_command_env
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env={**os.environ},
+            env=_build_command_env(),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
         output = stdout.decode("utf-8", errors="replace") if stdout else ""

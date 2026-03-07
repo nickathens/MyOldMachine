@@ -539,11 +539,12 @@ async def call_llm(user_id: int, message: str, chat=None) -> str:
 
 
 def _save_and_send(user_id: int, user_message: str, response: str, session=None, chat=None):
-    """Save conversation turn and trigger compaction if needed."""
+    """Save conversation turn and trigger compaction if needed.
+
+    Note: response is expected to be already sanitized by call_llm().
+    """
     if session is None:
         session = get_session(user_id)
-
-    response = sanitize_response(response)
 
     current_topic = session.get_current_topic()
     if current_topic:
@@ -1261,15 +1262,25 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"API key updated for {current_provider} by user {user_id}")
 
         # Delete the user's message to avoid the key sitting in chat history
+        chat = update.message.chat
+        deleted = False
         try:
             await update.message.delete()
+            deleted = True
         except Exception:
             pass
 
-        await update.message.chat.send_message(
-            f"API key updated for {current_provider}.\n"
-            f"(Your message with the key was deleted for security.)"
-        )
+        if deleted:
+            await chat.send_message(
+                f"API key updated for {current_provider}.\n"
+                f"(Your message with the key was deleted for security.)"
+            )
+        else:
+            await chat.send_message(
+                f"API key updated for {current_provider}.\n"
+                f"(Could not delete your message — delete it manually to avoid "
+                f"the key sitting in chat history.)"
+            )
     except Exception as e:
         logger.error(f"Failed to update API key: {e}")
         await update.message.reply_text(f"Failed: {e}")
@@ -1406,9 +1417,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     _processed_ids.add(msg_id)
     if len(_processed_ids) > _MAX_PROCESSED:
-        oldest = sorted(_processed_ids)[:len(_processed_ids) - _MAX_PROCESSED]
-        for oid in oldest:
-            _processed_ids.discard(oid)
+        # Remove oldest half — message IDs are monotonically increasing
+        cutoff = min(_processed_ids) + (_MAX_PROCESSED // 2)
+        _processed_ids.difference_update({mid for mid in _processed_ids if mid < cutoff})
 
     # Media group handling
     media_group_id = update.message.media_group_id

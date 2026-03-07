@@ -113,18 +113,20 @@ class SessionManager:
             return False
         meta = self.load_session_meta()
         last_reset = meta.get("last_reset")
-        if not last_reset:
-            return False
-        try:
-            last_reset_dt = datetime.fromisoformat(last_reset)
-        except (ValueError, TypeError):
-            return False
         now = datetime.now()
         reset_time = time(
             hour=self.config.get("daily_reset_hour", 4),
             minute=self.config.get("daily_reset_minute", 0),
         )
         today_reset = datetime.combine(now.date(), reset_time)
+        if not last_reset:
+            # Never reset before — only reset if we're past today's reset time
+            # and there's actually a conversation to reset
+            return now >= today_reset and self.conversation_file.exists()
+        try:
+            last_reset_dt = datetime.fromisoformat(last_reset)
+        except (ValueError, TypeError):
+            return False
         return now >= today_reset and last_reset_dt < today_reset
 
     def perform_daily_reset(self) -> bool:
