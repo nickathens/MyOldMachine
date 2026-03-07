@@ -281,6 +281,32 @@ DEFAULT_MODELS = {
     "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
 }
 
+# Model lists per provider — shown as numbered options during setup.
+# First entry in each list is the default (recommended).
+PROVIDER_MODELS = {
+    "claude-api": [
+        ("claude-sonnet-4-20250514", "Claude Sonnet 4 — fast, strong tool-use (recommended)"),
+        ("claude-opus-4-20250514", "Claude Opus 4 — most capable, slower, higher cost"),
+        ("claude-haiku-3-5-20241022", "Claude Haiku 3.5 — fastest, cheapest, good for simple tasks"),
+    ],
+    "openai": [
+        ("gpt-4o", "GPT-4o — multimodal, fast, strong tool-use (recommended)"),
+        ("gpt-4o-mini", "GPT-4o Mini — cheaper, faster, good for simple tasks"),
+        ("gpt-4-turbo", "GPT-4 Turbo — older but reliable"),
+        ("o3-mini", "o3-mini — reasoning model, slower but very capable"),
+    ],
+    "grok": [
+        ("grok-3-mini", "Grok 3 Mini — fast, good tool-use (recommended)"),
+        ("grok-3", "Grok 3 — most capable, higher cost"),
+        ("grok-2", "Grok 2 — older, still capable"),
+    ],
+    "gemini": [
+        ("gemini-2.0-flash", "Gemini 2.0 Flash — fast, good tool-use (recommended)"),
+        ("gemini-2.5-pro-preview-05-06", "Gemini 2.5 Pro — most capable, slower"),
+        ("gemini-2.0-flash-lite", "Gemini 2.0 Flash Lite — fastest, cheapest"),
+    ],
+}
+
 # Free models available on OpenRouter (no billing required)
 # Updated March 7 2026 — verified against openrouter.ai/models?q=free
 # IMPORTANT: Only models with tool-use/function-calling support are listed.
@@ -316,6 +342,22 @@ def _select_model_for_provider(config: dict, provider: str):
             config["llm_model"] = raw
     elif provider == "claude":
         config["llm_model"] = DEFAULT_MODELS["claude"]
+    elif provider in PROVIDER_MODELS:
+        models = PROVIDER_MODELS[provider]
+        print()
+        print(f"  {BOLD}Available models:{NC}")
+        for i, (model_id, desc) in enumerate(models, 1):
+            print(f"    {i}. {desc}")
+            print(f"       ID: {model_id}")
+        print()
+        print(f"  Or enter any model ID manually.")
+        print()
+        default_model = DEFAULT_MODELS.get(provider, models[0][0])
+        raw = ask(f"Model (number or ID)", default=default_model)
+        if raw.isdigit() and 1 <= int(raw) <= len(models):
+            config["llm_model"] = models[int(raw) - 1][0]
+        else:
+            config["llm_model"] = raw
     else:
         default_model = DEFAULT_MODELS.get(provider, "")
         config["llm_model"] = ask(f"Model", default=default_model)
