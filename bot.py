@@ -126,8 +126,17 @@ def save_task_progress(user_id: int, original_message: str, partial_text: str,
         "started": started,
         "updated": datetime.now().isoformat(),
     }
-    with open(progress_file, "w") as f:
-        json.dump(data, f, indent=2)
+    # Atomic write to prevent corruption on crash
+    tmp = progress_file.with_suffix(".json.tmp")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(progress_file)
+    except Exception as e:
+        logger.warning(f"Failed to save task progress for {user_id}: {e}")
+        tmp.unlink(missing_ok=True)
 
 
 def clear_task_progress(user_id: int):
@@ -451,7 +460,10 @@ def build_messages(user_id: int, new_message: str) -> list[Message]:
 
     messages = []
     for msg in history:
-        messages.append(Message(role=msg["role"], content=msg["content"]))
+        role = msg.get("role")
+        content = msg.get("content")
+        if role and content is not None:
+            messages.append(Message(role=role, content=content))
     messages.append(Message(role="user", content=new_message))
     return messages
 
@@ -574,9 +586,9 @@ def split_message(text: str, max_length: int = 4000) -> list[str]:
             chunks.append(text)
             break
         split_at = text.rfind("\n", 0, max_length)
-        if split_at == -1:
+        if split_at <= 0:
             split_at = text.rfind(" ", 0, max_length)
-        if split_at == -1:
+        if split_at <= 0:
             split_at = max_length
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip()

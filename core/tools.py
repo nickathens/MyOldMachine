@@ -1048,7 +1048,8 @@ async def _run_command(command: str, background: bool = False,
 
         # Truncate if too large
         if len(output) > MAX_OUTPUT_CHARS:
-            output = output[:MAX_OUTPUT_CHARS] + f"\n\n[Truncated — {len(output)} chars total]"
+            original_len = len(output)
+            output = output[:MAX_OUTPUT_CHARS] + f"\n\n[Truncated — {original_len} chars total]"
 
         return output
 
@@ -1141,7 +1142,8 @@ def _read_file(path: str) -> str:
     try:
         content = p.read_text(errors="replace")
         if len(content) > MAX_OUTPUT_CHARS:
-            content = content[:MAX_OUTPUT_CHARS] + f"\n\n[Truncated — {len(content)} chars total]"
+            original_len = len(content)
+            content = content[:MAX_OUTPUT_CHARS] + f"\n\n[Truncated — {original_len} chars total]"
         return content
     except PermissionError:
         return f"Error: Permission denied: {path}"
