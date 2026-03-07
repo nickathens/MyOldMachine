@@ -749,6 +749,50 @@ class GeminiProvider(LLMProvider):
         )
 
 
+class GrokProvider(LLMProvider):
+    """xAI Grok API — OpenAI-compatible with tool-use support.
+
+    Uses api.x.ai/v1 endpoint. $25 free credits on signup,
+    plus $150/month free if you opt into data sharing.
+    """
+
+    BASE_URL = "https://api.x.ai/v1"
+
+    def __init__(self, model: str, api_key: str = ""):
+        super().__init__(model, api_key)
+
+    @property
+    def provider_name(self) -> str:
+        return "grok"
+
+    @property
+    def supports_vision(self) -> bool:
+        # Grok 2+ models support vision, as do explicit vision variants
+        return "vision" in self.model or "grok-2" in self.model or "grok-3" in self.model
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ],
+        }
+        return await _openai_tool_loop(
+            url=f"{self.BASE_URL}/chat/completions",
+            headers=headers,
+            body=body,
+            model=self.model,
+            provider_name=self.provider_name,
+        )
+
+
 class OllamaProvider(LLMProvider):
     """Ollama local models with tool-use support."""
 
@@ -864,6 +908,8 @@ def create_provider(
             model, api_key, kwargs.get("base_url", "http://localhost:11434")
         ),
         "openrouter": lambda: OpenRouterProvider(model, api_key),
+        "grok": lambda: GrokProvider(model, api_key),
+        "xai": lambda: GrokProvider(model, api_key),
     }
     factory = providers.get(provider.lower())
     if not factory:

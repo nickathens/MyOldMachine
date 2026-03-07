@@ -247,8 +247,9 @@ LLM_PROVIDERS = [
     ("claude", "Claude Code CLI — full machine control via native tool-use (requires Node.js + claude CLI)"),
     ("claude-api", "Anthropic Claude API — text-only, no machine control, requires API key ($)"),
     ("openai", "OpenAI GPT — machine control via function calling, requires API key ($)"),
+    ("grok", "xAI Grok — machine control via function calling, $25 free credits + $150/mo with data sharing"),
     ("gemini", "Google Gemini — machine control via function calling, requires API key (free tier may have zero quota)"),
-    ("ollama", "Ollama — machine control via function calling, free, runs locally (no API key)"),
+    ("ollama", "Ollama — machine control via function calling, free, runs locally (auto-installs if needed)"),
     ("openrouter", "OpenRouter — machine control via function calling, many models, one API key (free models available)"),
 ]
 
@@ -256,6 +257,7 @@ DEFAULT_MODELS = {
     "claude": "claude-sonnet-4-20250514",
     "claude-api": "claude-sonnet-4-20250514",
     "openai": "gpt-4o",
+    "grok": "grok-3-mini",
     "gemini": "gemini-2.0-flash",
     "ollama": "llama3.1:8b",
     "openrouter": "meta-llama/llama-3.3-70b-instruct:free",
@@ -274,7 +276,7 @@ OPENROUTER_FREE_MODELS = [
 ]
 
 # Providers that need an API key
-API_KEY_PROVIDERS = {"claude-api", "openai", "gemini", "openrouter"}
+API_KEY_PROVIDERS = {"claude-api", "openai", "grok", "gemini", "openrouter"}
 
 
 def write_env(repo_dir: Path, config: dict):
@@ -484,6 +486,103 @@ def main():
             warn("npm not found — cannot install Claude Code CLI automatically.")
             warn("Install manually: npm install -g @anthropic-ai/claude-code && claude login")
 
+    # --- Ollama install (if provider is ollama) ---
+    if config.get("llm_provider") == "ollama" and not checkpoint_done("ollama_setup"):
+        import shutil as _shutil
+        ollama_auto = config.get("ollama_auto_install", not _shutil.which("ollama"))
+
+        if ollama_auto or not _shutil.which("ollama"):
+            print(f"\n{BOLD}Ollama Setup{NC}")
+
+            # Run hardware benchmark first
+            info("Running hardware benchmark...")
+            try:
+                benchmark_result = subprocess.run(
+                    [sys.executable, str(repo_dir / "install" / "ollama_setup.py"),
+                     "--json"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if benchmark_result.returncode == 0 and benchmark_result.stdout.strip():
+                    import json as _json
+                    bench_data = _json.loads(benchmark_result.stdout.strip())
+                    specs = bench_data.get("specs", {})
+                    recommended = bench_data.get("recommended_model")
+                    explanation = bench_data.get("explanation", "")
+
+                    print(f"  CPU:  {specs.get('cpu_name', '?')} ({specs.get('cpu_cores', '?')} cores)")
+                    print(f"  RAM:  {specs.get('ram_gb', '?')} GB")
+                    print(f"  Disk: {specs.get('disk_free_gb', '?')} GB free")
+                    gpu = specs.get("gpu", {})
+                    if gpu.get("name"):
+                        print(f"  GPU:  {gpu['name']} [{gpu['type']}]")
+                    print()
+
+                    if recommended:
+                        print(f"  {explanation}")
+                        print()
+                        # Update the default model
+                        config["llm_model"] = recommended
+                    else:
+                        warn("Hardware doesn't meet minimum requirements for local models.")
+                        warn("Consider switching to OpenRouter (free) for better results.")
+                        print()
+            except (subprocess.TimeoutExpired, Exception) as e:
+                warn(f"Benchmark failed ({e}). Continuing with defaults...")
+
+            # Now run the full setup (install + pull)
+            info("Installing Ollama and pulling model...")
+            # Use --model with the benchmark recommendation, or --auto to let it decide
+            if config.get("llm_model") and config["llm_model"] != DEFAULT_MODELS.get("ollama"):
+                # Benchmark recommended a specific model (or user chose one)
+                setup_args = [
+                    sys.executable, str(repo_dir / "install" / "ollama_setup.py"),
+                    "--model", config["llm_model"],
+                ]
+            else:
+                # Let ollama_setup auto-detect the best model
+                setup_args = [
+                    sys.executable, str(repo_dir / "install" / "ollama_setup.py"),
+                    "--auto",
+                ]
+
+            result = subprocess.run(setup_args)
+
+            if result.returncode == 0:
+                ok("Ollama setup complete")
+                checkpoint_set("ollama_setup")
+
+                # Update .env with the actual model (may have changed from default)
+                env_file = repo_dir / ".env"
+                if env_file.exists():
+                    env_content = env_file.read_text()
+                    lines = env_content.splitlines()
+                    new_lines = []
+                    for line in lines:
+                        if line.startswith("LLM_MODEL="):
+                            new_lines.append(f"LLM_MODEL={config['llm_model']}")
+                        else:
+                            new_lines.append(line)
+                    env_file.write_text("\n".join(new_lines) + "\n")
+            else:
+                warn("Ollama setup had issues. You can retry later:")
+                warn(f"  python {repo_dir}/install/ollama_setup.py")
+        else:
+            ok("Ollama is already installed")
+            # Just verify the model is available
+            model = config.get("llm_model", "llama3.1:8b")
+            info(f"Checking if model {model} is available...")
+            try:
+                check = subprocess.run(
+                    ["ollama", "show", model],
+                    capture_output=True, text=True, timeout=10
+                )
+                if check.returncode != 0:
+                    info(f"Model {model} not found locally. Pulling...")
+                    subprocess.run(["ollama", "pull", model], timeout=1800)
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                warn(f"Could not verify model. Make sure to run: ollama pull {model}")
+            checkpoint_set("ollama_setup")
+
     # --- Service setup ---
     if not checkpoint_done("service"):
         result = subprocess.run(
@@ -594,10 +693,28 @@ def _run_wizard_steps(detected_os: str) -> dict:
         config["llm_api_key"] = ""
         print(f"  {YELLOW}Claude Code CLI will be installed automatically (requires Node.js).{NC}")
         print(f"  {YELLOW}After install, run: claude login{NC}")
+    elif config["llm_provider"] == "grok":
+        print(f"  {GREEN}xAI Grok — $25 free credits on signup.{NC}")
+        print(f"  {GREEN}Opt into data sharing for $150/month additional free credits.{NC}")
+        print()
+        print(f"  You need an xAI API key:")
+        print(f"    1. Go to https://console.x.ai and sign up")
+        print(f"    2. Create an API key")
+        print(f"    3. Paste it below")
+        print()
+        config["llm_api_key"] = ask(f"xAI API key", secret=True)
     elif config["llm_provider"] == "ollama":
         config["llm_api_key"] = ""
-        config["ollama_url"] = ask("Ollama URL", default="http://localhost:11434", required=False)
-        print(f"  {YELLOW}Make sure Ollama is running: ollama serve{NC}")
+        # Check if Ollama is already installed
+        import shutil as _shutil
+        ollama_installed = _shutil.which("ollama") is not None
+        if ollama_installed:
+            ok("Ollama is already installed")
+            config["ollama_url"] = ask("Ollama URL", default="http://localhost:11434", required=False)
+        else:
+            print(f"  {YELLOW}Ollama is not installed. It will be installed automatically during setup.{NC}")
+            config["ollama_url"] = "http://localhost:11434"
+            config["ollama_auto_install"] = True
     elif config["llm_provider"] == "openrouter":
         # Check if user picked a model from the free list
         free_model_ids = {m[0] for m in OPENROUTER_FREE_MODELS}

@@ -966,8 +966,10 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     provider = get_llm_provider()
     if isinstance(_llm_provider, ClaudeCLIProvider):
         tool_use = "Yes (Claude CLI — native)"
-    else:
+    elif _llm_provider and _llm_provider.supports_tool_use:
         tool_use = "Yes (function calling)"
+    else:
+        tool_use = "No (text-only)"
     text = (
         f"MyOldMachine System Info\n\n"
         f"Version: {version} ({branch})\n"
