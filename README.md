@@ -53,10 +53,26 @@ Any Linux distribution with one of these package managers will work. The install
 ### Other
 - **Windows** (planned)
 
+### Software compatibility
+
+Not every machine can run the latest version of every app. The installer handles this automatically:
+
+1. **System package manager first** — tries `apt install`, `dnf install`, `brew install`, etc.
+2. **Flatpak fallback (Linux)** — if the system package fails (wrong version, missing from repos, too old), it tries Flatpak. Flatpak apps are sandboxed and version-independent — a 2016 Ubuntu machine can run the latest Blender via Flatpak even if `apt install blender` would give you Blender 2.79.
+3. **Direct binary downloads (macOS)** — for ffmpeg and Node.js, downloads pre-built binaries when Homebrew can't build them on old macOS.
+4. **Report what failed** — anything that couldn't be installed is reported with actionable guidance. The bot can help troubleshoot after setup.
+
+This means:
+- An old Ubuntu 18.04 laptop can still get modern Blender, GIMP, and Inkscape via Flatpak
+- A Fedora machine that doesn't have Blender in its repos gets it from Flathub
+- A macOS Catalina Mac that can't build ffmpeg via Homebrew gets a static binary instead
+- If nothing works for a specific app, you know exactly why and what to try next
+
 ### Hardware notes
 - Ollama (local AI) requires macOS 12+ or a modern Linux kernel
 - Playwright (browser skill) needs enough RAM for Chromium — on non-Debian systems, you may need to install browser dependencies manually
 - On first boot, the bot probes the system and reports which skills are ready vs. which need dependencies installed
+- Apps installed via Flatpak are detected by the system probe and reported alongside system-installed tools
 
 When something doesn't work, the bot is your first line of support. Tell it what happened. It has the context, the logs, and the ability to fix things on the machine.
 
@@ -290,7 +306,9 @@ The bot is your primary troubleshooting tool. But here are common issues:
 
 **Skills showing "not ready":** Run `/update` to re-probe system capabilities. The bot detects which tools and libraries are installed. Missing dependencies install automatically on first skill use, or you can install them manually and re-probe.
 
-**Workstation apps not installed:** If you chose minimal or headless mode and want desktop apps later, tell the bot. It can install Blender, GIMP, Inkscape, etc. on demand.
+**Workstation apps not installed:** If you chose minimal or headless mode and want desktop apps later, tell the bot. It can install Blender, GIMP, Inkscape, etc. on demand — either through the system package manager or via Flatpak.
+
+**Flatpak apps not launching from CLI:** Flatpak apps don't always create wrappers in PATH. Use `flatpak run org.blender.Blender` instead of just `blender`. The bot knows how to handle this.
 
 **Tool-use not working with small models:** Models under 7B parameters are unreliable at structured tool calls. Use OpenRouter's free tier for cloud models if your machine can only run small local ones.
 

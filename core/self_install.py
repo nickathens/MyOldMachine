@@ -314,7 +314,32 @@ def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
             installed.extend(system_missing)
         else:
             logger.error(f"Failed to install system packages: {result.stderr[:200]}")
-            failed.extend(system_missing)
+            # Try Flatpak fallback for each failed system package (Linux only)
+            if _is_linux():
+                still_failed = []
+                for pkg in system_missing:
+                    try:
+                        from install.compat import PACKAGES as COMPAT_PKGS, _install_via_flatpak
+                        # Find a compat entry matching this package name or binary
+                        compat_spec = COMPAT_PKGS.get(pkg)
+                        if not compat_spec:
+                            # Try matching by looking at system_packages values
+                            for spec in COMPAT_PKGS.values():
+                                pkg_names = spec.system_packages.values()
+                                if pkg in pkg_names or any(pkg in pn for pn in pkg_names):
+                                    compat_spec = spec
+                                    break
+                        if compat_spec and compat_spec.flatpak_id:
+                            logger.info(f"Trying Flatpak for {pkg}: {compat_spec.flatpak_id}")
+                            if _install_via_flatpak(compat_spec.flatpak_id, password):
+                                installed.append(f"{pkg} (flatpak)")
+                                continue
+                    except ImportError:
+                        pass
+                    still_failed.append(pkg)
+                failed.extend(still_failed)
+            else:
+                failed.extend(system_missing)
 
     # Pip packages — use venv pip explicitly
     pip_missing = [m.split(":", 1)[1] for m in missing if m.startswith("pip:")]

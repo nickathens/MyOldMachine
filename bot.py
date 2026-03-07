@@ -358,6 +358,13 @@ def build_system_prompt(user_id: int) -> str:
                 "use run_command with background=true, then poll with check_process."
             )
         parts.append("If the user asks for something and you're missing a tool, install it.")
+        parts.append("")
+        parts.append("### Software Compatibility:")
+        parts.append("Some apps may be installed via Flatpak instead of the system package manager.")
+        parts.append("Flatpak apps are sandboxed and version-independent — they work on any Linux version.")
+        parts.append("To run a Flatpak app: flatpak run <app_id>  (e.g. flatpak run org.blender.Blender)")
+        parts.append("To check installed Flatpak apps: flatpak list --app")
+        parts.append("If a skill's binary isn't in PATH but is installed via Flatpak, use the flatpak run command.")
     else:
         parts.append(f"You are {bot_name}, an AI assistant.")
         parts.append("You are a text-only assistant. You CANNOT run commands or access the filesystem. "

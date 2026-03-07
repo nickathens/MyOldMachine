@@ -69,6 +69,27 @@ def _detect_package_manager() -> str:
     return "none"
 
 
+def _check_flatpak_apps() -> dict:
+    """Check for Flatpak-installed applications. Returns {app_id: True}."""
+    if not shutil.which("flatpak"):
+        return {}
+    try:
+        result = subprocess.run(
+            ["flatpak", "list", "--app", "--columns=application"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            apps = {}
+            for line in result.stdout.strip().splitlines():
+                app_id = line.strip()
+                if app_id:
+                    apps[app_id] = True
+            return apps
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return {}
+
+
 def _get_ram_gb() -> float:
     """Get total RAM in GB."""
     try:
@@ -128,6 +149,30 @@ def probe_system(data_dir: Path) -> dict:
     caps["python_modules"] = {}
     for m in modules:
         caps["python_modules"][m] = _check_python_module(m)
+
+    # Flatpak apps (Linux — version-independent app installs)
+    flatpak_apps = _check_flatpak_apps()
+    caps["flatpak_available"] = shutil.which("flatpak") is not None
+    caps["flatpak_apps"] = flatpak_apps
+
+    # Map Flatpak app IDs to the binary/skill they provide.
+    # If a binary is missing from PATH but installed via Flatpak, the skill
+    # is still usable — the bot runs it via `flatpak run <app_id>`.
+    _flatpak_to_binary = {
+        "org.blender.Blender": "blender",
+        "org.gimp.GIMP": "gimp",
+        "org.inkscape.Inkscape": "inkscape",
+        "org.libreoffice.LibreOffice": "soffice",
+        "org.chromium.Chromium": "chromium",
+    }
+    for app_id, binary_name in _flatpak_to_binary.items():
+        if app_id in flatpak_apps and binary_name in caps["binaries"]:
+            if not caps["binaries"][binary_name]["available"]:
+                caps["binaries"][binary_name] = {
+                    "available": True,
+                    "path": f"flatpak run {app_id}",
+                    "version": "(flatpak)",
+                }
 
     # Skill readiness — based on what's available
     skill_status = {}
@@ -246,6 +291,13 @@ def get_caps_summary(data_dir: Path) -> str:
                     if not info.get("available")]
     if missing_bins:
         lines.append(f"Missing tools: {', '.join(missing_bins)}")
+
+    # Flatpak apps
+    flatpak_apps = caps.get("flatpak_apps", {})
+    if flatpak_apps:
+        lines.append(f"Flatpak apps: {', '.join(flatpak_apps.keys())}")
+    elif caps.get("flatpak_available"):
+        lines.append("Flatpak: installed (no apps)")
 
     # Skill summary
     summary = caps.get("summary", {})
