@@ -14,6 +14,7 @@ import argparse
 import getpass
 import json
 import os
+import platform
 import re
 import stat
 import subprocess
@@ -488,100 +489,93 @@ def main():
 
     # --- Ollama install (if provider is ollama) ---
     if config.get("llm_provider") == "ollama" and not checkpoint_done("ollama_setup"):
-        import shutil as _shutil
-        ollama_auto = config.get("ollama_auto_install", not _shutil.which("ollama"))
+        from install.ollama_setup import (
+            install_ollama, ensure_ollama_running, pull_model as ollama_pull_model,
+            verify_model, is_ollama_installed,
+        )
 
-        if ollama_auto or not _shutil.which("ollama"):
-            print(f"\n{BOLD}Ollama Setup{NC}")
+        model = config.get("llm_model", DEFAULT_MODELS.get("ollama", "llama3.1:8b"))
+        print(f"\n{BOLD}Ollama Setup{NC}")
+        info(f"Target model: {model}")
+        print()
 
-            # Run hardware benchmark first
-            info("Running hardware benchmark...")
-            try:
-                benchmark_result = subprocess.run(
-                    [sys.executable, str(repo_dir / "install" / "ollama_setup.py"),
-                     "--json"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                if benchmark_result.returncode == 0 and benchmark_result.stdout.strip():
-                    import json as _json
-                    bench_data = _json.loads(benchmark_result.stdout.strip())
-                    specs = bench_data.get("specs", {})
-                    recommended = bench_data.get("recommended_model")
-                    explanation = bench_data.get("explanation", "")
-
-                    print(f"  CPU:  {specs.get('cpu_name', '?')} ({specs.get('cpu_cores', '?')} cores)")
-                    print(f"  RAM:  {specs.get('ram_gb', '?')} GB")
-                    print(f"  Disk: {specs.get('disk_free_gb', '?')} GB free")
-                    gpu = specs.get("gpu", {})
-                    if gpu.get("name"):
-                        print(f"  GPU:  {gpu['name']} [{gpu['type']}]")
-                    print()
-
-                    if recommended:
-                        print(f"  {explanation}")
-                        print()
-                        # Update the default model
-                        config["llm_model"] = recommended
-                    else:
-                        warn("Hardware doesn't meet minimum requirements for local models.")
-                        warn("Consider switching to OpenRouter (free) for better results.")
-                        print()
-            except (subprocess.TimeoutExpired, Exception) as e:
-                warn(f"Benchmark failed ({e}). Continuing with defaults...")
-
-            # Now run the full setup (install + pull)
-            info("Installing Ollama and pulling model...")
-            # Use --model with the benchmark recommendation, or --auto to let it decide
-            if config.get("llm_model") and config["llm_model"] != DEFAULT_MODELS.get("ollama"):
-                # Benchmark recommended a specific model (or user chose one)
-                setup_args = [
-                    sys.executable, str(repo_dir / "install" / "ollama_setup.py"),
-                    "--model", config["llm_model"],
-                ]
-            else:
-                # Let ollama_setup auto-detect the best model
-                setup_args = [
-                    sys.executable, str(repo_dir / "install" / "ollama_setup.py"),
-                    "--auto",
-                ]
-
-            result = subprocess.run(setup_args)
-
-            if result.returncode == 0:
-                ok("Ollama setup complete")
-                checkpoint_set("ollama_setup")
-
-                # Update .env with the actual model (may have changed from default)
-                env_file = repo_dir / ".env"
-                if env_file.exists():
-                    env_content = env_file.read_text()
-                    lines = env_content.splitlines()
-                    new_lines = []
-                    for line in lines:
-                        if line.startswith("LLM_MODEL="):
-                            new_lines.append(f"LLM_MODEL={config['llm_model']}")
-                        else:
-                            new_lines.append(line)
-                    env_file.write_text("\n".join(new_lines) + "\n")
-            else:
-                warn("Ollama setup had issues. You can retry later:")
-                warn(f"  python {repo_dir}/install/ollama_setup.py")
+        # Step 1: Install Ollama if needed
+        if not is_ollama_installed():
+            info("Installing Ollama...")
+            if not install_ollama():
+                warn("Automatic Ollama installation failed.")
+                warn("Install manually:")
+                if platform.system() == "Darwin":
+                    warn("  brew install ollama")
+                    warn("  -- or --")
+                    warn("  Download from https://ollama.com/download/mac")
+                else:
+                    warn("  curl -fsSL https://ollama.com/install.sh | sh")
+                warn(f"Then run: ollama pull {model}")
+                warn("Then re-run the installer.")
+                sys.exit(1)
         else:
             ok("Ollama is already installed")
-            # Just verify the model is available
-            model = config.get("llm_model", "llama3.1:8b")
-            info(f"Checking if model {model} is available...")
+
+        # Step 2: Ensure Ollama server is running
+        info("Starting Ollama server...")
+        if not ensure_ollama_running():
+            warn("Could not start Ollama automatically. Trying manual start...")
+            # Last resort: start serve directly and wait
             try:
+                subprocess.Popen(
+                    ["ollama", "serve"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                import time as _time
+                _time.sleep(5)
+                # Verify
                 check = subprocess.run(
-                    ["ollama", "show", model],
+                    ["ollama", "list"],
                     capture_output=True, text=True, timeout=10
                 )
                 if check.returncode != 0:
-                    info(f"Model {model} not found locally. Pulling...")
-                    subprocess.run(["ollama", "pull", model], timeout=1800)
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                warn(f"Could not verify model. Make sure to run: ollama pull {model}")
-            checkpoint_set("ollama_setup")
+                    warn("Ollama server won't start. You may need to start it manually:")
+                    warn("  ollama serve")
+                    warn("Then re-run the installer.")
+                    sys.exit(1)
+            except Exception as e:
+                warn(f"Failed to start Ollama: {e}")
+                warn("Start it manually: ollama serve")
+                warn("Then re-run the installer.")
+                sys.exit(1)
+        ok("Ollama server is running")
+
+        # Step 3: Pull the model
+        info(f"Pulling model: {model}")
+        info("This may take a while depending on model size and connection speed...")
+        if not ollama_pull_model(model):
+            warn(f"Failed to pull model {model}.")
+            warn(f"Try manually: ollama pull {model}")
+            warn("Then re-run the installer.")
+            sys.exit(1)
+
+        # Step 4: Verify model responds
+        verify_model(model)
+
+        ok(f"Ollama ready with model: {model}")
+        checkpoint_set("ollama_setup")
+
+        # Update .env with the confirmed model
+        env_file = repo_dir / ".env"
+        if env_file.exists():
+            env_content = env_file.read_text()
+            lines = env_content.splitlines()
+            new_lines = []
+            for line in lines:
+                if line.startswith("LLM_MODEL="):
+                    new_lines.append(f"LLM_MODEL={model}")
+                else:
+                    new_lines.append(line)
+            env_file.write_text("\n".join(new_lines) + "\n")
+        print()
 
     # --- Service setup ---
     if not checkpoint_done("service"):
@@ -688,6 +682,47 @@ def _run_wizard_steps(detected_os: str) -> dict:
             config["llm_model"] = OPENROUTER_FREE_MODELS[int(raw) - 1][0]
         else:
             config["llm_model"] = raw
+    elif config["llm_provider"] == "ollama":
+        # Auto-detect hardware and pick the best model — no user input needed
+        print()
+        info("Detecting hardware to pick the best local model...")
+        try:
+            benchmark_result = subprocess.run(
+                [sys.executable, str(REPO_DIR / "install" / "ollama_setup.py"),
+                 "--json"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if benchmark_result.returncode == 0 and benchmark_result.stdout.strip():
+                bench_data = json.loads(benchmark_result.stdout.strip())
+                specs = bench_data.get("specs", {})
+                recommended = bench_data.get("recommended_model")
+                explanation = bench_data.get("explanation", "")
+
+                print(f"  CPU:  {specs.get('cpu_name', '?')} ({specs.get('cpu_cores', '?')} cores)")
+                print(f"  RAM:  {specs.get('ram_gb', '?')} GB")
+                print(f"  Disk: {specs.get('disk_free_gb', '?')} GB free")
+                gpu = specs.get("gpu", {})
+                if gpu.get("name"):
+                    print(f"  GPU:  {gpu['name']} [{gpu['type']}]")
+                print()
+
+                if recommended:
+                    config["llm_model"] = recommended
+                    ok(f"Selected model: {recommended}")
+                    # Strip ANSI for clean display
+                    clean_exp = re.sub(r'\033\[[0-9;]*m', '', explanation)
+                    print(f"  {clean_exp}")
+                else:
+                    warn("Hardware doesn't meet minimum requirements for local models.")
+                    warn("Falling back to smallest available model.")
+                    config["llm_model"] = "qwen2.5:0.5b"
+            else:
+                warn("Benchmark returned no data. Using default model.")
+                config["llm_model"] = DEFAULT_MODELS.get("ollama", "llama3.1:8b")
+        except (subprocess.TimeoutExpired, Exception) as e:
+            warn(f"Hardware detection failed ({e}). Using default model.")
+            config["llm_model"] = DEFAULT_MODELS.get("ollama", "llama3.1:8b")
+        print()
     else:
         default_model = DEFAULT_MODELS.get(config["llm_provider"], "")
         config["llm_model"] = ask(f"Model", default=default_model)
@@ -709,15 +744,12 @@ def _run_wizard_steps(detected_os: str) -> dict:
         config["llm_api_key"] = ask(f"xAI API key", secret=True)
     elif config["llm_provider"] == "ollama":
         config["llm_api_key"] = ""
-        # Check if Ollama is already installed
+        config["ollama_url"] = "http://localhost:11434"
         import shutil as _shutil
-        ollama_installed = _shutil.which("ollama") is not None
-        if ollama_installed:
+        if _shutil.which("ollama"):
             ok("Ollama is already installed")
-            config["ollama_url"] = ask("Ollama URL", default="http://localhost:11434", required=False)
         else:
-            print(f"  {YELLOW}Ollama is not installed. It will be installed automatically during setup.{NC}")
-            config["ollama_url"] = "http://localhost:11434"
+            print(f"  {GREEN}Ollama will be installed automatically.{NC}")
             config["ollama_auto_install"] = True
     elif config["llm_provider"] == "openrouter":
         # Check if user picked a model from the free list
