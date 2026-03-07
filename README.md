@@ -16,9 +16,25 @@ This is not a polished consumer product. It's a toolkit. You shape it.
 - **Full machine access** — the bot can run commands, read/write files, install software, manage processes
 - **LLM-agnostic** — works with Claude, OpenAI, Grok, Gemini, Ollama (local/free), or OpenRouter. 7 providers, switch anytime from Telegram
 - **Self-installing dependencies** — skills auto-install what they need on first use
-- **Modular skills** — weather, translation, web browsing, OCR, file compression, image editing, audio editing, video editing, downloads, and more
+- **37 skills** — Blender, GIMP, Inkscape, browser automation, audio/video editing, web scraping, cloud sync, and more
 - **Reminders & scheduling** — natural language, SQLite-backed, survives reboots
 - **Memory** — persistent facts, conversation history, project tracking
+
+## Install modes
+
+The installer gives you three choices:
+
+### Full Workstation (recommended)
+
+Your desktop stays intact. The bot installs creative and productivity apps alongside itself: Blender, GIMP, Inkscape, LibreOffice, ImageMagick, rclone. You can sit at the machine and use it normally while also controlling it through Telegram. This is the mode that makes your old machine most useful — the bot can open apps, edit files, render 3D scenes, process images, build websites.
+
+### Minimal
+
+The bot runs as a background service. Your existing apps and settings stay untouched. Skills self-install their dependencies on first use. Good if you want to keep the machine exactly as it is and let the bot grow into it gradually.
+
+### Headless Server
+
+Strips the desktop environment, disables sleep, turns the machine into a dedicated bot appliance. You interact with it only through Telegram or SSH. Frees up RAM and CPU for the bot. Good for machines you'll never sit in front of again.
 
 ## Supported platforms
 
@@ -68,7 +84,7 @@ The installer walks you through:
 4. LLM provider — shows which are free, which cost money
 5. Model selection — recommended models per provider
 6. Bot name and timezone
-7. Takeover level (full or soft)
+7. Install mode — workstation, minimal, or headless
 8. Sudo password (stored locally, never transmitted)
 
 After setup, the bot messages you on Telegram with machine specs and loaded skills.
@@ -98,7 +114,7 @@ Switch providers anytime from Telegram — no SSH needed:
 
 Skills are modular packages the bot loads automatically. Each has instructions the LLM reads, optional scripts, and a dependency manifest.
 
-### Included skills
+### Core skills (all install modes)
 
 | Skill | What it does |
 |-------|-------------|
@@ -124,6 +140,26 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | qrcode | Generate QR codes |
 | rss | Parse RSS/Atom feeds |
 | regex | Pattern matching and text extraction |
+
+### Workstation skills (pre-installed in workstation mode, self-install in others)
+
+| Skill | What it does |
+|-------|-------------|
+| blender | 3D modeling, rendering, animation via Blender's Python API |
+| gimp | Image editing and manipulation via GIMP's Script-Fu |
+| inkscape | Vector graphics creation and manipulation via Inkscape CLI |
+| spreadsheet | Create, edit, export Excel/ODS spreadsheets (LibreOffice + openpyxl) |
+| scraper | Web scraping with Playwright — handles JavaScript-rendered pages |
+| media | Screenshots and video recording of web pages |
+| icon-gen | Generate favicons, app icons, and icon sets |
+| sprite-gen | Create sprites and sprite sheets for games |
+| code-scaffold | Generate project templates and boilerplate |
+| charts | Terminal bar and line charts |
+| notes | Notes and knowledge management with nb |
+| bookmarks | Bookmark management with buku |
+| cloud-sync | Sync files to cloud storage (Google Drive, Dropbox, S3) via rclone |
+| web-build | Static site generation and web development |
+| upscale | AI-powered image upscaling with Real-ESRGAN |
 
 ### Adding your own skills
 
@@ -253,6 +289,8 @@ The bot is your primary troubleshooting tool. But here are common issues:
 **Non-Debian Linux — browser skill not working:** Playwright's `install-deps` only supports apt-based systems. On Fedora, Arch, etc., install Chromium through your package manager (`dnf install chromium`, `pacman -S chromium`), then the browser skill should work.
 
 **Skills showing "not ready":** Run `/update` to re-probe system capabilities. The bot detects which tools and libraries are installed. Missing dependencies install automatically on first skill use, or you can install them manually and re-probe.
+
+**Workstation apps not installed:** If you chose minimal or headless mode and want desktop apps later, tell the bot. It can install Blender, GIMP, Inkscape, etc. on demand.
 
 **Tool-use not working with small models:** Models under 7B parameters are unreliable at structured tool calls. Use OpenRouter's free tier for cloud models if your machine can only run small local ones.
 

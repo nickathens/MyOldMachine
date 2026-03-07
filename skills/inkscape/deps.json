@@ -1,0 +1,10 @@
+{
+  "check": {
+    "inkscape": "which inkscape"
+  },
+  "apt": ["inkscape"],
+  "dnf": ["inkscape"],
+  "pacman": ["inkscape"],
+  "zypper": ["inkscape"],
+  "brew": ["inkscape"]
+}

@@ -1,0 +1,5 @@
+{
+  "check": {
+    "node": "which node"
+  }
+}

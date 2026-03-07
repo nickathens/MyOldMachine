@@ -427,6 +427,216 @@ def provision_linux_soft(os_info: OSInfo, password):
     ok("Linux provisioning complete")
 
 
+# --- Workstation packages ---
+# Desktop applications installed in workstation mode.
+# These are the creative/productivity apps that make the machine a full workstation.
+LINUX_WORKSTATION_PACKAGES = {
+    "apt": [
+        "blender", "gimp", "inkscape",
+        "libreoffice-calc", "libreoffice-writer", "libreoffice-impress",
+        "imagemagick",
+        "chromium-browser",
+        "rclone",
+    ],
+    "dnf": [
+        "blender", "gimp", "inkscape",
+        "libreoffice-calc", "libreoffice-writer", "libreoffice-impress",
+        "ImageMagick",
+        "chromium",
+        "rclone",
+    ],
+    "yum": [
+        "gimp", "inkscape",
+        "libreoffice-calc", "libreoffice-writer", "libreoffice-impress",
+        "ImageMagick",
+        "chromium",
+    ],
+    "pacman": [
+        "blender", "gimp", "inkscape",
+        "libreoffice-fresh",
+        "imagemagick",
+        "chromium",
+        "rclone",
+    ],
+    "zypper": [
+        "blender", "gimp", "inkscape",
+        "libreoffice-calc", "libreoffice-writer", "libreoffice-impress",
+        "ImageMagick",
+        "chromium",
+        "rclone",
+    ],
+    "apk": [
+        "gimp", "inkscape",
+        "imagemagick",
+        "chromium",
+        "rclone",
+    ],
+}
+
+MACOS_WORKSTATION_CASKS = [
+    "blender", "gimp", "inkscape", "libreoffice", "chromium",
+]
+
+MACOS_WORKSTATION_FORMULAE = [
+    "imagemagick", "rclone",
+]
+
+
+def provision_linux_workstation(os_info: OSInfo, password):
+    """Workstation mode: install deps + desktop apps, keep desktop intact."""
+    info(f"Starting workstation Linux provisioning on {os_info.display_name}...")
+
+    # Step 1: Install base dependencies (same as soft install)
+    _install_linux_deps(os_info, password)
+
+    # Step 2: Install workstation/desktop apps
+    _install_linux_workstation_apps(os_info, password)
+
+    # Step 3: Configure system (lid close, SSH, firewall — but keep desktop)
+    _configure_linux(os_info, password)
+
+    ok("Linux workstation provisioning complete")
+
+
+def _install_linux_workstation_apps(os_info: OSInfo, password):
+    """Install desktop/creative applications for workstation mode."""
+    mgr = os_info.package_manager
+    if not mgr:
+        warn("No package manager detected — skipping workstation app installation")
+        return
+
+    packages = LINUX_WORKSTATION_PACKAGES.get(mgr, LINUX_WORKSTATION_PACKAGES.get("apt", []))
+    if not packages:
+        warn(f"No workstation packages defined for {mgr}")
+        return
+
+    install_cmd_tpl = _PKG_INSTALL_CMDS.get(mgr, "")
+    if not install_cmd_tpl:
+        warn(f"No install command for {mgr}")
+        return
+
+    info(f"Installing workstation apps via {mgr}...")
+    info("(This may take a while — Blender, GIMP, and LibreOffice are large packages)")
+
+    # Install one by one — some may not be available on all distros
+    import shutil as _shutil
+    installed_count = 0
+    for pkg in packages:
+        # Check if already installed via binary name
+        # Map package names to their typical binary
+        pkg_binaries = {
+            "blender": "blender",
+            "gimp": "gimp",
+            "inkscape": "inkscape",
+            "imagemagick": "convert",
+            "ImageMagick": "convert",
+            "chromium-browser": "chromium-browser",
+            "chromium": "chromium",
+            "rclone": "rclone",
+        }
+        binary = pkg_binaries.get(pkg)
+        if binary and _shutil.which(binary):
+            ok(f"  {pkg} already installed")
+            installed_count += 1
+            continue
+
+        # For libreoffice, check if soffice is present
+        if "libreoffice" in pkg and _shutil.which("soffice"):
+            ok(f"  {pkg} already installed (soffice found)")
+            installed_count += 1
+            continue
+
+        result = sudo_run(install_cmd_tpl.format(pkgs=pkg), password, timeout=600)
+        if result.returncode == 0:
+            installed_count += 1
+            ok(f"  {pkg} installed")
+        else:
+            warn(f"  {pkg} — not available or failed")
+            log_action(f"workstation_install_failed: {pkg}", result.stderr[:200] if result.stderr else "")
+
+    ok(f"Workstation apps: {installed_count}/{len(packages)} installed")
+
+
+def provision_macos_workstation(os_info: OSInfo, password):
+    """Workstation mode on macOS: install deps + desktop apps, keep everything."""
+    info(f"Starting workstation macOS provisioning on {os_info.display_name}...")
+
+    # Step 1: Install base dependencies via Homebrew
+    _install_macos_deps(os_info, password)
+
+    # Step 2: Install workstation apps (casks + formulae)
+    _install_macos_workstation_apps(os_info, password)
+
+    # Step 3: Configure system — but skip removing apps
+    _configure_macos(os_info, password)
+
+    ok("macOS workstation provisioning complete")
+
+
+def _install_macos_workstation_apps(os_info: OSInfo, password=None):
+    """Install desktop/creative applications on macOS via Homebrew casks."""
+    brew = _find_brew() or os_info.brew_path
+    if not brew:
+        warn("Homebrew not available — skipping workstation app installation")
+        warn("Install apps manually: Blender, GIMP, Inkscape, LibreOffice")
+        return
+
+    import shutil as _shutil
+
+    # Install casks (GUI apps)
+    info("Installing workstation apps (this may take a while)...")
+    for cask in MACOS_WORKSTATION_CASKS:
+        # Check if already in /Applications
+        app_names = {
+            "blender": "Blender.app",
+            "gimp": "GIMP*.app",
+            "inkscape": "Inkscape.app",
+            "libreoffice": "LibreOffice.app",
+            "chromium": "Chromium.app",
+        }
+        app_name = app_names.get(cask, "")
+        if app_name and not app_name.endswith("*.app"):
+            if Path(f"/Applications/{app_name}").exists():
+                ok(f"  {cask} already installed")
+                continue
+        elif app_name and app_name.endswith("*.app"):
+            # Glob check
+            import glob
+            if glob.glob(f"/Applications/{app_name}"):
+                ok(f"  {cask} already installed")
+                continue
+
+        log_action("brew_cask_install", cask)
+        result = run_streaming(
+            f"{brew} install --cask {cask} 2>&1",
+            label=f"  Installing {cask}"
+        )
+        if result.returncode == 0:
+            ok(f"  {cask} installed")
+        else:
+            combined = (result.stdout or "") + (result.stderr or "")
+            if "already installed" in combined:
+                ok(f"  {cask} already installed")
+            else:
+                warn(f"  {cask} — install failed (you can install it manually)")
+
+    # Install formulae (CLI tools)
+    for formula in MACOS_WORKSTATION_FORMULAE:
+        binary = formula  # Most formulae have the same name as their binary
+        if _shutil.which(binary):
+            ok(f"  {formula} already installed")
+            continue
+
+        result = run_streaming(
+            f"{brew} install {formula} 2>&1",
+            label=f"  Installing {formula}"
+        )
+        if result.returncode == 0:
+            ok(f"  {formula} installed")
+        else:
+            warn(f"  {formula} — install failed")
+
+
 def _install_linux_deps(os_info: OSInfo, password):
     """Install required packages on Linux using the detected package manager."""
     mgr = os_info.package_manager
@@ -1210,22 +1420,33 @@ def provision(os_info: OSInfo, takeover: str) -> bool:
         error("No sudo password found. Run the wizard first.")
         return False
 
+    # Map legacy names to new names
+    mode = takeover
+    if mode == "full":
+        mode = "headless"
+    elif mode == "soft":
+        mode = "minimal"
+
     if _dry_run:
         print(f"\n{BOLD}=== OS Provisioning (DRY RUN — no changes will be made) ==={NC}")
     else:
         print(f"\n{BOLD}=== OS Provisioning ==={NC}")
     print(f"    Target: {os_info.display_name}")
-    print(f"    Mode: {takeover}\n")
+    print(f"    Mode: {mode}\n")
 
     try:
         if os_info.os_type == "linux":
-            if takeover == "full":
+            if mode == "headless":
                 provision_linux_full(os_info, password)
+            elif mode == "workstation":
+                provision_linux_workstation(os_info, password)
             else:
                 provision_linux_soft(os_info, password)
         elif os_info.os_type == "macos":
-            if takeover == "full":
+            if mode == "headless":
                 provision_macos_full(os_info, password)
+            elif mode == "workstation":
+                provision_macos_workstation(os_info, password)
             else:
                 provision_macos_soft(os_info, password)
         else:
@@ -1249,7 +1470,7 @@ def main():
     parser.add_argument("--repo-dir", type=str, required=True)
     parser.add_argument("--os", type=str, choices=["linux", "macos"],
                         help="Override OS detection (optional)")
-    parser.add_argument("--takeover", type=str, choices=["full", "soft"], default="full")
+    parser.add_argument("--takeover", type=str, choices=["workstation", "minimal", "headless", "full", "soft"], default="workstation")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview all actions without making changes")
     args = parser.parse_args()

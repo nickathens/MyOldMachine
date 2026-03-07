@@ -1,0 +1,10 @@
+{
+  "check": {
+    "gimp": "which gimp"
+  },
+  "apt": ["gimp"],
+  "dnf": ["gimp"],
+  "pacman": ["gimp"],
+  "zypper": ["gimp"],
+  "brew": ["gimp"]
+}

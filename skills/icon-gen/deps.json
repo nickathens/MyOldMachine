@@ -1,0 +1,11 @@
+{
+  "pip": ["Pillow"],
+  "check": {
+    "imagemagick": "which convert"
+  },
+  "apt": ["imagemagick"],
+  "dnf": ["ImageMagick"],
+  "pacman": ["imagemagick"],
+  "zypper": ["ImageMagick"],
+  "brew": ["imagemagick"]
+}

@@ -1,0 +1,10 @@
+{
+  "check": {
+    "rclone": "which rclone"
+  },
+  "apt": ["rclone"],
+  "dnf": ["rclone"],
+  "pacman": ["rclone"],
+  "zypper": ["rclone"],
+  "brew": ["rclone"]
+}

@@ -1,0 +1,10 @@
+{
+  "check": {
+    "blender": "which blender"
+  },
+  "apt": ["blender"],
+  "dnf": ["blender"],
+  "pacman": ["blender"],
+  "zypper": ["blender"],
+  "brew": ["blender"]
+}

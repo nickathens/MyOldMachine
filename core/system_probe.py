@@ -109,6 +109,9 @@ def probe_system(data_dir: Path) -> dict:
         "node", "npm", "jq", "htop", "tmux",
         "tesseract", "espeak-ng",
         "sqlite3", "aria2c", "zip", "unzip", "tar",
+        # Workstation binaries
+        "blender", "gimp", "inkscape", "soffice", "convert",
+        "rclone", "chromium", "chromium-browser", "nb",
     ]
     caps["binaries"] = {}
     for b in binaries:
@@ -119,6 +122,8 @@ def probe_system(data_dir: Path) -> dict:
         "PIL", "pydub", "moviepy", "librosa", "playwright",
         "qrcode", "feedparser", "colorthief", "markitdown",
         "fontTools", "deep_translator", "httpx", "bs4",
+        # Workstation modules
+        "openpyxl", "termgraph", "buku", "realesrgan",
     ]
     caps["python_modules"] = {}
     for m in modules:
@@ -149,6 +154,22 @@ def probe_system(data_dir: Path) -> dict:
         "rss": ["feedparser"],
         "regex": [],
         "browser": ["playwright"],
+        # Workstation skills
+        "blender": ["blender"],
+        "gimp": ["gimp"],
+        "inkscape": ["inkscape"],
+        "spreadsheet": ["soffice", "openpyxl"],
+        "scraper": ["playwright"],
+        "media": ["playwright"],
+        "icon-gen": ["PIL", "convert"],
+        "sprite-gen": ["PIL"],
+        "code-scaffold": [],
+        "charts": ["termgraph"],
+        "notes": ["nb"],
+        "bookmarks": ["buku"],
+        "cloud-sync": ["rclone"],
+        "web-build": ["node"],
+        "upscale": ["realesrgan"],
     }
 
     for skill, deps in skill_deps.items():

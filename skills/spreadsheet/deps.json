@@ -1,0 +1,11 @@
+{
+  "check": {
+    "libreoffice": "which soffice"
+  },
+  "pip": ["openpyxl"],
+  "apt": ["libreoffice-calc"],
+  "dnf": ["libreoffice-calc"],
+  "pacman": ["libreoffice-fresh"],
+  "zypper": ["libreoffice-calc"],
+  "brew": ["libreoffice"]
+}

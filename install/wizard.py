@@ -379,6 +379,7 @@ def write_env(repo_dir: Path, config: dict):
         f"ALLOWED_USERS={config['telegram_user_id']}",
         f"BOT_NAME={config['bot_name']}",
         f"TIMEZONE={config['timezone']}",
+        f"INSTALL_MODE={config.get('takeover', 'workstation')}",
         f"WEBHOOK_PORT=0",
     ]
     if config["llm_provider"] == "ollama":
@@ -525,10 +526,14 @@ def main():
 
     if not provisioning_valid:
         print(f"\n{BOLD}System Provisioning{NC}")
-        takeover = config.get("takeover", "full")
+        takeover = config.get("takeover", "workstation")
         print("  The installer will now configure your machine.")
-        if takeover == "full":
-            print("  This will remove unnecessary software and install the bot's dependencies.")
+        if takeover == "headless":
+            print("  This will remove desktop software and install the bot's dependencies.")
+            print("  The machine will become a headless server — no GUI.")
+        elif takeover == "workstation":
+            print("  This will install the bot's dependencies plus creative/desktop apps.")
+            print("  Your desktop stays intact. You can use the machine normally.")
         else:
             print("  This will install the bot's dependencies without removing existing software.")
         print()
@@ -1028,25 +1033,25 @@ def _run_wizard_steps(detected_os: str) -> dict:
     detected_tz = detect_timezone()
     config["timezone"] = ask("Timezone", default=detected_tz)
 
-    # Step 6: Takeover level
-    print(f"\n{BOLD}Step 6: Takeover Level{NC}")
-    print(f"  Both options register the bot as a system service that:")
+    # Step 6: Install mode
+    print(f"\n{BOLD}Step 6: Install Mode{NC}")
+    print(f"  All modes register the bot as a system service that:")
     print(f"    - Starts automatically on boot")
     print(f"    - Restarts automatically on crash")
     print(f"    - Runs 24/7 without you touching a terminal")
     print()
-    if detected_os == "macos":
-        config["takeover"] = ask_choice(
-            "How much control should the bot have?",
-            [
-                ("full", "Full takeover — remove unused apps, disable sleep, headless mode (recommended for dedicated machines)"),
-                ("soft", "Soft install — bot runs as background service, your apps and settings stay untouched"),
-            ],
-            default="full",
-        )
-    else:
-        print("  Linux: Full takeover (strip desktop environment, disable sleep, server mode)")
-        config["takeover"] = "full"
+    config["takeover"] = ask_choice(
+        "Choose your install mode:",
+        [
+            ("workstation", "Full workstation — keeps your desktop, installs creative apps "
+             "(Blender, GIMP, Inkscape, LibreOffice), all skills enabled (recommended)"),
+            ("minimal", "Minimal — bot runs as background service, "
+             "your apps and settings stay untouched, skills self-install on first use"),
+            ("headless", "Headless server — strips the desktop environment, "
+             "disables sleep, turns the machine into a dedicated bot appliance"),
+        ],
+        default="workstation",
+    )
 
     # Step 7: Sudo password
     print(f"\n{BOLD}Step 7: System Access{NC}")
@@ -1109,7 +1114,9 @@ def _load_config_from_env(repo_dir: Path) -> dict:
                     config["bot_name"] = value
                 elif key == "TIMEZONE":
                     config["timezone"] = value
-    config.setdefault("takeover", "full")
+                elif key == "INSTALL_MODE":
+                    config["takeover"] = value
+    config.setdefault("takeover", "workstation")
     config.setdefault("bot_name", "MyOldMachine")
     return config
 
