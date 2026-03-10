@@ -640,9 +640,17 @@ class OpenAIProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        # GPT-5.x and o-series models require max_completion_tokens, not max_tokens
+        uses_completion_tokens = (
+            self.model.startswith("gpt-5")
+            or self.model.startswith("o1")
+            or self.model.startswith("o3")
+            or self.model.startswith("o4")
+        )
+        token_key = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
         body = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            token_key: max_tokens,
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},

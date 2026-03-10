@@ -176,9 +176,19 @@ def _call_api(prompt: str) -> str:
             if auth_header:
                 headers[auth_header] = auth_value
 
+            # GPT-5.x and o-series models require max_completion_tokens
+            uses_completion_tokens = (
+                provider == "openai" and (
+                    model.startswith("gpt-5")
+                    or model.startswith("o1")
+                    or model.startswith("o3")
+                    or model.startswith("o4")
+                )
+            )
+            token_key = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
             body = {
                 "model": model,
-                "max_tokens": 4096,
+                token_key: 4096,
                 "temperature": 0.3,
                 "messages": [
                     {"role": "system", "content": "You are analyzing behavioral observations to update a person model."},
