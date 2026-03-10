@@ -148,15 +148,16 @@ utils/
 
 ## LLM Providers
 
-| Provider | Tool-Use | Notes |
-|----------|----------|-------|
-| Claude CLI | Native | Full tool-use built into Claude's runtime |
-| Claude API | None | Text-only, no machine control |
-| OpenAI | OpenAI-compat | Requires paid API key |
-| Grok (xAI) | OpenAI-compat | $25 free credits + $150/mo with data sharing. api.x.ai/v1 |
-| Gemini | Native | Free tier has zero quota issues. Use via OpenRouter instead |
-| Ollama | OpenAI-compat | Local, free, auto-installs with hardware benchmark |
-| OpenRouter | OpenAI-compat | Free models available. 50 req/day free tier |
+| Provider | Tool-Use | Default Model | Notes |
+|----------|----------|---------------|-------|
+| Claude CLI | Native | claude-sonnet-4-6 | Full tool-use built into Claude's runtime |
+| Claude API | None | claude-sonnet-4-6 | Text-only, no machine control |
+| OpenAI | OpenAI-compat | gpt-5.4 | GPT-5.4/5-mini/4.1. Vision + tools |
+| DeepSeek | OpenAI-compat | deepseek-chat | V3.2. $0.28/$0.42/MTok. No vision |
+| Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | $25 free credits. Vision on 4.1 Fast |
+| Gemini | Native | gemini-2.5-flash | Free tier: 10 RPM / 250 RPD |
+| Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
+| OpenRouter | OpenAI-compat | openai/gpt-oss-120b:free | 17+ free models, 200 req/day |
 
 ## Boot Persistence
 

@@ -114,17 +114,17 @@ The installer shows you all options with clear free/paid labels:
 |----------|-------|--------|-------|
 | **Claude CLI** | With Pro/Max plan | No | Most capable. Uses your existing subscription. |
 | **Claude API** | No | No | Pay-per-token. Text-only (no machine control). |
-| **OpenAI** | No | No | GPT-4.1, GPT-4o. Full machine control. |
-| **DeepSeek** | No (very cheap) | No | $0.28/$0.42 per MTok. 128K context. Full machine control. |
-| **Grok (xAI)** | $25 free credits | No | Additional $150/mo free with data sharing. |
-| **Gemini** | Limited free tier | No | Rate limits are tight. |
+| **OpenAI** | No | No | GPT-5.4, GPT-4.1. Vision + full machine control. |
+| **DeepSeek** | No (very cheap) | No | V3.2. $0.28/$0.42 per MTok. 128K context. Full machine control. |
+| **Grok (xAI)** | $25 free credits | No | Grok 4.1 Fast: $0.20/$0.50. Vision + machine control. |
+| **Gemini** | Limited free tier | No | 2.5 Flash: 10 RPM / 250 RPD free. Machine control. |
 | **Ollama** | Yes | Yes | Run models locally. No API key. Requires macOS 12+ or modern Linux. |
-| **OpenRouter** | Yes (50 req/day) | No | 100+ models. Free tier available. |
+| **OpenRouter** | Yes (200 req/day) | No | 17+ free models with tool-use. |
 
 Switch providers anytime from Telegram — no SSH needed:
 ```
-/provider openrouter google/gemini-2.0-flash-001
-/model gpt-4o-mini
+/provider openai gpt-5.4
+/model gpt-5-mini
 /apikey sk-abc123...
 ```
 

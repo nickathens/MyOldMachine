@@ -1160,11 +1160,12 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.replace("/provider", "").strip()
 
     # Default models per provider — keep in sync with install/wizard.py DEFAULT_MODELS
+    # Last updated: March 10, 2026
     default_models = {
         "claude": "claude-sonnet-4-6",
         "claude-cli": "claude-sonnet-4-6",
         "claude-api": "claude-sonnet-4-6",
-        "openai": "gpt-4.1",
+        "openai": "gpt-5.4",
         "deepseek": "deepseek-chat",
         "grok": "grok-4-1-fast-non-reasoning",
         "gemini": "gemini-2.5-flash",
@@ -1847,7 +1848,7 @@ async def _health_monitor_loop(scheduler):
     await asyncio.sleep(60)
     while True:
         try:
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             if _last_health_check is None or now - _last_health_check >= _HEALTH_CHECK_INTERVAL:
                 _last_health_check = now
                 admin_ids = [
@@ -2005,6 +2006,14 @@ def main():
         allowed = get_allowed_users()
         if allowed and user_id not in allowed:
             return
+        # Duplicate protection — same as handle_message
+        msg_id = update.message.message_id
+        if msg_id in _processed_ids:
+            return
+        _processed_ids.add(msg_id)
+        if len(_processed_ids) > _MAX_PROCESSED:
+            cutoff = min(_processed_ids) + (_MAX_PROCESSED // 2)
+            _processed_ids.difference_update({mid for mid in _processed_ids if mid < cutoff})
         if await _try_alias(update, context):
             await _process_single(update, context)
         # If not an alias, silently ignore (don't spam "unknown command")

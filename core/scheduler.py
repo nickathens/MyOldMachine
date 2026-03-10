@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import signal
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
@@ -436,13 +437,36 @@ async def _execute_command(job_id: str):
 
         # Use sanitized environment (strips API keys/tokens)
         from core.tools import _build_command_env
+        import platform as _platform
+        from pathlib import Path as _Path
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            cwd=str(_Path.home()),
             env=_build_command_env(),
+            start_new_session=(_platform.system() != "Windows"),
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            # Kill the process and its children before re-raising
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
+            raise  # Re-raise so the outer except handles logging/notification
         output = stdout.decode("utf-8", errors="replace") if stdout else ""
 
         success = proc.returncode == 0
@@ -675,13 +699,19 @@ class Scheduler:
         metas = _get_all_meta(user_id=user_id)
         result = []
         for meta in metas:
-            run_at = datetime.now()
+            # Try to get next run time from APScheduler, fall back to stored run_at
+            run_at = None
             try:
                 aps_job = self._aps.get_job(meta["job_id"])
                 if aps_job and aps_job.next_run_time:
                     run_at = aps_job.next_run_time.replace(tzinfo=None)
             except Exception:
                 pass
+            if run_at is None:
+                try:
+                    run_at = datetime.fromisoformat(meta.get("run_at", ""))
+                except (ValueError, TypeError):
+                    run_at = datetime.now()
             result.append(Job.from_meta(meta, run_at=run_at))
         return result
 
@@ -690,13 +720,18 @@ class Scheduler:
         meta = _get_meta(job_id)
         if not meta:
             return None
-        run_at = datetime.now()
+        run_at = None
         try:
             aps_job = self._aps.get_job(job_id)
             if aps_job and aps_job.next_run_time:
                 run_at = aps_job.next_run_time.replace(tzinfo=None)
         except Exception:
             pass
+        if run_at is None:
+            try:
+                run_at = datetime.fromisoformat(meta.get("run_at", ""))
+            except (ValueError, TypeError):
+                run_at = datetime.now()
         return Job.from_meta(meta, run_at=run_at)
 
     async def send_message(self, user_id: int, text: str) -> bool:
@@ -705,6 +740,12 @@ class Scheduler:
             url = f"{self.api_base}/bot{self.bot_token}/sendMessage"
         else:
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+
+        # Telegram sendMessage has a 4096-character limit.
+        # Truncate long messages to avoid silent API failures.
+        if len(text) > 4000:
+            text = text[:3900] + "\n\n[Message truncated]"
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(url, json={

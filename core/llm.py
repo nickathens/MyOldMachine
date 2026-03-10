@@ -182,10 +182,12 @@ class ClaudeCLIProvider(LLMProvider):
                 typing_task = asyncio.create_task(send_typing_periodically())
 
             # Claude CLI needs a mostly-complete environment but we still strip
-            # dangerous env vars (other provider API keys, DB passwords, etc.)
+            # dangerous env vars (other provider API keys, bot tokens, DB passwords, etc.)
             cli_env = {k: v for k, v in os.environ.items()
                        if k not in {"OPENAI_API_KEY", "OPENROUTER_API_KEY",
                                     "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
+                                    "LLM_API_KEY", "TELEGRAM_BOT_TOKEN",
+                                    "TELEGRAM_TOKEN", "BOT_TOKEN",
                                     "DATABASE_URL", "DATABASE_PASSWORD",
                                     "REDIS_URL", "REDIS_PASSWORD"}}
             cli_env["HOME"] = str(Path.home())
@@ -630,7 +632,8 @@ class OpenAIProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        return "gpt-4" in self.model or "vision" in self.model
+        # GPT-4o, GPT-4.1, GPT-5.x all support vision
+        return any(prefix in self.model for prefix in ("gpt-4", "gpt-5")) or "vision" in self.model
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
@@ -888,9 +891,10 @@ class GeminiProvider(LLMProvider):
 class DeepSeekProvider(LLMProvider):
     """DeepSeek API — OpenAI-compatible with tool-use support.
 
-    Uses api.deepseek.com/v1 endpoint. Extremely cheap:
-    $0.28/$0.42 per MTok (with 90% cache discount).
-    128K context, both deepseek-chat and deepseek-reasoner support tool calls.
+    Uses api.deepseek.com/v1 endpoint. DeepSeek V3.2.
+    $0.28/$0.42 per MTok ($0.028 cached input — 90% discount).
+    128K context. Both deepseek-chat and deepseek-reasoner support tool calls.
+    No vision support in the API.
     """
 
     BASE_URL = "https://api.deepseek.com/v1"
@@ -947,8 +951,8 @@ class GrokProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # Grok 2+ models support vision, as do explicit vision variants
-        return "vision" in self.model or "grok-2" in self.model or "grok-3" in self.model or "grok-4" in self.model
+        # Grok 4.1 Fast models accept image input; grok-4-0709 and grok-3 are text-only
+        return "vision" in self.model or "grok-4-1-fast" in self.model or "grok-4-fast" in self.model
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {

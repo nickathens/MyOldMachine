@@ -59,8 +59,14 @@ def _call_claude_cli(prompt: str) -> str:
     if not which("claude"):
         return ""
     try:
+        # Use the configured model if it's a Claude model, otherwise use default
+        configured_model = get_llm_model()
+        if configured_model.startswith("claude-"):
+            cli_model = configured_model
+        else:
+            cli_model = "claude-sonnet-4-6"
         result = subprocess.run(
-            ["claude", "-p", prompt, "--model", "claude-sonnet-4-20250514"],
+            ["claude", "-p", prompt, "--model", cli_model],
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0 and result.stdout.strip():

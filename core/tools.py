@@ -1093,8 +1093,12 @@ async def _check_process(process_id: str, action: str = "status") -> str:
             result += new_output
     elif managed.is_running:
         result += "\n(No new output since last check)"
+    elif managed._read_offset > 0:
+        # Finished and LLM has already seen the output — don't re-dump
+        result += f"\n(Process finished. Output already shown — {len(managed.full_output)} chars total)"
     else:
-        # Finished — show full output if LLM hasn't seen it
+        # Finished but LLM never polled — show full output once
+        managed.consume_new_output()  # Advance read offset so we don't show again
         full = managed.full_output
         if full:
             result += f"\n--- Full output ({len(full)} chars) ---\n"
