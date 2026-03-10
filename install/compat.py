@@ -458,7 +458,17 @@ def smart_install(
                 else:
                     logger.warning(f"Brew formula install of {spec.display_name} failed: {combined[:200]}")
 
-    # Step 4: Flatpak fallback (Linux only, GUI apps)
+    # Step 4a: macOS direct download fallback
+    # When brew cask fails (e.g. app requires Big Sur+ but we're on Catalina),
+    # try downloading an older compatible version directly.
+    if is_macos and not result.installed:
+        if _install_macos_direct(spec, password):
+            result.installed = True
+            result.method = "direct"
+            result.version = _get_installed_version(spec)
+            return result
+
+    # Step 4b: Flatpak fallback (Linux only, GUI apps)
     if is_linux and spec.flatpak_id:
         logger.info(f"Trying Flatpak for {spec.display_name}: {spec.flatpak_id}")
         if _install_via_flatpak(spec.flatpak_id, password):
@@ -546,3 +556,222 @@ def _find_brew() -> Optional[str]:
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip()
     return None
+
+
+# ────────────────────────────────────────────────────────────────────
+# macOS direct download fallbacks
+# ────────────────────────────────────────────────────────────────────
+
+# Direct DMG/zip download URLs for macOS when Homebrew cask fails.
+# Keyed by package name. Each entry has:
+#   url: direct download URL (Intel x86_64)
+#   type: "dmg" or "zip"
+#   app_name: name of the .app inside the DMG (for dmg type)
+#   note: version/compat info
+#
+# These are the last versions compatible with macOS 10.15 Catalina.
+# Updated March 2026.
+_MACOS_DIRECT_DOWNLOADS = {
+    "blender": {
+        "url": "https://download.blender.org/release/Blender3.6/blender-3.6.23-macos-x64.dmg",
+        "type": "dmg",
+        "app_name": "Blender.app",
+        "note": "Blender 3.6.23 LTS — last version supporting macOS 10.15",
+    },
+    "inkscape": {
+        "url": "https://media.inkscape.org/dl/resources/file/Inkscape-1.4.3_x86_64.dmg",
+        "type": "dmg",
+        "app_name": "Inkscape.app",
+        "note": "Inkscape 1.4.3 — supports macOS 10.13+",
+    },
+    "libreoffice": {
+        "url": "https://download.documentfoundation.org/libreoffice/stable/25.8.5/mac/x86_64/LibreOffice_25.8.5_MacOS_x86-64.dmg",
+        "type": "dmg",
+        "app_name": "LibreOffice.app",
+        "note": "LibreOffice 25.8.5 — last branch supporting macOS 10.15",
+    },
+    "rclone": {
+        "url": "https://downloads.rclone.org/rclone-current-osx-amd64.zip",
+        "type": "zip",
+        "binary": "rclone",
+        "note": "rclone — official static binary, all macOS versions",
+    },
+    "imagemagick": {
+        # ImageMagick has no standalone macOS binary. Retry brew after permissions fix.
+        "type": "brew_retry",
+        "formula": "imagemagick",
+        "note": "ImageMagick — retry via Homebrew (permissions may have been fixed)",
+    },
+}
+
+
+def _install_macos_direct(spec: PackageSpec, password: Optional[str] = None) -> bool:
+    """Try to install a macOS package via direct download when Homebrew fails.
+
+    Handles DMG mounting/copying, ZIP extraction, and brew retries.
+    Returns True if the package was successfully installed.
+    """
+    import tempfile
+
+    dl_info = _MACOS_DIRECT_DOWNLOADS.get(spec.name)
+    if not dl_info:
+        return False
+
+    dl_type = dl_info.get("type", "")
+
+    if dl_type == "brew_retry":
+        # Retry brew install — permissions may have been fixed since the first attempt
+        brew = _find_brew()
+        if not brew:
+            return False
+        formula = dl_info.get("formula", spec.brew_formula or spec.name)
+        logger.info(f"Retrying brew install of {spec.display_name} (permissions may be fixed now)...")
+        r = _run(f"{brew} install {formula} 2>&1", timeout=600)
+        return r.returncode == 0 and _is_binary_available(spec)
+
+    url = dl_info.get("url", "")
+    if not url:
+        return False
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"myoldmachine_{spec.name}_"))
+
+    try:
+        if dl_type == "dmg":
+            return _install_from_dmg(spec, url, dl_info, tmp_dir, password)
+        elif dl_type == "zip":
+            return _install_from_zip(spec, url, dl_info, tmp_dir, password)
+    except Exception as e:
+        logger.warning(f"Direct install of {spec.display_name} failed: {e}")
+        return False
+    finally:
+        try:
+            import shutil as _shutil
+            _shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        except Exception:
+            pass
+
+    return False
+
+
+def _install_from_dmg(
+    spec: PackageSpec,
+    url: str,
+    dl_info: dict,
+    tmp_dir: Path,
+    password: Optional[str],
+) -> bool:
+    """Download a DMG, mount it, copy the .app to /Applications."""
+    import shlex as _shlex
+    dmg_path = tmp_dir / f"{spec.name}.dmg"
+    app_name = dl_info.get("app_name", f"{spec.display_name}.app")
+
+    logger.info(f"Downloading {spec.display_name} DMG...")
+    # Follow redirects (-L) for sites like inkscape.org that redirect
+    dl = _run(f"curl -fsSL -o {_shlex.quote(str(dmg_path))} {_shlex.quote(url)}", timeout=300)
+    if dl.returncode != 0:
+        logger.warning(f"Download failed: {dl.stderr[:200]}")
+        return False
+
+    if not dmg_path.exists() or dmg_path.stat().st_size < 1_000_000:
+        logger.warning(f"Downloaded file too small or missing: {dmg_path}")
+        return False
+
+    # Mount the DMG
+    mount_point = tmp_dir / "mnt"
+    mount_point.mkdir(exist_ok=True)
+    mount_result = _run(
+        f"hdiutil attach {_shlex.quote(str(dmg_path))} -mountpoint {_shlex.quote(str(mount_point))} -nobrowse -quiet",
+        timeout=60,
+    )
+    if mount_result.returncode != 0:
+        logger.warning(f"Failed to mount DMG: {mount_result.stderr[:200]}")
+        return False
+
+    try:
+        # Find the .app inside the mounted volume
+        app_path = mount_point / app_name
+        if not app_path.exists():
+            # Search for any .app in the mount
+            apps = list(mount_point.glob("*.app"))
+            if apps:
+                app_path = apps[0]
+            else:
+                logger.warning(f"No .app found in DMG at {mount_point}")
+                return False
+
+        # Copy to /Applications
+        dest = Path(f"/Applications/{app_path.name}")
+        safe_dest = _shlex.quote(str(dest))
+        safe_src = _shlex.quote(str(app_path))
+        if dest.exists():
+            _sudo_run(f"rm -rf {safe_dest}", password, timeout=30)
+
+        logger.info(f"Installing {app_path.name} to /Applications...")
+        result = _sudo_run(f"cp -R {safe_src} /Applications/", password, timeout=120)
+        if result.returncode != 0:
+            logger.warning(f"Failed to copy app: {result.stderr[:200]}")
+            return False
+
+        # Remove quarantine attribute so macOS doesn't block it
+        _sudo_run(f"xattr -rd com.apple.quarantine {safe_dest}", password, timeout=10)
+
+        if dest.exists():
+            logger.info(f"{spec.display_name} installed to /Applications/{app_path.name}")
+            return True
+
+    finally:
+        # Always unmount
+        _run(f"hdiutil detach {_shlex.quote(str(mount_point))} -quiet -force", timeout=30)
+
+    return False
+
+
+def _install_from_zip(
+    spec: PackageSpec,
+    url: str,
+    dl_info: dict,
+    tmp_dir: Path,
+    password: Optional[str],
+) -> bool:
+    """Download a ZIP, extract it, install binary to /usr/local/bin."""
+    import shlex as _shlex
+    zip_path = tmp_dir / f"{spec.name}.zip"
+    binary_name = dl_info.get("binary", spec.binary)
+
+    logger.info(f"Downloading {spec.display_name}...")
+    dl = _run(f"curl -fsSL -o {_shlex.quote(str(zip_path))} {_shlex.quote(url)}", timeout=120)
+    if dl.returncode != 0:
+        logger.warning(f"Download failed: {dl.stderr[:200]}")
+        return False
+
+    # Extract
+    extract_dir = tmp_dir / "extracted"
+    extract_dir.mkdir(exist_ok=True)
+    _run(f"unzip -o {_shlex.quote(str(zip_path))} -d {_shlex.quote(str(extract_dir))}", timeout=60)
+
+    # Find the binary
+    binary_path = None
+    for f in extract_dir.rglob(binary_name):
+        if f.is_file():
+            binary_path = f
+            break
+
+    if not binary_path:
+        logger.warning(f"Binary '{binary_name}' not found in extracted archive")
+        return False
+
+    # Install to /usr/local/bin
+    dest = f"/usr/local/bin/{binary_name}"
+    _sudo_run(f"cp {_shlex.quote(str(binary_path))} {_shlex.quote(dest)}", password, timeout=30)
+    _sudo_run(f"chmod +x {_shlex.quote(dest)}", password, timeout=10)
+
+    # Ensure /usr/local/bin is in PATH for this process
+    import os
+    if "/usr/local/bin" not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"/usr/local/bin:{os.environ.get('PATH', '')}"
+
+    if shutil.which(binary_name):
+        logger.info(f"{spec.display_name} installed to {dest}")
+        return True
+
+    return False

@@ -1058,16 +1058,14 @@ def _run_wizard_steps(detected_os: str) -> dict:
     elif config["llm_provider"] in API_KEY_PROVIDERS:
         config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
 
-    # Step 4: Bot name
+    # Step 4: Bot name and timezone
     print(f"\n{BOLD}Step 4: Personalization{NC}")
     config["bot_name"] = ask("What should your bot call itself?", default="MyOldMachine")
-
-    # Step 5: Timezone
     detected_tz = detect_timezone()
     config["timezone"] = ask("Timezone", default=detected_tz)
 
-    # Step 6: Install mode
-    print(f"\n{BOLD}Step 6: Install Mode{NC}")
+    # Step 5: Install mode
+    print(f"\n{BOLD}Step 5: Install Mode{NC}")
     print(f"  All modes register the bot as a system service that:")
     print(f"    - Starts automatically on boot")
     print(f"    - Restarts automatically on crash")
@@ -1086,8 +1084,8 @@ def _run_wizard_steps(detected_os: str) -> dict:
         default="workstation",
     )
 
-    # Step 7: Sudo password
-    print(f"\n{BOLD}Step 7: System Access{NC}")
+    # Step 6: Sudo password
+    print(f"\n{BOLD}Step 6: System Access{NC}")
     print("  The bot needs your password stored locally so it can install software on its own.")
     print("  Stored at ~/.sudo_pass (readable only by you, never sent anywhere).")
 

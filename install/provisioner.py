@@ -802,6 +802,50 @@ def _check_sip_status() -> bool:
         return True  # Assume enabled if we can't check
 
 
+def _fix_homebrew_permissions(brew_path, password):
+    """Fix /usr/local ownership so Homebrew can install packages.
+
+    On Catalina and older macOS, /usr/local/* is often owned by root.
+    Homebrew needs write access to /usr/local/bin, /usr/local/lib, etc.
+    Without this fix, every `brew install` fails with a permissions error.
+    """
+    import shlex
+
+    brew_dir = str(Path(brew_path).parent)
+    if brew_dir == "/opt/homebrew/bin":
+        # Apple Silicon path — usually owned by the user already
+        return
+
+    # Check if /usr/local/bin is writable by current user
+    test_dirs = [
+        "/usr/local/bin", "/usr/local/include", "/usr/local/lib",
+        "/usr/local/share", "/usr/local/share/doc",
+        "/usr/local/share/man", "/usr/local/share/man/man1",
+    ]
+    unwritable = [d for d in test_dirs if Path(d).exists() and not os.access(d, os.W_OK)]
+
+    if not unwritable:
+        return  # All dirs are writable, no fix needed
+
+    current_user = os.environ.get("USER", "")
+    if not current_user:
+        try:
+            current_user = subprocess.run(
+                "whoami", shell=True, capture_output=True, text=True, timeout=5
+            ).stdout.strip()
+        except Exception:
+            return
+
+    info(f"Fixing Homebrew directory permissions for {current_user}...")
+    dirs_str = " ".join(shlex.quote(d) for d in unwritable)
+    sudo_run(f"chown -R {shlex.quote(current_user)} {dirs_str}", password)
+
+    # Also ensure write permission
+    sudo_run(f"chmod u+w {dirs_str}", password)
+    log_action("fix_homebrew_permissions", f"user={current_user} dirs={len(unwritable)}")
+    ok("Homebrew directory permissions fixed")
+
+
 def _install_macos_deps(os_info: OSInfo, password=None):
     """Install dependencies via Homebrew — version-aware."""
     brew = _find_brew() or os_info.brew_path
@@ -836,6 +880,11 @@ def _install_macos_deps(os_info: OSInfo, password=None):
         brew_dir = str(Path(brew).parent)
         os.environ["PATH"] = f"{brew_dir}:{os.environ.get('PATH', '')}"
         _add_brew_to_profile(os_info, brew)
+
+    # Fix Homebrew directory permissions — on Catalina and older macOS,
+    # /usr/local/* is often owned by root, which breaks every `brew install`.
+    # This is the single most common cause of install failures on old Macs.
+    _fix_homebrew_permissions(brew, password)
 
     info("Installing packages via Homebrew...")
     info("(On older macOS, Homebrew compiles from source — this can take a while)")
@@ -929,6 +978,11 @@ def _install_macos_deps(os_info: OSInfo, password=None):
             if pkg == "ffmpeg" and not _shutil.which("ffmpeg"):
                 info("Homebrew failed for ffmpeg — trying static binary install...")
                 if _install_ffmpeg_direct(os_info):
+                    installed_count += 1
+                    continue
+            if pkg == "sox" and not _shutil.which("sox"):
+                info("Homebrew failed for sox — trying direct binary install...")
+                if _install_sox_direct(os_info):
                     installed_count += 1
                     continue
             # For other packages, check if they appeared in PATH after all
@@ -1102,6 +1156,77 @@ def _install_ffmpeg_direct(os_info: OSInfo) -> bool:
             return True
 
     warn("ffmpeg binary was installed but could not be verified")
+    return False
+
+
+def _install_sox_direct(os_info: OSInfo) -> bool:
+    """Install sox via Homebrew with fixed permissions, or from source as last resort.
+
+    Unlike ffmpeg, there's no standalone static binary distribution for sox on macOS.
+    The most reliable path is to retry brew install after permissions are fixed.
+    If that still fails, we compile from source as a last resort.
+    """
+    import shutil as _shutil
+
+    # Retry brew install — permissions may have been fixed after the initial failure
+    brew = _find_brew()
+    if brew:
+        result = run(f"{brew} install sox 2>&1", timeout=600)
+        if result.returncode == 0 or _shutil.which("sox"):
+            if _shutil.which("sox"):
+                verify = run("sox --version", timeout=10)
+                version_line = verify.stdout.strip() if verify.stdout else "unknown"
+                ok(f"sox installed via Homebrew retry: {version_line}")
+                log_action("install_sox_brew_retry", version_line)
+                return True
+
+    # Last resort: compile from source
+    info("Trying to compile sox from source...")
+    tmp_dir = Path(tempfile.mkdtemp(prefix="myoldmachine_sox_"))
+    sox_version = "14.4.2"
+    url = f"https://downloads.sourceforge.net/project/sox/sox/{sox_version}/sox-{sox_version}.tar.gz"
+
+    dl_result = run(f"curl -fsSL -o '{tmp_dir}/sox.tar.gz' '{url}'", timeout=120)
+    if dl_result.returncode != 0:
+        warn(f"Failed to download sox source: {dl_result.stderr[:200]}")
+        try:
+            import shutil
+            shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        except Exception:
+            pass
+        return False
+
+    password = get_sudo_password()
+    compile_cmds = (
+        f"cd '{tmp_dir}' && "
+        f"tar xzf sox.tar.gz && "
+        f"cd sox-{sox_version} && "
+        f"./configure --prefix=/usr/local 2>&1 && "
+        f"make -j$(sysctl -n hw.ncpu 2>/dev/null || echo 2) 2>&1"
+    )
+    compile_result = run_streaming(compile_cmds, label="Compiling sox from source")
+
+    if compile_result.returncode == 0:
+        sudo_run(f"make -C '{tmp_dir}/sox-{sox_version}' install", password, timeout=120)
+
+    # Cleanup
+    try:
+        import shutil
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+    except Exception:
+        pass
+
+    if "/usr/local/bin" not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"/usr/local/bin:{os.environ.get('PATH', '')}"
+
+    if _shutil.which("sox"):
+        verify = run("sox --version", timeout=10)
+        version_line = verify.stdout.strip() if verify.stdout else "unknown"
+        ok(f"sox installed from source: {version_line}")
+        log_action("install_sox_source", version_line)
+        return True
+
+    warn("sox could not be installed. Audio processing features will be limited.")
     return False
 
 
