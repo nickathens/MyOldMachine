@@ -185,9 +185,9 @@ class ClaudeCLIProvider(LLMProvider):
             # dangerous env vars (other provider API keys, DB passwords, etc.)
             cli_env = {k: v for k, v in os.environ.items()
                        if k not in {"OPENAI_API_KEY", "OPENROUTER_API_KEY",
-                                    "GOOGLE_API_KEY", "DATABASE_URL",
-                                    "DATABASE_PASSWORD", "REDIS_URL",
-                                    "REDIS_PASSWORD"}}
+                                    "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
+                                    "DATABASE_URL", "DATABASE_PASSWORD",
+                                    "REDIS_URL", "REDIS_PASSWORD"}}
             cli_env["HOME"] = str(Path.home())
 
             process = await asyncio.create_subprocess_exec(
@@ -885,6 +885,50 @@ class GeminiProvider(LLMProvider):
         )
 
 
+class DeepSeekProvider(LLMProvider):
+    """DeepSeek API — OpenAI-compatible with tool-use support.
+
+    Uses api.deepseek.com/v1 endpoint. Extremely cheap:
+    $0.28/$0.42 per MTok (with 90% cache discount).
+    128K context, both deepseek-chat and deepseek-reasoner support tool calls.
+    """
+
+    BASE_URL = "https://api.deepseek.com/v1"
+
+    def __init__(self, model: str, api_key: str = ""):
+        super().__init__(model, api_key)
+
+    @property
+    def provider_name(self) -> str:
+        return "deepseek"
+
+    @property
+    def supports_vision(self) -> bool:
+        return False  # DeepSeek V3.2 API does not support vision
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ],
+        }
+        return await _openai_tool_loop(
+            url=f"{self.BASE_URL}/chat/completions",
+            headers=headers,
+            body=body,
+            model=self.model,
+            provider_name=self.provider_name,
+        )
+
+
 class GrokProvider(LLMProvider):
     """xAI Grok API — OpenAI-compatible with tool-use support.
 
@@ -1050,6 +1094,7 @@ def create_provider(
             model, api_key, kwargs.get("base_url", "http://localhost:11434")
         ),
         "openrouter": lambda: OpenRouterProvider(model, api_key),
+        "deepseek": lambda: DeepSeekProvider(model, api_key),
         "grok": lambda: GrokProvider(model, api_key),
         "xai": lambda: GrokProvider(model, api_key),
     }

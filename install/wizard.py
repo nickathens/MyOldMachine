@@ -248,6 +248,7 @@ _ALL_LLM_PROVIDERS = [
     ("claude", "Claude Code CLI — uses your Pro/Max plan (no API key needed), full machine control"),
     ("claude-api", "Anthropic Claude API — requires paid API credits ($), chat only, no machine control"),
     ("openai", "OpenAI — requires API key ($), machine control via function calling"),
+    ("deepseek", "DeepSeek — extremely cheap ($0.28/$0.42 per MTok), 128K context, machine control"),
     ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
     ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
@@ -267,6 +268,7 @@ DEFAULT_MODELS = {
     "claude": "claude-sonnet-4-6",
     "claude-api": "claude-sonnet-4-6",
     "openai": "gpt-4.1",
+    "deepseek": "deepseek-chat",
     "grok": "grok-4-1-fast-non-reasoning",
     "gemini": "gemini-2.5-flash",
     "ollama": "llama3.1:8b",
@@ -303,6 +305,10 @@ PROVIDER_MODELS = {
         ("gemini-2.5-pro", "Gemini 2.5 Pro — best reasoning, free tier (5 RPM / 100 RPD), $1.25/$10"),
         ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — cheapest, free tier (15 RPM / 1000 RPD), $0.10/$0.40"),
     ],
+    "deepseek": [
+        ("deepseek-chat", "DeepSeek V3.2 Chat — fast, strong, $0.28/$0.42 per MTok (recommended)"),
+        ("deepseek-reasoner", "DeepSeek V3.2 Reasoner — thinking mode, $0.28/$0.42 per MTok"),
+    ],
 }
 
 # Free models available on OpenRouter (no billing required)
@@ -328,7 +334,7 @@ OPENROUTER_FREE_MODELS = [
 ]
 
 # Providers that need an API key
-API_KEY_PROVIDERS = {"claude-api", "openai", "grok", "gemini", "openrouter"}
+API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "gemini", "openrouter"}
 
 
 def _select_model_for_provider(config: dict, provider: str):
@@ -620,6 +626,10 @@ def main():
                     print(f"  You need a Google AI API key:")
                     print(f"    1. Go to https://aistudio.google.com/apikey")
                     print(f"    2. Sign in and click 'Create API key'")
+                    print()
+                elif new_provider == "deepseek":
+                    print(f"  You need a DeepSeek API key:")
+                    print(f"    1. Go to https://platform.deepseek.com/api_keys")
                     print()
                 elif new_provider == "grok":
                     print(f"  You need an xAI API key:")
@@ -956,6 +966,18 @@ def _run_wizard_steps(detected_os: str) -> dict:
         print(f"  {YELLOW}New accounts get $5 free credits.{NC}")
         print()
         config["llm_api_key"] = ask("Anthropic API key", secret=True)
+    elif config["llm_provider"] == "deepseek":
+        print()
+        print(f"  {GREEN}DeepSeek — extremely cheap: $0.28 input / $0.42 output per million tokens.{NC}")
+        print(f"  {GREEN}90% discount on cached tokens. 128K context window.{NC}")
+        print()
+        print(f"  You need a DeepSeek API key:")
+        print(f"    1. Go to https://platform.deepseek.com/api_keys")
+        print(f"    2. Sign up or log in")
+        print(f"    3. Create an API key and copy it")
+        print(f"    4. Paste it below")
+        print()
+        config["llm_api_key"] = ask("DeepSeek API key", secret=True)
     elif config["llm_provider"] == "grok":
         print()
         print(f"  {GREEN}xAI Grok — $25 free credits on signup.{NC}")

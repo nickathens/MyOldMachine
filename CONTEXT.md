@@ -1,6 +1,6 @@
 # MyOldMachine — Project Context
 
-Last updated: 2026-03-09
+Last updated: 2026-03-10
 
 ## Overview
 
@@ -65,6 +65,7 @@ core/
   skill_loader.py   — Auto-loads skills from skills/ directory
   updater.py        — Git pull + restart mechanism
   self_install.py   — Runtime dependency installer
+  memory.py         — Deep memory system (person models, observations, reflection)
   health.py         — Health check endpoint
 install/
   wizard.py         — Interactive setup (provider, API key, Telegram token)
@@ -80,6 +81,8 @@ utils/
   scheduler_cli.py  — CLI for managing scheduled jobs
   send_to_telegram.py — Send files/messages to users
   project_manager.py — Memory system project management
+  observe.py        — Observation CLI (save behavioral observations)
+  reflect.py        — Nightly reflection script (updates person models)
   cleanup.py        — Data cleanup utilities
   safe_json.py      — Atomic JSON read/write
 ```

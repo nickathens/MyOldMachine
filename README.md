@@ -14,10 +14,11 @@ This is not a polished consumer product. It's a toolkit. You shape it.
 
 - **Always-on** — runs as a system service, survives reboots and crashes
 - **Full machine access** — the bot can run commands, read/write files, install software, manage processes
-- **LLM-agnostic** — works with Claude, OpenAI, Grok, Gemini, Ollama (local/free), or OpenRouter. 7 providers, switch anytime from Telegram
+- **LLM-agnostic** — works with Claude, OpenAI, DeepSeek, Grok, Gemini, Ollama (local/free), or OpenRouter. 8 providers, switch anytime from Telegram
 - **Self-installing dependencies** — skills auto-install what they need on first use
 - **37 skills** — Blender, GIMP, Inkscape, browser automation, audio/video editing, web scraping, cloud sync, and more
 - **Reminders & scheduling** — natural language, SQLite-backed, survives reboots
+- **Deep memory** — per-user person models that evolve through observations and nightly reflection. The bot learns how each user communicates, what they prefer, and what they're working on
 - **Memory** — persistent facts, conversation history, project tracking
 
 ## Install modes
@@ -114,6 +115,7 @@ The installer shows you all options with clear free/paid labels:
 | **Claude CLI** | With Pro/Max plan | No | Most capable. Uses your existing subscription. |
 | **Claude API** | No | No | Pay-per-token. Text-only (no machine control). |
 | **OpenAI** | No | No | GPT-4.1, GPT-4o. Full machine control. |
+| **DeepSeek** | No (very cheap) | No | $0.28/$0.42 per MTok. 128K context. Full machine control. |
 | **Grok (xAI)** | $25 free credits | No | Additional $150/mo free with data sharing. |
 | **Gemini** | Limited free tier | No | Rate limits are tight. |
 | **Ollama** | Yes | Yes | Run models locally. No API key. Requires macOS 12+ or modern Linux. |
@@ -215,7 +217,8 @@ User (Telegram) → bot.py → core/llm.py (provider factory)
               ClaudeCLI    OpenAI-compat    Gemini
               (native      (OpenRouter,     (native
                tools)       OpenAI, Grok,    function
-                            Ollama)          calling)
+                            DeepSeek,        calling)
+                            Ollama)
                     │           │               │
                     └───────────┼───────────────┘
                                 ↓
@@ -257,6 +260,44 @@ The bot checks system health every 4 hours and alerts you via Telegram if:
 - Internet connectivity is lost
 
 Alerts have a 4-hour cooldown — you won't get spammed. You can also check manually with `/health`, which shows disk, RAM, swap, CPU, network, and uptime.
+
+## Deep memory system
+
+The bot builds an evolving understanding of each user over time. This is not a flat list of facts — it's a structured person model that captures behavioral patterns, communication preferences, current priorities, and relationship dynamics.
+
+### How it works
+
+1. **Observations** — during conversations, the bot notices things worth remembering: corrections, preferences, behavioral patterns, project context. It saves these as append-only entries.
+
+2. **Person model** — a structured profile for each user (~500 words) covering identity, preferences, behavioral patterns, current state, and relationship dynamics.
+
+3. **Nightly reflection** — a scheduled job runs at 3 AM, analyzes recent observations, and updates each user's person model. It deduplicates, synthesizes patterns, and discards noise.
+
+### Tier-aware
+
+The system adapts to the model running it:
+
+- **Strong models** (Claude, GPT-4, DeepSeek, Grok, Gemini, large Ollama 70B+): Full mode — observations, nightly reflection, model updates. The LLM has enough reasoning ability to synthesize behavioral data meaningfully.
+
+- **Weak models** (small Ollama, free OpenRouter, etc.): Lite mode — observations accumulate as raw entries, loaded directly into context. No reflection loop. Still useful — the bot remembers facts and corrections — but without the pattern synthesis.
+
+### Multi-user
+
+Each Telegram user gets their own person model, observations, and memory directory. A family sharing one machine gets individual contexts. Privacy note: all data lives as files on disk, readable by anyone with SSH access.
+
+### What gets remembered
+
+| Observation type | Example |
+|------------------|---------|
+| `behavioral` | "Prefers short, direct answers" |
+| `correction` | "Got the timezone wrong — user is in Athens, not London" |
+| `preference` | "Always wants audio files as MP3, not WAV" |
+| `state` | "Currently focused on a job application deadline" |
+| `project` | "Working on a website redesign for their portfolio" |
+| `factual` | "User's timezone is Europe/Athens" |
+| `relationship` | "User expressed frustration with verbose responses" |
+
+The bot saves observations automatically during conversations — no user action needed. Users can also use `/remember` for explicit facts.
 
 ## Telegram commands
 

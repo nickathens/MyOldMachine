@@ -14,7 +14,7 @@ import os
 import re
 import stat
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -33,6 +33,7 @@ from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider
 from core.tools import get_process_registry
 from core.skill_loader import SkillManager
 from core.session import SessionManager, get_session_manager
+from core.memory import MemoryManager
 from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
 from core.health import build_health_report, check_critical, run_health_check
 from core.updater import check_for_updates, full_update, get_current_version, get_current_branch
@@ -79,6 +80,7 @@ _MEDIA_GROUP_WAIT = 1.5
 # Globals initialized in main()
 _llm_provider = None
 _skill_manager = None
+_memory_manager = None
 
 MAX_CONTEXT_MESSAGES = 40
 
@@ -508,6 +510,28 @@ def build_system_prompt(user_id: int) -> str:
         for mem in memories:
             parts.append(f"- {mem['content']}")
         parts.append("")
+
+    # Deep memory system — person models and observations
+    if _memory_manager:
+        # Determine if we're in full mode (strong model) or lite mode
+        provider = get_llm_provider()
+        full_mode = provider in ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "gemini", "google")
+        # Ollama: full mode only if running a large model
+        if provider == "ollama":
+            model_name = get_llm_model().lower()
+            full_mode = any(size in model_name for size in ("70b", "72b", "34b", "32b", "405b"))
+
+        memory_ctx = _memory_manager.build_memory_context(user_id, full_mode=full_mode)
+        if memory_ctx:
+            parts.append(memory_ctx)
+
+        # Observation instructions — only for tool-use providers
+        if has_tool_use:
+            venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
+            parts.append(_memory_manager.build_observation_instructions(
+                user_id, venv_python, BOT_DIR
+            ))
+            parts.append("")
 
     # Skills — only relevant for providers that can execute tools
     if has_tool_use and _skill_manager:
@@ -1141,6 +1165,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "claude-cli": "claude-sonnet-4-6",
         "claude-api": "claude-sonnet-4-6",
         "openai": "gpt-4.1",
+        "deepseek": "deepseek-chat",
         "grok": "grok-4-1-fast-non-reasoning",
         "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
@@ -1197,7 +1222,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_model = default_models.get(new_provider, "")
 
     # Check if API key is needed but missing
-    needs_key = new_provider in ("openai", "grok", "gemini", "openrouter", "claude-api")
+    needs_key = new_provider in ("openai", "deepseek", "grok", "gemini", "openrouter", "claude-api")
     current_key = get_llm_api_key()
     if needs_key and not current_key:
         await update.message.reply_text(
@@ -1747,6 +1772,12 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.perform_daily_reset()
             logger.info(f"Daily reset performed for user {user_id}")
 
+        # Initialize person model for new users
+        if _memory_manager and not _memory_manager.get_model(user_id):
+            user_name = update.effective_user.first_name or "User"
+            _memory_manager.init_model(user_id, name=user_name)
+            logger.info(f"Initialized person model for user {user_id} ({user_name})")
+
         # Crash-loop protection
         incomplete = get_incomplete_task(user_id)
         if incomplete:
@@ -1834,10 +1865,66 @@ async def _health_monitor_loop(scheduler):
         await asyncio.sleep(300)  # Check eligibility every 5 minutes
 
 
+def _setup_reflection_job(scheduler):
+    """Set up the nightly reflection scheduler job if not already present."""
+    from core.scheduler import _get_all_meta
+
+    # Check if reflection job already exists
+    existing = _get_all_meta()
+    for meta in existing:
+        if meta.get("name") == "nightly-reflection":
+            logger.info("Nightly reflection job already scheduled")
+            return
+
+    # Determine if the current provider supports reflection
+    provider = get_llm_provider()
+    model = get_llm_model().lower()
+
+    # Strong enough for reflection?
+    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "gemini", "google")
+    is_capable = provider in capable_providers
+
+    # Ollama: only large models
+    if provider == "ollama":
+        is_capable = any(size in model for size in ("70b", "72b", "34b", "32b", "405b"))
+
+    # OpenRouter: depends on the model — assume capable if paid
+    if provider == "openrouter":
+        is_capable = ":free" not in model
+
+    if not is_capable:
+        logger.info(f"Skipping reflection job — {provider}/{model} may not be capable enough")
+        return
+
+    # Schedule nightly at 3:00 AM
+    run_at = datetime.now().replace(hour=3, minute=0, second=0, microsecond=0)
+    if run_at <= datetime.now():
+        run_at += timedelta(days=1)
+
+    venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
+    reflect_script = str(BOT_DIR / "utils" / "reflect.py")
+
+    # Get admin user for notifications
+    allowed = get_allowed_users()
+    admin_id = allowed[0] if allowed else 0
+
+    scheduler.add_job(
+        user_id=admin_id,
+        message="Nightly memory reflection",
+        run_at=run_at,
+        repeat="daily",
+        job_type="command",
+        name="nightly-reflection",
+        notify=False,
+        command=f"{venv_python} {reflect_script}",
+    )
+    logger.info("Scheduled nightly reflection job at 3:00 AM")
+
+
 # --- Main ---
 
 def main():
-    global _llm_provider, _skill_manager
+    global _llm_provider, _skill_manager, _memory_manager
 
     token = get_telegram_token()
 
@@ -1860,6 +1947,10 @@ def main():
     # Initialize skills
     _skill_manager = SkillManager(SKILLS_DIR)
     logger.info(f"Loaded {len(_skill_manager.skills)} skills")
+
+    # Initialize deep memory system
+    _memory_manager = MemoryManager(DATA_DIR)
+    logger.info("Memory system initialized")
 
     # Build Telegram app
     api_base = get_telegram_api_base()
@@ -1935,6 +2026,9 @@ def main():
         scheduler.start()
         logger.info("Scheduler started with Claude handler")
         await recover_pending_messages(application.bot)
+
+        # Schedule nightly reflection job if not already present
+        _setup_reflection_job(scheduler)
 
         # Start proactive health monitoring
         asyncio.create_task(_health_monitor_loop(scheduler))
