@@ -176,25 +176,36 @@ def _call_api(prompt: str) -> str:
             if auth_header:
                 headers[auth_header] = auth_value
 
-            # GPT-5.x and o-series models require max_completion_tokens
-            uses_completion_tokens = (
-                provider == "openai" and (
-                    model.startswith("gpt-5")
-                    or model.startswith("o1")
-                    or model.startswith("o3")
-                    or model.startswith("o4")
-                )
+            # Determine token parameter name and temperature support
+            # OpenAI: GPT-5.x and o-series need max_completion_tokens, reject temperature
+            # Grok: reasoning models (grok-4 non-fast, grok-3-mini) need max_completion_tokens, reject temperature
+            # OpenRouter: max_completion_tokens preferred (max_tokens deprecated)
+            # DeepSeek: reasoner ignores temperature
+            is_openai_reasoning = provider == "openai" and (
+                model.startswith("gpt-5") or model.startswith("o1")
+                or model.startswith("o3") or model.startswith("o4")
             )
+            is_grok_reasoning = provider == "grok" and (
+                "reasoning" in model
+                or (model.startswith("grok-4") and "fast" not in model)
+                or "mini" in model
+            )
+            is_deepseek_reasoner = provider == "deepseek" and "reasoner" in model
+
+            uses_completion_tokens = is_openai_reasoning or is_grok_reasoning or provider == "openrouter"
+            rejects_temperature = is_openai_reasoning or is_grok_reasoning or is_deepseek_reasoner
+
             token_key = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
             body = {
                 "model": model,
                 token_key: 4096,
-                "temperature": 0.3,
                 "messages": [
                     {"role": "system", "content": "You are analyzing behavioral observations to update a person model."},
                     {"role": "user", "content": prompt},
                 ],
             }
+            if not rejects_temperature:
+                body["temperature"] = 0.3
 
             with httpx.Client(timeout=120.0) as client:
                 resp = client.post(url, headers=headers, json=body)

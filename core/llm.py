@@ -640,23 +640,28 @@ class OpenAIProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        # GPT-5.x and o-series models require max_completion_tokens, not max_tokens
-        uses_completion_tokens = (
-            self.model.startswith("gpt-5")
-            or self.model.startswith("o1")
+        # GPT-5.x and o-series models require max_completion_tokens, not max_tokens.
+        # o-series and GPT-5.x also reject the temperature parameter entirely.
+        is_reasoning = (
+            self.model.startswith("o1")
             or self.model.startswith("o3")
             or self.model.startswith("o4")
         )
+        is_gpt5 = self.model.startswith("gpt-5")
+        uses_completion_tokens = is_reasoning or is_gpt5
+        rejects_temperature = is_reasoning or is_gpt5
+
         token_key = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
         body = {
             "model": self.model,
             token_key: max_tokens,
-            "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 *[{"role": m.role, "content": m.content} for m in messages],
             ],
         }
+        if not rejects_temperature:
+            body["temperature"] = temperature
         return await _openai_tool_loop(
             url=f"{self.base_url}/chat/completions",
             headers=headers,
@@ -691,7 +696,7 @@ class OpenRouterProvider(LLMProvider):
         }
         body = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            "max_completion_tokens": max_tokens,
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -923,15 +928,18 @@ class DeepSeekProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        # deepseek-reasoner ignores temperature (no error, just no effect)
+        is_reasoner = "reasoner" in self.model
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 *[{"role": m.role, "content": m.content} for m in messages],
             ],
         }
+        if not is_reasoner:
+            body["temperature"] = temperature
         return await _openai_tool_loop(
             url=f"{self.BASE_URL}/chat/completions",
             headers=headers,
@@ -962,20 +970,37 @@ class GrokProvider(LLMProvider):
         # Grok 4.1 Fast models accept image input; grok-4-0709 and grok-3 are text-only
         return "vision" in self.model or "grok-4-1-fast" in self.model or "grok-4-fast" in self.model
 
+    def _is_reasoning_model(self) -> bool:
+        """Check if this is a Grok reasoning model (uses max_completion_tokens, no temperature)."""
+        # grok-4-0709 and grok-4 are reasoning models.
+        # grok-4-1-fast-* and grok-4-fast-* are NOT reasoning models (they're fast non-reasoning).
+        # grok-3-mini is a reasoning model. grok-3 is not.
+        m = self.model
+        if "reasoning" in m:
+            return True
+        if m.startswith("grok-4") and "fast" not in m:
+            return True
+        if "mini" in m:
+            return True
+        return False
+
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        is_reasoning = self._is_reasoning_model()
+        token_key = "max_completion_tokens" if is_reasoning else "max_tokens"
         body = {
             "model": self.model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            token_key: max_tokens,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 *[{"role": m.role, "content": m.content} for m in messages],
             ],
         }
+        if not is_reasoning:
+            body["temperature"] = temperature
         return await _openai_tool_loop(
             url=f"{self.BASE_URL}/chat/completions",
             headers=headers,
