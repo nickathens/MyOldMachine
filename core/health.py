@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import platform
+import re
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -47,7 +48,6 @@ def get_system_uptime() -> str:
                 capture_output=True, text=True, timeout=5
             )
             # Parse: { sec = 1709123456, usec = 0 }
-            import re
             match = re.search(r"sec\s*=\s*(\d+)", result.stdout)
             if match:
                 boot_time = int(match.group(1))
@@ -98,7 +98,6 @@ def get_memory_usage() -> dict:
                 ["vm_stat"], capture_output=True, text=True, timeout=5
             )
             page_size = 4096  # Intel default; Apple Silicon uses 16384 — parsed below
-            import re
             pages_free = 0
             pages_active = 0
             pages_inactive = 0
@@ -249,7 +248,6 @@ def get_swap_usage() -> dict:
                 capture_output=True, text=True, timeout=5
             )
             # Parse: "total = 2048.00M  used = 1024.00M  free = 1024.00M"
-            import re
             total = used = free = 0.0
             m = re.search(r"total\s*=\s*([\d.]+)M", result.stdout)
             if m:

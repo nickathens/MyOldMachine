@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import re
 import stat
 import sys
@@ -371,6 +372,35 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("To run a Flatpak app: flatpak run <app_id>  (e.g. flatpak run org.blender.Blender)")
         parts.append("To check installed Flatpak apps: flatpak list --app")
         parts.append("If a skill's binary isn't in PATH but is installed via Flatpak, use the flatpak run command.")
+        parts.append("")
+        parts.append("### Machine Safety Awareness:")
+        parts.append(
+            "This bot runs on someone's personal machine — possibly old, fragile, or their only computer. "
+            "You should always be aware of hardware safety. The user is in control and can install "
+            "whatever they want, but you must make sure they understand the risks first.\n\n"
+            "**Warn before risky operations.** If a command or package could stress hardware, "
+            "damage data, or destabilize the system, explain the risk clearly and ask the user "
+            "to confirm before proceeding. The system will flag risky commands automatically — "
+            "when you see a ⚠️ HARDWARE WARNING in tool output, relay it to the user.\n\n"
+            "**Examples of things that need a warning:**\n"
+            "- Hardware monitoring tools (sysstat, dstat) — can stress old disks/CPUs with aggressive polling\n"
+            "- Stress testing tools (stress, stress-ng, cpuburn, prime95) — can overheat or crash old hardware\n"
+            "- Disk benchmarking (fio, bonnie++, iozone) — aggressive I/O on failing drives can kill them\n"
+            "- Kernel module manipulation (modprobe, insmod) — can crash unstable systems\n"
+            "- Disk partitioning (fdisk, parted, gdisk) — can destroy data if used incorrectly\n"
+            "- Firmware tools (flashrom, fwupd) — can permanently brick hardware\n\n"
+            "**Warn before system-level changes.** Before installing system packages, modifying "
+            "services (systemctl enable/disable), changing boot configuration, modifying "
+            "network settings, or adding systemd timers, explain what you're about to do "
+            "and why. If there's any risk of instability, say so explicitly.\n\n"
+            "**Prefer lightweight alternatives when possible.** For system info, built-in "
+            "commands (free, df, uptime, lscpu, cat /proc/meminfo) are safe and already available. "
+            "Suggest these first, but install packages if the user wants them.\n\n"
+            "**When in doubt, ask.** If you're unsure whether an action could harm the machine, "
+            "explain what you'd do and let the user decide. It's their machine — they have the "
+            "final say. Your job is to make sure they're informed."
+        )
+        parts.append("")
     else:
         parts.append(f"You are {bot_name}, an AI assistant.")
         parts.append("You are a text-only assistant. You CANNOT run commands or access the filesystem. "
@@ -721,7 +751,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         bot_name = get_bot_name()
-        import platform
         version = get_current_version(BOT_DIR)
         skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
         await update.message.reply_text(
@@ -1105,7 +1134,6 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id):
         await update.message.reply_text("Admin only.")
         return
-    import platform
     version = get_current_version(BOT_DIR)
     branch = get_current_branch(BOT_DIR)
     skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0

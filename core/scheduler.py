@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import re
 import signal
 import sqlite3
@@ -437,15 +438,13 @@ async def _execute_command(job_id: str):
 
         # Use sanitized environment (strips API keys/tokens)
         from core.tools import _build_command_env
-        import platform as _platform
-        from pathlib import Path as _Path
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=str(_Path.home()),
+            cwd=str(Path.home()),
             env=_build_command_env(),
-            start_new_session=(_platform.system() != "Windows"),
+            start_new_session=(platform.system() != "Windows"),
         )
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)

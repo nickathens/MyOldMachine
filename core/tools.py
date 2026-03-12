@@ -222,20 +222,6 @@ def _strip_gemini_unsupported(schema: dict) -> dict:
     return cleaned
 
 
-# Legacy aliases for backward compatibility with llm.py imports
-TOOLS_OPENAI = None  # Lazy — set on first access
-TOOLS_GEMINI = None
-
-
-def _ensure_legacy_aliases():
-    """Populate legacy aliases on first use."""
-    global TOOLS_OPENAI, TOOLS_GEMINI
-    if TOOLS_OPENAI is None:
-        TOOLS_OPENAI = get_tools_openai()
-    if TOOLS_GEMINI is None:
-        TOOLS_GEMINI = get_tools_gemini()
-
-
 # ============================================================================
 # 2. ENVIRONMENT HARDENING
 # ============================================================================
@@ -380,6 +366,104 @@ BLOCKED_PATTERNS = [
     r"wget\s+.*\|\s*sudo\s+bash",
 ]
 
+# --- Warning system for risky (but not catastrophic) operations ---
+# These are NOT blocked — the LLM is expected to warn the user and get
+# confirmation before proceeding. The warning is returned as part of the
+# tool result so the LLM can present it to the user.
+
+# Risky command patterns: {regex: warning message}
+_RISKY_COMMAND_PATTERNS = [
+    # Kernel module manipulation — can crash unstable hardware
+    (r"\binsmod\b", "Loading kernel modules can crash or destabilize the system, especially on old hardware."),
+    (r"\bmodprobe\b", "Loading kernel modules can crash or destabilize the system, especially on old hardware."),
+    # Disk partitioning — can destroy data
+    (r"\bfdisk\b", "Disk partitioning can destroy data if used incorrectly."),
+    (r"\bparted\b", "Disk partitioning can destroy data if used incorrectly."),
+    (r"\bgdisk\b", "Disk partitioning can destroy data if used incorrectly."),
+    (r"\bgparted\b", "Disk partitioning can destroy data if used incorrectly."),
+    (r"\bcfdisk\b", "Disk partitioning can destroy data if used incorrectly."),
+    # Firmware flashing — can brick hardware
+    (r"\bflashrom\b", "Firmware flashing can permanently brick hardware if it fails or is interrupted."),
+    (r"\bfwupd\b", "Firmware updates can brick hardware if they fail or are interrupted."),
+]
+_COMPILED_RISKY_COMMANDS = [(re.compile(p, re.IGNORECASE), msg) for p, msg in _RISKY_COMMAND_PATTERNS]
+
+# Risky packages: {package_name: warning message}
+# These are not blocked — the user can install them if they confirm.
+RISKY_PACKAGES = {
+    # Hardware monitoring that polls aggressively
+    "sysstat": "Aggressive hardware polling — can stress old disks/CPUs if left running.",
+    "dstat": "Aggressive hardware polling — can stress old disks/CPUs if left running.",
+    # Deliberate stress/load testing tools
+    "stress": "CPU/memory stress testing — can overheat or crash old hardware.",
+    "stress-ng": "CPU/memory stress testing — can overheat or crash old hardware.",
+    "cpuburn": "CPU stress testing — will push hardware to thermal limits.",
+    "s-tui": "Includes stress testing features that can overheat old hardware.",
+    "prime95": "CPU stress testing — will push hardware to thermal limits.",
+    "mprime": "CPU stress testing — will push hardware to thermal limits.",
+    "linpack": "CPU stress testing — will push hardware to thermal limits.",
+    # Low-level firmware tools
+    "flashrom": "Firmware flashing — can permanently brick hardware.",
+    "fwupd": "Firmware updates — can brick hardware if interrupted.",
+    "fwupdate": "Firmware updates — can brick hardware if interrupted.",
+    # Disk benchmarking
+    "bonnie++": "Disk benchmarking — aggressive I/O can kill failing drives.",
+    "fio": "Disk benchmarking — aggressive I/O can kill failing drives.",
+    "iozone": "Disk benchmarking — aggressive I/O can kill failing drives.",
+}
+
+# Regex patterns that match package install commands across all package managers.
+# Pre-compiled with IGNORECASE for efficiency (called on every command).
+# Note: pacman -S is case-sensitive (lowercase -s means search), but since
+# we use IGNORECASE here, both -S and -s will match. This is acceptable
+# because the warning is informational (not blocking), and a false positive
+# on `pacman -s` is harmless.
+_COMPILED_INSTALL_PREFIXES = [re.compile(p, re.IGNORECASE) for p in [
+    r"(?:sudo\s+)?apt(?:-get)?\s+install\b",
+    r"(?:sudo\s+)?dnf\s+install\b",
+    r"(?:sudo\s+)?yum\s+install\b",
+    r"(?:sudo\s+)?pacman\s+-S\b",
+    r"(?:sudo\s+)?zypper\s+install\b",
+    r"(?:sudo\s+)?apk\s+add\b",
+    r"brew\s+install\b",
+    r"(?:sudo\s+)?snap\s+install\b",
+    r"pip3?\s+install\b",
+    r"python3?\s+-m\s+pip\s+install\b",
+    r"(?:sudo\s+)?npm\s+install\b",
+]]
+
+
+def _check_risky_command(command: str) -> list[str]:
+    """Check if a command involves risky operations.
+
+    Returns a list of warning strings. Empty list means no warnings.
+    These do NOT block execution — they're informational for the LLM to
+    present to the user before or after running the command.
+    """
+    warnings = []
+
+    # Check risky command patterns
+    for pattern, msg in _COMPILED_RISKY_COMMANDS:
+        if pattern.search(command):
+            warnings.append(msg)
+            break  # One command warning is enough
+
+    # Check risky package installs
+    for prefix in _COMPILED_INSTALL_PREFIXES:
+        match = prefix.search(command)
+        if not match:
+            continue
+        remainder = command[match.end():]
+        tokens = remainder.split()
+        packages = [t for t in tokens if t and not t.startswith("-")]
+        for pkg in packages:
+            pkg_name = re.split(r"[><=:]", pkg)[0].strip().lower()
+            if pkg_name in RISKY_PACKAGES:
+                warnings.append(f"Package '{pkg_name}': {RISKY_PACKAGES[pkg_name]}")
+
+    return warnings
+
+
 # Paths the LLM should never write to
 BLOCKED_WRITE_PATHS = [
     "/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/sudoers.d/",
@@ -392,7 +476,12 @@ _COMPILED_BLOCKED = [re.compile(p) for p in BLOCKED_PATTERNS]
 
 
 def _is_command_blocked(command: str) -> str | None:
-    """Return a reason string if the command is blocked, else None."""
+    """Return a reason string if the command is blocked, else None.
+
+    Only blocks truly catastrophic commands (rm -rf /, fork bombs, etc.).
+    Risky-but-legitimate commands are handled by _check_risky_command()
+    which returns warnings instead of blocks.
+    """
     for pattern in _COMPILED_BLOCKED:
         if pattern.search(command):
             return f"Blocked: dangerous command pattern detected"
@@ -1003,6 +1092,9 @@ async def _run_command(command: str, background: bool = False,
     if blocked:
         return blocked
 
+    # Check for risky operations — these produce warnings, not blocks
+    risk_warnings = _check_risky_command(command)
+
     effective_timeout = timeout or (BACKGROUND_TIMEOUT if background else COMMAND_TIMEOUT)
     logger.info(f"Executing command (bg={background}): {command[:200]}")
 
@@ -1028,7 +1120,7 @@ async def _run_command(command: str, background: bool = False,
                     logger.error(f"Background stream error for {managed.process_id}: {t.exception()}")
 
             task.add_done_callback(_bg_done)
-            return (
+            result = (
                 f"Background process started.\n"
                 f"Process ID: {managed.process_id}\n"
                 f"Command: {command[:100]}\n"
@@ -1036,6 +1128,12 @@ async def _run_command(command: str, background: bool = False,
                 f"Use check_process(process_id='{managed.process_id}') to see output and status.\n"
                 f"Use check_process(process_id='{managed.process_id}', action='kill') to stop it."
             )
+            if risk_warnings:
+                result += "\n\n⚠️ HARDWARE WARNING — tell the user before continuing:\n"
+                for w in risk_warnings:
+                    result += f"  - {w}\n"
+                result += "Ask the user if they want to continue. Use check_process with action='kill' to stop if they don't."
+            return result
 
         # Foreground: stream output and wait for completion
         await _stream_process_output(managed, effective_timeout)
@@ -1051,6 +1149,13 @@ async def _run_command(command: str, background: bool = False,
         if len(output) > MAX_OUTPUT_CHARS:
             original_len = len(output)
             output = output[:MAX_OUTPUT_CHARS] + f"\n\n[Truncated — {original_len} chars total]"
+
+        # Append hardware warnings so the LLM informs the user
+        if risk_warnings:
+            output += "\n\n⚠️ HARDWARE WARNING — inform the user:\n"
+            for w in risk_warnings:
+                output += f"  - {w}\n"
+            output += "Make sure the user is aware of these risks."
 
         return output
 

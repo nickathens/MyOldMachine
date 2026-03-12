@@ -13,6 +13,7 @@ Provides:
 import json
 import logging
 import re
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -263,7 +264,6 @@ class SessionManager:
 
         # Check if claude CLI is available — without it we can't summarize,
         # and trimming without summarizing would lose context permanently
-        import shutil
         if not shutil.which("claude"):
             logger.info("Compaction skipped — claude CLI not available")
             return history, ""
