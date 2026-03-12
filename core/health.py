@@ -1,10 +1,12 @@
 """
 System Health Monitor.
 
-Tracks disk, CPU, RAM, uptime, and network status.
-Provides /health command output and critical alerts.
+Tracks disk, CPU, RAM, uptime, network status, and polling liveness.
+Provides /health command output, critical alerts, and automatic recovery
+when the Telegram polling loop stops receiving updates.
 """
 
+import asyncio
 import logging
 import os
 import platform
@@ -367,3 +369,256 @@ async def run_health_check(send_fn, admin_user_ids: list[int],
             await send_fn(uid, message)
         except Exception as e:
             logger.error(f"Failed to send health alert to {uid}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Polling liveness monitor
+# ---------------------------------------------------------------------------
+# Detects when the Telegram polling loop stops receiving updates (due to
+# network issues, stale connections, or library-level failures) and recovers
+# by cleanly exiting the process so systemd/launchd restarts it.
+
+POLLING_CHECK_INTERVAL = 60      # How often to check (seconds)
+POLLING_STALE_THRESHOLD = 1800   # 30 minutes with zero updates → investigate
+POLLING_RECOVERY_COOLDOWN = 300  # 5 min cooldown between recovery attempts
+
+# Internet check targets — lightweight HEAD requests
+_CONNECTIVITY_HOSTS = [
+    "https://api.telegram.org",
+    "https://www.google.com",
+    "https://1.1.1.1",
+]
+_CONNECTIVITY_TIMEOUT = 10
+
+
+class PollingHealthMonitor:
+    """
+    Monitors Telegram polling liveness and recovers from silent failures.
+
+    How it works:
+    - Every incoming Telegram update resets the last_update_time via record_update().
+    - Every 60 seconds the monitor checks elapsed time since last update.
+    - If 30+ minutes pass with no updates:
+      1. Check internet connectivity (async HTTP HEAD requests).
+      2. If internet is down → log it, keep waiting (nothing we can do).
+      3. If internet is up but we still see no updates on the *next* check
+         (two consecutive stale checks = ~32 minutes minimum) → the polling
+         loop is likely stuck. Exit the process cleanly so systemd restarts it.
+    - If a local Bot API is configured, attempt to restart it first before
+      exiting the whole process.
+    - All recovery is silent — no messages sent to the user.
+    """
+
+    def __init__(
+        self,
+        local_api_base: Optional[str] = None,
+    ):
+        self.local_api_base = local_api_base
+
+        # State
+        self.last_update_time: float = time.monotonic()
+        self.last_recovery_time: float = 0.0
+        self.internet_was_down: bool = False
+        self._was_stale: bool = False
+        self._running: bool = False
+        self._task: Optional[asyncio.Task] = None
+
+    def record_update(self):
+        """Call on every incoming Telegram update."""
+        self.last_update_time = time.monotonic()
+
+    def start(self):
+        """Start the background monitor."""
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._loop())
+        logger.info(
+            "Polling health monitor started (check every %ds, stale threshold %ds)",
+            POLLING_CHECK_INTERVAL, POLLING_STALE_THRESHOLD,
+        )
+
+    async def stop(self):
+        """Stop the monitor."""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        logger.info("Polling health monitor stopped")
+
+    async def _loop(self):
+        """Main loop — runs until stopped or process exits."""
+        # Give the bot time to start up and receive initial updates
+        await asyncio.sleep(30)
+
+        while self._running:
+            try:
+                await self._check()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Polling health check error: %s", e, exc_info=True)
+
+            await asyncio.sleep(POLLING_CHECK_INTERVAL)
+
+    async def _check(self):
+        """Single health check cycle."""
+        elapsed = time.monotonic() - self.last_update_time
+
+        if elapsed < POLLING_STALE_THRESHOLD:
+            # Updates arriving normally
+            self._was_stale = False
+            return
+
+        logger.warning(
+            "No Telegram updates for %.0f seconds (threshold: %d). Diagnosing...",
+            elapsed, POLLING_STALE_THRESHOLD,
+        )
+
+        # Step 1: Internet connectivity
+        internet_ok = await self._check_internet()
+
+        if not internet_ok:
+            if not self.internet_was_down:
+                self.internet_was_down = True
+                logger.warning("Internet connectivity lost. Waiting for recovery...")
+            self._was_stale = False
+            return
+
+        # Internet restored after outage
+        if self.internet_was_down:
+            self.internet_was_down = False
+            logger.info("Internet connectivity restored")
+            # If using a local Bot API, restart it — its upstream connection is
+            # likely stale. Otherwise the polling library should reconnect on its own.
+            if self.local_api_base:
+                await self._restart_local_api(
+                    "Internet restored after outage — restarting local Bot API"
+                )
+            self._was_stale = False
+            return
+
+        # Step 2: Internet is up. Two-check confirmation to prevent false positives.
+        if not self._was_stale:
+            logger.info(
+                "Internet OK but no updates. Could be a quiet period — "
+                "will confirm on next check."
+            )
+            self._was_stale = True
+            return
+
+        # Step 3: Second consecutive stale check. Something is wrong.
+        logger.warning(
+            "No updates for %.0f seconds despite healthy internet "
+            "(confirmed over 2 checks). Taking recovery action.",
+            elapsed,
+        )
+
+        # Enforce cooldown
+        now = time.monotonic()
+        if now - self.last_recovery_time < POLLING_RECOVERY_COOLDOWN:
+            remaining = POLLING_RECOVERY_COOLDOWN - (now - self.last_recovery_time)
+            logger.info("Recovery cooldown active (%.0fs remaining). Skipping.", remaining)
+            return
+        self.last_recovery_time = now
+
+        # If using a local Bot API, restart that service first
+        if self.local_api_base:
+            restarted = await self._restart_local_api(
+                "Stale polling — internet OK but no updates arriving"
+            )
+            if restarted:
+                self._was_stale = False
+                return
+
+        # No local API (or restart failed). The polling library itself is stuck.
+        # Exit cleanly so systemd/launchd restarts the entire bot.
+        logger.critical(
+            "Polling loop appears stuck. Exiting for automatic restart. "
+            "Reason: %d seconds with no updates, internet OK.",
+            int(elapsed),
+        )
+        # os._exit avoids cleanup complications — systemd will restart us
+        os._exit(1)
+
+    async def _check_internet(self) -> bool:
+        """Check internet connectivity via async HTTP HEAD requests."""
+        try:
+            import httpx
+        except ImportError:
+            # httpx not available — fall back to synchronous curl check in executor
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, get_network_status)
+
+        async with httpx.AsyncClient(timeout=_CONNECTIVITY_TIMEOUT) as client:
+            for url in _CONNECTIVITY_HOSTS:
+                try:
+                    response = await client.head(url)
+                    if response.status_code < 500:
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    async def _restart_local_api(self, reason: str) -> bool:
+        """
+        Attempt to restart the local Bot API service.
+        Returns True if restart succeeded, False otherwise.
+        """
+        logger.info("Attempting local Bot API restart. Reason: %s", reason)
+
+        # Detect the service manager and try to restart
+        if platform.system() == "Linux":
+            # Try user-level systemd first, then system-level
+            for cmd in [
+                ["systemctl", "--user", "restart", "telegram-bot-api"],
+                ["systemctl", "restart", "telegram-bot-api"],
+            ]:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                    if proc.returncode == 0:
+                        logger.info("Restarted telegram-bot-api via %s", " ".join(cmd))
+                        await asyncio.sleep(5)
+                        self.last_update_time = time.monotonic()
+                        return True
+                except (asyncio.TimeoutError, Exception) as e:
+                    logger.debug("Restart via %s failed: %s", " ".join(cmd), e)
+                    continue
+
+        logger.warning("Could not restart local Bot API")
+        return False
+
+
+# Module-level singleton for easy access from bot.py
+_polling_monitor: Optional[PollingHealthMonitor] = None
+
+
+def init_polling_monitor(
+    local_api_base: Optional[str] = None,
+) -> PollingHealthMonitor:
+    """Create and return the polling health monitor singleton."""
+    global _polling_monitor
+    _polling_monitor = PollingHealthMonitor(
+        local_api_base=local_api_base,
+    )
+    return _polling_monitor
+
+
+def get_polling_monitor() -> Optional[PollingHealthMonitor]:
+    """Get the polling monitor instance (or None if not initialized)."""
+    return _polling_monitor
+
+
+def record_polling_update():
+    """Convenience: record an update on the singleton monitor."""
+    if _polling_monitor:
+        _polling_monitor.record_update()

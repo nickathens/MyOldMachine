@@ -35,7 +35,10 @@ from core.skill_loader import SkillManager
 from core.session import SessionManager, get_session_manager
 from core.memory import MemoryManager
 from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
-from core.health import build_health_report, check_critical, run_health_check
+from core.health import (
+    build_health_report, check_critical, run_health_check,
+    init_polling_monitor, get_polling_monitor, record_polling_update,
+)
 from core.updater import check_for_updates, full_update, get_current_version, get_current_branch
 from core.system_probe import probe_system, get_caps_summary
 
@@ -45,6 +48,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -1971,6 +1975,12 @@ def main():
     builder = builder.concurrent_updates(True)
     app = builder.build()
 
+    # Track all incoming updates for polling health monitoring
+    async def _track_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        record_polling_update()
+
+    app.add_handler(TypeHandler(Update, _track_update), group=-1)
+
     # Command handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("clear", clear_command))
@@ -2039,8 +2049,14 @@ def main():
         # Schedule nightly reflection job if not already present
         _setup_reflection_job(scheduler)
 
-        # Start proactive health monitoring
+        # Start proactive health monitoring (system resources)
         asyncio.create_task(_health_monitor_loop(scheduler))
+
+        # Start polling liveness monitor (detects stale Telegram connection)
+        polling_monitor = init_polling_monitor(
+            local_api_base=api_base,
+        )
+        polling_monitor.start()
 
         # System capability probe — runs once on first boot
         caps_file = DATA_DIR / "system_caps.json"
@@ -2077,8 +2093,12 @@ def main():
                 first_boot_marker.touch()
                 logger.info("First boot message sent")
 
-    # Shutdown: stop scheduler, kill background processes, wait for active processes
+    # Shutdown: stop scheduler, polling monitor, kill background processes
     async def post_shutdown(application):
+        # Stop polling health monitor
+        polling_monitor = get_polling_monitor()
+        if polling_monitor:
+            await polling_monitor.stop()
         scheduler = get_scheduler()
         if scheduler:
             scheduler.stop()
