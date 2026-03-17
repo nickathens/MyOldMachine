@@ -4,5 +4,9 @@
   "pip": ["demucs"],
   "check": {
     "ffmpeg": "ffmpeg -version"
-  }
+  },
+  "weight": "heavy",
+  "min_ram_gb": 4,
+  "min_disk_gb": 3,
+  "install_note": "Installs PyTorch + Demucs models (~1.5 GB download)"
 }

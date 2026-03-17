@@ -4,5 +4,9 @@
   "pip": ["librosa", "matplotlib", "numpy", "soundfile"],
   "check": {
     "ffmpeg": "ffmpeg -version"
-  }
+  },
+  "weight": "medium",
+  "min_ram_gb": 1,
+  "min_disk_gb": 1,
+  "install_note": "Installs librosa + scientific computing libraries (~200 MB)"
 }

@@ -111,6 +111,15 @@ def _get_ram_gb() -> float:
     return 0
 
 
+def _get_disk_free_gb() -> float:
+    """Get free disk space on the home partition in GB."""
+    try:
+        usage = shutil.disk_usage(Path.home())
+        return round(usage.free / (1024**3), 1)
+    except Exception:
+        return 0
+
+
 def probe_system(data_dir: Path) -> dict:
     """Run a full system capability probe. Returns and saves the results."""
     caps = {
@@ -121,6 +130,7 @@ def probe_system(data_dir: Path) -> dict:
         "hostname": platform.node(),
         "python_version": platform.python_version(),
         "ram_gb": _get_ram_gb(),
+        "disk_free_gb": _get_disk_free_gb(),
         "package_manager": _detect_package_manager(),
     }
 
@@ -277,7 +287,7 @@ def get_caps_summary(data_dir: Path) -> str:
 
     lines = [
         f"OS: {caps.get('os', '?')} {caps.get('os_version', '')}",
-        f"Arch: {caps.get('arch', '?')} / RAM: {caps.get('ram_gb', '?')} GB",
+        f"Arch: {caps.get('arch', '?')} / RAM: {caps.get('ram_gb', '?')} GB / Disk free: {caps.get('disk_free_gb', '?')} GB",
         f"Package manager: {caps.get('package_manager', '?')}",
     ]
 

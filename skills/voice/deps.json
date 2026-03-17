@@ -4,5 +4,9 @@
   "pip": ["openai-whisper"],
   "check": {
     "ffmpeg": "ffmpeg -version"
-  }
+  },
+  "weight": "heavy",
+  "min_ram_gb": 4,
+  "min_disk_gb": 3,
+  "install_note": "Installs PyTorch + Whisper models (~1 GB download)"
 }

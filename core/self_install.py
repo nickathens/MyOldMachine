@@ -260,12 +260,17 @@ def check_skill_deps(skill_path: Path) -> list[str]:
     return missing
 
 
-def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
+def install_missing(skill_path: Path, notify_fn=None,
+                    ram_gb: float = 0, disk_free_gb: float = 0) -> tuple[bool, list[str]]:
     """
     Install missing dependencies for a skill.
-    Returns (success, list of installed items).
+    Returns (success, list of installed/warning items).
 
-    notify_fn: optional async callback to inform user, signature: (message: str) -> None
+    Args:
+        skill_path: Path to the skill directory.
+        notify_fn: optional async callback to inform user.
+        ram_gb: Total system RAM in GB (for resource gating).
+        disk_free_gb: Free disk space in GB (for resource gating).
     """
     deps = load_deps(skill_path)
     if not deps:
@@ -274,6 +279,12 @@ def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
     missing = check_skill_deps(skill_path)
     if not missing:
         return True, []
+
+    # Resource gate — check if machine can handle this skill's deps
+    resource_warning = check_resource_requirements(skill_path, ram_gb, disk_free_gb)
+    if resource_warning:
+        logger.warning(f"Resource check failed for {skill_path.name}: {resource_warning}")
+        return False, [f"BLOCKED: {resource_warning}"]
 
     password = get_sudo_password()
     installed = []
@@ -409,6 +420,69 @@ def install_missing(skill_path: Path, notify_fn=None) -> tuple[bool, list[str]]:
 
     success = len(failed) == 0
     return success, installed
+
+
+def check_resource_requirements(skill_path: Path, ram_gb: float = 0, disk_free_gb: float = 0) -> Optional[str]:
+    """Check if the machine has enough resources for a skill's dependencies.
+
+    Args:
+        skill_path: Path to the skill directory.
+        ram_gb: Total system RAM in GB (from system_caps.json).
+        disk_free_gb: Free disk space in GB (from system_caps.json).
+
+    Returns:
+        A warning string if resources are insufficient, None if OK.
+    """
+    deps = load_deps(skill_path)
+    if not deps:
+        return None
+
+    min_ram = deps.get("min_ram_gb", 0)
+    min_disk = deps.get("min_disk_gb", 0)
+    weight = deps.get("weight", "light")
+    install_note = deps.get("install_note", "")
+
+    if not min_ram and not min_disk:
+        return None
+
+    issues = []
+
+    if min_ram and ram_gb and ram_gb < min_ram:
+        issues.append(f"needs {min_ram} GB RAM (this machine has {ram_gb} GB)")
+
+    if min_disk and disk_free_gb and disk_free_gb < min_disk:
+        issues.append(f"needs {min_disk} GB free disk (only {disk_free_gb} GB available)")
+
+    if not issues:
+        return None
+
+    parts = [f"Skill '{skill_path.name}' [{weight}]"]
+    if install_note:
+        parts.append(install_note)
+    parts.append("Resource warning: " + "; ".join(issues))
+    return ". ".join(parts)
+
+
+def get_skill_resource_info(skill_path: Path) -> Optional[dict]:
+    """Get resource requirement metadata for a skill.
+
+    Returns dict with weight, min_ram_gb, min_disk_gb, install_note
+    or None if no resource requirements are specified.
+    """
+    deps = load_deps(skill_path)
+    if not deps:
+        return None
+
+    weight = deps.get("weight")
+    if not weight:
+        return None
+
+    return {
+        "weight": weight,
+        "min_ram_gb": deps.get("min_ram_gb", 0),
+        "min_disk_gb": deps.get("min_disk_gb", 0),
+        "install_note": deps.get("install_note", ""),
+    }
 
 
 def clear_cache():

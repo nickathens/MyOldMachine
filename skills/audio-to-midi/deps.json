@@ -1,3 +1,7 @@
 {
-  "pip": ["basic-pitch"]
+  "pip": ["basic-pitch"],
+  "weight": "medium",
+  "min_ram_gb": 2,
+  "min_disk_gb": 1,
+  "install_note": "Installs ONNX runtime + Basic Pitch model (~300 MB download)"
 }

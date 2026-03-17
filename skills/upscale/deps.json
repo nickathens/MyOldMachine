@@ -1,3 +1,7 @@
 {
-  "pip": ["realesrgan", "basicsr", "gfpgan"]
+  "pip": ["realesrgan", "basicsr", "gfpgan"],
+  "weight": "heavy",
+  "min_ram_gb": 4,
+  "min_disk_gb": 3,
+  "install_note": "Installs PyTorch + Real-ESRGAN models (~1.5 GB download)"
 }

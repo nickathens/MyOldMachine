@@ -244,6 +244,52 @@ All skills have:
 - Python syntax validated
 - Skill loader verified (all 54 skills load correctly)
 
+## Resource-Aware Dependency Gating (Mar 17)
+
+Skills with heavy dependencies now declare minimum resource requirements in `deps.json`:
+
+```json
+{
+  "weight": "heavy",
+  "min_ram_gb": 4,
+  "min_disk_gb": 3,
+  "install_note": "Installs PyTorch + Demucs models (~1.5 GB download)"
+}
+```
+
+**How it works:**
+1. `system_probe.py` detects RAM and free disk space on first boot, saves to `data/system_caps.json`
+2. `skill_loader.py` reads resource requirements from `deps.json` and annotates the skill list with `[HEAVY]`/`[MEDIUM]` tags and warnings when the machine lacks resources
+3. The LLM sees these warnings in its system prompt and asks the user before attempting heavy installs
+4. `self_install.py` has a resource gate in `install_missing()` that blocks installation when resources are insufficient
+
+**14 skills annotated** (6 heavy, 8 medium):
+- Heavy: stems (4GB/3GB), voice (4GB/3GB), upscale (4GB/3GB), background-removal (2GB/2GB), blender (2GB/2GB), spreadsheet (1GB/2GB)
+- Medium: audio-to-midi (2GB/1GB), browser (1GB/1GB), scraper (1GB/1GB), media (1GB/1GB), gimp (1GB/1GB), inkscape (1GB/1GB), audio-analysis (1GB/1GB), music-theory (1GB/1GB)
+
+Light skills (40 remaining) have no resource requirements and install normally.
+
+## Production Hardening (Mar 17)
+
+Ported battle-tested improvements from the private Telegram bot (`claude-telegram-bot`):
+
+**CLI Provider (`core/llm.py`):**
+- **No-text timeout** (600s): Kills Claude if tools are running but no user-facing text produced for 10 minutes. Catches infinite tool loops.
+- **Buffer overflow handling**: `read_line_with_timeout()` now catches `LimitOverrunError` and drains the buffer instead of crashing.
+- **50MB subprocess buffer** (was 10MB): Prevents buffer overflow on large tool outputs.
+- **Last-turn text fallback**: On error/timeout, prefers text from the latest assistant turn over the full accumulated partial text. More relevant results.
+- **API key stripping**: Added `XAI_API_KEY`, `GROK_API_KEY` to the env vars stripped from Claude CLI subprocess.
+- **Approach-timeout warning**: Logs at 80% of idle timeout threshold for diagnostics.
+
+**Append-only message log (`core/message_log.py`):**
+- Per-user SQLite database that records every exchange permanently
+- Never touched by conversation compaction — provides complete searchable history
+- WAL mode for concurrent reads, indexed by timestamp and role
+
+**Bot (`bot.py`):**
+- Message log integration: every user/assistant exchange logged in `_save_and_send()`
+- Improved queued-message notification text
+
 ## Testing
 
 Tested on:

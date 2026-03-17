@@ -6,5 +6,9 @@
   ],
   "check": {
     "playwright": "python3 -c 'import playwright; print(\"ok\")'"
-  }
+  },
+  "weight": "medium",
+  "min_ram_gb": 1,
+  "min_disk_gb": 1,
+  "install_note": "Installs Playwright + Chromium browser (~400 MB)"
 }

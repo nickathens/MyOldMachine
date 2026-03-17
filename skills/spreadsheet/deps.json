@@ -7,5 +7,9 @@
   "dnf": ["libreoffice-calc"],
   "pacman": ["libreoffice-fresh"],
   "zypper": ["libreoffice-calc"],
-  "brew": ["libreoffice"]
+  "brew": ["libreoffice"],
+  "weight": "heavy",
+  "min_ram_gb": 1,
+  "min_disk_gb": 2,
+  "install_note": "Installs LibreOffice Calc (~500 MB)"
 }

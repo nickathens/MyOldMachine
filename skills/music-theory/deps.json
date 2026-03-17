@@ -1,3 +1,7 @@
 {
-  "pip": ["music21"]
+  "pip": ["music21"],
+  "weight": "medium",
+  "min_ram_gb": 1,
+  "min_disk_gb": 1,
+  "install_note": "Installs music21 library (~100 MB)"
 }

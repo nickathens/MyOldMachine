@@ -41,7 +41,8 @@ from core.health import (
     init_polling_monitor, get_polling_monitor, record_polling_update,
 )
 from core.updater import check_for_updates, full_update, get_current_version, get_current_branch
-from core.system_probe import probe_system, get_caps_summary
+from core.system_probe import probe_system, get_caps_summary, load_caps
+from core.message_log import log_exchange
 
 from telegram import Update
 from telegram.ext import (
@@ -569,7 +570,13 @@ def build_system_prompt(user_id: int) -> str:
 
     # Skills — only relevant for providers that can execute tools
     if has_tool_use and _skill_manager:
-        skills_ctx = _skill_manager.build_context(exclude=blocked_skills)
+        # Load system caps for resource-aware skill annotations
+        caps = load_caps(DATA_DIR)
+        skills_ctx = _skill_manager.build_context(
+            exclude=blocked_skills,
+            ram_gb=caps.get("ram_gb", 0),
+            disk_free_gb=caps.get("disk_free_gb", 0),
+        )
         if skills_ctx:
             parts.append(skills_ctx)
 
@@ -691,7 +698,8 @@ async def call_llm(user_id: int, message: str, chat=None) -> str:
     return text
 
 
-def _save_and_send(user_id: int, user_message: str, response: str, session=None, **_kwargs):
+def _save_and_send(user_id: int, user_message: str, response: str,
+                   session=None, message_id: int = None, **_kwargs):
     """Save conversation turn and trigger compaction if needed.
 
     Note: response is expected to be already sanitized by call_llm().
@@ -713,6 +721,13 @@ def _save_and_send(user_id: int, user_message: str, response: str, session=None,
         if len(history) > session.config["compaction_threshold"]:
             history, _ = session.compact_conversation(history, session.summary_file)
         session.save_conversation(history)
+
+    # Append-only message log (survives compaction)
+    try:
+        log_exchange(user_id, user_message, response,
+                     message_id=message_id, topic=current_topic)
+    except Exception as e:
+        logger.error(f"Failed to log message for user {user_id}: {e}")
 
     return response
 
@@ -1771,7 +1786,7 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
 
             response = await call_llm(user_id, user_message, chat=chat)
 
-            _save_and_send(user_id, user_message, response, session=session, chat=chat)
+            _save_and_send(user_id, user_message, response, session=session, message_id=first_msg_id)
 
             for chunk in split_message(response):
                 try:
@@ -1794,7 +1809,7 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if lock.locked():
         try:
-            await update.message.reply_text("Still working on your previous request. Your message is queued.")
+            await update.message.reply_text("Still working on your previous request. I'll get to this once it's done.")
         except Exception:
             pass
 
@@ -1854,7 +1869,8 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response = await call_llm(user_id, user_message, chat=update.message.chat)
 
             # Save to current session (topic or main) with compaction
-            _save_and_send(user_id, user_message, response, session=session)
+            _save_and_send(user_id, user_message, response, session=session,
+                           message_id=update.message.message_id)
 
             for chunk in split_message(response):
                 try:

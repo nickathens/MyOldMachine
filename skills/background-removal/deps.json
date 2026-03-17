@@ -1,3 +1,7 @@
 {
-  "pip": ["rembg", "Pillow"]
+  "pip": ["rembg", "Pillow"],
+  "weight": "heavy",
+  "min_ram_gb": 2,
+  "min_disk_gb": 2,
+  "install_note": "Installs ONNX runtime + U2-Net model (~500 MB download)"
 }

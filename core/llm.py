@@ -97,6 +97,7 @@ class ClaudeCLIProvider(LLMProvider):
     """
 
     IDLE_TIMEOUT = 3600  # 1 hour of no output = stuck
+    NO_TEXT_TIMEOUT = 600  # 10 min of tool activity with zero user-facing text = stuck
     PROGRESS_INTERVAL = 300  # Send progress message every 5 min
 
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
@@ -152,11 +153,14 @@ class ClaudeCLIProvider(LLMProvider):
 
         typing_task = None
         process = None
-        last_activity = asyncio.get_running_loop().time()
-        last_progress_message = asyncio.get_running_loop().time()
-        last_progress_save = asyncio.get_running_loop().time()
+        start_time = asyncio.get_running_loop().time()
+        last_activity = start_time
+        last_text_output = start_time
+        last_progress_message = start_time
+        last_progress_save = start_time
         final_result = None
         partial_text = ""
+        last_turn_text_blocks = []
         current_status = "thinking"
         tool_in_progress = None
 
@@ -176,6 +180,17 @@ class ClaudeCLIProvider(LLMProvider):
                 return await asyncio.wait_for(stream.readline(), timeout=timeout)
             except asyncio.TimeoutError:
                 return None
+            except (asyncio.LimitOverrunError, ValueError) as e:
+                logger.warning(f"Oversized output line ({e}), draining buffer")
+                try:
+                    chunk = await asyncio.wait_for(
+                        stream.read(len(stream._buffer) if stream._buffer else 1024),
+                        timeout=5
+                    )
+                    logger.warning(f"Drained {len(chunk)} bytes from oversized line")
+                except Exception as drain_err:
+                    logger.warning(f"Buffer drain failed: {drain_err}")
+                return b'\n'
 
         try:
             if chat:
@@ -186,6 +201,7 @@ class ClaudeCLIProvider(LLMProvider):
             cli_env = {k: v for k, v in os.environ.items()
                        if k not in {"OPENAI_API_KEY", "OPENROUTER_API_KEY",
                                     "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
+                                    "XAI_API_KEY", "GROK_API_KEY",
                                     "LLM_API_KEY", "TELEGRAM_BOT_TOKEN",
                                     "TELEGRAM_TOKEN", "BOT_TOKEN",
                                     "DATABASE_URL", "DATABASE_PASSWORD",
@@ -199,7 +215,7 @@ class ClaudeCLIProvider(LLMProvider):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._bot_dir),
                 env=cli_env,
-                limit=10 * 1024 * 1024,  # 10MB buffer
+                limit=50 * 1024 * 1024,  # 50MB buffer for large JSON lines
             )
             self._active_processes.add(process)
 
@@ -215,7 +231,7 @@ class ClaudeCLIProvider(LLMProvider):
                 time_since_activity = current_time - last_activity
 
                 if time_since_activity > self.IDLE_TIMEOUT:
-                    logger.warning(f"Claude idle timeout for user {user_id} after {self.IDLE_TIMEOUT}s")
+                    logger.warning(f"Claude idle timeout for user {user_id} after {self.IDLE_TIMEOUT}s. Last status: {current_status}, tool: {tool_in_progress}")
                     if self.on_progress_save and user_id:
                         self.on_progress_save(user_id, original_message, partial_text,
                                               f"timeout after {self.IDLE_TIMEOUT}s", tool_in_progress)
@@ -233,7 +249,45 @@ class ClaudeCLIProvider(LLMProvider):
                         timeout_msg += f" Was running: {tool_in_progress}"
                     if partial_text:
                         timeout_msg += "\n\nPartial progress was saved. Use /recover to see it."
+                    else:
+                        timeout_msg += " The task may have been too complex. Try breaking it into smaller steps."
                     return LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name)
+
+                # No-text timeout: Claude is running tools but hasn't produced
+                # any user-facing text in NO_TEXT_TIMEOUT seconds.  This catches
+                # the case where tool JSON events keep last_activity alive but
+                # the user sees nothing.  Skips the first 120s to allow for
+                # initial thinking/planning before any output.
+                time_since_text = current_time - last_text_output
+                time_since_start = current_time - start_time
+                if time_since_text > self.NO_TEXT_TIMEOUT and tool_in_progress and time_since_start > 120:
+                    logger.warning(
+                        f"Claude no-text timeout for user {user_id}: {int(time_since_text)}s "
+                        f"without user-facing text. Tool: {tool_in_progress}, status: {current_status}"
+                    )
+                    if self.on_progress_save and user_id:
+                        self.on_progress_save(user_id, original_message, partial_text,
+                                              f"no-text timeout after {int(time_since_text)}s", tool_in_progress)
+                    process.kill()
+                    await process.wait()
+                    last_turn = "\n".join(last_turn_text_blocks).strip()
+                    fallback = last_turn or partial_text.strip()
+                    if fallback:
+                        if self.on_progress_clear and user_id:
+                            self.on_progress_clear(user_id)
+                        return LLMResponse(
+                            text=fallback + f"\n\n[Stopped: ran {tool_in_progress} for {int(time_since_text)}s with no response text.]",
+                            model=self.model, provider=self.provider_name, tool_use=True,
+                        )
+                    return LLMResponse(
+                        text=f"Claude was running {tool_in_progress} for {int(time_since_text // 60)} minutes "
+                             f"without producing any response. The task may need to be broken into smaller steps.",
+                        model=self.model, provider=self.provider_name,
+                    )
+
+                # Log warning when approaching idle timeout
+                if time_since_activity > self.IDLE_TIMEOUT * 0.8 and time_since_activity <= self.IDLE_TIMEOUT * 0.8 + 30:
+                    logger.warning(f"Claude approaching idle timeout for user {user_id}: {int(time_since_activity)}s idle. Status: {current_status}")
 
                 # Send progress message periodically
                 time_since_progress = current_time - last_progress_message
@@ -261,22 +315,27 @@ class ClaudeCLIProvider(LLMProvider):
                             if msg_type == "assistant":
                                 current_status = "generating response"
                                 tool_in_progress = None
+                                last_turn_text_blocks = []
                                 msg_data = data.get("message", {})
                                 for block in msg_data.get("content", []):
                                     if block.get("type") == "text":
                                         text = block.get("text", "")
-                                        if text and text not in partial_text:
+                                        if text:
+                                            last_turn_text_blocks.append(text)
+                                            last_text_output = asyncio.get_running_loop().time()
                                             partial_text += text + "\n"
                             elif msg_type == "tool_use":
                                 tool_name = data.get("name", "tool")
                                 tool_in_progress = tool_name
                                 current_status = f"using {tool_name}"
+                                logger.debug(f"Claude using tool: {tool_name}")
                             elif msg_type == "tool_result":
                                 tool_in_progress = None
                                 current_status = "processing result"
 
                             if msg_type == "result" and "result" in data:
                                 final_result = data["result"]
+                                last_text_output = asyncio.get_running_loop().time()
 
                             # Save progress periodically
                             current_time = asyncio.get_running_loop().time()
@@ -300,11 +359,14 @@ class ClaudeCLIProvider(LLMProvider):
 
             if process.returncode != 0 and not final_result:
                 logger.error(f"Claude error for user {user_id} (exit {process.returncode}): {stderr_text}")
-                if partial_text.strip():
+                last_turn = "\n".join(last_turn_text_blocks).strip()
+                fallback_text = last_turn or partial_text.strip()
+                if fallback_text:
+                    logger.info(f"Returning fallback text despite error for user {user_id} ({len(fallback_text)} chars, from_last_turn={bool(last_turn)})")
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
                     return LLMResponse(
-                        text=partial_text.strip(), model=self.model,
+                        text=fallback_text, model=self.model,
                         provider=self.provider_name, tool_use=True,
                     )
                 if self.on_progress_save and user_id:
@@ -331,19 +393,27 @@ class ClaudeCLIProvider(LLMProvider):
                     text=final_result, model=self.model,
                     provider=self.provider_name, tool_use=True,
                 )
-            elif partial_text.strip():
+
+            # No "result" message — use last assistant turn if available,
+            # otherwise fall back to all accumulated partial text
+            last_turn = "\n".join(last_turn_text_blocks).strip()
+            fallback_text = last_turn or partial_text.strip()
+            if fallback_text:
+                logger.warning(f"No final result for user {user_id}, returning fallback text ({len(fallback_text)} chars, from_last_turn={bool(last_turn)})")
                 return LLMResponse(
-                    text=partial_text.strip(), model=self.model,
+                    text=fallback_text, model=self.model,
                     provider=self.provider_name, tool_use=True,
                 )
+
+            if stderr_text:
+                logger.warning(f"No response from Claude for user {user_id}. Stderr: {stderr_text[:500]}")
             else:
-                if stderr_text:
-                    logger.warning(f"No response from Claude for user {user_id}. Stderr: {stderr_text[:500]}")
-                return LLMResponse(
-                    text="Claude produced no response. Try /clear to reset, or send a shorter message.",
-                    model=self.model, provider=self.provider_name,
-                    error="No output",
-                )
+                logger.warning(f"No response from Claude for user {user_id}. Exit code: {process.returncode}. No stderr.")
+            return LLMResponse(
+                text="Claude produced no response. This can happen when the context is too large. Try /clear to reset, or send a shorter message.",
+                model=self.model, provider=self.provider_name,
+                error="No output",
+            )
 
         except Exception as e:
             logger.exception(f"Failed to call Claude for user {user_id}")
