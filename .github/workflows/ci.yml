@@ -133,10 +133,17 @@ jobs:
           for d in decls:
               assert 'name' in d
               assert 'parameters' in d
-              # Verify no unsupported keywords leaked into Gemini schema
-              params_json = json.dumps(d['parameters'])
-              for keyword in ['additionalProperties', 'default', 'minimum', 'maximum']:
-                  assert keyword not in params_json, f'Unsupported keyword {keyword} in Gemini schema for {d[\"name\"]}'
+              # Verify no unsupported keywords leaked as dict keys in Gemini schema
+              def check_keys(obj, path=''):
+                  if isinstance(obj, dict):
+                      for k, v in obj.items():
+                          assert k not in ('additionalProperties', 'default', 'minimum', 'maximum'), \
+                              f'Unsupported key \"{k}\" at {path}.{k} in Gemini schema for {d[\"name\"]}'
+                          check_keys(v, f'{path}.{k}')
+                  elif isinstance(obj, list):
+                      for i, item in enumerate(obj):
+                          check_keys(item, f'{path}[{i}]')
+              check_keys(d['parameters'])
 
           print(f'All {len(TOOL_DEFINITIONS)} tool definitions valid')
           print(f'OpenAI format: {len(openai_tools)} tools')

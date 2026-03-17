@@ -282,7 +282,7 @@ else
         fi
         git clone https://github.com/nickathens/MyOldMachine.git "$REPO_DIR" || die "Failed to clone repository"
     fi
-    cd "$REPO_DIR"
+    cd "$REPO_DIR" || die "Failed to enter repository directory"
 fi
 
 # ─────────────────────────────────────────────────────────
