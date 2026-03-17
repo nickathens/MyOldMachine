@@ -30,7 +30,6 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 # macOS version names for user-friendly display

@@ -24,10 +24,10 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 from core.config import (
-    BOT_DIR, DATA_DIR, USERS_DIR, MEMORY_DIR, SKILLS_DIR,
+    BOT_DIR, DATA_DIR, USERS_DIR, SKILLS_DIR,
     get_telegram_token, get_telegram_api_base, get_allowed_users,
     get_bot_name, get_llm_provider, get_llm_model, get_llm_api_key,
-    get_ollama_base_url, get_webhook_port, get_user_profile, is_admin,
+    get_ollama_base_url, get_user_profile, is_admin,
     LOG_DIR,
 )
 from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider
@@ -37,10 +37,10 @@ from core.session import SessionManager, get_session_manager
 from core.memory import MemoryManager
 from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
 from core.health import (
-    build_health_report, check_critical, run_health_check,
+    build_health_report, run_health_check,
     init_polling_monitor, get_polling_monitor, record_polling_update,
 )
-from core.updater import check_for_updates, full_update, get_current_version, get_current_branch
+from core.updater import full_update, get_current_version, get_current_branch
 from core.system_probe import probe_system, get_caps_summary, load_caps
 from core.message_log import log_exchange
 

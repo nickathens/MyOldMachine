@@ -7,8 +7,6 @@ Designed to run as a scheduled command job (daily at 3 AM).
 """
 
 import logging
-import os
-import sys
 import time
 from datetime import datetime
 from pathlib import Path

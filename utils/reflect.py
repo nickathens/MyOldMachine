@@ -96,6 +96,7 @@ def _call_api(prompt: str) -> str:
         "openai": ("https://api.openai.com/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
         "deepseek": ("https://api.deepseek.com/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
         "grok": ("https://api.x.ai/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
+        "kimi": ("https://api.moonshot.ai/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
         "openrouter": ("https://openrouter.ai/api/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
         "claude-api": ("https://api.anthropic.com/v1/messages", None, None),
     }
@@ -186,7 +187,7 @@ def _call_api(prompt: str) -> str:
                 or model.startswith("o3") or model.startswith("o4")
             )
             is_grok_reasoning = provider == "grok" and (
-                "reasoning" in model
+                ("reasoning" in model and "non-reasoning" not in model)
                 or (model.startswith("grok-4") and "fast" not in model)
                 or "mini" in model
             )
