@@ -143,6 +143,10 @@ def probe_system(data_dir: Path) -> dict:
         # Workstation binaries
         "blender", "gimp", "inkscape", "soffice", "convert",
         "rclone", "chromium", "chromium-browser", "nb",
+        # Audio/music binaries
+        "fluidsynth", "lilypond",
+        # DevOps binaries
+        "docker", "lighthouse", "compare",
     ]
     caps["binaries"] = {}
     for b in binaries:
@@ -155,6 +159,9 @@ def probe_system(data_dir: Path) -> dict:
         "fontTools", "deep_translator", "httpx", "bs4",
         # Workstation modules
         "openpyxl", "termgraph", "buku", "realesrgan",
+        # Audio/music modules
+        "mingus", "pretty_midi", "mido", "basic_pitch",
+        "music21", "scipy", "demucs", "whisper", "yaml",
     ]
     caps["python_modules"] = {}
     for m in modules:
@@ -225,6 +232,28 @@ def probe_system(data_dir: Path) -> dict:
         "cloud-sync": ["rclone"],
         "web-build": ["node"],
         "upscale": ["realesrgan"],
+        # Audio/music skills
+        "midi": ["mido"],
+        "midi-to-audio": ["fluidsynth", "ffmpeg"],
+        "sheet-music": ["lilypond"],
+        "music-theory": ["music21"],
+        "audio-to-midi": ["basic_pitch"],
+        "algorithmic-composition": ["mingus", "pretty_midi"],
+        "sound-design": ["scipy"],
+        "stems": ["ffmpeg", "demucs"],
+        "voice": ["ffmpeg", "whisper"],
+        # DevOps/automation skills
+        "docker-services": ["docker"],
+        "lighthouse": ["lighthouse"],
+        "screenshot-diff": ["compare", "PIL"],
+        "workflow": ["yaml"],
+        # Data/research skills
+        "research": ["httpx", "bs4"],
+        "price-monitor": ["httpx", "bs4"],
+        # AI/media skills
+        "background-removal": ["PIL"],
+        # Knowledge skill (no deps)
+        "impeccable": [],
     }
 
     for skill, deps in skill_deps.items():
