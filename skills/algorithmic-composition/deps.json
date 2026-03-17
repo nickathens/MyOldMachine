@@ -1,0 +1,3 @@
+{
+  "pip": ["mingus", "pretty_midi", "numpy"]
+}

@@ -1,0 +1,8 @@
+{
+  "apt": ["imagemagick"],
+  "brew": ["imagemagick"],
+  "pip": ["Pillow"],
+  "check": {
+    "compare": "compare --version"
+  }
+}

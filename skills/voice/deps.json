@@ -1,0 +1,8 @@
+{
+  "apt": ["ffmpeg"],
+  "brew": ["ffmpeg"],
+  "pip": ["openai-whisper"],
+  "check": {
+    "ffmpeg": "ffmpeg -version"
+  }
+}

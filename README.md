@@ -212,7 +212,7 @@ The installer handles version mismatches automatically:
 - On first boot, the bot probes the system and reports which skills are ready vs. which need dependencies installed
 - Flatpak apps are detected by the system probe and reported alongside system-installed tools
 
-## Skills (37 total)
+## Skills (54 total)
 
 Skills are modular packages the bot loads automatically. Each has instructions the LLM reads, optional scripts, and a dependency manifest.
 
@@ -242,6 +242,34 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | qrcode | Generate QR codes |
 | rss | Parse RSS/Atom feeds |
 | regex | Pattern matching and text extraction |
+| workflow | Multi-step YAML pipelines with retry, conditions, crash recovery |
+| research | Data collection, aggregation, and research automation |
+| price-monitor | Track prices and get alerts for changes |
+| docker-services | Spin up databases and services with Docker |
+| impeccable | Production-grade frontend design knowledge |
+
+### Audio and music skills
+
+| Skill | What it does |
+|-------|-------------|
+| voice | Speech-to-text transcription using Whisper |
+| stems | Separate audio into stems (vocals, drums, bass, other) using Demucs |
+| midi | Read, edit, transpose, and merge MIDI files |
+| midi-to-audio | Render MIDI to audio with FluidSynth and real instrument soundfonts |
+| audio-to-midi | Transcribe audio to MIDI using Spotify's Basic Pitch |
+| sheet-music | Convert MIDI to sheet music (PDF/PNG) via LilyPond |
+| music-theory | Chord, key, and interval analysis |
+| algorithmic-composition | Generate music programmatically |
+| sound-design | Programmatic sound synthesis and audio generation |
+
+### Visual and media skills
+
+| Skill | What it does |
+|-------|-------------|
+| background-removal | AI-powered background removal from images |
+| upscale | AI-powered image upscaling with Real-ESRGAN |
+| screenshot-diff | Visual regression testing for websites |
+| media | Screenshots and video recording of web pages |
 
 ### Workstation skills (pre-installed in workstation mode, self-install in others)
 
@@ -252,7 +280,7 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | inkscape | Vector graphics creation and manipulation via Inkscape CLI |
 | spreadsheet | Create, edit, export Excel/ODS spreadsheets (LibreOffice + openpyxl) |
 | scraper | Web scraping with Playwright — handles JavaScript-rendered pages |
-| media | Screenshots and video recording of web pages |
+| lighthouse | Website performance and SEO auditing |
 | icon-gen | Generate favicons, app icons, and icon sets |
 | sprite-gen | Create sprites and sprite sheets for games |
 | code-scaffold | Generate project templates and boilerplate |
@@ -261,7 +289,6 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | bookmarks | Bookmark management with buku |
 | cloud-sync | Sync files to cloud storage (Google Drive, Dropbox, S3) via rclone |
 | web-build | Static site generation and web development |
-| upscale | AI-powered image upscaling with Real-ESRGAN |
 
 ### Adding your own skills
 

@@ -213,6 +213,37 @@ Full production readiness update — 166 unique users cloning, 0 issues filed:
 - Ollama models below 7B are unreliable for tool-use (hallucinate calls, break JSON format)
 - Weak models may still write commands as text; fallback parser catches most cases but can miss unusual formats
 
+## Skills Expansion (Mar 17)
+
+Added 17 new skills ported from the Telegram bot (37 -> 54 total):
+
+| Skill | Category | Dependencies |
+|-------|----------|-------------|
+| workflow | Automation | pyyaml |
+| voice | Audio | openai-whisper, ffmpeg |
+| background-removal | Visual | rembg, Pillow |
+| impeccable | Knowledge | (none) |
+| research | Data | requests, beautifulsoup4, feedparser |
+| midi | Music | mido |
+| midi-to-audio | Music | fluidsynth, fluid-soundfont-gm, ffmpeg |
+| sheet-music | Music | lilypond |
+| music-theory | Music | music21 |
+| audio-to-midi | Music | basic-pitch |
+| algorithmic-composition | Music | mingus, pretty_midi, numpy |
+| sound-design | Music | numpy, scipy |
+| lighthouse | Web | lighthouse (npm) |
+| screenshot-diff | Web | imagemagick, Pillow |
+| stems | Audio | demucs, ffmpeg |
+| price-monitor | Data | requests, beautifulsoup4 |
+| docker-services | DevOps | docker |
+
+All skills have:
+- `SKILL.md` with generic paths (no user-specific references)
+- `deps.json` for self-install system (apt, brew, pip, npm, check)
+- Scripts in `scripts/` directory
+- Python syntax validated
+- Skill loader verified (all 54 skills load correctly)
+
 ## Testing
 
 Tested on:

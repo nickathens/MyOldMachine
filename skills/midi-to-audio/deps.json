@@ -1,0 +1,8 @@
+{
+  "apt": ["fluidsynth", "fluid-soundfont-gm", "ffmpeg"],
+  "brew": ["fluid-synth", "ffmpeg"],
+  "check": {
+    "fluidsynth": "fluidsynth --version",
+    "ffmpeg": "ffmpeg -version"
+  }
+}

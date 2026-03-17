@@ -1,0 +1,7 @@
+{
+  "apt": ["lilypond"],
+  "brew": ["lilypond"],
+  "check": {
+    "lilypond": "lilypond --version"
+  }
+}

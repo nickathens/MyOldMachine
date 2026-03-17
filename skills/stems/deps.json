@@ -1,0 +1,8 @@
+{
+  "apt": ["ffmpeg"],
+  "brew": ["ffmpeg"],
+  "pip": ["demucs"],
+  "check": {
+    "ffmpeg": "ffmpeg -version"
+  }
+}
