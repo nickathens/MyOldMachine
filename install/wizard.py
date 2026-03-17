@@ -250,6 +250,7 @@ _ALL_LLM_PROVIDERS = [
     ("openai", "OpenAI — requires API key ($), machine control via function calling"),
     ("deepseek", "DeepSeek — extremely cheap ($0.28/$0.42 per MTok), 128K context, machine control"),
     ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
+    ("kimi", "Moonshot Kimi — K2.5 multimodal, 256K context, $0.60/$3.00 per MTok, machine control"),
     ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
     ("openrouter", "OpenRouter — many models, one API key (free models available), machine control"),
@@ -270,6 +271,7 @@ DEFAULT_MODELS = {
     "openai": "gpt-5.4",
     "deepseek": "deepseek-chat",
     "grok": "grok-4-1-fast-non-reasoning",
+    "kimi": "kimi-k2.5",
     "gemini": "gemini-2.5-flash",
     "ollama": "llama3.1:8b",
     "openrouter": "openrouter/hunter-alpha",
@@ -321,6 +323,11 @@ PROVIDER_MODELS = {
         ("deepseek-chat", "DeepSeek V3.2 Chat — fast, strong, $0.28/$0.42 per MTok (recommended)"),
         ("deepseek-reasoner", "DeepSeek V3.2 Reasoner — thinking mode, $0.28/$0.42 per MTok"),
     ],
+    "kimi": [
+        ("kimi-k2.5", "Kimi K2.5 — multimodal (vision + tools), 256K context, $0.60/$3.00 per MTok (recommended)"),
+        ("kimi-k2", "Kimi K2 — text + code, 256K context, $0.60/$2.50 per MTok"),
+        ("kimi-latest", "Kimi Latest — auto-selects model, pricing varies by context length"),
+    ],
 }
 
 # Free models available on OpenRouter (no billing required)
@@ -351,7 +358,146 @@ OPENROUTER_FREE_MODELS = [
 ]
 
 # Providers that need an API key
-API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "gemini", "openrouter"}
+API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "openrouter"}
+
+# Step-by-step API key guides for each provider.
+# Shown during setup when the user picks a provider.
+# URLs verified March 17, 2026.
+API_KEY_GUIDES = {
+    "claude-api": {
+        "name": "Anthropic",
+        "url": "https://console.anthropic.com/settings/keys",
+        "steps": [
+            "Go to console.anthropic.com/settings/keys",
+            "  (redirects to platform.claude.com/settings/keys)",
+            "Sign up with email, Google, or SSO",
+            "Add a payment method under Billing (pay-as-you-go, no minimum)",
+            "Click 'Create Key', name it, and copy it immediately",
+            "  The full key is shown only once — starts with sk-ant-",
+        ],
+        "notes": [
+            "New accounts may receive initial free credits.",
+            "You can set spending limits to avoid surprises.",
+        ],
+    },
+    "openai": {
+        "name": "OpenAI",
+        "url": "https://platform.openai.com/api-keys",
+        "steps": [
+            "Go to platform.openai.com/api-keys",
+            "Sign up or log in (separate from ChatGPT login)",
+            "Add a payment method under Billing and buy credits",
+            "Click 'Create new secret key', name it, and copy it immediately",
+            "  The full key is shown only once — starts with sk-",
+        ],
+        "notes": [
+            "The API platform account is separate from ChatGPT.",
+            "You must add credits before API calls will work.",
+        ],
+    },
+    "deepseek": {
+        "name": "DeepSeek",
+        "url": "https://platform.deepseek.com/api_keys",
+        "steps": [
+            "Go to platform.deepseek.com/api_keys",
+            "Sign up with email, Google, or GitHub",
+            "Top up your balance (very cheap — $0.28/$0.42 per MTok)",
+            "Click 'Create API Key', name it, and copy it immediately",
+            "  The full key is shown only once — starts with sk-",
+        ],
+        "notes": [
+            "Extremely affordable. $2 of credits lasts a long time.",
+            "90% discount on cached input tokens.",
+        ],
+    },
+    "grok": {
+        "name": "xAI (Grok)",
+        "url": "https://console.x.ai",
+        "steps": [
+            "Go to console.x.ai and create an account",
+            "  No credit card required for signup",
+            "In the left sidebar, click 'API Keys'",
+            "Click 'Create API Key', name it, and copy it immediately",
+            "  The full key is shown only once",
+        ],
+        "notes": [
+            "$25 free credits on signup — no payment needed.",
+            "Opt into data sharing for $150/month additional free credits.",
+        ],
+    },
+    "kimi": {
+        "name": "Moonshot AI (Kimi)",
+        "url": "https://platform.moonshot.ai",
+        "steps": [
+            "Go to platform.moonshot.ai",
+            "Sign up with Google or email",
+            "In the left sidebar, click 'API Keys'",
+            "Click 'Create API Key', name it, and copy it immediately",
+            "  The full key is shown only once",
+        ],
+        "notes": [
+            "OpenAI-compatible API — same format, different base URL.",
+            "K2.5 supports vision and tool calling. 256K context.",
+        ],
+    },
+    "gemini": {
+        "name": "Google AI (Gemini)",
+        "url": "https://aistudio.google.com/apikey",
+        "steps": [
+            "Go to aistudio.google.com/apikey",
+            "Sign in with your Google account",
+            "Click 'Create API key'",
+            "Choose 'Create API key in new project' (easiest)",
+            "Copy the key — Google lets you view it again later",
+        ],
+        "notes": [
+            "Free tier available — no credit card required:",
+            "  Gemini 2.5 Pro:         5 RPM,  100 req/day",
+            "  Gemini 2.5 Flash:      10 RPM,  250 req/day",
+            "  Gemini 2.5 Flash-Lite: 15 RPM, 1000 req/day",
+        ],
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "url": "https://openrouter.ai/settings/keys",
+        "steps": [
+            "Go to openrouter.ai and click 'Sign up'",
+            "  Sign up with email, Google, or GitHub",
+            "Go to openrouter.ai/settings/keys",
+            "Click 'Create Key', name it, and copy it immediately",
+            "  The full key is shown only once — starts with sk-or-",
+        ],
+        "notes": [
+            "Free models available — no billing required.",
+            "Free tier: 20 requests/min, 200 requests/day.",
+            "Add credits only if you want access to paid models.",
+        ],
+    },
+}
+
+
+def _print_api_key_guide(provider: str):
+    """Print the step-by-step API key guide for a provider."""
+    guide = API_KEY_GUIDES.get(provider)
+    if not guide:
+        return
+    print()
+    print(f"  {BOLD}How to get your {guide['name']} API key:{NC}")
+    print()
+    for step in guide["steps"]:
+        # Indented sub-steps start with spaces
+        if step.startswith("  "):
+            print(f"    {YELLOW}{step}{NC}")
+        else:
+            print(f"    → {step}")
+    if guide.get("notes"):
+        print()
+        for note in guide["notes"]:
+            if note.startswith("  "):
+                print(f"      {note}")
+            else:
+                print(f"    {GREEN}{note}{NC}")
+    print()
 
 
 def _select_model_for_provider(config: dict, provider: str):
@@ -629,38 +775,10 @@ def main():
 
             # Handle API key for the new provider
             if new_provider in API_KEY_PROVIDERS:
-                if new_provider == "openrouter":
-                    free_ids = {m[0] for m in OPENROUTER_FREE_MODELS}
-                    is_free = config["llm_model"] in free_ids or config["llm_model"].endswith(":free")
-                    if is_free:
-                        print(f"  {GREEN}Free model selected — no billing required.{NC}")
-                    print(f"  You need an OpenRouter API key (free to create):")
-                    print(f"    1. Go to https://openrouter.ai and sign up")
-                    print(f"    2. Go to Keys → Create Key")
-                    print(f"    3. Paste it below")
-                    print()
-                elif new_provider == "gemini":
-                    print(f"  You need a Google AI API key:")
-                    print(f"    1. Go to https://aistudio.google.com/apikey")
-                    print(f"    2. Sign in and click 'Create API key'")
-                    print()
-                elif new_provider == "deepseek":
-                    print(f"  You need a DeepSeek API key:")
-                    print(f"    1. Go to https://platform.deepseek.com/api_keys")
-                    print()
-                elif new_provider == "grok":
-                    print(f"  You need an xAI API key:")
-                    print(f"    1. Go to https://console.x.ai/team/default/api-keys")
-                    print()
-                elif new_provider == "openai":
-                    print(f"  You need an OpenAI API key:")
-                    print(f"    1. Go to https://platform.openai.com/api-keys")
-                    print()
-                elif new_provider == "claude-api":
-                    print(f"  You need an Anthropic API key:")
-                    print(f"    1. Go to https://console.anthropic.com/settings/keys")
-                    print()
-                config["llm_api_key"] = ask(f"API key for {new_provider}", secret=True)
+                _print_api_key_guide(new_provider)
+                guide = API_KEY_GUIDES.get(new_provider, {})
+                key_label = f"{guide.get('name', new_provider)} API key"
+                config["llm_api_key"] = ask(key_label, secret=True)
             else:
                 config["llm_api_key"] = ""
 
@@ -882,6 +1000,7 @@ def _run_wizard_steps(detected_os: str) -> dict:
     print(f"  {YELLOW}PAID options:{NC}")
     print(f"    - Claude API — requires Anthropic API credits (separate from Pro/Max plan)")
     print(f"    - OpenAI — requires OpenAI API credits")
+    print(f"    - Kimi — Moonshot AI, multimodal, 256K context ($0.60/$3.00 per MTok)")
     print()
     available_providers = _get_available_providers()
     # Default to first available provider (claude if present, otherwise claude-api)
@@ -971,56 +1090,6 @@ def _run_wizard_steps(detected_os: str) -> dict:
             print(f"  {YELLOW}Claude Code CLI will be installed automatically after provisioning.{NC}")
         print(f"  {YELLOW}After install, run: claude login{NC}")
         print(f"  {YELLOW}This opens your browser to authenticate — no key to copy-paste.{NC}")
-    elif config["llm_provider"] == "claude-api":
-        print()
-        print(f"  You need an Anthropic API key:")
-        print(f"    1. Go to https://console.anthropic.com/settings/keys")
-        print(f"    2. Sign up or log in")
-        print(f"    3. Click 'Create Key' and copy it")
-        print(f"    4. Paste it below")
-        print()
-        print(f"  {YELLOW}Note: Claude API requires a paid account with credits.{NC}")
-        print(f"  {YELLOW}New accounts get $5 free credits.{NC}")
-        print()
-        config["llm_api_key"] = ask("Anthropic API key", secret=True)
-    elif config["llm_provider"] == "deepseek":
-        print()
-        print(f"  {GREEN}DeepSeek V3.2 — extremely cheap: $0.28 input / $0.42 output per million tokens.{NC}")
-        print(f"  {GREEN}90% discount on cached tokens. 128K context window.{NC}")
-        print()
-        print(f"  You need a DeepSeek API key:")
-        print(f"    1. Go to https://platform.deepseek.com/api_keys")
-        print(f"    2. Sign up or log in")
-        print(f"    3. Create an API key and copy it")
-        print(f"    4. Paste it below")
-        print()
-        config["llm_api_key"] = ask("DeepSeek API key", secret=True)
-    elif config["llm_provider"] == "grok":
-        print()
-        print(f"  {GREEN}xAI Grok — $25 free credits on signup.{NC}")
-        print(f"  {GREEN}Opt into data sharing for $150/month additional free credits.{NC}")
-        print()
-        print(f"  You need an xAI API key:")
-        print(f"    1. Go to https://console.x.ai/team/default/api-keys")
-        print(f"    2. Sign up or log in")
-        print(f"    3. Click 'Create API Key' and copy it")
-        print(f"    4. Paste it below")
-        print()
-        config["llm_api_key"] = ask("xAI API key", secret=True)
-    elif config["llm_provider"] == "gemini":
-        print()
-        print(f"  You need a Google AI API key:")
-        print(f"    1. Go to https://aistudio.google.com/apikey")
-        print(f"    2. Sign in with your Google account")
-        print(f"    3. Click 'Create API key' and copy it")
-        print(f"    4. Paste it below")
-        print()
-        print(f"  {GREEN}Free tier available — no credit card required:{NC}")
-        print(f"    Gemini 2.5 Pro:        5 RPM,  100 req/day")
-        print(f"    Gemini 2.5 Flash:     10 RPM,  250 req/day")
-        print(f"    Gemini 2.5 Flash-Lite: 15 RPM, 1000 req/day")
-        print()
-        config["llm_api_key"] = ask("Google AI API key", secret=True)
     elif config["llm_provider"] == "ollama":
         config["llm_api_key"] = ""
         config["ollama_url"] = "http://localhost:11434"
@@ -1038,31 +1107,17 @@ def _run_wizard_steps(detected_os: str) -> dict:
         else:
             print(f"  {GREEN}Ollama will be installed automatically.{NC}")
             config["ollama_auto_install"] = True
-    elif config["llm_provider"] == "openrouter":
-        # Check if user picked a model from the free list
-        free_model_ids = {m[0] for m in OPENROUTER_FREE_MODELS}
-        is_free = config["llm_model"] in free_model_ids or config["llm_model"].endswith(":free")
-        if is_free:
-            print(f"  {GREEN}Free model selected — no billing required.{NC}")
-        print(f"  You need an OpenRouter API key (free to create):")
-        print(f"    1. Go to https://openrouter.ai and sign up")
-        print(f"    2. Go to Keys → Create Key")
-        print(f"    3. Paste it below")
-        print()
-        config["llm_api_key"] = ask("OpenRouter API key", secret=True)
-    elif config["llm_provider"] == "openai":
-        print()
-        print(f"  You need an OpenAI API key:")
-        print(f"    1. Go to https://platform.openai.com/api-keys")
-        print(f"    2. Sign up or log in")
-        print(f"    3. Click 'Create new secret key' and copy it")
-        print(f"    4. Paste it below")
-        print()
-        print(f"  {YELLOW}Note: OpenAI API requires a paid account with credits.{NC}")
-        print()
-        config["llm_api_key"] = ask("OpenAI API key", secret=True)
     elif config["llm_provider"] in API_KEY_PROVIDERS:
-        config["llm_api_key"] = ask(f"API key for {config['llm_provider']}", secret=True)
+        # OpenRouter: tell user if their selected model is free
+        if config["llm_provider"] == "openrouter":
+            free_model_ids = {m[0] for m in OPENROUTER_FREE_MODELS}
+            is_free = config["llm_model"] in free_model_ids or config["llm_model"].endswith(":free")
+            if is_free:
+                print(f"\n  {GREEN}Free model selected — no billing required.{NC}")
+        _print_api_key_guide(config["llm_provider"])
+        guide = API_KEY_GUIDES.get(config["llm_provider"], {})
+        key_label = f"{guide.get('name', config['llm_provider'])} API key"
+        config["llm_api_key"] = ask(key_label, secret=True)
 
     # Step 4: Bot name and timezone
     print(f"\n{BOLD}Step 4: Personalization{NC}")

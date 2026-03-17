@@ -5,8 +5,8 @@ LLM Provider Abstraction Layer for MyOldMachine.
 PRIMARY: Claude Code CLI — runs as subprocess with full tool-use (bash, file
 read/write, etc.). This is how the bot actually controls the machine.
 
-API PROVIDERS: OpenAI, Google Gemini, Ollama, OpenRouter — these use httpx
-for API calls with function-calling / tool-use support. The LLM sends
+API PROVIDERS: OpenAI, Google Gemini, Kimi, Ollama, OpenRouter — these use
+httpx for API calls with function-calling / tool-use support. The LLM sends
 structured tool calls, we execute them locally, and return results.
 """
 
@@ -202,6 +202,7 @@ class ClaudeCLIProvider(LLMProvider):
                        if k not in {"OPENAI_API_KEY", "OPENROUTER_API_KEY",
                                     "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
                                     "XAI_API_KEY", "GROK_API_KEY",
+                                    "MOONSHOT_API_KEY",
                                     "LLM_API_KEY", "TELEGRAM_BOT_TOKEN",
                                     "TELEGRAM_TOKEN", "BOT_TOKEN",
                                     "DATABASE_URL", "DATABASE_PASSWORD",
@@ -1086,6 +1087,53 @@ class GrokProvider(LLMProvider):
         )
 
 
+class KimiProvider(LLMProvider):
+    """Moonshot Kimi API — OpenAI-compatible with tool-use support.
+
+    Uses api.moonshot.ai/v1 endpoint. Kimi K2.5 is multimodal (vision + tools).
+    256K context. $0.60/$3.00 per MTok (K2.5), $0.60/$2.50 (K2).
+    Temperature clamped to [0, 1].
+    """
+
+    BASE_URL = "https://api.moonshot.ai/v1"
+
+    def __init__(self, model: str, api_key: str = ""):
+        super().__init__(model, api_key)
+
+    @property
+    def provider_name(self) -> str:
+        return "kimi"
+
+    @property
+    def supports_vision(self) -> bool:
+        # K2.5 is multimodal (vision), K2 and kimi-latest are text-only
+        return "k2.5" in self.model
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        # Moonshot clamps temperature to [0, 1]
+        clamped_temp = max(0.0, min(1.0, temperature))
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": clamped_temp,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ],
+        }
+        return await _openai_tool_loop(
+            url=f"{self.BASE_URL}/chat/completions",
+            headers=headers,
+            body=body,
+            model=self.model,
+            provider_name=self.provider_name,
+        )
+
+
 class OllamaProvider(LLMProvider):
     """Ollama local models with tool-use support."""
 
@@ -1210,6 +1258,8 @@ def create_provider(
         "deepseek": lambda: DeepSeekProvider(model, api_key),
         "grok": lambda: GrokProvider(model, api_key),
         "xai": lambda: GrokProvider(model, api_key),
+        "kimi": lambda: KimiProvider(model, api_key),
+        "moonshot": lambda: KimiProvider(model, api_key),
     }
     factory = providers.get(provider.lower())
     if not factory:

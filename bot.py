@@ -4,7 +4,7 @@ MyOldMachine — LLM-Powered Telegram Bot
 
 A self-hosted, provider-agnostic Telegram bot that turns any old machine into
 a dedicated AI assistant. Supports Claude CLI (with full tool-use), Claude API,
-OpenAI, Gemini, Ollama, and OpenRouter.
+OpenAI, Gemini, Kimi, Ollama, and OpenRouter.
 """
 
 import asyncio
@@ -550,7 +550,7 @@ def build_system_prompt(user_id: int) -> str:
     if _memory_manager:
         # Determine if we're in full mode (strong model) or lite mode
         provider = get_llm_provider()
-        full_mode = provider in ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "gemini", "google")
+        full_mode = provider in ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "google")
         # Ollama: full mode only if running a large model
         if provider == "ollama":
             model_name = get_llm_model().lower()
@@ -1207,7 +1207,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.replace("/provider", "").strip()
 
     # Default models per provider — keep in sync with install/wizard.py DEFAULT_MODELS
-    # Last updated: March 10, 2026
+    # Last updated: March 17, 2026
     default_models = {
         "claude": "claude-sonnet-4-6",
         "claude-cli": "claude-sonnet-4-6",
@@ -1215,6 +1215,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "openai": "gpt-5.4",
         "deepseek": "deepseek-chat",
         "grok": "grok-4-1-fast-non-reasoning",
+        "kimi": "kimi-k2.5",
         "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
         "openrouter": "openrouter/hunter-alpha",
@@ -1270,7 +1271,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_model = default_models.get(new_provider, "")
 
     # Check if API key is needed but missing
-    needs_key = new_provider in ("openai", "deepseek", "grok", "gemini", "openrouter", "claude-api")
+    needs_key = new_provider in ("openai", "deepseek", "grok", "kimi", "gemini", "openrouter", "claude-api")
     current_key = get_llm_api_key()
     if needs_key and not current_key:
         await update.message.reply_text(
@@ -1930,7 +1931,7 @@ def _setup_reflection_job(scheduler):
     model = get_llm_model().lower()
 
     # Strong enough for reflection?
-    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "gemini", "google")
+    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "google")
     is_capable = provider in capable_providers
 
     # Ollama: only large models

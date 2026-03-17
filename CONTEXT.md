@@ -155,9 +155,12 @@ utils/
 | OpenAI | OpenAI-compat | gpt-5.4 | GPT-5.4/5-mini/4.1. Vision + tools |
 | DeepSeek | OpenAI-compat | deepseek-chat | V3.2. $0.28/$0.42/MTok. No vision |
 | Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | $25 free credits. Vision on 4.1 Fast. New: Grok 4.20 |
+| Kimi (Moonshot) | OpenAI-compat | kimi-k2.5 | Multimodal, 256K ctx. $0.60/$3.00/MTok. Vision on K2.5 |
 | Gemini | Native | gemini-2.5-flash | Free tier: 10 RPM / 250 RPD |
 | Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
 | OpenRouter | OpenAI-compat | openrouter/hunter-alpha | 19+ free models w/tool-use, 200 req/day |
+
+**Total: 9 providers.**
 
 ## Boot Persistence
 
@@ -298,3 +301,4 @@ Tested on:
 - **tools.py integration tests:** All 5 subsystems verified (process mgmt, env hardening, unified schema, streaming, preflight)
 - **Debug pass (Mar 9):** 14 bugs across tools.py, llm.py, wizard.py
 - **Update pass (Mar 17):** Model refresh, 2 Grok bugs, 3 install.sh fixes, CI pipeline, README improvements
+- **API key guides (Mar 17):** Centralized `API_KEY_GUIDES` dict in wizard.py — step-by-step signup instructions for all 7 API-key providers, shown during install and in fallback flow

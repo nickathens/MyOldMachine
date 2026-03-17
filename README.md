@@ -72,6 +72,7 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 | **OpenRouter** | Yes (200 req/day) | 19+ free models with tool-use. Easy to start with. |
 | **Gemini** | Limited free tier | Google's AI. Flash: 10 RPM / 250 RPD. Pro: 5 RPM / 100 RPD. |
 | **Grok** | $25 free credits | xAI's models. Vision on 4.1 Fast and 4.20. |
+| **Kimi** | No | Moonshot AI. K2.5 multimodal, 256K context. $0.60/$3.00 per MTok. |
 | **DeepSeek** | No (very cheap) | $0.28 per million tokens input. Great value. |
 | **OpenAI** | No | GPT-5.4, GPT-5 Mini/Nano, GPT-4.1. Vision + tools. |
 | **Claude CLI** | With Pro/Max plan | Most capable. Uses your existing Anthropic subscription. |

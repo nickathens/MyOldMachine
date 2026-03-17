@@ -177,6 +177,7 @@ jobs:
               ('gemini', 'gemini-2.5-flash', 'test-key'),
               ('deepseek', 'deepseek-chat', 'test-key'),
               ('grok', 'grok-4-1-fast-non-reasoning', 'test-key'),
+              ('kimi', 'kimi-k2.5', 'test-key'),
               ('ollama', 'llama3.1:8b', ''),
           ]
 
@@ -202,6 +203,18 @@ jobs:
           grok_4 = create_provider('grok', 'grok-4-0709', 'k')
           assert grok_4._is_reasoning_model(), 'grok-4-0709 should be reasoning'
           assert not grok_4.supports_vision, 'grok-4-0709 should NOT support vision'
+
+          # Test Kimi vision detection
+          kimi_k25 = create_provider('kimi', 'kimi-k2.5', 'k')
+          assert kimi_k25.supports_vision, 'kimi-k2.5 should support vision'
+          assert kimi_k25.provider_name == 'kimi'
+
+          kimi_k2 = create_provider('kimi', 'kimi-k2', 'k')
+          assert not kimi_k2.supports_vision, 'kimi-k2 should NOT support vision'
+
+          # Test moonshot alias
+          kimi_alias = create_provider('moonshot', 'kimi-k2.5', 'k')
+          assert kimi_alias.provider_name == 'kimi', 'moonshot alias should create KimiProvider'
 
           print('All provider tests passed')
           "
