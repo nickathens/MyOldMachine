@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-syntax:
+    name: Python syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check Python syntax (all .py files)
+        run: python -m py_compile bot.py && find core/ install/ utils/ -name '*.py' -exec python -m py_compile {} +
+      - name: Check for obvious import errors
+        run: |
+          pip install -q python-telegram-bot python-dotenv httpx apscheduler sqlalchemy
+          python -c "
+          import importlib, sys, pathlib
+          errors = []
+          for f in pathlib.Path('.').rglob('*.py'):
+              if 'skills/' in str(f) or '.venv/' in str(f):
+                  continue
+              try:
+                  with open(f) as fh:
+                      compile(fh.read(), str(f), 'exec')
+              except SyntaxError as e:
+                  errors.append(f'{f}: {e}')
+          if errors:
+              print('Syntax errors found:')
+              for e in errors:
+                  print(f'  {e}')
+              sys.exit(1)
+          print(f'All core Python files compile cleanly')
+          "
+
+  install-script-lint:
+    name: Shell script lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: Lint install.sh
+        run: shellcheck -S warning -e SC2034,SC2086,SC2155,SC1091 install.sh
+
+  install-dry-run:
+    name: Install dry run (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -q -r requirements.txt
+      - name: Run wizard --help (verify it loads)
+        run: |
+          . .venv/bin/activate
+          python install/wizard.py --help
+      - name: Run provisioner --dry-run
+        run: |
+          . .venv/bin/activate
+          python install/provisioner.py --repo-dir . --takeover minimal --dry-run
+      - name: Verify bot imports
+        run: |
+          . .venv/bin/activate
+          python -c "
+          from core.config import get_llm_provider, get_llm_model
+          from core.tools import get_tools_openai, get_tools_gemini, TOOL_DEFINITIONS
+          from core.llm import create_provider
+          from core.session import SessionManager
+          from core.health import get_disk_usage, get_memory_usage
+          print('All core imports successful')
+          print(f'Tools: {len(TOOL_DEFINITIONS)}')
+          print(f'OpenAI tool format: {len(get_tools_openai())} tools')
+          print(f'Gemini tool format: {len(get_tools_gemini()[0][\"functionDeclarations\"])} declarations')
+          "
+
+  tool-schema-validation:
+    name: Validate tool schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -q -r requirements.txt
+      - name: Validate tool definitions
+        run: |
+          . .venv/bin/activate
+          python -c "
+          import json
+          from core.tools import TOOL_DEFINITIONS, get_tools_openai, get_tools_gemini
+
+          # Verify all tools have required fields
+          for tool in TOOL_DEFINITIONS:
+              assert 'name' in tool, f'Tool missing name: {tool}'
+              assert 'description' in tool, f'Tool {tool[\"name\"]} missing description'
+              assert 'parameters' in tool, f'Tool {tool[\"name\"]} missing parameters'
+              params = tool['parameters']
+              assert params.get('type') == 'object', f'Tool {tool[\"name\"]} params must be object type'
+              assert 'properties' in params, f'Tool {tool[\"name\"]} missing properties'
+
+          # Verify OpenAI format
+          openai_tools = get_tools_openai()
+          for t in openai_tools:
+              assert t['type'] == 'function'
+              assert 'function' in t
+              assert 'name' in t['function']
+              assert 'parameters' in t['function']
+
+          # Verify Gemini format
+          gemini_tools = get_tools_gemini()
+          assert len(gemini_tools) == 1
+          decls = gemini_tools[0]['functionDeclarations']
+          for d in decls:
+              assert 'name' in d
+              assert 'parameters' in d
+              # Verify no unsupported keywords leaked into Gemini schema
+              params_json = json.dumps(d['parameters'])
+              for keyword in ['additionalProperties', 'default', 'minimum', 'maximum']:
+                  assert keyword not in params_json, f'Unsupported keyword {keyword} in Gemini schema for {d[\"name\"]}'
+
+          print(f'All {len(TOOL_DEFINITIONS)} tool definitions valid')
+          print(f'OpenAI format: {len(openai_tools)} tools')
+          print(f'Gemini format: {len(decls)} declarations')
+          "
+
+  provider-factory:
+    name: Validate provider factory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -q -r requirements.txt
+      - name: Test provider creation
+        run: |
+          . .venv/bin/activate
+          python -c "
+          from core.llm import create_provider
+
+          # Test all API providers can be instantiated
+          providers = [
+              ('claude-api', 'claude-sonnet-4-6', 'test-key'),
+              ('openai', 'gpt-5.4', 'test-key'),
+              ('openrouter', 'openrouter/hunter-alpha', 'test-key'),
+              ('gemini', 'gemini-2.5-flash', 'test-key'),
+              ('deepseek', 'deepseek-chat', 'test-key'),
+              ('grok', 'grok-4-1-fast-non-reasoning', 'test-key'),
+              ('ollama', 'llama3.1:8b', ''),
+          ]
+
+          for name, model, key in providers:
+              p = create_provider(name, model, key)
+              assert p.provider_name == name or name in ('claude-api', 'xai'), f'{name} provider_name mismatch'
+              print(f'  {name}: {p.__class__.__name__} (vision={p.supports_vision}, tools={p.supports_tool_use})')
+
+          # Test Grok reasoning detection
+          grok_non = create_provider('grok', 'grok-4-1-fast-non-reasoning', 'k')
+          assert not grok_non._is_reasoning_model(), 'grok-4-1-fast-non-reasoning should NOT be reasoning'
+
+          grok_reason = create_provider('grok', 'grok-4-1-fast-reasoning', 'k')
+          assert grok_reason._is_reasoning_model(), 'grok-4-1-fast-reasoning should be reasoning'
+
+          grok_420_non = create_provider('grok', 'grok-4.20-beta-0309-non-reasoning', 'k')
+          assert not grok_420_non._is_reasoning_model(), 'grok-4.20 non-reasoning should NOT be reasoning'
+          assert grok_420_non.supports_vision, 'grok-4.20 should support vision'
+
+          grok_420_reason = create_provider('grok', 'grok-4.20-beta-0309-reasoning', 'k')
+          assert grok_420_reason._is_reasoning_model(), 'grok-4.20 reasoning should be reasoning'
+
+          grok_4 = create_provider('grok', 'grok-4-0709', 'k')
+          assert grok_4._is_reasoning_model(), 'grok-4-0709 should be reasoning'
+          assert not grok_4.supports_vision, 'grok-4-0709 should NOT support vision'
+
+          print('All provider tests passed')
+          "

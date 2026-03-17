@@ -1202,7 +1202,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "grok": "grok-4-1-fast-non-reasoning",
         "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
-        "openrouter": "openai/gpt-oss-120b:free",
+        "openrouter": "openrouter/hunter-alpha",
     }
 
     if not text:

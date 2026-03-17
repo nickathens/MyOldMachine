@@ -967,15 +967,21 @@ class GrokProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # Grok 4.1 Fast models accept image input; grok-4-0709 and grok-3 are text-only
-        return "vision" in self.model or "grok-4-1-fast" in self.model or "grok-4-fast" in self.model
+        # Grok 4.1 Fast, 4 Fast, and 4.20 models accept image input.
+        # grok-4-0709 and grok-3 are text-only.
+        m = self.model
+        return ("vision" in m or "grok-4-1-fast" in m or "grok-4-fast" in m
+                or m.startswith("grok-4.20"))
 
     def _is_reasoning_model(self) -> bool:
         """Check if this is a Grok reasoning model (uses max_completion_tokens, no temperature)."""
-        # grok-4-0709 and grok-4 are reasoning models.
-        # grok-4-1-fast-* and grok-4-fast-* are NOT reasoning models (they're fast non-reasoning).
-        # grok-3-mini is a reasoning model. grok-3 is not.
+        # Non-reasoning models explicitly: grok-4-1-fast-non-reasoning, grok-4-fast-non-reasoning,
+        #   grok-4.20-beta-*-non-reasoning, grok-3, grok-code-fast-1.
+        # Reasoning models: grok-4-1-fast-reasoning, grok-4-fast-reasoning,
+        #   grok-4.20-beta-*-reasoning, grok-4.20-multi-agent-*, grok-4-0709, grok-3-mini.
         m = self.model
+        if "non-reasoning" in m:
+            return False
         if "reasoning" in m:
             return True
         if m.startswith("grok-4") and "fast" not in m:

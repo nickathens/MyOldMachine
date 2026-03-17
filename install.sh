@@ -179,7 +179,8 @@ fi
 # Keep sudo alive in the background
 (while true; do sudo -n true 2>/dev/null; sleep 50; done) &
 SUDO_KEEPALIVE_PID=$!
-trap "kill $SUDO_KEEPALIVE_PID 2>/dev/null" EXIT
+cleanup_sudo() { kill $SUDO_KEEPALIVE_PID 2>/dev/null; }
+trap cleanup_sudo EXIT INT TERM
 
 echo ""
 
@@ -449,11 +450,11 @@ if ! checkpoint_done "python"; then
         fi
     fi
 
-    ok "Python: $($PYTHON --version)"
+    ok "Python: $("$PYTHON" --version)"
     checkpoint_set "python"
 else
     PYTHON=$(find_python) || die "Python was previously installed but can't be found. Remove $CHECKPOINT_FILE and re-run."
-    ok "Python: $($PYTHON --version) (cached)"
+    ok "Python: $("$PYTHON" --version) (cached)"
 fi
 
 # ─────────────────────────────────────────────────────────
@@ -463,7 +464,7 @@ fi
 if ! checkpoint_done "venv"; then
     if [ ! -d "$REPO_DIR/.venv" ]; then
         info "Creating virtual environment..."
-        $PYTHON -m venv "$REPO_DIR/.venv" || die "Failed to create virtual environment.
+        "$PYTHON" -m venv "$REPO_DIR/.venv" || die "Failed to create virtual environment.
   Ubuntu/Debian: sudo apt install python3-venv
   Fedora/RHEL:   sudo dnf install python3-virtualenv
   Arch:          sudo pacman -S python-virtualenv
@@ -493,4 +494,5 @@ echo ""
 
 # Pass checkpoint file path so wizard and provisioner can use it
 export MYOLDMACHINE_CHECKPOINT_FILE="$CHECKPOINT_FILE"
-exec "$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/wizard.py" --repo-dir "$REPO_DIR" --os "$OS" < "$TTY_INPUT"
+"$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/wizard.py" --repo-dir "$REPO_DIR" --os "$OS" < "$TTY_INPUT"
+exit $?

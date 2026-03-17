@@ -6,13 +6,23 @@ One command installs everything. You talk to it on Telegram. It can run commands
 
 ## Quick start
 
-### Option 1: One command
+### What you need
+
+- An old laptop or desktop (Linux or macOS 10.14+)
+- Internet connection
+- A Telegram account (free — [download here](https://telegram.org))
+
+That's it. The installer handles everything else.
+
+### Install
+
+**Option 1: One command**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
 ```
 
-### Option 2: Clone and run
+**Option 2: Clone and run**
 
 ```bash
 git clone https://github.com/nickathens/MyOldMachine.git
@@ -20,16 +30,22 @@ cd MyOldMachine
 ./install.sh
 ```
 
-The installer walks you through everything step by step:
+### What the installer does
+
+The setup wizard walks you through 6 steps:
 
 1. Your name
-2. Telegram bot token (with instructions on how to get one)
-3. Your Telegram user ID
-4. Which AI provider to use (free options available)
+2. Telegram bot token (with instructions — takes 2 minutes via [@BotFather](https://t.me/BotFather))
+3. Your Telegram user ID (the wizard tells you how to find it)
+4. Which AI provider to use (free options available — you can change later)
 5. Bot name and timezone
 6. Install mode — workstation, minimal, or headless
 
-After setup, the bot messages you on Telegram. You're done.
+After setup, the bot messages you on Telegram. Close the laptop lid if you want — it stays running. If the machine reboots, the bot starts automatically.
+
+### Resuming a failed install
+
+If the install is interrupted (power loss, SSH disconnect, etc.), just run the command again. It resumes from where it left off.
 
 ## What can it do?
 
@@ -53,11 +69,11 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 | Provider | Free? | Notes |
 |----------|-------|-------|
 | **Ollama** | Yes | Runs AI locally on your machine. No API key needed. Needs macOS 12+ or modern Linux. |
-| **OpenRouter** | Yes (200 req/day) | Cloud AI with free models. Easy to start with. |
-| **Gemini** | Limited free tier | Google's AI. 10 requests/min, 250/day on free tier. |
-| **Grok** | $25 free credits | xAI's models. Vision support. |
+| **OpenRouter** | Yes (200 req/day) | 19+ free models with tool-use. Easy to start with. |
+| **Gemini** | Limited free tier | Google's AI. Flash: 10 RPM / 250 RPD. Pro: 5 RPM / 100 RPD. |
+| **Grok** | $25 free credits | xAI's models. Vision on 4.1 Fast and 4.20. |
 | **DeepSeek** | No (very cheap) | $0.28 per million tokens input. Great value. |
-| **OpenAI** | No | GPT-5.4, GPT-4.1. Vision support. |
+| **OpenAI** | No | GPT-5.4, GPT-5 Mini/Nano, GPT-4.1. Vision + tools. |
 | **Claude CLI** | With Pro/Max plan | Most capable. Uses your existing Anthropic subscription. |
 | **Claude API** | No | Pay-per-token. Text-only (no machine control). |
 
@@ -136,7 +152,13 @@ Then just type `/disk`, `/weather`, or `/backup`.
 
 The bot itself is your primary troubleshooting tool. Tell it what went wrong and it can usually fix it.
 
+**Install fails partway through?** Run the install command again. It has a checkpoint system and resumes from where it stopped.
+
 **Bot not responding?** Check the service: `sudo systemctl status myoldmachine` (Linux) or `launchctl list | grep myoldmachine` (macOS). Logs are in `data/logs/bot.log`.
+
+**OpenRouter "rate limit" errors?** Free models have a 200 req/day limit, and tool-use consumes 5-6 requests per user message. Switch to a model with higher limits or add billing.
+
+**Gemini "quota exhausted"?** Google's free tier quotas reset daily at midnight Pacific. Use Flash-Lite (1000 RPD) instead of Pro (100 RPD) for higher limits.
 
 **A skill doesn't work?** Send the error to the bot. It can read logs, check versions, and fix configurations.
 

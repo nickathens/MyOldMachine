@@ -272,12 +272,12 @@ DEFAULT_MODELS = {
     "grok": "grok-4-1-fast-non-reasoning",
     "gemini": "gemini-2.5-flash",
     "ollama": "llama3.1:8b",
-    "openrouter": "openai/gpt-oss-120b:free",
+    "openrouter": "openrouter/hunter-alpha",
 }
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
-# Last updated: March 10, 2026 — verified against official API docs
+# Last updated: March 17, 2026 — verified against official API docs
 PROVIDER_MODELS = {
     "claude": [
         ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning (recommended)"),
@@ -287,6 +287,7 @@ PROVIDER_MODELS = {
         ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning, $3/$15 per MTok (recommended)"),
         ("claude-opus-4-6", "Claude Opus 4.6 — most capable, $5/$25 per MTok"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, $1/$5 per MTok"),
+        ("claude-sonnet-4-5", "Claude Sonnet 4.5 — legacy, $3/$15 per MTok (retires no sooner than Sep 29)"),
     ],
     "openai": [
         ("gpt-5.4", "GPT-5.4 — latest frontier, vision + tools, $2.50/$15 per MTok (recommended)"),
@@ -301,17 +302,20 @@ PROVIDER_MODELS = {
     "grok": [
         ("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast — cheapest, vision, $0.20/$0.50 per MTok (recommended)"),
         ("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning — chain-of-thought, vision, $0.20/$0.50"),
+        ("grok-4.20-beta-0309-non-reasoning", "Grok 4.20 — newest flagship, vision, $2/$6 per MTok"),
+        ("grok-4.20-beta-0309-reasoning", "Grok 4.20 Reasoning — newest, chain-of-thought, $2/$6 per MTok"),
         ("grok-code-fast-1", "Grok Code Fast — optimized for coding, $0.20/$1.50 per MTok"),
-        ("grok-4-0709", "Grok 4 — flagship, most capable, $3/$15 per MTok"),
+        ("grok-4-0709", "Grok 4 — strong flagship, $3/$15 per MTok"),
         ("grok-3", "Grok 3 — previous gen, $3/$15 per MTok"),
         ("grok-3-mini", "Grok 3 Mini — lightweight, $0.30/$0.50 per MTok"),
     ],
     "gemini": [
         ("gemini-2.5-flash", "Gemini 2.5 Flash — fast, free tier (10 RPM / 250 RPD), $0.30/$2.50 (recommended)"),
         ("gemini-2.5-pro", "Gemini 2.5 Pro — best reasoning, free tier (5 RPM / 100 RPD), $1.25/$10"),
-        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — cheapest, free tier available"),
+        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — cheapest, free tier (15 RPM / 1000 RPD), retiring Mar 31"),
         ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview — latest, no free tier, $2/$12 per MTok"),
         ("gemini-3-flash-preview", "Gemini 3 Flash Preview — fast frontier, preview"),
+        ("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite Preview — cost-efficient next-gen, preview"),
     ],
     "deepseek": [
         ("deepseek-chat", "DeepSeek V3.2 Chat — fast, strong, $0.28/$0.42 per MTok (recommended)"),
@@ -320,19 +324,21 @@ PROVIDER_MODELS = {
 }
 
 # Free models available on OpenRouter (no billing required)
-# Updated March 10, 2026 — verified against costgoat.com/pricing/openrouter-free-models
+# Updated March 17, 2026 — verified against costgoat.com/pricing/openrouter-free-models
 # IMPORTANT: Only models with tool-use/function-calling support are listed.
 # MyOldMachine needs tool-use to control the machine.
 # Rate limits: 20 requests/minute, 200 requests/day.
 OPENROUTER_FREE_MODELS = [
-    ("openai/gpt-oss-120b:free", "GPT-OSS 120B — OpenAI open-source, strong tool-use (recommended)"),
+    ("openrouter/hunter-alpha", "Hunter Alpha — OpenRouter native, vision + tools + reasoning, 1M ctx (recommended)"),
+    ("openrouter/healer-alpha", "Healer Alpha — OpenRouter native, vision + tools + reasoning, 262K ctx"),
+    ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron Super 120B — NVIDIA, tools + reasoning, 262K ctx"),
+    ("openai/gpt-oss-120b:free", "GPT-OSS 120B — OpenAI open-source, strong tool-use"),
     ("openai/gpt-oss-20b:free", "GPT-OSS 20B — OpenAI open-source, fast, tool-use"),
-    ("qwen/qwen3-coder:free", "Qwen3 Coder 480B — Alibaba, coding + tool-use, 262K ctx"),
+    ("qwen/qwen3-coder:free", "Qwen3 Coder — Alibaba, coding + tool-use, 262K ctx"),
     ("qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3 Next 80B — large MoE, tool-use, 262K ctx"),
-    ("qwen/qwen3-vl-235b-a22b-thinking", "Qwen3 VL 235B — vision + thinking + tool-use"),
-    ("qwen/qwen3-vl-30b-a3b-thinking", "Qwen3 VL 30B — vision + thinking + tool-use"),
-    ("arcee-ai/trinity-large-preview:free", "Arcee Trinity Large — strong reasoning + tool-use"),
-    ("stepfun/step-3.5-flash:free", "Step 3.5 Flash — StepFun, reasoning + tool-use, 256K ctx"),
+    ("arcee-ai/trinity-large-preview:free", "Arcee Trinity Large — reasoning + tool-use, 131K ctx"),
+    ("stepfun/step-3.5-flash:free", "Step 3.5 Flash — StepFun, tool-use, 256K ctx"),
+    ("minimax/minimax-m2.5:free", "MiniMax M2.5 — tool-use, 196K ctx"),
     ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — Meta, solid all-rounder, tool-use"),
     ("mistralai/mistral-small-3.1-24b-instruct:free", "Mistral Small 3.1 24B — fast, vision + tool-use"),
     ("google/gemma-3-27b-it:free", "Gemma 3 27B — Google, vision + tool-use"),

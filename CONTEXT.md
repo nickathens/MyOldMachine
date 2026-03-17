@@ -1,6 +1,6 @@
 # MyOldMachine — Project Context
 
-Last updated: 2026-03-10
+Last updated: 2026-03-17
 
 ## Overview
 
@@ -154,10 +154,10 @@ utils/
 | Claude API | None | claude-sonnet-4-6 | Text-only, no machine control |
 | OpenAI | OpenAI-compat | gpt-5.4 | GPT-5.4/5-mini/4.1. Vision + tools |
 | DeepSeek | OpenAI-compat | deepseek-chat | V3.2. $0.28/$0.42/MTok. No vision |
-| Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | $25 free credits. Vision on 4.1 Fast |
+| Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | $25 free credits. Vision on 4.1 Fast. New: Grok 4.20 |
 | Gemini | Native | gemini-2.5-flash | Free tier: 10 RPM / 250 RPD |
 | Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
-| OpenRouter | OpenAI-compat | openai/gpt-oss-120b:free | 17+ free models, 200 req/day |
+| OpenRouter | OpenAI-compat | openrouter/hunter-alpha | 19+ free models w/tool-use, 200 req/day |
 
 ## Boot Persistence
 
@@ -187,11 +187,27 @@ Running `python bot.py` directly is for **testing only** — it dies when the te
 13. Gemini `func_args` could be `None` — crash on `.get()`
 14. Stale OpenRouter free model IDs in wizard
 
+## Update Pass (Mar 17)
+
+Full production readiness update — 166 unique users cloning, 0 issues filed:
+1. **Model list refresh**: All 8 providers verified against official API docs
+   - Added Grok 4.20 models (vision + reasoning/non-reasoning variants)
+   - Added Claude Sonnet 4.5 (legacy) to Claude API provider
+   - Added Gemini 3.1 Flash-Lite Preview, updated Flash-Lite deprecation notice (Mar 31)
+   - Updated OpenRouter free models: +3 new (hunter-alpha, healer-alpha, nemotron-super-120b), +1 (minimax-m2.5), removed 2 non-free Qwen VL models
+   - Changed OpenRouter default from `openai/gpt-oss-120b:free` to `openrouter/hunter-alpha` (1M ctx, vision+tools+reasoning)
+2. **Bug fix: Grok `_is_reasoning_model()`** — "non-reasoning" contains "reasoning", so all `*-non-reasoning` models were incorrectly classified as reasoning (wrong token param, no temperature). Fixed by checking `"non-reasoning"` first.
+3. **Bug fix: Grok `supports_vision`** — new 4.20 models support vision but weren't matched. Added `m.startswith("grok-4.20")`.
+4. **install.sh fixes**: trap only handled EXIT (not INT/TERM); `$PYTHON` unquoted in several places; `exec` killed sudo keepalive before wizard runs.
+5. **README improvements**: Added prerequisites section, install resume note, better troubleshooting (OpenRouter rate limits, Gemini quotas).
+6. **GitHub Actions CI**: Python syntax check, shellcheck lint, provisioner dry-run on Ubuntu 22/24, tool schema validation, provider factory tests with Grok reasoning/vision assertions.
+
 ## Known Issues
 
 - Google free tier quota can change without notice, breaking Gemini models
+- `gemini-2.5-flash-lite` retiring March 31, 2026 — migrate to `gemini-3.1-flash-lite-preview`
 - OpenRouter free model IDs can go stale — verify against their API
-- OpenRouter free tier: 50 req/day — tool-use multiplies consumption (5-6 iterations per real request)
+- OpenRouter free tier: 200 req/day — tool-use multiplies consumption (5-6 iterations per real request)
 - macOS launchd service registration is fragile — `launchctl kickstart -k` is more reliable than unload/load
 - Old Macs compile ffmpeg from source (~30-60 min)
 - Ollama models below 7B are unreliable for tool-use (hallucinate calls, break JSON format)
@@ -204,3 +220,4 @@ Tested on:
 - Issues found and fixed: quota exhaustion, stale model IDs, verbose text dumps, restart race condition
 - **tools.py integration tests:** All 5 subsystems verified (process mgmt, env hardening, unified schema, streaming, preflight)
 - **Debug pass (Mar 9):** 14 bugs across tools.py, llm.py, wizard.py
+- **Update pass (Mar 17):** Model refresh, 2 Grok bugs, 3 install.sh fixes, CI pipeline, README improvements
