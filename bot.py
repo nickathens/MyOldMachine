@@ -471,6 +471,16 @@ def build_system_prompt(user_id: int) -> str:
             "final say. Your job is to make sure they're informed."
         )
         parts.append("")
+        parts.append("### Bot Self-Protection (CRITICAL):")
+        parts.append(
+            "NEVER modify the bot's own Python virtual environment (.venv directory), "
+            "bot.py, core/ directory, or .env file. These are the bot's own runtime files. "
+            "Deleting or recreating the .venv will crash the running bot immediately. "
+            "If you need to install Python packages for a skill or task, install them in a "
+            "SEPARATE virtual environment (e.g., in the user's home directory or project directory), "
+            "not in the bot's .venv. The bot manages its own dependencies internally."
+        )
+        parts.append("")
     else:
         parts.append(f"You are {bot_name}, an AI assistant.")
         parts.append("You are a text-only assistant. You CANNOT run commands or access the filesystem. "

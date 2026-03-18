@@ -40,6 +40,22 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# --- Bot Self-Protection ---
+# The bot's own directory and venv must be protected from LLM-initiated commands.
+# The LLM can accidentally "rebuild" the Python environment, breaking the running
+# bot process (e.g., deleting .venv causes SSL cert paths to vanish, httpx fails).
+# self_install.py manages the venv internally via Python imports — it does NOT go
+# through the tool execution layer, so these blocks don't affect it.
+
+_BOT_DIR = Path(__file__).parent.parent.resolve()
+_BOT_VENV = str(_BOT_DIR / ".venv")
+_BOT_CORE_FILES = [
+    str(_BOT_DIR / "bot.py"),
+    str(_BOT_DIR / "core") + "/",       # entire core/ directory
+    str(_BOT_DIR / ".env"),
+    str(_BOT_DIR / ".venv") + "/",       # entire venv
+]
+
 # --- Constants ---
 
 MAX_OUTPUT_CHARS = 50_000
@@ -469,7 +485,7 @@ BLOCKED_WRITE_PATHS = [
     "/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/sudoers.d/",
     "/etc/hosts", "/boot/", "/boot/grub/",
     "/etc/crontab", "/var/spool/cron/",
-]
+] + _BOT_CORE_FILES  # Protect bot's own venv, core/, bot.py, .env
 
 
 _COMPILED_BLOCKED = [re.compile(p) for p in BLOCKED_PATTERNS]
@@ -478,13 +494,94 @@ _COMPILED_BLOCKED = [re.compile(p) for p in BLOCKED_PATTERNS]
 def _is_command_blocked(command: str) -> str | None:
     """Return a reason string if the command is blocked, else None.
 
-    Only blocks truly catastrophic commands (rm -rf /, fork bombs, etc.).
+    Only blocks truly catastrophic commands (rm -rf /, fork bombs, etc.)
+    and commands that would modify the bot's own runtime environment.
     Risky-but-legitimate commands are handled by _check_risky_command()
     which returns warnings instead of blocks.
     """
     for pattern in _COMPILED_BLOCKED:
         if pattern.search(command):
             return f"Blocked: dangerous command pattern detected"
+
+    # Protect the bot's own venv and core files from LLM modification.
+    # The LLM might try to "fix" things by rebuilding the venv, which
+    # destroys the running process's SSL certs, imported module paths, etc.
+    bot_venv_block = _check_bot_self_modification(command)
+    if bot_venv_block:
+        return bot_venv_block
+
+    return None
+
+
+def _check_bot_self_modification(command: str) -> str | None:
+    """Block commands that would modify the bot's own venv or core files.
+
+    Returns a reason string if blocked, None if safe.
+    """
+    # Normalize the bot dir as it appears in commands (may not be resolved)
+    bot_dir_str = str(_BOT_DIR)
+    venv_str = _BOT_VENV
+
+    # Also check for the unresolved path (symlinks, home-relative, etc.)
+    bot_dir_unresolved = str(Path(__file__).parent.parent)
+
+    # Check if the command references the bot's .venv directory
+    # with a destructive operation. Also catch cd-then-modify patterns.
+    refs_venv = (
+        venv_str in command
+        or f"{bot_dir_str}/.venv" in command
+        or f"{bot_dir_unresolved}/.venv" in command
+        or re.search(r"\bcd\s+" + re.escape(bot_dir_str) + r".*\.venv", command)
+        or re.search(r"\bcd\s+" + re.escape(bot_dir_unresolved) + r".*\.venv", command)
+    )
+    if refs_venv:
+        # Block rm/delete of venv
+        if re.search(r"\brm\b", command):
+            return (
+                f"Blocked: cannot delete the bot's own virtual environment ({venv_str}). "
+                "This would crash the running bot process."
+            )
+        # Block recreating the venv
+        if re.search(r"\bpython[0-9.]*\s+-m\s+venv\b", command):
+            return (
+                f"Blocked: cannot recreate the bot's own virtual environment ({venv_str}). "
+                "This would crash the running bot process."
+            )
+        # Block pip install/uninstall targeting the bot's venv explicitly
+        if re.search(r"\bpip[0-9.]*\s+(install|uninstall)\b", command):
+            return (
+                f"Blocked: cannot modify packages in the bot's own virtual environment ({venv_str}). "
+                "Use the bot's self-install system for dependency management."
+            )
+
+    # Block writing to bot.py or core/ via shell commands (echo >, cat >, sed -i, etc.)
+    # Build both resolved and unresolved variants of protected paths
+    all_protected = set(_BOT_CORE_FILES)
+    for p in list(_BOT_CORE_FILES):
+        # Add unresolved variant (replace resolved bot_dir with unresolved)
+        all_protected.add(p.replace(bot_dir_str, bot_dir_unresolved))
+    for protected in all_protected:
+        if protected in command:
+            # Allow read-only operations (cat, head, tail, less, file, wc, grep)
+            read_only = re.match(
+                r"^\s*(cat|head|tail|less|more|file|wc|grep|egrep|fgrep|rg|ls|stat|md5sum|sha256sum)\b",
+                command.strip()
+            )
+            if read_only:
+                continue
+            # Block if it looks like a write/modify operation
+            if re.search(r"(>\s*|>>|sed\s+-i|tee\s|mv\s|cp\s.*\s" + re.escape(protected) + r")", command):
+                return (
+                    f"Blocked: cannot modify bot core file ({protected}). "
+                    "Bot internals are protected from tool-use modification."
+                )
+            # Block rm of core files
+            if re.search(r"\brm\b", command):
+                return (
+                    f"Blocked: cannot delete bot core file ({protected}). "
+                    "Bot internals are protected from tool-use modification."
+                )
+
     return None
 
 

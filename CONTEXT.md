@@ -348,3 +348,17 @@ Ported from the Telegram bot to prevent recurring reminders from being silently 
    - Never remove a recurring job unless user explicitly asks
 
 **Files modified:** `core/scheduler.py`, `utils/scheduler_cli.py`, `bot.py`
+
+## Bot Self-Protection (Mar 18)
+
+Prevents the LLM from accidentally destroying its own runtime environment:
+
+1. **Venv protection (`core/tools.py`)**: Commands targeting the bot's `.venv` directory are blocked — `rm`, `python -m venv`, `pip install/uninstall`. Catches both resolved and unresolved paths, and `cd-then-modify` patterns.
+
+2. **Core file protection**: `bot.py`, `core/`, `.env`, and `.venv/` are protected from both `write_file` (via `BLOCKED_WRITE_PATHS`) and `run_command` (via `_check_bot_self_modification`). Read-only commands (`cat`, `grep`, `head`, etc.) are still allowed.
+
+3. **System prompt instruction**: Explicit "Bot Self-Protection" section tells the LLM to never modify its own runtime files and to use separate venvs for user tasks.
+
+**Root cause**: The LLM rebuilt its own Python venv via tool-use, deleting SSL cert paths that `httpx` needed. Every subsequent API call failed with `FileNotFoundError`. Protection is at the tool layer (not just the prompt) so it works regardless of which LLM model is running.
+
+**Files modified:** `core/tools.py`, `bot.py`, `CONTEXT.md`
