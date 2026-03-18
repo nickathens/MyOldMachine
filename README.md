@@ -22,6 +22,12 @@ That's it. The installer handles everything else.
 curl -fsSL https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
 ```
 
+No `curl`? Use `wget`:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
+```
+
 **Option 2: Clone and run**
 
 ```bash
