@@ -330,3 +330,21 @@ Tested on:
 - **Debug pass (Mar 9):** 14 bugs across tools.py, llm.py, wizard.py
 - **Update pass (Mar 17):** Model refresh, 2 Grok bugs, 3 install.sh fixes, CI pipeline, README improvements
 - **API key guides (Mar 17):** Centralized `API_KEY_GUIDES` dict in wizard.py — step-by-step signup instructions for all 7 API-key providers, shown during install and in fallback flow
+
+## Scheduler Reliability Overhaul (Mar 18)
+
+Ported from the Telegram bot to prevent recurring reminders from being silently lost:
+
+1. **End date support (`--until`)**: Recurring jobs can now have an expiry date. The `end_date` is stored in `job_meta`, passed to APScheduler's `CronTrigger`/`IntervalTrigger`, and expired jobs are automatically cleaned up during the 60-second sync loop.
+
+2. **Safe update (`update` subcommand)**: Changes a reminder's text without touching the trigger. Prevents the delete+recreate failure mode where the "recreate" step could fail, silently losing the reminder.
+
+3. **Biweekly repeat**: Added `IntervalTrigger(weeks=2)` support. CLI accepts `--repeat biweekly`.
+
+4. **LLM protocol rules**: Four mandatory rules in the system prompt:
+   - Deadline-related recurring reminders MUST use `--until`
+   - To reword, use `update`, NEVER delete+recreate
+   - Always verify after creating (run `list`)
+   - Never remove a recurring job unless user explicitly asks
+
+**Files modified:** `core/scheduler.py`, `utils/scheduler_cli.py`, `bot.py`

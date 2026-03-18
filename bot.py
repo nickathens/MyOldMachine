@@ -514,10 +514,18 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("### Reminders and Scheduling:")
         parts.append("When the user asks to set a reminder, use the scheduler CLI:")
         parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"YYYY-MM-DD HH:MM\" --message \"text\"")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"YYYY-MM-DD HH:MM\" --message \"text\" --repeat daily --until \"YYYY-MM-DD HH:MM\"")
         parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py add --user {user_id} --at \"in 30 minutes\" --message \"text\"")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py update --id <job_id> --user {user_id} --message \"new text\"")
         parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py list --user {user_id}")
         parts.append(f"  {venv_python} {BOT_DIR}/utils/scheduler_cli.py remove --id <job_id> --user {user_id}")
         parts.append("NEVER use crontab. The scheduler handles everything.")
+        parts.append("")
+        parts.append("### Scheduler Protocol (MANDATORY RULES):")
+        parts.append("1. **Deadline-related recurring reminders MUST use --until.** If a user says 'remind me every day until March 17', the --until flag is REQUIRED. Never create a repeating reminder for a countdown without an end date.")
+        parts.append("2. **To reword a reminder, use `update`, NEVER delete+recreate.** The `update` subcommand changes the message text while preserving the job ID, trigger, and recurrence. Delete+recreate risks losing the reminder if the recreate step fails.")
+        parts.append("3. **Always verify after creating.** Run `list` after adding a reminder to confirm it was stored correctly.")
+        parts.append("4. **Never remove a recurring job unless the user explicitly asks to cancel it.** Modifying text is not a reason to remove a job.")
         parts.append("")
 
         # Memory system
@@ -1070,7 +1078,10 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for j in jobs:
         repeat_tag = f" [{j.repeat}]" if j.repeat else ""
         type_tag = f" [{j.job_type}]" if j.job_type not in ("reminder",) else ""
-        text += f"- {j.run_at:%Y-%m-%d %H:%M}{repeat_tag}{type_tag}: {j.message[:50]}\n  ID: {j.job_id}\n\n"
+        until_tag = ""
+        if j.end_date:
+            until_tag = f" (until {j.end_date.strftime('%Y-%m-%d')})"
+        text += f"- {j.run_at:%Y-%m-%d %H:%M}{repeat_tag}{until_tag}{type_tag}: {j.message[:50]}\n  ID: {j.job_id}\n\n"
     text += "Use /cancel <id> to remove."
     for chunk in split_message(text):
         await update.message.reply_text(chunk)
@@ -1172,8 +1183,11 @@ async def jobs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     type_map = {"agent": "Agent", "command": "System", "reminder": "Reminder"}
     for job in jobs:
         repeat_text = f" [{job.repeat}]" if job.repeat else ""
+        until_text = ""
+        if job.end_date:
+            until_text = f" (until {job.end_date.strftime('%Y-%m-%d')})"
         type_text = type_map.get(job.job_type, job.job_type.capitalize())
-        text += f"[{type_text}] {job.run_at:%Y-%m-%d %H:%M}{repeat_text}\n"
+        text += f"[{type_text}] {job.run_at:%Y-%m-%d %H:%M}{repeat_text}{until_text}\n"
         text += f"  {job.message[:60]}{'...' if len(job.message) > 60 else ''}\n"
         text += f"  ID: {job.job_id}\n\n"
     text += "Use /cancel <id> to remove."

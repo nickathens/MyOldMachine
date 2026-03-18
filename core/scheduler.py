@@ -30,6 +30,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED
 
 logger = logging.getLogger(__name__)
@@ -88,40 +89,42 @@ def parse_natural_time(text: str) -> Optional[datetime]:
         elif 'week' in unit:
             return now + timedelta(weeks=amount)
 
+    def _parse_hm(match):
+        """Parse hour/minute/ampm from regex match, return (hour, minute) or None if invalid."""
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        ampm = match.group(3) if match.lastindex >= 3 else None
+        if ampm == 'pm' and hour < 12:
+            hour += 12
+        elif ampm == 'am' and hour == 12:
+            hour = 0
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        return hour, minute
+
     # "tomorrow at HH:MM" or "tomorrow at Ham/pm"
     tomorrow_pattern = re.match(r'tomorrow\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
     if tomorrow_pattern:
-        hour = int(tomorrow_pattern.group(1))
-        minute = int(tomorrow_pattern.group(2) or 0)
-        ampm = tomorrow_pattern.group(3)
-        if ampm == 'pm' and hour < 12:
-            hour += 12
-        elif ampm == 'am' and hour == 12:
-            hour = 0
-        tomorrow = now + timedelta(days=1)
-        return tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        hm = _parse_hm(tomorrow_pattern)
+        if hm:
+            hour, minute = hm
+            tomorrow = now + timedelta(days=1)
+            return tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
     # "at HH:MM" or "at Ham/pm" — requires "at" keyword, HH:MM format, or am/pm suffix
-    # All patterns normalized to 3 groups: (hour, minute_or_None, ampm_or_None)
     at_pattern = re.match(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
     if not at_pattern:
-        # Match "3pm", "10am", "10:30am" (bare number requires am/pm or colon)
         at_pattern = re.match(r'(\d{1,2}):(\d{2})\s*(am|pm)?$', text)
     if not at_pattern:
-        # Match "3pm", "10am" — only 2 groups, so add a non-capturing minute group
         at_pattern = re.match(r'(\d{1,2})()\s*(am|pm)', text)
     if at_pattern:
-        hour = int(at_pattern.group(1))
-        minute = int(at_pattern.group(2) or 0)
-        ampm = at_pattern.group(3)
-        if ampm == 'pm' and hour < 12:
-            hour += 12
-        elif ampm == 'am' and hour == 12:
-            hour = 0
-        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)
-        return target
+        hm = _parse_hm(at_pattern)
+        if hm:
+            hour, minute = hm
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+            return target
 
     # Weekday names
     weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
@@ -130,13 +133,9 @@ def parse_natural_time(text: str) -> Optional[datetime]:
             time_match = re.search(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
             hour, minute = 9, 0
             if time_match:
-                hour = int(time_match.group(1))
-                minute = int(time_match.group(2) or 0)
-                ampm = time_match.group(3)
-                if ampm == 'pm' and hour < 12:
-                    hour += 12
-                elif ampm == 'am' and hour == 12:
-                    hour = 0
+                hm = _parse_hm(time_match)
+                if hm:
+                    hour, minute = hm
             current_weekday = now.weekday()
             days_ahead = i - current_weekday
             if days_ahead <= 0:
@@ -180,6 +179,11 @@ def _init_meta_db():
             conn.execute(f"SELECT {col} FROM job_meta LIMIT 1")
         except sqlite3.OperationalError:
             conn.execute(f"ALTER TABLE job_meta ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+    # Add end_date column if missing (recurring job expiry)
+    try:
+        conn.execute("SELECT end_date FROM job_meta LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE job_meta ADD COLUMN end_date TEXT DEFAULT NULL")
     conn.commit()
     conn.close()
 
@@ -208,15 +212,15 @@ def _save_meta(job_id: str, user_id: int, message: str, job_type: str,
                log_file: str = None, repeat: str = None,
                weekdays: list = None, channel: str = "telegram",
                run_at: datetime = None, raw_at: str = "",
-               created_context: str = ""):
+               created_context: str = "", end_date: datetime = None):
     """Save job metadata to SQLite."""
     conn = _connect_db(DB_PATH)
     conn.execute("""
         INSERT OR REPLACE INTO job_meta
         (job_id, user_id, message, job_type, name, notify, command,
          log_file, repeat, weekdays, channel, created_at, run_at,
-         raw_at, created_context)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         raw_at, created_context, end_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job_id, user_id, message, job_type, name, int(notify),
         command, log_file, repeat,
@@ -224,6 +228,7 @@ def _save_meta(job_id: str, user_id: int, message: str, job_type: str,
         channel, datetime.now().isoformat(),
         run_at.isoformat() if run_at else datetime.now().isoformat(),
         raw_at, created_context,
+        end_date.isoformat() if end_date else None,
     ))
     conn.commit()
     conn.close()
@@ -240,6 +245,9 @@ def _get_meta(job_id: str) -> Optional[dict]:
     d = dict(row)
     d["notify"] = bool(d["notify"])
     d["weekdays"] = json.loads(d["weekdays"]) if d["weekdays"] else None
+    # Ensure end_date key exists (may be missing on old schema)
+    if "end_date" not in d:
+        d["end_date"] = None
     return d
 
 
@@ -257,6 +265,8 @@ def _get_all_meta(user_id: int = None) -> list[dict]:
         d = dict(row)
         d["notify"] = bool(d["notify"])
         d["weekdays"] = json.loads(d["weekdays"]) if d["weekdays"] else None
+        if "end_date" not in d:
+            d["end_date"] = None
         result.append(d)
     return result
 
@@ -311,7 +321,8 @@ class Job:
                  repeat: str = None, channel: str = "telegram",
                  job_type: str = "reminder", name: str = None,
                  notify: bool = True, command: str = None,
-                 weekdays: list = None, log_file: str = None):
+                 weekdays: list = None, log_file: str = None,
+                 end_date: datetime = None):
         self.job_id = job_id
         self.user_id = user_id
         self.message = message
@@ -325,6 +336,7 @@ class Job:
         self.command = command
         self.weekdays = weekdays
         self.log_file = log_file
+        self.end_date = end_date
 
     def to_dict(self) -> dict:
         d = {
@@ -345,11 +357,20 @@ class Job:
             d["weekdays"] = self.weekdays
         if self.log_file:
             d["log_file"] = self.log_file
+        if self.end_date:
+            d["end_date"] = self.end_date.isoformat() if isinstance(self.end_date, datetime) else self.end_date
         return d
 
     @classmethod
     def from_meta(cls, meta: dict, run_at: datetime = None) -> 'Job':
         """Create a Job from metadata dict."""
+        end_date = None
+        end_date_str = meta.get("end_date")
+        if end_date_str:
+            try:
+                end_date = datetime.fromisoformat(end_date_str)
+            except ValueError:
+                pass
         return cls(
             job_id=meta["job_id"],
             user_id=meta["user_id"],
@@ -364,6 +385,7 @@ class Job:
             command=meta.get("command"),
             weekdays=meta.get("weekdays"),
             log_file=meta.get("log_file"),
+            end_date=end_date,
         )
 
 
@@ -610,7 +632,8 @@ class Scheduler:
         metas = _get_all_meta()
         return {m["job_id"]: m for m in metas}
 
-    def _build_trigger(self, run_at: datetime, repeat: str = None, weekdays: list = None):
+    def _build_trigger(self, run_at: datetime, repeat: str = None,
+                       weekdays: list = None, end_date: datetime = None):
         """Build an APScheduler trigger from our repeat/weekday parameters."""
         if not repeat:
             return DateTrigger(run_date=run_at)
@@ -621,15 +644,29 @@ class Scheduler:
         if repeat == "daily":
             if weekdays:
                 days = ','.join(day_map[d] for d in weekdays)
-                return CronTrigger(day_of_week=days, hour=run_at.hour, minute=run_at.minute, second=0)
-            return CronTrigger(hour=run_at.hour, minute=run_at.minute, second=0)
+                return CronTrigger(
+                    day_of_week=days, hour=run_at.hour,
+                    minute=run_at.minute, second=0, end_date=end_date,
+                )
+            return CronTrigger(
+                hour=run_at.hour, minute=run_at.minute, second=0,
+                end_date=end_date,
+            )
         elif repeat == "weekly":
             return CronTrigger(
                 day_of_week=day_map[run_at.weekday()],
                 hour=run_at.hour, minute=run_at.minute, second=0,
+                end_date=end_date,
+            )
+        elif repeat == "biweekly":
+            return IntervalTrigger(
+                weeks=2, start_date=run_at, end_date=end_date,
             )
         elif repeat == "monthly":
-            return CronTrigger(day=run_at.day, hour=run_at.hour, minute=run_at.minute, second=0)
+            return CronTrigger(
+                day=run_at.day, hour=run_at.hour,
+                minute=run_at.minute, second=0, end_date=end_date,
+            )
 
         return DateTrigger(run_date=run_at)
 
@@ -638,8 +675,8 @@ class Scheduler:
                 job_type: str = "reminder", name: str = None,
                 notify: bool = True, command: str = None,
                 weekdays: list = None, log_file: str = None,
-                created_context: str = "") -> Job:
-        """Add a new job."""
+                created_context: str = "", end_date: datetime = None) -> Job:
+        """Add a new job. end_date sets when recurring jobs stop firing."""
         job_id = str(uuid.uuid4())[:8]
 
         _save_meta(
@@ -650,9 +687,10 @@ class Scheduler:
             run_at=run_at,
             raw_at=run_at.isoformat() if run_at else "",
             created_context=created_context or f"bot add_job: {message[:80]}",
+            end_date=end_date,
         )
 
-        trigger = self._build_trigger(run_at, repeat, weekdays)
+        trigger = self._build_trigger(run_at, repeat, weekdays, end_date)
         executor_fn = _JOB_EXECUTORS.get(job_type, _execute_reminder)
 
         self._aps.add_job(
@@ -663,14 +701,15 @@ class Scheduler:
             replace_existing=True,
         )
 
-        logger.info(f"Added {job_type} job {job_id} for user {user_id}: {message[:50]}...")
+        end_info = f" (until {end_date.strftime('%Y-%m-%d')})" if end_date else ""
+        logger.info(f"Added {job_type} job {job_id} for user {user_id}: {message[:50]}...{end_info}")
 
         return Job(
             job_id=job_id, user_id=user_id, message=message,
             run_at=run_at, repeat=repeat, channel=channel,
             job_type=job_type, name=name or message[:50],
             notify=notify, command=command, weekdays=weekdays,
-            log_file=log_file,
+            log_file=log_file, end_date=end_date,
         )
 
     def add_agent_job(self, user_id: int, task: str, run_at: datetime,
@@ -692,6 +731,43 @@ class Scheduler:
         _delete_meta(job_id)
         logger.info(f"Removed job {job_id}")
         return True
+
+    def update_job(self, job_id: str, message: str = None,
+                   name: str = None) -> Optional[Job]:
+        """Update a job's message or name without touching the trigger.
+
+        This is the safe way to reword a reminder. It modifies metadata
+        in place -- the job ID, schedule, and recurrence are preserved.
+        Returns the updated Job, or None if job not found.
+        """
+        meta = _get_meta(job_id)
+        if not meta:
+            return None
+
+        conn = _connect_db(DB_PATH)
+        updates = []
+        params = []
+        if message is not None:
+            updates.append("message = ?")
+            params.append(message)
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+
+        if not updates:
+            conn.close()
+            return self.get_job(job_id)
+
+        params.append(job_id)
+        conn.execute(
+            f"UPDATE job_meta SET {', '.join(updates)} WHERE job_id = ?",
+            params
+        )
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Updated job {job_id}: message={message!r}, name={name!r}")
+        return self.get_job(job_id)
 
     def get_user_jobs(self, user_id: int) -> list[Job]:
         """Get all jobs for a specific user."""
@@ -779,7 +855,15 @@ class Scheduler:
                     if not meta.get("repeat") and run_at < now:
                         run_at = now + timedelta(seconds=5)
 
-                    trigger = self._build_trigger(run_at, meta.get("repeat"), meta.get("weekdays"))
+                    end_date = None
+                    end_date_str = meta.get("end_date")
+                    if end_date_str:
+                        try:
+                            end_date = datetime.fromisoformat(end_date_str)
+                        except ValueError:
+                            pass
+
+                    trigger = self._build_trigger(run_at, meta.get("repeat"), meta.get("weekdays"), end_date)
                     executor_fn = _JOB_EXECUTORS.get(meta.get("job_type", "reminder"), _execute_reminder)
                     self._aps.add_job(
                         executor_fn, trigger=trigger,
@@ -797,6 +881,26 @@ class Scheduler:
                     logger.info(f"Removed orphaned APScheduler job {aps_id}")
                 except Exception:
                     pass
+
+        # Clean up expired recurring jobs (end_date has passed)
+        for meta in metas:
+            end_date_str = meta.get("end_date")
+            if not end_date_str or not meta.get("repeat"):
+                continue
+            try:
+                end_date = datetime.fromisoformat(end_date_str)
+            except ValueError:
+                continue
+            if end_date < now:
+                try:
+                    self._aps.remove_job(meta["job_id"])
+                except Exception:
+                    pass
+                _delete_meta(meta["job_id"])
+                logger.info(
+                    f"Cleaned up expired recurring job {meta['job_id']} "
+                    f"({meta.get('name', '')}) — end_date was {end_date_str}"
+                )
 
     async def _recover_missed_jobs(self):
         """Fire one-shot jobs that were missed while bot was down."""
