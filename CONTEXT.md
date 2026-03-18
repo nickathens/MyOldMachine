@@ -293,6 +293,34 @@ Ported battle-tested improvements from the private Telegram bot (`claude-telegra
 - Message log integration: every user/assistant exchange logged in `_save_and_send()`
 - Improved queued-message notification text
 
+## First-Contact Orientation & Non-Technical UX (Mar 18)
+
+**Problem:** The bot assumed users were technical. The first boot message was a raw dump of specs, provider info, and version numbers. The system prompt used technical language (file paths, CLI commands, tool names) when talking to users. Users cloning MyOldMachine are often non-technical — they want a helpful assistant, not a terminal.
+
+**Changes:**
+
+1. **Auto-firing orientation prompt** (`build_orientation_prompt()` in `bot.py`):
+   - On first boot, instead of a static text message, the LLM generates a personalized introduction
+   - Reads system capabilities (OS, RAM, disk, skill readiness) and translates them to plain language
+   - Introduces itself, explains what it can do in categories (not raw skill names)
+   - Asks the user about themselves (name, interests, immediate needs) to populate the person model
+   - Falls back to a simple static message if the LLM call fails
+   - Saved to conversation history as `[First boot — assistant introduced itself]` (not the raw prompt)
+
+2. **Communication Style directive** in system prompt:
+   - "Assume the user has NO experience with code, terminals, or technical concepts"
+   - Concrete examples: "I'll convert the video" not "I'll run ffmpeg to transcode"
+   - Adapts upward if the user demonstrates technical knowledge
+   - Only shows jargon when the user specifically asks for technical details
+
+3. **User-facing text rewritten**:
+   - `/start`: Friendly greeting with skill count, no raw specs
+   - `/help`: Reorganized by use case (memory, reminders, organization), not by internal module
+   - Recovery message: Plain language ("I was working on something when I got interrupted")
+   - Fallback first boot message: Simple and welcoming
+
+**Files modified:** `bot.py` only — 4 sections changed (new function, system prompt, start_command, help_command, post_init).
+
 ## Testing
 
 Tested on:

@@ -320,6 +320,60 @@ async def recover_pending_messages(bot):
 
 # --- System prompt builder ---
 
+def build_orientation_prompt(user_id: int) -> str:
+    """Build the auto-firing first-contact orientation prompt.
+
+    This is the initial message sent through the LLM on first boot,
+    so the bot introduces itself, audits the environment, checks skills,
+    and asks the user about themselves — all in plain, non-technical language.
+    """
+    bot_name = get_bot_name()
+    caps_summary = get_caps_summary(DATA_DIR)
+    caps = load_caps(DATA_DIR)
+
+    # Build skill readiness report
+    skills_report = ""
+    if caps:
+        skill_status = caps.get("skills", {})
+        ready = [name for name, info in skill_status.items() if info.get("ready")]
+        not_ready = {name: info.get("missing", [])
+                     for name, info in skill_status.items() if not info.get("ready")}
+
+        if ready:
+            skills_report += f"\nSkills ready to use ({len(ready)}): {', '.join(sorted(ready))}"
+        if not_ready:
+            skills_report += f"\n\nSkills that need setup ({len(not_ready)}):"
+            for name, missing in sorted(not_ready.items()):
+                skills_report += f"\n  - {name}: missing {', '.join(missing)}"
+
+    return (
+        f"This is your FIRST conversation with this user. You just got installed on their machine.\n\n"
+        f"Your name is {bot_name}. You are their personal AI assistant that lives on this computer "
+        f"and can do things for them — manage files, edit media, set reminders, and much more.\n\n"
+        f"Here is what you know about this machine:\n{caps_summary}\n"
+        f"{skills_report}\n\n"
+        f"YOUR TASK for this first message:\n\n"
+        f"1. INTRODUCE yourself warmly but concisely. Explain in simple, non-technical language "
+        f"what you are and what you can do. Do NOT list every skill — give a high-level overview "
+        f"of your capabilities grouped by category (e.g. 'I can work with photos and videos', "
+        f"'I can help with music and audio', 'I can manage your files and schedule').\n\n"
+        f"2. REPORT the machine status in plain language. Not raw specs — translate them. "
+        f"For example, instead of '15.5 GB RAM', say 'Your computer has plenty of memory'. "
+        f"Instead of listing missing binaries, say which categories of skills are ready and "
+        f"which ones would need a quick setup (and offer to do it for them).\n\n"
+        f"3. ASK the user about themselves. You want to learn:\n"
+        f"   - What they'd like to call themselves (or confirm their Telegram name)\n"
+        f"   - What they're most interested in using you for\n"
+        f"   - Any specific tasks they have in mind right now\n\n"
+        f"Keep your message friendly, clear, and under 300 words. "
+        f"Do NOT use technical jargon, file paths, command names, or code. "
+        f"Do NOT overwhelm them with information. Make them feel like they just got "
+        f"a capable, approachable assistant — not a terminal window.\n\n"
+        f"Remember: this user may have ZERO experience with computers beyond basic use. "
+        f"Meet them where they are."
+    )
+
+
 def build_system_prompt(user_id: int) -> str:
     """Build the system prompt with user context, skills, memories, and instructions.
 
@@ -366,6 +420,21 @@ def build_system_prompt(user_id: int) -> str:
                 "use run_command with background=true, then poll with check_process."
             )
         parts.append("If the user asks for something and you're missing a tool, install it.")
+        parts.append("")
+        parts.append("### Communication Style:")
+        parts.append(
+            "IMPORTANT: Assume the user has NO experience with code, terminals, or technical concepts. "
+            "Always explain things in plain, everyday language. Never use jargon without explaining it. "
+            "Never show raw file paths, command-line syntax, or code snippets in your responses "
+            "unless the user specifically asks for technical details.\n\n"
+            "Instead of technical language, use simple descriptions:\n"
+            "  - Instead of 'I'll run ffmpeg to transcode', say 'I'll convert the video for you'\n"
+            "  - Instead of 'pip install failed', say 'I tried to add a tool but it didn't work'\n"
+            "  - Instead of 'check the logs at /var/log/', say 'I'll look into what went wrong'\n"
+            "  - Instead of listing file paths, describe what you did in plain words\n\n"
+            "If the user demonstrates technical knowledge through their messages, you can gradually "
+            "match their level. But start simple. When in doubt, explain more, not less."
+        )
         parts.append("")
         parts.append("### Software Compatibility:")
         parts.append("Some apps may be installed via Flatpak instead of the system package manager.")
@@ -758,24 +827,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     incomplete = get_incomplete_task(user_id)
     if incomplete and incomplete.get("partial_text"):
-        original = incomplete.get("original_message", "unknown")
         await update.message.reply_text(
-            f"Welcome back. There was an interrupted task.\n\n"
-            f"Original request: {original[:100]}...\n\n"
-            f"Send /recover to see progress, or continue with a new message."
+            "Welcome back! I was working on something when I got interrupted.\n\n"
+            "Send /recover to see what I was doing, or just send me a new message."
         )
     else:
         bot_name = get_bot_name()
-        version = get_current_version(BOT_DIR)
         skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
         await update.message.reply_text(
-            f"Connected to {bot_name}.\n\n"
-            f"Provider: {get_llm_provider()} / {get_llm_model()}\n"
-            f"OS: {platform.system()} {platform.release()}\n"
-            f"Skills: {skills_count}\n"
-            f"Version: {version}\n\n"
-            "Send /help for all commands.\n"
-            "Just send me a message."
+            f"Hi! I'm {bot_name}, your AI assistant on this computer.\n\n"
+            f"I have {skills_count} skills available — from managing files and "
+            f"setting reminders to editing photos, videos, and audio.\n\n"
+            f"Just send me a message describing what you need, "
+            f"and I'll take care of it.\n\n"
+            f"Send /help to see all available commands."
         )
 
 
@@ -1472,43 +1537,34 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_name = get_bot_name()
     text = (
-        f"{bot_name} Commands\n\n"
-        "General:\n"
-        "  /start - Connect and show info\n"
-        "  /help - Show this help\n"
-        "  /clear - Reset conversation\n"
-        "  /status - Bot status\n\n"
-        "Memory:\n"
-        "  /remember <fact> - Save a memory\n"
-        "  /memories - Show memories\n"
-        "  /forget <n> - Delete memory by number\n\n"
-        "Sessions:\n"
-        "  /topic <name> - Switch to topic session\n"
-        "  /topics - List all topics\n\n"
-        "Reminders:\n"
-        "  /remind <time> <message> - Set a reminder\n"
-        "  /reminders - Show reminders\n"
-        "  /cancel <id> - Cancel a reminder\n"
-        "  /schedule <time> | <task> - Schedule agent task\n"
-        "  /jobs - Show all scheduled jobs\n\n"
-        "Recovery:\n"
-        "  /recover - Show interrupted task\n"
-        "  /clear_recovery - Delete recovery data\n\n"
-        "AI Provider:\n"
-        "  /provider - Show/switch AI provider\n"
-        "  /model - Show/change model\n"
-        "  /apikey - Set API key\n\n"
+        f"{bot_name} — What I Can Do\n\n"
+        "Just send me a message describing what you need. "
+        "You can also send me photos, documents, audio, or video files "
+        "and I'll work with them.\n\n"
+        "Useful commands:\n"
+        "  /start — Say hello and see basic info\n"
+        "  /help — Show this guide\n"
+        "  /clear — Start a fresh conversation\n"
+        "  /status — See how things are running\n\n"
+        "Memory & reminders:\n"
+        "  /remember — Save something I should always know\n"
+        "  /memories — See what I remember about you\n"
+        "  /remind — Set a reminder (e.g. /remind tomorrow 9am Call the dentist)\n"
+        "  /reminders — See your upcoming reminders\n"
+        "  /cancel — Cancel a reminder\n\n"
+        "Organization:\n"
+        "  /topic — Switch to a separate conversation thread\n"
+        "  /topics — See all your conversation threads\n\n"
         "Shortcuts:\n"
-        "  /alias - List your shortcuts\n"
-        "  /alias set <name> <text> - Create a shortcut\n"
-        "  /alias remove <name> - Delete a shortcut\n\n"
-        "Admin:\n"
-        "  /health - System health report\n"
-        "  /cleanup - Clean old attachments and logs\n"
-        "  /system - System info\n"
-        "  /update - Update to latest version\n"
-        "  /restart - Restart the bot\n\n"
-        "Just send a message to chat. Send files for processing."
+        "  /alias — Create quick shortcuts for things you ask often\n\n"
+        "Settings (advanced):\n"
+        "  /provider — Change AI brain\n"
+        "  /model — Change AI model\n"
+        "  /apikey — Set API key for a provider\n\n"
+        "System:\n"
+        "  /health — Check if everything is healthy\n"
+        "  /update — Get the latest version\n"
+        "  /restart — Restart me\n"
     )
     await update.message.reply_text(text)
 
@@ -2113,30 +2169,60 @@ def main():
             except Exception as e:
                 logger.warning(f"System probe failed: {e}")
 
-        # First boot message — sent once after install
+        # First boot — orientation through the LLM
         first_boot_marker = DATA_DIR / ".first_boot_sent"
         if not first_boot_marker.exists():
             allowed = get_allowed_users()
             if allowed:
-                bot_name = get_bot_name()
-                skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
-                version = get_current_version(BOT_DIR)
-                caps_summary = get_caps_summary(DATA_DIR)
-                msg = (
-                    f"{bot_name} is online.\n\n"
-                    f"{caps_summary}\n"
-                    f"Provider: {get_llm_provider()} / {get_llm_model()}\n"
-                    f"Skills: {skills_count}\n"
-                    f"Version: {version}\n\n"
-                    f"Send /help for commands, or just send me a message."
-                )
+                # Fire the orientation prompt through the LLM for each user
                 for uid in allowed:
                     try:
-                        await application.bot.send_message(chat_id=uid, text=msg)
+                        # Initialize person model before orientation
+                        if _memory_manager and not _memory_manager.get_model(uid):
+                            profile = get_user_profile(uid)
+                            user_name = profile.get("name", "User")
+                            _memory_manager.init_model(uid, name=user_name)
+
+                        orientation_msg = build_orientation_prompt(uid)
+                        logger.info(f"Running first-boot orientation for user {uid}")
+
+                        # Send typing indicator while LLM generates response
+                        try:
+                            await application.bot.send_chat_action(chat_id=uid, action="typing")
+                        except Exception:
+                            pass
+
+                        response = await call_llm(uid, orientation_msg)
+
+                        # Save to conversation history with a clean user entry
+                        # (don't pollute history with the full orientation prompt)
+                        session = get_session(uid)
+                        _save_and_send(uid, "[First boot — assistant introduced itself]",
+                                       response, session=session)
+
+                        for chunk in split_message(response):
+                            try:
+                                await application.bot.send_message(chat_id=uid, text=chunk)
+                            except Exception as e:
+                                logger.error(f"Failed to send orientation to {uid}: {e}")
                     except Exception as e:
-                        logger.warning(f"Failed to send first boot message to {uid}: {e}")
+                        # Fallback: send a simple static message if LLM fails
+                        logger.error(f"Orientation failed for {uid}, sending fallback: {e}")
+                        try:
+                            bot_name = get_bot_name()
+                            await application.bot.send_message(
+                                chat_id=uid,
+                                text=(
+                                    f"{bot_name} is online and ready.\n\n"
+                                    f"Send me a message to get started — I'm here to help with "
+                                    f"anything on this computer.\n\n"
+                                    f"Send /help to see what I can do."
+                                ),
+                            )
+                        except Exception:
+                            pass
                 first_boot_marker.touch()
-                logger.info("First boot message sent")
+                logger.info("First boot orientation complete")
 
     # Shutdown: stop scheduler, polling monitor, kill background processes
     async def post_shutdown(application):
