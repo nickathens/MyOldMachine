@@ -253,6 +253,7 @@ _ALL_LLM_PROVIDERS = [
     ("kimi", "Moonshot Kimi — K2.5 multimodal, 256K context, $0.60/$3.00 per MTok, machine control"),
     ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
+    ("ollama-cloud", "Ollama Cloud — cloud-hosted models (free tier available), no local GPU needed"),
     ("openrouter", "OpenRouter — many models, one API key (free models available), machine control"),
 ]
 
@@ -274,6 +275,7 @@ DEFAULT_MODELS = {
     "kimi": "kimi-k2.5",
     "gemini": "gemini-2.5-flash",
     "ollama": "llama3.1:8b",
+    "ollama-cloud": "qwen3.5:cloud",
     "openrouter": "openrouter/hunter-alpha",
 }
 
@@ -328,6 +330,19 @@ PROVIDER_MODELS = {
         ("kimi-k2", "Kimi K2 — text + code, 256K context, $0.60/$2.50 per MTok"),
         ("kimi-latest", "Kimi Latest — auto-selects model, pricing varies by context length"),
     ],
+    "ollama-cloud": [
+        ("qwen3.5:cloud", "Qwen 3.5 Cloud (397B) — largest, strong reasoning (recommended)"),
+        ("qwen3.5:122b", "Qwen 3.5 122B — strong reasoning"),
+        ("deepseek-v3.2", "DeepSeek V3.2 — 671B MoE, strong reasoning"),
+        ("nemotron-3-super:120b", "Nemotron 3 Super 120B — NVIDIA, strong tool-use"),
+        ("devstral-2:123b", "Devstral 2 123B — Mistral, coding-focused"),
+        ("glm-5:40b", "GLM-5 40B active (744B total) — Zhipu AI"),
+        ("minimax-m2.7", "MiniMax M2.7 — fast, general-purpose"),
+        ("minimax-m2.5", "MiniMax M2.5 — fast, general-purpose"),
+        ("gemini-3-flash-preview", "Gemini 3 Flash Preview — Google, fast"),
+        ("kimi-k2.5", "Kimi K2.5 — Moonshot, multimodal"),
+        ("qwen3-vl:235b", "Qwen3-VL 235B — vision + language, multimodal"),
+    ],
 }
 
 # Free models available on OpenRouter (no billing required)
@@ -358,7 +373,7 @@ OPENROUTER_FREE_MODELS = [
 ]
 
 # Providers that need an API key
-API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "openrouter"}
+API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "ollama-cloud", "openrouter"}
 
 # Step-by-step API key guides for each provider.
 # Shown during setup when the user picks a provider.
@@ -455,6 +470,21 @@ API_KEY_GUIDES = {
             "  Gemini 2.5 Pro:         5 RPM,  100 req/day",
             "  Gemini 2.5 Flash:      10 RPM,  250 req/day",
             "  Gemini 2.5 Flash-Lite: 15 RPM, 1000 req/day",
+        ],
+    },
+    "ollama-cloud": {
+        "name": "Ollama Cloud",
+        "url": "https://ollama.com/settings/keys",
+        "steps": [
+            "Go to ollama.com and create an account (or sign in)",
+            "Go to ollama.com/settings/keys",
+            "Click 'Create API key', name it, and copy it immediately",
+            "  API keys don't expire but can be revoked anytime",
+        ],
+        "notes": [
+            "Free tier available — session limits reset every 5 hours, weekly reset every 7 days.",
+            "Pro ($20/mo) and Max ($100/mo) tiers for heavier usage.",
+            "Same API as local Ollama — just runs in the cloud.",
         ],
     },
     "openrouter": {
@@ -993,6 +1023,7 @@ def _run_wizard_steps(detected_os: str) -> dict:
     print(f"  {GREEN}FREE options:{NC}")
     print(f"    - Claude Code CLI — uses your existing Anthropic Pro/Max subscription")
     print(f"    - Ollama — runs a local model on this machine (no internet needed)")
+    print(f"    - Ollama Cloud — cloud-hosted models, free tier (no local GPU needed)")
     print(f"    - OpenRouter — has free models (20 RPM, 200 req/day)")
     print(f"    - Gemini — free tier with real quota (5-15 RPM, 100-1000 RPD)")
     print(f"    - Grok — $25 free credits on signup")

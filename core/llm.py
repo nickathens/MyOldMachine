@@ -1135,7 +1135,7 @@ class KimiProvider(LLMProvider):
 
 
 class OllamaProvider(LLMProvider):
-    """Ollama local models with tool-use support."""
+    """Ollama models (local or cloud) with tool-use support."""
 
     def __init__(self, model: str, api_key: str = "", base_url: str = "http://localhost:11434"):
         super().__init__(model, api_key)
@@ -1143,12 +1143,16 @@ class OllamaProvider(LLMProvider):
 
     @property
     def provider_name(self) -> str:
+        if self.base_url.endswith("ollama.com"):
+            return "ollama-cloud"
         return "ollama"
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         # Ollama supports OpenAI-compatible /v1/chat/completions endpoint
         # which includes tool-use support
         headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
 
         # OpenAI-compat endpoint uses max_tokens at root level, not options
         body = {
@@ -1162,18 +1166,29 @@ class OllamaProvider(LLMProvider):
         }
 
         # Check if Ollama is reachable before trying
+        is_cloud = self.base_url.endswith("ollama.com")
         try:
+            probe_headers = {}
+            if self.api_key:
+                probe_headers["Authorization"] = f"Bearer {self.api_key}"
             async with httpx.AsyncClient(timeout=10.0) as probe:
-                probe_resp = await probe.get(f"{self.base_url}/api/tags")
-                if probe_resp.status_code != 200:
+                probe_resp = await probe.get(f"{self.base_url}/api/tags", headers=probe_headers)
+                if probe_resp.status_code == 401:
                     return LLMResponse(
                         text="", model=self.model, provider=self.provider_name,
-                        error="Cannot connect to Ollama. Is it running? (ollama serve)"
+                        error="Ollama Cloud authentication failed. Check your API key (LLM_API_KEY in .env)."
+                    )
+                if probe_resp.status_code != 200:
+                    error_hint = "Check your API key at ollama.com/settings/keys" if is_cloud else "Is it running? (ollama serve)"
+                    return LLMResponse(
+                        text="", model=self.model, provider=self.provider_name,
+                        error=f"Cannot connect to Ollama. {error_hint}"
                     )
         except (httpx.ConnectError, httpx.ConnectTimeout):
+            error_hint = "Check your internet connection." if is_cloud else "Is it running? (ollama serve)"
             return LLMResponse(
                 text="", model=self.model, provider=self.provider_name,
-                error="Cannot connect to Ollama. Is it running? (ollama serve)"
+                error=f"Cannot connect to Ollama. {error_hint}"
             )
         except Exception:
             pass  # Proceed anyway — the main request will fail with a better error
@@ -1205,8 +1220,11 @@ class OllamaProvider(LLMProvider):
                 },
             }
             try:
+                native_headers = {"Content-Type": "application/json"}
+                if self.api_key:
+                    native_headers["Authorization"] = f"Bearer {self.api_key}"
                 async with httpx.AsyncClient(timeout=600.0) as client:
-                    resp = await client.post(url, json=native_body)
+                    resp = await client.post(url, headers=native_headers, json=native_body)
                     try:
                         data = resp.json()
                     except Exception:
@@ -1253,6 +1271,9 @@ def create_provider(
         "google": lambda: GeminiProvider(model, api_key),
         "ollama": lambda: OllamaProvider(
             model, api_key, kwargs.get("base_url", "http://localhost:11434")
+        ),
+        "ollama-cloud": lambda: OllamaProvider(
+            model, api_key, "https://ollama.com"
         ),
         "openrouter": lambda: OpenRouterProvider(model, api_key),
         "deepseek": lambda: DeepSeekProvider(model, api_key),

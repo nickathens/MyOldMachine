@@ -1307,6 +1307,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "kimi": "kimi-k2.5",
         "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
+        "ollama-cloud": "qwen3.5:cloud",
         "openrouter": "openrouter/hunter-alpha",
     }
 

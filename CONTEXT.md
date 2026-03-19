@@ -158,9 +158,10 @@ utils/
 | Kimi (Moonshot) | OpenAI-compat | kimi-k2.5 | Multimodal, 256K ctx. $0.60/$3.00/MTok. Vision on K2.5 |
 | Gemini | Native | gemini-2.5-flash | Free tier: 10 RPM / 250 RPD |
 | Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
+| Ollama Cloud | OpenAI-compat | qwen3.5:cloud | Cloud-hosted, free tier, no local GPU needed |
 | OpenRouter | OpenAI-compat | openrouter/hunter-alpha | 19+ free models w/tool-use, 200 req/day |
 
-**Total: 9 providers.**
+**Total: 10 providers.**
 
 ## Boot Persistence
 
