@@ -43,6 +43,7 @@ from core.health import (
 from core.updater import full_update, get_current_version, get_current_branch
 from core.system_probe import probe_system, get_caps_summary, load_caps
 from core.message_log import log_exchange
+from utils.safe_json import save_json as _atomic_save_json
 
 from telegram import Update
 from telegram.ext import (
@@ -89,6 +90,12 @@ _skill_manager = None
 _memory_manager = None
 
 MAX_CONTEXT_MESSAGES = 40
+
+# Prompt size budget (characters). When system prompt + conversation history exceeds
+# this, older messages are trimmed. Conservative value that fits all providers —
+# Claude CLI (200k), OpenAI (128k), Gemini (1M), DeepSeek (128k), Ollama (varies).
+# ~20k tokens leaves room for the model's response and internal overhead.
+PROMPT_CHAR_BUDGET = 80000
 
 # Health check interval (seconds)
 _HEALTH_CHECK_INTERVAL = 4 * 3600  # 4 hours
@@ -733,6 +740,57 @@ async def call_llm(user_id: int, message: str, chat=None) -> str:
     """Call the configured LLM provider and return the response text."""
     system_prompt = build_system_prompt(user_id)
     messages = build_messages(user_id, message)
+
+    # Size-based conversation trimming: if system prompt + messages exceeds the
+    # character budget, trim older conversation messages (not the new user message).
+    # This prevents "prompt too long" errors regardless of conversation length.
+    system_size = len(system_prompt)
+    new_msg_size = len(message) + 20  # <user>...</user> tags overhead
+    remaining_budget = max(PROMPT_CHAR_BUDGET - system_size - new_msg_size, 5000)
+
+    # Calculate total conversation size (all messages except the last one, which is the new message)
+    conv_messages = messages[:-1]  # History only, exclude new user message
+    conv_size = sum(len(m.content) + 20 for m in conv_messages)  # +20 for XML tag overhead
+
+    if conv_size > remaining_budget and conv_messages:
+        session = get_session(user_id)
+        # Convert Message objects to dicts for smart_trim_conversation
+        history_dicts = [{"role": m.role, "content": m.content} for m in conv_messages]
+
+        # Smart-trim first (removes verbose tool outputs, truncates old messages)
+        trimmed = session.smart_trim_conversation(history_dicts)
+
+        # If still over budget, drop oldest messages (keep at least 6 for continuity)
+        min_keep = 6
+        while len(trimmed) > min_keep and sum(len(m.get("content", "")) + 20 for m in trimmed) > remaining_budget:
+            trimmed.pop(0)
+
+        original_count = len(conv_messages)
+        trimmed_size = sum(len(m.get("content", "")) + 20 for m in trimmed)
+        messages_dropped = len(trimmed) < original_count
+
+        # Rebuild messages if anything changed (count reduced or content trimmed)
+        if messages_dropped or trimmed_size < conv_size:
+            messages = [Message(role=m["role"], content=m["content"]) for m in trimmed]
+            messages.append(Message(role="user", content=message))
+
+        # Only persist to disk if messages were actually dropped (not just content-trimmed)
+        # Content trimming is session-local and doesn't need to be saved
+        if messages_dropped:
+            current_topic = session.get_current_topic()
+            if current_topic:
+                session.save_topic_session(current_topic, trimmed)
+            else:
+                # Write directly (atomic) to avoid save_conversation() re-running smart_trim
+                _atomic_save_json(session.conversation_file, trimmed)
+                session.compact_conversation(trimmed, session.summary_file)
+
+        if messages_dropped or trimmed_size < conv_size:
+            logger.info(
+                f"Size-based trim for user {user_id}: {original_count} -> {len(trimmed)} messages, "
+                f"{conv_size} -> {trimmed_size} chars "
+                f"(system: {system_size} chars, budget: {PROMPT_CHAR_BUDGET})"
+            )
 
     # For Claude CLI provider, pass extra kwargs for progress tracking
     if isinstance(_llm_provider, ClaudeCLIProvider):
