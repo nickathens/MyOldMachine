@@ -4,7 +4,6 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
-#   wget -qO- https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
 #   -- or --
 #   git clone https://github.com/nickathens/MyOldMachine.git && cd MyOldMachine && ./install.sh
 
@@ -184,37 +183,6 @@ cleanup_sudo() { kill $SUDO_KEEPALIVE_PID 2>/dev/null; }
 trap cleanup_sudo EXIT INT TERM
 
 echo ""
-
-# ─────────────────────────────────────────────────────────
-# Step 1.5: Ensure curl is available
-# ─────────────────────────────────────────────────────────
-
-if ! command -v curl &>/dev/null; then
-    if [ "$OS" = "linux" ]; then
-        info "Installing curl..."
-        if command -v apt-get &>/dev/null; then
-            sudo apt-get update -qq 2>/dev/null || warn "apt-get update had warnings"
-            sudo apt-get install -y -qq curl || die "Failed to install curl"
-        elif command -v dnf &>/dev/null; then
-            sudo dnf install -y curl || die "Failed to install curl"
-        elif command -v yum &>/dev/null; then
-            sudo yum install -y curl || die "Failed to install curl"
-        elif command -v pacman &>/dev/null; then
-            sudo pacman -Sy --noconfirm curl || die "Failed to install curl"
-        elif command -v zypper &>/dev/null; then
-            sudo zypper install -y curl || die "Failed to install curl"
-        elif command -v apk &>/dev/null; then
-            sudo apk add curl || die "Failed to install curl"
-        else
-            die "No supported package manager found. Install curl manually and re-run."
-        fi
-        ok "curl installed"
-    else
-        # macOS always has curl (ships with the OS since 10.0)
-        die "curl not found — this should not happen on macOS. Install Xcode Command Line Tools:
-  xcode-select --install"
-    fi
-fi
 
 # ─────────────────────────────────────────────────────────
 # Step 2: Ensure git is available
