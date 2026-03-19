@@ -987,6 +987,9 @@ def main():
         print(f"    launchctl list | grep myoldmachine")
         print(f"    tail -f {repo_dir}/data/logs/bot.log")
     print()
+    print(f"  {YELLOW}If this worked for you, consider giving it a star:{NC}")
+    print(f"  {BOLD}https://github.com/nickathens/MyOldMachine{NC}")
+    print()
 
 
 def _run_wizard_steps(detected_os: str) -> dict:
