@@ -28,19 +28,6 @@ No `curl`? Use `wget`:
 wget -qO- https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
 ```
 
-No `curl` or `wget`? Install one first:
-
-```bash
-# Debian/Ubuntu
-sudo apt install curl -y && curl -fsSL https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
-
-# Fedora/RHEL
-sudo dnf install curl -y && curl -fsSL https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
-
-# Arch
-sudo pacman -Sy curl --noconfirm && curl -fsSL https://raw.githubusercontent.com/nickathens/MyOldMachine/main/install.sh | bash
-```
-
 **Option 2: Clone and run**
 
 ```bash
