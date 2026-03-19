@@ -2012,7 +2012,7 @@ def _setup_reflection_job(scheduler):
     model = get_llm_model().lower()
 
     # Strong enough for reflection?
-    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "google")
+    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "google", "ollama-cloud")
     is_capable = provider in capable_providers
 
     # Ollama: only large models

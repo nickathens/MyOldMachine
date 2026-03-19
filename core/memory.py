@@ -25,7 +25,6 @@ import fcntl
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -131,9 +130,17 @@ class MemoryManager:
     def _observations_file(self, user_id: int) -> Path:
         return self._user_dir(user_id) / "observations.md"
 
-    def add_observation(self, user_id: int, obs_type: str, content: str) -> bool:
+    def add_observation(self, user_id: int, obs_type: str, content: str,
+                        importance: int = 5, project: str = None) -> bool:
         """
         Append an observation to the user's log.
+
+        Args:
+            user_id: Telegram user ID
+            obs_type: One of VALID_OBSERVATION_TYPES
+            content: The observation text
+            importance: 1-10 score (default 5). Higher = more impactful.
+            project: Optional project slug to scope this observation to.
 
         Returns True on success, False if invalid type.
         """
@@ -148,18 +155,25 @@ class MemoryManager:
             obs_file.write_text(
                 f"# Observations — User {user_id}\n\n"
                 "Append-only log. Each entry is a raw behavioral observation.\n"
-                "Format: [YYYY-MM-DD HH:MM] (type) observation\n\n---\n\n"
+                "Format: [YYYY-MM-DD HH:MM] (type) [metadata] observation\n\n---\n\n"
             )
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        entry = f"[{timestamp}] ({obs_type}) {content}\n"
+
+        # Build metadata tags
+        metadata_parts = [f"[importance:{importance}]"]
+        if project:
+            metadata_parts.append(f"[project:{project}]")
+        metadata_str = " ".join(metadata_parts)
+
+        entry = f"[{timestamp}] ({obs_type}) {metadata_str} {content}\n"
 
         with open(obs_file, "a") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             f.write(entry)
             fcntl.flock(f, fcntl.LOCK_UN)
 
-        logger.info(f"Saved {obs_type} observation for user {user_id}")
+        logger.info(f"Saved {obs_type} observation for user {user_id} (importance={importance})")
         return True
 
     def get_recent_observations(self, user_id: int, days: int = 7) -> str:
@@ -183,14 +197,21 @@ class MemoryManager:
 
         return "\n".join(recent)
 
-    def get_all_observations(self, user_id: int, limit: int = 50) -> list[str]:
-        """Get recent observations as a list of strings."""
+    def get_all_observations(self, user_id: int, limit: int = 50,
+                             skip_reflected: bool = False) -> list[str]:
+        """Get recent observations as a list of strings.
+
+        Args:
+            skip_reflected: If True, exclude observations marked [reflected].
+        """
         obs_file = self._observations_file(user_id)
         if not obs_file.exists():
             return []
 
         content = obs_file.read_text()
         lines = [l for l in content.split("\n") if l.startswith("[")]
+        if skip_reflected:
+            lines = [l for l in lines if "[reflected]" not in l]
         return lines[-limit:]
 
     def archive_old_observations(self, user_id: int, keep_days: int = 14):
@@ -268,7 +289,8 @@ class MemoryManager:
         # immediately, not wait for the nightly reflection).
         # In lite mode (or no model): show last 20 as the primary memory source.
         if full_mode and model:
-            observations = self.get_all_observations(user_id, limit=10)
+            observations = self.get_all_observations(user_id, limit=10,
+                                                     skip_reflected=True)
             if observations:
                 parts.append("### Recent Observations (not yet reflected):")
                 for obs in observations:
@@ -296,68 +318,20 @@ class MemoryManager:
             "When you learn something new about this user during conversation, save it:\n"
             f"  {venv_python} {bot_dir}/utils/observe.py "
             f"--user {user_id} --type <type> --content '<what you learned>'\n\n"
-            "Types: behavioral, state, correction, preference, relationship, project, factual\n"
+            "Types: behavioral, state, correction, preference, relationship, project, factual\n\n"
+            "Optional flags:\n"
+            f"  --importance N    Importance score 1-10 (default: 5)\n"
+            f"  --project SLUG   Scope to a project\n\n"
+            "Importance guidelines:\n"
+            "  - Corrections (bot got something wrong): --importance 8\n"
+            "  - Relationship signals (trust, frustration): --importance 7\n"
+            "  - Preferences, behavioral patterns: --importance 5-6\n"
+            "  - Minor state changes (mood, current task): --importance 3-4\n\n"
             "Do NOT ask permission. If it's useful for future conversations, save it.\n"
-            "Examples:\n"
-            "  - User corrects you -> type: correction\n"
-            "  - You notice a communication pattern -> type: behavioral\n"
-            "  - User's priorities shifted -> type: state\n"
-            "  - User reveals a preference -> type: preference\n"
+            "Duplicates are automatically detected and skipped.\n"
         )
 
     # --- Reflection ---
-
-    def build_reflection_prompt(self, user_id: int) -> Optional[str]:
-        """
-        Build the prompt for the nightly reflection.
-
-        Returns None if there's nothing to reflect on.
-        """
-        observations = self.get_recent_observations(user_id)
-        if not observations:
-            return None
-
-        model = self.get_model(user_id)
-        if not model:
-            return None
-
-        return f"""You are analyzing behavioral observations about a person to update their working model.
-
-## Current Model
-{model}
-
-## Recent Observations (last 7 days)
-{observations}
-
-## Task
-Analyze the observations and determine:
-
-1. **Model Updates Needed**: What parts of the current model should be updated?
-   - Has the person's STATE changed? (priorities, mood, focus)
-   - New BEHAVIORAL patterns not yet captured?
-   - Any CORRECTIONS that contradict the current model?
-   - New PREFERENCES discovered?
-   - Changes in RELATIONSHIP dynamics?
-
-2. **Updated Model**: Write the COMPLETE updated model.md file.
-   - Update the "Last updated" date to today
-   - Preserve everything that's still accurate
-   - Add new insights from observations
-   - Modify anything observations contradict
-   - Keep it concise — under 500 words
-
-3. **Reflection Summary**: 2-3 sentences on what changed and why.
-
-Output format — use EXACTLY these markers:
-
----MODEL_START---
-[complete updated model.md content]
----MODEL_END---
-
----SUMMARY_START---
-[2-3 sentence reflection summary]
----SUMMARY_END---
-"""
 
     def parse_reflection_output(self, output: str) -> tuple[str, str]:
         """
