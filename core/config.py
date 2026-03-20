@@ -111,9 +111,9 @@ def load_user_profiles() -> dict:
 DEFAULT_USER_PROFILE = {
     "name": "User",
     "display_name": "User",
-    "role": "admin",
-    "can_install": True,
-    "can_restart": True,
+    "role": "user",
+    "can_install": False,
+    "can_restart": False,
     "blocked_skills": [],
 }
 

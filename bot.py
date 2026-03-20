@@ -519,11 +519,11 @@ def build_system_prompt(user_id: int) -> str:
     parts.append(f"User's Telegram ID: {user_id}")
     parts.append("")
 
-    # Only show sudo/system info to providers that can use it, and only to admins
-    if has_tool_use and user_role == "admin":
+    # Only show sudo info to Claude CLI (which already has full access via
+    # --dangerously-skip-permissions).  API providers — especially weak/free
+    # models — are prompt-injection targets and should not know the sudo path.
+    if has_tool_use and user_role == "admin" and is_claude_cli:
         parts.append(f"Sudo password is stored at ~/.sudo_pass — use it for privileged commands.")
-        if not is_claude_cli:
-            parts.append("For sudo: run_command('cat ~/.sudo_pass | sudo -S <your_command>')")
         parts.append("")
 
     # Tool-use-only sections (skip for text-only providers)
@@ -1876,9 +1876,9 @@ async def _try_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # Auth check
+    # Auth check — empty ALLOWED_USERS rejects everyone (must configure during setup)
     allowed = get_allowed_users()
-    if allowed and user_id not in allowed:
+    if not allowed or user_id not in allowed:
         await update.message.reply_text("Unauthorized. Your ID is not in ALLOWED_USERS.")
         return
 
@@ -2239,7 +2239,7 @@ def main():
         # Auth check — same as handle_message
         user_id = update.effective_user.id
         allowed = get_allowed_users()
-        if allowed and user_id not in allowed:
+        if not allowed or user_id not in allowed:
             return
         # Duplicate protection — same as handle_message
         msg_id = update.message.message_id
