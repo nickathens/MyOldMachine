@@ -281,6 +281,9 @@ class MemoryManager:
         model = self.get_model(user_id)
         if model:
             parts.append("### Person Model (learned about this user):")
+            # Cap model size to prevent context bloat
+            if len(model) > 3000:
+                model = model[:2800] + "\n\n[... model truncated, read full file for details]"
             parts.append(model)
             parts.append("")
 

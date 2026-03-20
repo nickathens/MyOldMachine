@@ -325,6 +325,9 @@ class ClaudeCLIProvider(LLMProvider):
                                             last_turn_text_blocks.append(text)
                                             last_text_output = asyncio.get_running_loop().time()
                                             partial_text += text + "\n"
+                                            # Cap at 100KB to prevent unbounded memory growth
+                                            if len(partial_text) > 102400:
+                                                partial_text = partial_text[-102400:]
                             elif msg_type == "tool_use":
                                 tool_name = data.get("name", "tool")
                                 tool_in_progress = tool_name

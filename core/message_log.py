@@ -129,3 +129,19 @@ def get_message_count(user_id: int) -> int:
         return row[0]
     finally:
         conn.close()
+
+
+def prune_old_messages(user_id: int, keep_days: int = 90) -> int:
+    """Delete messages older than keep_days and VACUUM. Returns count deleted."""
+    conn = _get_conn(user_id)
+    try:
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=keep_days)).isoformat()
+        cursor = conn.execute("DELETE FROM messages WHERE timestamp < ?", (cutoff,))
+        deleted = cursor.rowcount
+        conn.commit()
+        if deleted > 0:
+            conn.execute("VACUUM")
+        return deleted
+    finally:
+        conn.close()

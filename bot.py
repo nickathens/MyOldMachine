@@ -56,13 +56,35 @@ from telegram.ext import (
 )
 
 # Logging
+from logging.handlers import RotatingFileHandler
+
+class _TokenRedactFilter(logging.Filter):
+    """Redact bot tokens from log output to prevent credential leaks."""
+    import re as _re
+    _pattern = _re.compile(r'\d{8,10}:[A-Za-z0-9_\-]{30,}')
+
+    def filter(self, record):
+        if record.args:
+            try:
+                record.msg = str(record.msg) % record.args
+                record.args = None
+            except (TypeError, ValueError):
+                pass
+        if hasattr(record, 'msg') and isinstance(record.msg, str):
+            record.msg = self._pattern.sub('[REDACTED]', record.msg)
+        return True
+
+_log_handlers = [
+    RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10*1024*1024, backupCount=3),
+    logging.StreamHandler(),
+]
+for _h in _log_handlers:
+    _h.addFilter(_TokenRedactFilter())
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
-    handlers=[
-        logging.FileHandler(LOG_DIR / "bot.log"),
-        logging.StreamHandler(),
-    ],
+    handlers=_log_handlers,
 )
 logger = logging.getLogger(__name__)
 
@@ -198,7 +220,7 @@ def save_task_progress(user_id: int, original_message: str, partial_text: str,
     data = {
         "user_id": user_id,
         "original_message": original_message[:500],
-        "partial_text": partial_text,
+        "partial_text": partial_text[-20480:] if len(partial_text) > 20480 else partial_text,
         "status": status,
         "current_tool": tool,
         "started": started,
@@ -586,11 +608,12 @@ def build_system_prompt(user_id: int) -> str:
             parts.append(system_context.read_text())
             parts.append("")
 
-    # Active projects from memory
+    # Active projects from memory (cap at 8 to prevent context bloat)
     projects_dir = memory_dir / "projects"
     if projects_dir.exists():
         project_lines = []
-        for pdir in projects_dir.iterdir():
+        project_count = 0
+        for pdir in sorted(projects_dir.iterdir()):
             if not pdir.is_dir():
                 continue
             state_file = pdir / "state.json"
@@ -601,13 +624,22 @@ def build_system_prompt(user_id: int) -> str:
                     state = json.load(f)
                 if state.get("status") != "in_progress":
                     continue
-                project_lines.append(f"\n**{state.get('name', 'Unknown')}**")
-                project_lines.append(f"  Location: {state.get('location', 'unknown')}")
+                if project_count >= 8:
+                    break
+                project_count += 1
+                block = []
+                block.append(f"\n**{state.get('name', 'Unknown')}**")
+                block.append(f"  Location: {state.get('location', 'unknown')}")
                 if state.get("summary"):
-                    project_lines.append(f"  Summary: {state['summary']}")
+                    block.append(f"  Summary: {state['summary']}")
                 if state.get("next_steps"):
                     for step in state["next_steps"][:3]:
-                        project_lines.append(f"  - {step}")
+                        block.append(f"  - {step}")
+                block_text = "\n".join(block)
+                # Cap per-project block at 1500 chars
+                if len(block_text) > 1500:
+                    block_text = block_text[:1400] + "\n  [... truncated]"
+                project_lines.append(block_text)
             except (json.JSONDecodeError, KeyError):
                 continue
         if project_lines:
@@ -624,11 +656,13 @@ def build_system_prompt(user_id: int) -> str:
             parts.append(f"(Read with: {topics_dir}/<topic>.md)")
             parts.append("")
 
-    # Conversation summary (from compaction)
+    # Conversation summary (from compaction) — cap to prevent bloat
     session = get_session(user_id)
     summary = session.load_summary()
     if summary:
         parts.append("### Conversation Summary (older context):")
+        if len(summary) > 3000:
+            summary = summary[:2800] + "\n\n[... summary truncated for context management]"
         parts.append(summary)
         parts.append("")
 
@@ -852,16 +886,23 @@ def _save_and_send(user_id: int, user_message: str, response: str,
     if session is None:
         session = get_session(user_id)
 
+    # Truncate stored messages to prevent unbounded history growth.
+    # Full content is preserved in the append-only message log below.
+    stored_user_msg = user_message[:500] if len(user_message) > 500 else user_message
+    stored_response = response
+    if len(response) > 4000:
+        stored_response = response[:3800] + "\n\n[... response truncated in history]"
+
     current_topic = session.get_current_topic()
     if current_topic:
         history = session.get_topic_session(current_topic)
-        history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": response})
+        history.append({"role": "user", "content": stored_user_msg})
+        history.append({"role": "assistant", "content": stored_response})
         session.save_topic_session(current_topic, history)
     else:
         history = session.load_conversation()
-        history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": response})
+        history.append({"role": "user", "content": stored_user_msg})
+        history.append({"role": "assistant", "content": stored_response})
         # Trigger compaction if conversation is getting long
         if len(history) > session.config["compaction_threshold"]:
             history, _ = session.compact_conversation(history, session.summary_file)
