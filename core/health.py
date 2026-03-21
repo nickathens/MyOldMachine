@@ -174,17 +174,18 @@ def get_load_average() -> Optional[str]:
 
 
 def get_network_status() -> bool:
-    """Check if we have internet connectivity."""
-    try:
-        # Use curl instead of ping — works consistently across Linux and macOS
-        # without platform-specific flag differences
-        result = subprocess.run(
-            ["curl", "-sf", "--max-time", "3", "-o", "/dev/null", "https://www.google.com"],
-            capture_output=True, timeout=5
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    """Check if we have internet connectivity (tries multiple hosts)."""
+    for url in ("https://api.telegram.org", "https://www.google.com", "https://1.1.1.1"):
+        try:
+            result = subprocess.run(
+                ["curl", "-sf", "--max-time", "5", "-o", "/dev/null", url],
+                capture_output=True, timeout=8
+            )
+            if result.returncode == 0:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def build_health_report(bot_dir: Optional[Path] = None) -> str:
@@ -314,8 +315,13 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
         load = get_load_average() or "unknown"
         alerts.append(f"WARNING: CPU load sustained at {cpu}% (load: {load})")
 
+    global _consecutive_net_failures
     if not get_network_status():
-        alerts.append("WARNING: No internet connectivity")
+        _consecutive_net_failures += 1
+        if _consecutive_net_failures >= _NET_FAILURE_THRESHOLD:
+            alerts.append("WARNING: No internet connectivity")
+    else:
+        _consecutive_net_failures = 0
 
     return alerts
 
@@ -328,6 +334,10 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
 # Key: alert message prefix (e.g. "CRITICAL: Disk"), Value: timestamp last sent.
 _alert_cooldowns: dict[str, float] = {}
 _ALERT_COOLDOWN_SECONDS = 4 * 3600  # Don't repeat the same alert for 4 hours
+
+# Track consecutive network failures — only alert after 2+ in a row
+_consecutive_net_failures: int = 0
+_NET_FAILURE_THRESHOLD = 2  # Require this many consecutive failures before alerting
 
 
 def _alert_key(alert_msg: str) -> str:
