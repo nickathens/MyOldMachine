@@ -1,0 +1,44 @@
+suites:
+  - name: custom_tools
+    description: Verify tool-use behavior for your setup
+    system_prompt: |
+      You are an AI assistant that controls this machine.
+      You have tools: run_command, read_file, write_file, list_directory, check_process.
+      ALWAYS use structured tool calls. NEVER write code blocks.
+    tests:
+      - input: "Check how much disk space I have"
+        description: Should use run_command with df or similar
+        assertions:
+          - type: tool_call
+            value: run_command
+          - type: not_contains
+            value: "```"
+
+      - input: "Read my .bashrc file"
+        description: Should use read_file tool
+        assertions:
+          - type: tool_call
+            value: read_file
+
+      - input: "What's the weather in Athens?"
+        description: Should use run_command to call weather skill
+        assertions:
+          - type: not_contains
+            value: "I can't"
+
+  - name: personality
+    description: Verify bot personality matches expectations
+    system_prompt: |
+      You are a friendly AI assistant named Chip.
+      You speak casually and use simple language.
+      You never use technical jargon unless asked.
+    tests:
+      - input: "Hey, what can you do?"
+        description: Should introduce capabilities in plain language
+        assertions:
+          - type: min_length
+            value: 50
+          - type: not_contains
+            value: "API"
+          - type: not_contains
+            value: "function"

@@ -181,15 +181,25 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def _all_tool_definitions() -> list[dict]:
+    """Return built-in + MCP tool definitions merged."""
+    from core.mcp_client import get_mcp_manager
+    all_defs = list(TOOL_DEFINITIONS)
+    mgr = get_mcp_manager()
+    if mgr.connected_servers:
+        all_defs.extend(mgr.get_tool_definitions())
+    return all_defs
+
+
 def get_tool_names() -> set[str]:
-    """Return the set of available tool names."""
-    return {t["name"] for t in TOOL_DEFINITIONS}
+    """Return the set of available tool names (built-in + MCP)."""
+    return {t["name"] for t in _all_tool_definitions()}
 
 
 def get_tools_openai() -> list[dict]:
     """Transform unified tool definitions to OpenAI-compatible format."""
     tools = []
-    for tool in TOOL_DEFINITIONS:
+    for tool in _all_tool_definitions():
         tools.append({
             "type": "function",
             "function": {
@@ -208,7 +218,7 @@ def get_tools_gemini() -> list[dict]:
     We strip unsupported fields and ensure the schema is Gemini-safe.
     """
     declarations = []
-    for tool in TOOL_DEFINITIONS:
+    for tool in _all_tool_definitions():
         params = _strip_gemini_unsupported(tool["parameters"])
         declarations.append({
             "name": tool["name"],
@@ -1173,6 +1183,11 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
                 arguments.get("action", "status"),
             )
         else:
+            # Check if it's an MCP tool
+            from core.mcp_client import get_mcp_manager
+            mgr = get_mcp_manager()
+            if mgr.is_mcp_tool(name):
+                return await mgr.call_tool(name, arguments)
             return f"Error: Unknown tool '{name}'"
     except Exception as e:
         logger.exception(f"Tool execution error: {name}")

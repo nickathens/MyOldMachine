@@ -169,6 +169,45 @@ The bot itself is your primary troubleshooting tool. Tell it what went wrong and
 
 **Something else?** Every machine is different. Start the bot, describe the problem, and work through it together. That's how this project is designed to work.
 
+## How it compares
+
+If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonder how MyOldMachine is different. Both turn a machine into an AI assistant you control through messaging — but the design philosophy and target audience diverge significantly.
+
+| | **MyOldMachine** | **OpenClaw** |
+|---|---|---|
+| **Language** | Python | TypeScript |
+| **Install** | `curl ... \| bash` — works on decade-old hardware | `npm install -g openclaw` — requires Node 24 |
+| **AI providers** | 9 — Claude CLI, OpenAI, Gemini, Grok, Kimi, DeepSeek, OpenRouter, Ollama, Claude API | Primarily OpenAI, configurable profiles |
+| **Free/local AI** | Ollama (unlimited, local), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
+| **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
+| **Skills** | 54 modular skills with auto-installing dependencies | 100+ AgentSkills |
+| **Target machine** | Old laptops, desktops, any Linux/macOS — runs on 1GB RAM with Ollama small models | Modern hardware recommended |
+| **Ownership** | Independent, MIT licensed | OpenAI-acquired (March 2026) |
+| **MCP support** | Client — connects to any MCP server for unlimited tool expansion | Native MCP client support |
+
+**When to use MyOldMachine:** You have an old machine collecting dust. You want a free, provider-agnostic AI assistant that works with whatever hardware you have. You don't want vendor lock-in.
+
+**When to use OpenClaw:** You need multi-platform messaging (WhatsApp, Slack, Discord) and are comfortable with Node.js and OpenAI pricing.
+
+## What it replaces
+
+A dedicated MyOldMachine setup can replace several paid services:
+
+| SaaS tool | Monthly cost | MyOldMachine equivalent |
+|-----------|-------------|------------------------|
+| ChatGPT Plus / Claude Pro | $20–25 | Use Ollama (free, local) or OpenRouter free tier |
+| Zapier / Make (automation) | $20–70 | `workflow` skill — YAML-defined multi-step pipelines |
+| Notion AI | $10 | `notes` skill + `database` skill |
+| Canva (basic) | $13 | `image-editing` + `inkscape` + `gimp` skills |
+| Descript (audio) | $24 | `audio-editing` + `stems` + `voice` skills |
+| Grammarly | $12 | Ask the bot to proofread — it has the full LLM |
+| Todoist / Reminders | $5 | Built-in scheduler with natural language |
+| Cloud storage sync | $3–10 | `cloud-sync` skill (rclone — Google Drive, Dropbox, S3) |
+| Website monitoring | $10–30 | `lighthouse` + `screenshot-diff` + `price-monitor` skills |
+| Transcription service | $10–25 | `voice` skill (Whisper, local, unlimited) |
+
+That's $127–244/month in SaaS subscriptions replaced by one old laptop running free software. The only ongoing cost is electricity and whichever AI provider you choose — which can be $0 with Ollama.
+
 ---
 
 # Advanced
@@ -305,6 +344,39 @@ skills/my-skill/
 
 The bot reads `SKILL.md` to learn how to use the skill. Dependencies install automatically on first use.
 
+### MCP server support
+
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) is an open standard for connecting AI applications to external tools and data sources. MyOldMachine can connect to any MCP server, giving the bot access to hundreds of community-built integrations — databases, APIs, cloud services, and more — without writing custom skills.
+
+**Setup:**
+
+1. Install the MCP SDK: `pip install "mcp[cli]"`
+2. Copy `mcp_servers.json.example` to `mcp_servers.json`
+3. Add your MCP servers
+4. Restart the bot
+
+**Example `mcp_servers.json`:**
+
+```json
+{
+  "servers": [
+    {
+      "name": "github",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }
+    },
+    {
+      "name": "sqlite",
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db-path", "/home/user/data.db"]
+    }
+  ]
+}
+```
+
+MCP tools appear alongside built-in tools automatically. The bot discovers each server's capabilities on startup and routes tool calls transparently. Browse available servers at [github.com/modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers).
+
 ## Deep memory system
 
 The bot builds an evolving understanding of each user over time. This is not a flat list of facts — it's a structured person model that captures behavioral patterns, communication preferences, current priorities, and relationship dynamics.
@@ -381,6 +453,31 @@ The bot checks system health every 4 hours and alerts you via Telegram if:
 - Internet connectivity is lost
 
 Alerts have a 4-hour cooldown — you won't get spammed. Check manually anytime with `/health`.
+
+## Prompt evaluation
+
+A built-in testing framework for verifying system prompt behavior across providers. Catches regressions when you modify prompts — runs locally, no data leaves your machine.
+
+```bash
+# Run built-in test suites against all available providers
+python tests/prompt_eval.py
+
+# Test specific providers
+python tests/prompt_eval.py --providers openai,gemini
+
+# Run a specific suite
+python tests/prompt_eval.py --suite tool_use
+
+# Use custom YAML tests
+python tests/prompt_eval.py --config tests/eval_config.yaml
+
+# Verbose — show full responses
+python tests/prompt_eval.py -v
+```
+
+Built-in suites test: tool-use compliance (structured calls vs code blocks), safety (refuses destructive commands, doesn't leak secrets), communication style (plain language, no jargon), and bot self-protection (refuses to modify its own runtime).
+
+Custom tests use YAML with assertion types: `contains`, `not_contains`, `matches`, `not_matches`, `min_length`, `max_length`, `tool_call`, `no_tool_call`. See `tests/eval_config.yaml.example`.
 
 ## Security
 

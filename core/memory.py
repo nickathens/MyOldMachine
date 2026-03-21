@@ -23,6 +23,7 @@ Tier-aware:
 
 import fcntl
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -109,11 +110,14 @@ class MemoryManager:
             for old in versions[14:]:
                 old.unlink()
 
-        # Write with file lock
-        with open(model_file, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        # Atomic write: temp file + fsync + rename to avoid race with
+        # concurrent readers
+        tmp = model_file.with_suffix(".md.tmp")
+        with open(tmp, "w") as f:
             f.write(content)
-            fcntl.flock(f, fcntl.LOCK_UN)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(model_file)
 
     def init_model(self, user_id: int, name: str = "User"):
         """Create a default person model if none exists."""
@@ -256,13 +260,16 @@ class MemoryManager:
                 f.write(line + "\n")
             fcntl.flock(f, fcntl.LOCK_UN)
 
-        # Rewrite active observations
-        with open(obs_file, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        # Atomic rewrite: temp file + fsync + rename to avoid race with
+        # concurrent add_observation() appends
+        tmp = obs_file.with_suffix(".md.tmp")
+        with open(tmp, "w") as f:
             f.write("\n".join(header_lines).rstrip() + "\n\n")
             for line in recent_lines:
                 f.write(line + "\n")
-            fcntl.flock(f, fcntl.LOCK_UN)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(obs_file)
 
         logger.info(f"Archived {len(archive_lines)} observations for user {user_id}, "
                      f"kept {len(recent_lines)} recent")

@@ -233,11 +233,14 @@ def _append_lesson_to_project(state_file: Path, record: dict):
 
     data["updated"] = datetime.now().strftime("%Y-%m-%d")
 
-    with open(state_file, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    # Atomic write: temp file + fsync + rename to prevent corruption
+    tmp = state_file.with_suffix(".json.tmp")
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
         f.write("\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.rename(state_file)
 
 
 # ─── Mark Observations as Reflected ───────────────────────────────
@@ -270,10 +273,14 @@ def _mark_observations_reflected(user_id: int, mm: MemoryManager, records: list)
         new_lines.append(line)
 
     if marked > 0:
-        with open(obs_file, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        # Atomic write: temp file + fsync + rename to avoid race with
+        # concurrent add_observation() appends (which use open("a") + flock)
+        tmp = obs_file.with_suffix(".md.tmp")
+        with open(tmp, "w") as f:
             f.write("\n".join(new_lines))
-            fcntl.flock(f, fcntl.LOCK_UN)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.rename(obs_file)
         log(f"  Marked {marked} observations as reflected for user {user_id}")
 
 

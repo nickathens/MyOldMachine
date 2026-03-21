@@ -449,6 +449,19 @@ def build_system_prompt(user_id: int) -> str:
                 "use run_command with background=true, then poll with check_process."
             )
         parts.append("If the user asks for something and you're missing a tool, install it.")
+
+        # MCP server tools (if any connected)
+        from core.mcp_client import get_mcp_manager
+        mcp = get_mcp_manager()
+        mcp_tools = mcp.get_tools()
+        if mcp_tools:
+            parts.append("")
+            parts.append("### MCP Server Tools:")
+            parts.append("These additional tools are available from connected MCP servers:")
+            for t in mcp_tools:
+                parts.append(f"  - {t.name} [{t.server_name}]: {t.description}")
+            if not is_claude_cli:
+                parts.append("Call MCP tools just like built-in tools — they appear in the tool list.")
         parts.append("")
         parts.append("### Communication Style:")
         parts.append(
@@ -2271,6 +2284,17 @@ def main():
         logger.info("Scheduler started with Claude handler")
         await recover_pending_messages(application.bot)
 
+        # Connect to configured MCP servers (if any)
+        from core.mcp_client import get_mcp_manager
+        mcp = get_mcp_manager()
+        if mcp.available:
+            try:
+                results = await mcp.connect_all()
+                for name, status in results.items():
+                    logger.info(f"MCP server '{name}': {status}")
+            except Exception as e:
+                logger.warning(f"MCP initialization failed: {e}")
+
         # Schedule nightly reflection job if not already present
         _setup_reflection_job(scheduler)
 
@@ -2348,7 +2372,7 @@ def main():
                 first_boot_marker.touch()
                 logger.info("First boot orientation complete")
 
-    # Shutdown: stop scheduler, polling monitor, kill background processes
+    # Shutdown: stop scheduler, polling monitor, MCP, kill background processes
     async def post_shutdown(application):
         # Stop polling health monitor
         polling_monitor = get_polling_monitor()
@@ -2357,6 +2381,12 @@ def main():
         scheduler = get_scheduler()
         if scheduler:
             scheduler.stop()
+        # Disconnect MCP servers
+        from core.mcp_client import get_mcp_manager
+        try:
+            await get_mcp_manager().disconnect_all()
+        except Exception as e:
+            logger.warning(f"MCP shutdown error: {e}")
         # Kill any background processes from the tool execution layer
         registry = get_process_registry()
         running = registry.list_running()
