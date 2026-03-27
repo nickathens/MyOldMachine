@@ -1,0 +1,12 @@
+{
+  "pip": [
+    "google-api-python-client",
+    "google-auth-httplib2",
+    "google-auth-oauthlib"
+  ],
+  "check": {
+    "google-api": "python3 -c 'from googleapiclient.discovery import build; print(\"ok\")'"
+  },
+  "weight": "light",
+  "install_note": "Pure Python (~15 MB). Shares credentials with calendar skill. Requires Google OAuth setup — see SKILL.md"
+}

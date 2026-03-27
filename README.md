@@ -180,7 +180,7 @@ If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonde
 | **AI providers** | 9 — Claude CLI, OpenAI, Gemini, Grok, Kimi, DeepSeek, OpenRouter, Ollama, Claude API | Primarily OpenAI, configurable profiles |
 | **Free/local AI** | Ollama (unlimited, local), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
-| **Skills** | 54 modular skills with auto-installing dependencies | 100+ AgentSkills |
+| **Skills** | 58 modular skills with auto-installing dependencies | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux/macOS — runs on 1GB RAM with Ollama small models | Modern hardware recommended |
 | **Ownership** | Independent, MIT licensed | OpenAI-acquired (March 2026) |
 | **MCP support** | Client — connects to any MCP server for unlimited tool expansion | Native MCP client support |
@@ -252,7 +252,7 @@ The installer handles version mismatches automatically:
 - On first boot, the bot probes the system and reports which skills are ready vs. which need dependencies installed
 - Flatpak apps are detected by the system probe and reported alongside system-installed tools
 
-## Skills (54 total)
+## Skills (58 total)
 
 Skills are modular packages the bot loads automatically. Each has instructions the LLM reads, optional scripts, and a dependency manifest.
 
@@ -283,8 +283,10 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | rss | Parse RSS/Atom feeds |
 | regex | Pattern matching and text extraction |
 | workflow | Multi-step YAML pipelines with retry, conditions, crash recovery |
-| research | Data collection, aggregation, and research automation |
+| research | Data collection, aggregation, dialectical analysis, and research automation |
 | price-monitor | Track prices and get alerts for changes |
+| calendar | Google Calendar integration — view, add, delete events |
+| email | Gmail integration — send, read, search, draft emails |
 | docker-services | Spin up databases and services with Docker |
 | impeccable | Production-grade frontend design knowledge |
 
@@ -316,6 +318,8 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | Skill | What it does |
 |-------|-------------|
 | blender | 3D modeling, rendering, animation via Blender's Python API |
+| blender-video | Video editing, color grading, compositing via Blender's VSE |
+| godot | Game development with Godot 4 engine |
 | gimp | Image editing and manipulation via GIMP's Script-Fu |
 | inkscape | Vector graphics creation and manipulation via Inkscape CLI |
 | spreadsheet | Create, edit, export Excel/ODS spreadsheets (LibreOffice + openpyxl) |

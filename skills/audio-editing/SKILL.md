@@ -38,6 +38,15 @@ python scripts/edit.py info input.mp3
 
 mp3, wav, flac, ogg, m4a, aac (requires ffmpeg)
 
+## Examples
+
+"Cut 10 to 30 seconds from this track" + audio
+"Merge these two songs together" + 2 files
+"Add a 2 second fade out" + audio
+"Make this louder by 6dB" + audio
+"Convert this to mp3" + audio file
+"Normalize this to -14 LUFS" + audio
+
 ## Notes
 
 - Uses pydub with ffmpeg backend

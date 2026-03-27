@@ -1,0 +1,9 @@
+{
+  "check": {
+    "godot": "which godot || which godot4 || which godot-4"
+  },
+  "weight": "heavy",
+  "min_ram_gb": 2,
+  "min_disk_gb": 1,
+  "install_note": "Godot must be installed manually from https://godotengine.org/download — not available via most package managers"
+}

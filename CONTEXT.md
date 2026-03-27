@@ -246,7 +246,7 @@ All skills have:
 - `deps.json` for self-install system (apt, brew, pip, npm, check)
 - Scripts in `scripts/` directory
 - Python syntax validated
-- Skill loader verified (all 54 skills load correctly)
+- Skill loader verified (all 58 skills load correctly)
 
 ## Resource-Aware Dependency Gating (Mar 17)
 

@@ -1,3 +1,5 @@
 {
-  "pip": ["requests", "beautifulsoup4", "feedparser"]
+  "pip": ["requests", "beautifulsoup4", "feedparser"],
+  "weight": "light",
+  "install_note": "Pure Python (~5 MB). Dialectic analysis uses only stdlib (SQLite FTS5)"
 }

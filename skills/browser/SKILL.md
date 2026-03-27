@@ -102,6 +102,7 @@ $B cookies --clear                     # Clear cookies
 ```
 
 Cookies and storage persist across commands automatically.
+Saved to `/tmp/browser_storage.json` on daemon stop.
 
 ## Multi-step Example: Login Flow
 
@@ -116,9 +117,28 @@ $B snapshot                            # See logged-in page
 $B screenshot /tmp/logged_in.png
 ```
 
+## Legacy Commands (backwards compatible)
+
+Old v1 syntax still works:
+
+```bash
+$B screenshot <url> <output.png> [--full-page] [--width 1280] [--height 720] [--wait 1000]
+$B extract <url> [--format text] [--selector css]
+$B click <url> <selector>
+$B fill <url> --field "sel=val" [--field ...]
+$B eval <url> "javascript"
+$B session <url>
+```
+
+Legacy mode is detected automatically when the first argument is a URL.
+Legacy commands open a fresh browser each time (no daemon).
+
 ## Notes
 
 - Uses Playwright with Chromium
 - Daemon runs headless, listens on Unix socket `/tmp/browser_daemon.sock`
 - Auto-starts daemon if not running when using any command
 - Close tabs when done with a task to keep things clean
+- Refs file: `/tmp/browser_refs.json`
+- State file: `/tmp/browser_daemon_state.json`
+- PID file: `/tmp/browser_daemon.pid`

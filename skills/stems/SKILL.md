@@ -31,6 +31,13 @@ Creates a folder with:
 | htdemucs_ft | Better | Slower |
 | mdx_extra | Best | Slowest |
 
+## Examples
+
+"Separate the stems from this song" + audio file
+"Extract the vocals from this track"
+"Isolate the drums"
+"Remove vocals from this song" (use the 'other' stem)
+
 ## Notes
 
 - Processing takes 5-15 minutes per song (CPU)

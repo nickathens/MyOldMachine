@@ -1,0 +1,14 @@
+{
+  "check": {
+    "blender": "which blender"
+  },
+  "apt": ["blender"],
+  "dnf": ["blender"],
+  "pacman": ["blender"],
+  "zypper": ["blender"],
+  "brew": ["blender"],
+  "weight": "heavy",
+  "min_ram_gb": 2,
+  "min_disk_gb": 2,
+  "install_note": "Installs Blender 3D (~500 MB) — shared with blender skill"
+}

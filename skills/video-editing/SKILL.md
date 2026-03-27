@@ -45,6 +45,17 @@ python scripts/video.py gif input.mp4 output.gif --start 0 --duration 5 --fps 10
 
 top, bottom, center, top-left, top-right, bottom-left, bottom-right
 
+## Examples
+
+"Cut 10-30 seconds from this video" + video
+"Combine these videos" + multiple videos
+"Add this music to the video" + video + audio
+"Remove audio from this video" + video
+"Add 'Chapter 1' text at the bottom" + video
+"Resize to 720p" + video
+"Extract frames at 1fps" + video
+"Make a gif from first 5 seconds" + video
+
 ## Notes
 
 - Uses moviepy with ffmpeg backend

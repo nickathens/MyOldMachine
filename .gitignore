@@ -24,3 +24,8 @@ Thumbs.db
 # Sudo password (never commit)
 .sudo_pass
 session.py.bak
+
+# Google API credentials (never commit)
+google_credentials.json
+google_token.json
+gmail_token.json
