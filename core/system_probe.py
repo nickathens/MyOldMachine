@@ -10,6 +10,7 @@ Re-run on /update to detect newly installed tools.
 
 import json
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -111,6 +112,14 @@ def _get_ram_gb() -> float:
     return 0
 
 
+def _get_cpu_cores() -> int:
+    """Get the number of logical CPU cores."""
+    try:
+        return os.cpu_count() or 0
+    except Exception:
+        return 0
+
+
 def _get_disk_free_gb() -> float:
     """Get free disk space on the home partition in GB."""
     try:
@@ -129,6 +138,7 @@ def probe_system(data_dir: Path) -> dict:
         "arch": platform.machine(),
         "hostname": platform.node(),
         "python_version": platform.python_version(),
+        "cpu_cores": _get_cpu_cores(),
         "ram_gb": _get_ram_gb(),
         "disk_free_gb": _get_disk_free_gb(),
         "package_manager": _detect_package_manager(),
@@ -316,7 +326,7 @@ def get_caps_summary(data_dir: Path) -> str:
 
     lines = [
         f"OS: {caps.get('os', '?')} {caps.get('os_version', '')}",
-        f"Arch: {caps.get('arch', '?')} / RAM: {caps.get('ram_gb', '?')} GB / Disk free: {caps.get('disk_free_gb', '?')} GB",
+        f"Arch: {caps.get('arch', '?')} / CPU cores: {caps.get('cpu_cores', '?')} / RAM: {caps.get('ram_gb', '?')} GB / Disk free: {caps.get('disk_free_gb', '?')} GB",
         f"Package manager: {caps.get('package_manager', '?')}",
     ]
 

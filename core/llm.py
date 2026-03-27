@@ -363,23 +363,54 @@ class ClaudeCLIProvider(LLMProvider):
 
             if process.returncode != 0 and not final_result:
                 logger.error(f"Claude error for user {user_id} (exit {process.returncode}): {stderr_text}")
+                # Detect OOM kill: kernel sends SIGKILL (-9) when memory limit
+                # is hit, or stderr may mention it explicitly
+                is_oom = (
+                    process.returncode == -9
+                    or "out of memory" in stderr_text.lower()
+                    or "killed" in stderr_text.lower()
+                )
                 last_turn = "\n".join(last_turn_text_blocks).strip()
                 fallback_text = last_turn or partial_text.strip()
                 if fallback_text:
                     logger.info(f"Returning fallback text despite error for user {user_id} ({len(fallback_text)} chars, from_last_turn={bool(last_turn)})")
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
+                    suffix = ""
+                    if is_oom:
+                        elapsed = int(asyncio.get_running_loop().time() - start_time)
+                        suffix = (
+                            f"\n\n[Hit memory limit after {elapsed // 60}m {elapsed % 60}s. "
+                            f"Last action: {tool_in_progress or current_status}. "
+                            f"Partial work above may be incomplete. "
+                            f"Use /recover if needed.]"
+                        )
                     return LLMResponse(
-                        text=fallback_text, model=self.model,
+                        text=fallback_text + suffix, model=self.model,
                         provider=self.provider_name, tool_use=True,
                     )
                 if self.on_progress_save and user_id:
                     self.on_progress_save(user_id, original_message, partial_text,
                                           f"error: {stderr_text[:100]}", tool_in_progress)
-                if "out of memory" in stderr_text.lower() or "killed" in stderr_text.lower():
+                if is_oom:
+                    elapsed = int(asyncio.get_running_loop().time() - start_time)
+                    oom_msg = (
+                        f"Claude hit the memory limit and was killed after "
+                        f"{elapsed // 60}m {elapsed % 60}s."
+                    )
+                    if tool_in_progress:
+                        oom_msg += f" It was running: {tool_in_progress}."
+                    if current_status and current_status != "thinking":
+                        oom_msg += f" Status: {current_status}."
+                    oom_msg += (
+                        "\n\nThis usually happens when Claude reads too many large files "
+                        "or accumulates too much tool output in a single session. "
+                        "Try breaking the task into smaller steps, or use /clear to reset context."
+                    )
+                    if partial_text.strip():
+                        oom_msg += "\n\nPartial progress was saved. Use /recover to see it."
                     return LLMResponse(
-                        text="Claude process was killed (likely out of memory). Try a simpler request or use /clear.",
-                        model=self.model, provider=self.provider_name,
+                        text=oom_msg, model=self.model, provider=self.provider_name,
                         error="OOM killed",
                     )
                 return LLMResponse(

@@ -21,6 +21,7 @@ Types:
     relationship — trust signals, frustration signals, what's working
     project     — something learned about a specific project
     factual     — a fact about the person (address, schedule, contact, etc.)
+    self-eval   — bot evaluates its own performance on a task
 
 Optional flags:
     --project SLUG   — scope observation to a project (routes to project state during reflection)

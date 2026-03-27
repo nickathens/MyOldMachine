@@ -37,6 +37,7 @@ VALID_OBSERVATION_TYPES = [
     "relationship", # trust signals, frustration signals
     "project",      # something learned about a specific project
     "factual",      # a fact about the person (address, schedule, etc.)
+    "self-eval",    # bot evaluates its own performance on a task
 ]
 
 # Default person model template for new users
@@ -328,15 +329,18 @@ class MemoryManager:
             "When you learn something new about this user during conversation, save it:\n"
             f"  {venv_python} {bot_dir}/utils/observe.py "
             f"--user {user_id} --type <type> --content '<what you learned>'\n\n"
-            "Types: behavioral, state, correction, preference, relationship, project, factual\n\n"
+            "Types: behavioral, state, correction, preference, relationship, project, factual, self-eval\n\n"
             "Optional flags:\n"
             f"  --importance N    Importance score 1-10 (default: 5)\n"
             f"  --project SLUG   Scope to a project\n\n"
             "Importance guidelines:\n"
             "  - Corrections (bot got something wrong): --importance 8\n"
             "  - Relationship signals (trust, frustration): --importance 7\n"
+            "  - Self-evaluation (what worked/didn't on a complex task): --importance 6\n"
             "  - Preferences, behavioral patterns: --importance 5-6\n"
             "  - Minor state changes (mood, current task): --importance 3-4\n\n"
+            "Self-eval: After completing a non-trivial task, evaluate your own performance.\n"
+            "Note what approach worked, what didn't, and why. Only for complex tasks, not trivial ones.\n\n"
             "Do NOT ask permission. If it's useful for future conversations, save it.\n"
             "Duplicates are automatically detected and skipped.\n"
         )

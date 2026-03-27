@@ -59,8 +59,21 @@ class SessionManager:
         self.summary_file = user_dir / "conversation_summary.json"
         self.session_meta_file = user_dir / "session_meta.json"
         self.topics_dir = user_dir / "topics"
+        self._compaction_runner = None  # External async compaction runner (set by bot.py)
         user_dir.mkdir(parents=True, exist_ok=True)
         self.topics_dir.mkdir(parents=True, exist_ok=True)
+
+    def set_compaction_runner(self, runner):
+        """Set an external compaction runner (async callable).
+
+        When set, compaction uses this runner instead of spawning a subprocess
+        in a thread pool. This allows bot.py to route compaction through the
+        global LLM semaphore on low-resource machines.
+
+        Args:
+            runner: async callable(prompt: str, summary_file: Path, batch_size: int)
+        """
+        self._compaction_runner = runner
 
     def load_session_meta(self) -> dict:
         """Load session metadata."""
@@ -304,8 +317,28 @@ class SessionManager:
             "Provide only the merged summary, no preamble. Keep under 600 words."
         )
 
+        if self._compaction_runner:
+            # Use external runner (routes through bot's semaphore on low-resource machines)
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._compaction_runner(prompt, summary_file, batch_size))
+                logger.info(f"Scheduled semaphore-aware compaction of {batch_size} messages "
+                            f"({len(remaining_history)} remaining)")
+            except RuntimeError:
+                logger.warning("No running event loop — falling back to thread pool compaction")
+                self._run_compaction_thread(prompt, summary_file, batch_size)
+        else:
+            # Legacy: thread pool compaction (used on capable machines or non-bot usage)
+            self._run_compaction_thread(prompt, summary_file, batch_size)
+            logger.info(f"Scheduled background compaction of {batch_size} messages "
+                        f"({len(remaining_history)} remaining)")
+
+        return remaining_history, existing_summary
+
+    def _run_compaction_thread(self, prompt: str, summary_file: Path, batch_size: int):
+        """Run compaction in a background thread via the thread pool."""
         def run_compaction_background():
-            """Run Claude compaction in background thread."""
             try:
                 result = subprocess.run(
                     ["claude", "-p", prompt],
@@ -327,10 +360,6 @@ class SessionManager:
                 logger.error(f"Background compaction failed: {e}")
 
         _executor.submit(run_compaction_background)
-        logger.info(f"Scheduled background compaction of {batch_size} messages "
-                     f"({len(remaining_history)} remaining)")
-
-        return remaining_history, existing_summary
 
     # --- Topic/Project Session Management ---
 

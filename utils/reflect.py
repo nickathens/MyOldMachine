@@ -11,14 +11,15 @@ Architecture:
         - Route project-scoped observations to project state.json 'lessons' arrays
         - Sum importance scores; skip reflection if below threshold
         - Filter out project-scoped observations (they've been routed)
-    Phase 1+2: Generate model update — single LLM call
-        - Given behavioral/relationship/state observations + current model, produce update
-        - Uses Claude CLI if available, falls back to configured API provider
+    Phase 1: Generate Questions — LLM call #1 (short, capable providers only)
+        - Given observations, generate 3 key questions to focus the update
+    Phase 2: Update Model — LLM call #2 (full)
+        - Answer the questions, produce targeted model update with strict quality rules
 
 Tier-aware:
-- Uses Claude CLI if available (best quality)
-- Falls back to the configured LLM provider via API
-- Skips reflection entirely if no capable model is available
+- Capable providers (Claude CLI, paid APIs): Two-phase reflection (better quality)
+- Weaker providers (Ollama, free tier, OpenRouter): Single-call reflection (saves tokens)
+- No capable model: Skips reflection entirely
 
 Usage:
     python reflect.py                          # Full reflection for all users
@@ -96,8 +97,8 @@ def parse_observation(line: str) -> dict:
         return None
     record["timestamp"] = ts_match.group(1)
 
-    # Extract type
-    type_match = re.search(r'\((\w+)\)', line)
+    # Extract type (supports hyphenated types like self-eval)
+    type_match = re.search(r'\(([\w-]+)\)', line)
     if not type_match:
         return None
     record["type"] = type_match.group(1)
@@ -265,7 +266,7 @@ def _mark_observations_reflected(user_id: int, mm: MemoryManager, records: list)
     for line in content.split("\n"):
         if line in raw_lines and "[reflected]" not in line:
             # Insert [reflected] tag after the type marker
-            type_match = re.search(r'\((\w+)\)', line)
+            type_match = re.search(r'\(([\w-]+)\)', line)
             if type_match:
                 insert_pos = type_match.end()
                 line = line[:insert_pos] + " [reflected]" + line[insert_pos:]
@@ -454,6 +455,194 @@ def _call_api(prompt: str) -> str:
         return ""
 
 
+# ─── Provider Capability Detection ────────────────────────────────
+
+# Providers capable enough for two-phase reflection (question generation + model update).
+# These are paid APIs or strong local models where the extra call is worth the quality gain.
+_CAPABLE_PROVIDERS = {"claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi"}
+
+# Large Ollama models that can handle two-phase reflection
+_CAPABLE_OLLAMA_SIZES = {"70b", "72b", "34b", "32b", "405b"}
+
+
+def _is_capable_provider() -> bool:
+    """Determine if the current provider is capable enough for two-phase reflection.
+
+    Two-phase uses 2 LLM calls (questions + update) for better quality.
+    Only worth the extra cost/latency on strong models.
+    """
+    # Claude CLI is always capable
+    if which("claude"):
+        return True
+
+    provider = get_llm_provider()
+    if provider in _CAPABLE_PROVIDERS:
+        return True
+
+    # Gemini Pro models are capable, but free-tier Gemini may not be
+    if provider in ("gemini", "google"):
+        model = get_llm_model().lower()
+        return "pro" in model or "ultra" in model
+
+    # Large Ollama models only
+    if provider in ("ollama", "ollama-cloud"):
+        model = get_llm_model().lower()
+        return any(size in model for size in _CAPABLE_OLLAMA_SIZES)
+
+    return False
+
+
+# ─── Phase 1: Generate Questions (capable providers only) ────────
+
+def _generate_questions(observations_text: str) -> str:
+    """Generate 3 key questions from observations using a short LLM call.
+
+    Returns the raw question text, or empty string on failure.
+    """
+    prompt = (
+        "You are analyzing behavioral observations about a person from the last 7 days.\n\n"
+        f"## Observations\n{observations_text}\n\n"
+        "## Task\n"
+        "Based on these observations, identify the 3 most important questions about how "
+        "this person's behavior, priorities, communication patterns, or relationship with "
+        "the bot has changed or evolved.\n\n"
+        "These questions should:\n"
+        "- Focus on patterns across multiple observations, not individual events\n"
+        "- Ask about WHY something is happening, not just WHAT happened\n"
+        "- Identify emerging trends or shifts that the observations hint at but don't explicitly state\n"
+        "- Be answerable from the observations + existing model\n\n"
+        "Output exactly 3 questions, numbered 1-3, one per line. Nothing else."
+    )
+
+    # Try Claude CLI first, then API
+    output = _call_claude_cli(prompt)
+    if not output:
+        output = _call_api(prompt)
+    return output
+
+
+# ─── Prompt Builders ──────────────────────────────────────────────
+
+def _build_strict_prompt(current_model: str, observations_text: str,
+                         questions: str, routing_note: str) -> str:
+    """Build the strict model update prompt with quality guardrails.
+
+    Used for capable providers (two-phase or single-call with quality rules).
+    """
+    questions_section = ""
+    if questions:
+        questions_section = (
+            f"\n## Key Questions to Address\n"
+            f"These questions were generated from analyzing the observations. "
+            f"Answer each one as part of your model update.\n"
+            f"{questions}\n"
+        )
+
+    step1 = ""
+    if questions:
+        step1 = (
+            "### Step 1: Answer the Questions\n"
+            "For each question above, write a brief answer (2-3 sentences) based on the "
+            "observations and your understanding of this person. These answers should inform "
+            "where and how you update the model.\n\n"
+        )
+
+    return (
+        "You are a behavioral analyst maintaining a working model of a person.\n\n"
+        f"## Current Model\n{current_model}\n\n"
+        f"## Recent Behavioral Observations (last 7 days)\n"
+        f"These are the observations that should inform the model update. Project-specific "
+        f"corrections and lessons have already been routed to their project files — they are "
+        f"NOT included here.\n{observations_text}\n"
+        f"{routing_note}"
+        f"{questions_section}\n"
+        f"## Your Task\n\n"
+        f"{step1}"
+        f"### {'Step 2' if questions else 'Step 1'}: Write the Updated Model\n\n"
+        "Update the model following these rules:\n\n"
+        "Structure: Keep these sections:\n"
+        "- Identity (who they are — stable facts and core traits)\n"
+        "- Behavioral (how they work, communicate, decide — patterns)\n"
+        "- State (current priorities, mood, what they're working on — volatile)\n"
+        "- Relationship (trust level, expectations, what works — evolving)\n\n"
+        "Section stability:\n"
+        "- Identity section: Only change if observations directly contradict it. Most stable section.\n"
+        "- Behavioral section: Update when you see a new pattern confirmed by 2+ observations. "
+        "Single events don't become behavioral rules.\n"
+        "- State section: Update freely — this is volatile by nature.\n"
+        "- Relationship section: Update trust/expectations when observations show clear shifts.\n\n"
+        "Deduplication (critical):\n"
+        "- Each insight appears ONCE, in ONE section. If something is in Behavioral, don't repeat in Relationship.\n"
+        "- Before writing a sentence, check: is this already said elsewhere in the model? If yes, don't write it.\n"
+        "- The \"Recent Observations\" section at the bottom should say "
+        "\"[All observations have been integrated into the model above]\".\n\n"
+        "Content rules (STRICT):\n"
+        "- Do NOT include project-specific details. No project names, tools, file sizes, resolutions, "
+        "competition names, or technical specs. The model describes WHO this person IS and HOW they behave, "
+        "not WHAT they're working on. The State section can mention broad focus AREAS "
+        "(e.g. \"game development, AI systems\") but not specific project names or technical details.\n"
+        "- Do NOT include factual profile data (age, address, weight, dietary targets).\n"
+        "- Do NOT use bold (**) formatting. Write everything in plain text.\n"
+        "- Update the \"Last updated\" date to today.\n"
+        "- Preserve everything that's still accurate.\n"
+        "- Remove anything outdated or contradicted by observations.\n"
+        "- End the model with: ## Recent Observations (last 7 days)\\n"
+        "[All observations have been integrated into the model above]\n\n"
+        "Length target: 35-50 lines. If the model exceeds 50 lines, you have duplication or "
+        "project detail leakage — cut it.\n\n"
+        f"### {'Step 3' if questions else 'Step 2'}: Reflection Summary\n"
+        "Write a reflection that demonstrates genuine understanding:\n"
+        "- What patterns are emerging vs. what's stable\n"
+        "- What you consolidated or removed and why\n"
+        "- One prediction about what this person will care about next\n\n"
+        "## Output Format — use EXACTLY these markers:\n\n"
+        "---MODEL_START---\n"
+        "[complete updated model.md content]\n"
+        "---MODEL_END---\n\n"
+        "---SUMMARY_START---\n"
+        "[reflection summary]\n"
+        "---SUMMARY_END---\n"
+    )
+
+
+def _build_simple_prompt(current_model: str, observations_text: str,
+                         routing_note: str) -> str:
+    """Build a simpler single-call prompt for weaker providers.
+
+    Still includes the key quality rules but in a more compact form
+    that smaller models can follow reliably.
+    """
+    return (
+        "You are analyzing behavioral observations about a person to update their working model.\n\n"
+        f"## Current Model\n{current_model}\n\n"
+        f"## Recent Observations (last 7 days)\n{observations_text}\n"
+        f"{routing_note}\n"
+        "## Task\n"
+        "Write a COMPLETE updated model.md file based on the observations.\n\n"
+        "Rules:\n"
+        "- Keep these sections: Identity, Behavioral, State, Relationship\n"
+        "- Identity: only change if contradicted. Behavioral: new patterns from 2+ observations. "
+        "State: update freely. Relationship: update on clear trust shifts.\n"
+        "- Each insight appears ONCE in ONE section. No duplicates.\n"
+        "- No project names, tool names, file paths, or technical specs. "
+        "Describe who they are and how they behave, not what they're working on.\n"
+        "- No bold formatting. Plain text only.\n"
+        "- No factual profile data (age, weight, address).\n"
+        "- Update the \"Last updated\" date to today.\n"
+        "- Target 35-50 lines. Cut if over 50.\n"
+        "- End with: ## Recent Observations (last 7 days)\\n"
+        "[All observations have been integrated into the model above]\n\n"
+        "Also write a 2-3 sentence reflection summary.\n\n"
+        "Output format — use EXACTLY these markers:\n\n"
+        "---MODEL_START---\n"
+        "[complete updated model.md content]\n"
+        "---MODEL_END---\n\n"
+        "---SUMMARY_START---\n"
+        "[2-3 sentence reflection summary]\n"
+        "---SUMMARY_END---\n"
+    )
+
+
 # ─── Reflection Pipeline ──────────────────────────────────────────
 
 def run_reflection(mm: MemoryManager, user_id: int, dry_run: bool = False,
@@ -515,7 +704,7 @@ def run_reflection(mm: MemoryManager, user_id: int, dry_run: bool = False,
         return {"user_id": user_id, "status": "dry_run", "obs_count": obs_count,
                 "routed": len(routed), "importance_sum": importance_sum}
 
-    # ── Build reflection prompt ──
+    # ── Build routing note for LLM context ──
     routing_note = ""
     if routed_summary:
         routing_note = (
@@ -523,43 +712,31 @@ def run_reflection(mm: MemoryManager, user_id: int, dry_run: bool = False,
             f"{routed_summary}\n"
         )
 
-    prompt = f"""You are analyzing behavioral observations about a person to update their working model.
+    # ── Determine reflection mode ──
+    capable = _is_capable_provider()
+    questions = ""
 
-## Current Model
-{model}
+    if capable:
+        # ── Phase 1: Generate questions (capable providers only) ──
+        log(f"  Phase 1: Generating questions from {len(remaining)} observations...")
+        questions = _generate_questions(observations_text)
+        if not questions:
+            log("  Phase 1 produced no questions, using fallback questions")
+            questions = (
+                "1. What behavioral patterns have changed or strengthened?\n"
+                "2. How has the relationship dynamic shifted?\n"
+                "3. What emerging priorities or concerns are visible?"
+            )
+        else:
+            log(f"  Phase 1 complete: {questions[:150]}...")
 
-## Recent Observations (last 7 days)
-{observations_text}
-{routing_note}
-## Task
-Analyze the observations and determine:
-
-1. **Model Updates Needed**: What parts of the current model should be updated?
-   - Has the person's STATE changed? (priorities, mood, focus)
-   - New BEHAVIORAL patterns not yet captured?
-   - Any CORRECTIONS that contradict the current model?
-   - New PREFERENCES discovered?
-   - Changes in RELATIONSHIP dynamics?
-
-2. **Updated Model**: Write the COMPLETE updated model.md file.
-   - Update the "Last updated" date to today
-   - Preserve everything that's still accurate
-   - Add new insights from observations
-   - Modify anything observations contradict
-   - Keep it concise — under 500 words
-
-3. **Reflection Summary**: 2-3 sentences on what changed and why.
-
-Output format — use EXACTLY these markers:
-
----MODEL_START---
-[complete updated model.md content]
----MODEL_END---
-
----SUMMARY_START---
-[2-3 sentence reflection summary]
----SUMMARY_END---
-"""
+        # ── Phase 2: Update model with strict prompt ──
+        log("  Phase 2: Updating model (strict prompt)...")
+        prompt = _build_strict_prompt(model, observations_text, questions, routing_note)
+    else:
+        # ── Single-call mode for weaker providers ──
+        log("  Single-call mode (provider not capable of two-phase)...")
+        prompt = _build_simple_prompt(model, observations_text, routing_note)
 
     # Try Claude CLI first (best quality), then API
     output = _call_claude_cli(prompt)
@@ -586,6 +763,10 @@ Output format — use EXACTLY these markers:
     reflection_text = summary or ""
     if routed:
         reflection_text += f"\n\nProject routing: {len(routed)} observations routed to project state files."
+    if capable and questions:
+        reflection_text += "\n\nReflection mode: two-phase (questions + strict update)"
+    else:
+        reflection_text += "\n\nReflection mode: single-call (simple prompt)"
     mm.log_reflection(user_id, obs_count, reflection_text)
 
     # Archive old observations
@@ -599,6 +780,7 @@ Output format — use EXACTLY these markers:
         "routed": len(routed),
         "reflected": len(remaining),
         "importance_sum": importance_sum,
+        "two_phase": capable,
     }
 
 

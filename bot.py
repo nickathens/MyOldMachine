@@ -8,13 +8,17 @@ OpenAI, Gemini, Kimi, Ollama, and OpenRouter.
 """
 
 import asyncio
+import glob as _glob_mod
 import json
 import logging
 import os
 import platform
 import re
+import shutil
 import stat
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -96,6 +100,168 @@ def _get_user_lock(user_id: int) -> asyncio.Lock:
     if user_id not in _user_locks:
         _user_locks[user_id] = asyncio.Lock()
     return _user_locks[user_id]
+
+
+# --- Conditional LLM semaphore (hardware-aware) ---
+# On low-resource machines (RAM < 8GB or CPU cores <= 2), serializes all LLM
+# calls to prevent concurrent heavy subprocesses from causing OOM/thermal crashes.
+# On capable machines, this is a no-op that allows full concurrency.
+
+class _NoOpSemaphore:
+    """Async context manager that does nothing — used on capable machines."""
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *args):
+        pass
+
+_llm_semaphore = None  # Lazily created on first use inside event loop (Python 3.8 compat)
+_semaphore_active = False  # Whether real semaphore is in use
+
+
+def _get_llm_semaphore():
+    """Get the LLM semaphore, creating it lazily inside the running event loop.
+
+    Creating asyncio.Semaphore() in main() (before run_polling() starts) would
+    bind it to the wrong event loop on Python 3.8-3.9. Lazy creation ensures
+    it's bound to the event loop that actually runs the handlers.
+    """
+    global _llm_semaphore
+    if _llm_semaphore is None:
+        if _semaphore_active:
+            _llm_semaphore = asyncio.Semaphore(1)
+        else:
+            _llm_semaphore = _NoOpSemaphore()
+    return _llm_semaphore
+
+
+async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size: int):
+    """Run compaction as an async task that acquires the LLM semaphore.
+
+    This prevents the compaction subprocess from running concurrently with
+    user-facing LLM calls on low-resource machines.
+    """
+    try:
+        async with _get_llm_semaphore():
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "-p", "-",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode()),
+                    timeout=120,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.error("Semaphore-aware compaction timed out")
+                return
+
+            if proc.returncode == 0 and stdout.strip():
+                from utils.safe_json import save_json as _sj
+                _sj(summary_file, {
+                    "summary": stdout.decode().strip(),
+                    "updated": datetime.now().isoformat(),
+                    "compacted_messages": batch_size,
+                })
+                logger.info(f"Semaphore-aware compaction complete: {batch_size} messages summarized")
+            else:
+                logger.warning(f"Compaction returned no output (exit {proc.returncode})")
+    except Exception as e:
+        logger.error(f"Semaphore-aware compaction failed: {e}")
+
+
+def _extract_pdf_text(file_path: str, max_chars: int = 50000, max_ocr_pages: int = 5) -> str:
+    """Extract text from a PDF file. Falls back to OCR for scanned PDFs.
+
+    Pre-extracts text so the LLM doesn't need to use the Read tool on PDFs,
+    which can consume excessive memory (rendering pages as images) and crash
+    resource-constrained machines.
+    """
+    try:
+        # Try pypdf first (used by the pdf skill), then PyPDF2 as fallback
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            try:
+                from PyPDF2 import PdfReader
+            except ImportError:
+                return "[PDF text extraction unavailable — install pypdf: pip install pypdf]"
+
+        text_parts = []
+        total_chars = 0
+        with open(file_path, 'rb') as f:
+            reader = PdfReader(f)
+            num_pages = len(reader.pages)
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text() or ""
+                if total_chars + len(page_text) > max_chars:
+                    remaining = max_chars - total_chars
+                    if remaining > 0:
+                        text_parts.append(f"--- Page {i+1}/{num_pages} ---")
+                        text_parts.append(page_text[:remaining])
+                    text_parts.append(f"\n[... truncated at {max_chars} chars, {num_pages - i - 1} pages remaining ...]")
+                    break
+                text_parts.append(f"--- Page {i+1}/{num_pages} ---")
+                text_parts.append(page_text)
+                total_chars += len(page_text)
+
+        extracted = "\n".join(text_parts)
+
+        # If very little text extracted, it's likely a scanned PDF — try OCR
+        if total_chars < 100 and num_pages > 0:
+            ocr_text = _ocr_pdf(file_path, num_pages, max_ocr_pages, max_chars)
+            if ocr_text:
+                return f"[Scanned PDF — {num_pages} pages, OCR extracted from first {min(num_pages, max_ocr_pages)}:]\n{ocr_text}"
+            return f"[Scanned PDF — {num_pages} pages, no readable text extracted.]"
+
+        return extracted
+    except Exception as e:
+        return f"[PDF text extraction failed: {e}]"
+
+
+def _ocr_pdf(file_path: str, num_pages: int, max_pages: int, max_chars: int) -> str:
+    """OCR a scanned PDF using pdftoppm + tesseract."""
+    if not shutil.which("pdftoppm") or not shutil.which("tesseract"):
+        return ""
+    try:
+        pages_to_ocr = min(num_pages, max_pages)
+        text_parts = []
+        total_chars = 0
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run(
+                ["pdftoppm", "-png", "-r", "200", "-l", str(pages_to_ocr),
+                 file_path, os.path.join(tmpdir, "page")],
+                capture_output=True, timeout=60
+            )
+            if result.returncode != 0:
+                return ""
+
+            page_images = sorted(_glob_mod.glob(os.path.join(tmpdir, "page-*.png")))
+            for i, img_path in enumerate(page_images):
+                ocr_result = subprocess.run(
+                    ["tesseract", img_path, "-"],
+                    capture_output=True, text=True, timeout=30
+                )
+                page_text = ocr_result.stdout.strip() if ocr_result.returncode == 0 else ""
+                if total_chars + len(page_text) > max_chars:
+                    remaining = max_chars - total_chars
+                    if remaining > 0:
+                        text_parts.append(f"--- Page {i+1}/{num_pages} (OCR) ---")
+                        text_parts.append(page_text[:remaining])
+                    text_parts.append(f"\n[... OCR truncated at {max_chars} chars ...]")
+                    break
+                text_parts.append(f"--- Page {i+1}/{num_pages} (OCR) ---")
+                text_parts.append(page_text)
+                total_chars += len(page_text)
+
+        return "\n".join(text_parts) if text_parts else ""
+    except Exception as e:
+        logger.warning(f"PDF OCR failed: {e}")
+        return ""
 
 
 # Duplicate message protection
@@ -196,7 +362,10 @@ def get_attachments_dir(user_id: int) -> Path:
 
 
 def get_session(user_id: int) -> SessionManager:
-    return get_session_manager(user_id, USERS_DIR)
+    session = get_session_manager(user_id, USERS_DIR)
+    if _semaphore_active:
+        session.set_compaction_runner(_run_compaction_under_semaphore)
+    return session
 
 
 # --- Task progress tracking (crash recovery) ---
@@ -839,44 +1008,46 @@ async def call_llm(user_id: int, message: str, chat=None) -> str:
                 f"(system: {system_size} chars, budget: {PROMPT_CHAR_BUDGET})"
             )
 
-    # For Claude CLI provider, pass extra kwargs for progress tracking
-    if isinstance(_llm_provider, ClaudeCLIProvider):
-        response: LLMResponse = await _llm_provider.complete(
-            system_prompt=system_prompt,
-            messages=messages,
-            chat=chat,
-            user_id=user_id,
-            original_message=message,
-        )
-    else:
-        # API providers — simple typing indicator
-        typing_task = None
-
-        async def send_typing():
-            while True:
-                try:
-                    if chat:
-                        await chat.send_action("typing")
-                    await asyncio.sleep(4)
-                except asyncio.CancelledError:
-                    break
-                except Exception:
-                    await asyncio.sleep(4)
-
-        try:
-            if chat:
-                typing_task = asyncio.create_task(send_typing())
-            response = await _llm_provider.complete(
+    # Semaphore serializes LLM calls on low-resource machines (no-op on capable ones)
+    async with _get_llm_semaphore():
+        # For Claude CLI provider, pass extra kwargs for progress tracking
+        if isinstance(_llm_provider, ClaudeCLIProvider):
+            response: LLMResponse = await _llm_provider.complete(
                 system_prompt=system_prompt,
                 messages=messages,
+                chat=chat,
+                user_id=user_id,
+                original_message=message,
             )
-        finally:
-            if typing_task:
-                typing_task.cancel()
-                try:
-                    await typing_task
-                except asyncio.CancelledError:
-                    pass
+        else:
+            # API providers — simple typing indicator
+            typing_task = None
+
+            async def send_typing():
+                while True:
+                    try:
+                        if chat:
+                            await chat.send_action("typing")
+                        await asyncio.sleep(4)
+                    except asyncio.CancelledError:
+                        break
+                    except Exception:
+                        await asyncio.sleep(4)
+
+            try:
+                if chat:
+                    typing_task = asyncio.create_task(send_typing())
+                response = await _llm_provider.complete(
+                    system_prompt=system_prompt,
+                    messages=messages,
+                )
+            finally:
+                if typing_task:
+                    typing_task.cancel()
+                    try:
+                        await typing_task
+                    except asyncio.CancelledError:
+                        pass
 
     if response.error and not response.text:
         logger.error(f"LLM error for user {user_id}: {response.error}")
@@ -1960,9 +2131,14 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
         if all_attachments:
             info = "\n\n[Attachments:]"
             for path, ftype in all_attachments:
-                info += f"\n- {ftype}: {path}"
-                if ftype == "image":
-                    info += " (viewable with Read tool)"
+                if str(path).lower().endswith('.pdf'):
+                    pdf_text = _extract_pdf_text(str(path))
+                    info += f"\n- document (PDF): {os.path.basename(str(path))}"
+                    info += f"\n  [PDF content pre-extracted — file not available for Read tool]\n{pdf_text}"
+                elif ftype == "image":
+                    info += f"\n- {ftype}: {path} (viewable with Read tool)"
+                else:
+                    info += f"\n- {ftype}: {path}"
             user_message = (user_message + info) if user_message else f"[Sent {len(all_attachments)} file(s)]{info}"
 
         if not user_message:
@@ -2042,9 +2218,14 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if attachments:
             info = "\n\n[Attachments:]"
             for path, ftype in attachments:
-                info += f"\n- {ftype}: {path}"
-                if ftype == "image":
-                    info += " (viewable with Read tool)"
+                if str(path).lower().endswith('.pdf'):
+                    pdf_text = _extract_pdf_text(str(path))
+                    info += f"\n- document (PDF): {os.path.basename(str(path))}"
+                    info += f"\n  [PDF content pre-extracted — file not available for Read tool]\n{pdf_text}"
+                elif ftype == "image":
+                    info += f"\n- {ftype}: {path} (viewable with Read tool)"
+                else:
+                    info += f"\n- {ftype}: {path}"
             user_message = (user_message + info) if user_message else f"[Sent file(s)]{info}"
 
         if not user_message:
@@ -2167,7 +2348,7 @@ def _setup_reflection_job(scheduler):
 # --- Main ---
 
 def main():
-    global _llm_provider, _skill_manager, _memory_manager
+    global _llm_provider, _skill_manager, _memory_manager, _semaphore_active
 
     token = get_telegram_token()
 
@@ -2186,6 +2367,25 @@ def main():
     if isinstance(_llm_provider, ClaudeCLIProvider):
         _llm_provider.on_progress_save = save_task_progress
         _llm_provider.on_progress_clear = clear_task_progress
+
+    # Hardware-aware concurrency control: enable semaphore on low-resource machines
+    # Note: actual asyncio.Semaphore is created lazily on first use inside the event
+    # loop (_get_llm_semaphore), because creating it here would bind to the wrong
+    # loop on Python 3.8-3.9. We just set the flag here.
+    caps = load_caps(DATA_DIR)
+    ram_gb = caps.get("ram_gb", 0)
+    cpu_cores = caps.get("cpu_cores", 0)
+    if ram_gb > 0 and (ram_gb < 8 or cpu_cores <= 2):
+        _semaphore_active = True
+        logger.info(
+            f"LLM semaphore ENABLED (RAM: {ram_gb}GB, CPU cores: {cpu_cores}) — "
+            f"concurrent LLM calls will be serialized"
+        )
+    else:
+        logger.info(
+            f"LLM semaphore disabled (RAM: {ram_gb}GB, CPU cores: {cpu_cores}) — "
+            f"full concurrency allowed"
+        )
 
     # Initialize skills
     _skill_manager = SkillManager(SKILLS_DIR)
