@@ -256,33 +256,40 @@ def _mark_observations_reflected(user_id: int, mm: MemoryManager, records: list)
     if not obs_file.exists():
         return
 
-    content = obs_file.read_text()
+    # Hold exclusive lock for the entire read-modify-write cycle to prevent
+    # add_observation() from appending between read and rename (data loss).
+    lock_fd = os.open(str(obs_file), os.O_RDONLY)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-    # Build a set of raw lines to match
-    raw_lines = {r["raw"] for r in records}
+        content = obs_file.read_text()
 
-    new_lines = []
-    marked = 0
-    for line in content.split("\n"):
-        if line in raw_lines and "[reflected]" not in line:
-            # Insert [reflected] tag after the type marker
-            type_match = re.search(r'\(([\w-]+)\)', line)
-            if type_match:
-                insert_pos = type_match.end()
-                line = line[:insert_pos] + " [reflected]" + line[insert_pos:]
-                marked += 1
-        new_lines.append(line)
+        # Build a set of raw lines to match
+        raw_lines = {r["raw"] for r in records}
 
-    if marked > 0:
-        # Atomic write: temp file + fsync + rename to avoid race with
-        # concurrent add_observation() appends (which use open("a") + flock)
-        tmp = obs_file.with_suffix(".md.tmp")
-        with open(tmp, "w") as f:
-            f.write("\n".join(new_lines))
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.rename(obs_file)
-        log(f"  Marked {marked} observations as reflected for user {user_id}")
+        new_lines = []
+        marked = 0
+        for line in content.split("\n"):
+            if line in raw_lines and "[reflected]" not in line:
+                # Insert [reflected] tag after the type marker
+                type_match = re.search(r'\(([\w-]+)\)', line)
+                if type_match:
+                    insert_pos = type_match.end()
+                    line = line[:insert_pos] + " [reflected]" + line[insert_pos:]
+                    marked += 1
+            new_lines.append(line)
+
+        if marked > 0:
+            tmp = obs_file.with_suffix(".md.tmp")
+            with open(tmp, "w") as f:
+                f.write("\n".join(new_lines))
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.rename(obs_file)
+            log(f"  Marked {marked} observations as reflected for user {user_id}")
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 # ─── LLM Calls ────────────────────────────────────────────────────

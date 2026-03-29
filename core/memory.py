@@ -225,52 +225,60 @@ class MemoryManager:
         if not obs_file.exists():
             return
 
-        content = obs_file.read_text()
-        lines = content.split("\n")
+        # Hold exclusive lock on the observations file for the entire
+        # read-modify-write cycle. This prevents add_observation() from
+        # appending between our read and our atomic rename (which would
+        # silently drop the appended observation).
+        lock_fd = os.open(str(obs_file), os.O_RDONLY)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-        cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+            content = obs_file.read_text()
+            lines = content.split("\n")
 
-        header_lines = []
-        recent_lines = []
-        archive_lines = []
+            cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
 
-        for line in lines:
-            if line.startswith("["):
-                try:
-                    date_str = line[1:11]
-                    if date_str >= cutoff:
+            header_lines = []
+            recent_lines = []
+            archive_lines = []
+
+            for line in lines:
+                if line.startswith("["):
+                    try:
+                        date_str = line[1:11]
+                        if date_str >= cutoff:
+                            recent_lines.append(line)
+                        else:
+                            archive_lines.append(line)
+                    except (IndexError, ValueError):
                         recent_lines.append(line)
-                    else:
-                        archive_lines.append(line)
-                except (IndexError, ValueError):
-                    recent_lines.append(line)
-            else:
-                header_lines.append(line)
+                else:
+                    header_lines.append(line)
 
-        if not archive_lines:
-            return
+            if not archive_lines:
+                return
 
-        # Append to archive
-        archive_file = self._user_dir(user_id) / "observations_archive.md"
-        needs_header = not archive_file.exists() or archive_file.stat().st_size == 0
-        with open(archive_file, "a") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            if needs_header:
-                f.write(f"# Observation Archive — User {user_id}\n\n---\n\n")
-            for line in archive_lines:
-                f.write(line + "\n")
-            fcntl.flock(f, fcntl.LOCK_UN)
+            # Append to archive
+            archive_file = self._user_dir(user_id) / "observations_archive.md"
+            needs_header = not archive_file.exists() or archive_file.stat().st_size == 0
+            with open(archive_file, "a") as f:
+                if needs_header:
+                    f.write(f"# Observation Archive — User {user_id}\n\n---\n\n")
+                for line in archive_lines:
+                    f.write(line + "\n")
 
-        # Atomic rewrite: temp file + fsync + rename to avoid race with
-        # concurrent add_observation() appends
-        tmp = obs_file.with_suffix(".md.tmp")
-        with open(tmp, "w") as f:
-            f.write("\n".join(header_lines).rstrip() + "\n\n")
-            for line in recent_lines:
-                f.write(line + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.rename(obs_file)
+            # Atomic rewrite of observations file while lock is held
+            tmp = obs_file.with_suffix(".md.tmp")
+            with open(tmp, "w") as f:
+                f.write("\n".join(header_lines).rstrip() + "\n\n")
+                for line in recent_lines:
+                    f.write(line + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.rename(obs_file)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
 
         logger.info(f"Archived {len(archive_lines)} observations for user {user_id}, "
                      f"kept {len(recent_lines)} recent")
