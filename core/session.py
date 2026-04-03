@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 # Thread pool for non-blocking subprocess calls
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="compaction")
 
+# Guard: summary file paths with a compaction task already scheduled.
+# Prevents duplicate background processes when history stays long
+# during first-compaction (no summary exists yet, so disk isn't trimmed).
+_compaction_scheduled: set[str] = set()
+
 # Default configuration
 DEFAULT_CONFIG = {
     "daily_reset_enabled": True,
@@ -281,6 +286,12 @@ class SessionManager:
             logger.info("Compaction skipped — claude CLI not available")
             return history, ""
 
+        # Dedup guard: skip if a compaction task is already running for this file
+        sf_key = str(summary_file)
+        if sf_key in _compaction_scheduled:
+            logger.debug(f"Compaction already scheduled for {summary_file}, skipping duplicate")
+            return history, ""
+
         # Load existing summary
         existing_summary = ""
         if summary_file.exists():
@@ -305,17 +316,28 @@ class SessionManager:
             conv_text.append(f"<{role}>{content}</{role}>")
 
         prompt = (
-            "You are compacting conversation history. Merge the following messages "
-            "into the existing summary. Keep it concise but preserve:\n"
-            "- Key decisions and their rationale\n"
-            "- Important facts, preferences, or requirements mentioned\n"
-            "- Task outcomes and current state of ongoing work\n"
-            "- File paths, project names, and technical details that may be needed later\n\n"
-            "Drop: greetings, filler, repeated information, verbose tool outputs.\n\n"
+            "You are compacting conversation history into a rolling summary. "
+            "This summary will be injected as context when the conversation is "
+            "resumed, so write it as a factual third-person record — NOT as a "
+            "conversation transcript.\n\n"
+            "Merge the new messages into the existing summary. Structure the "
+            "output with these sections (omit empty sections):\n\n"
+            "**Key decisions:** Decisions made and their rationale\n"
+            "**Current work:** What was being worked on, current state\n"
+            "**Pending tasks:** Anything the user asked for that isn't done yet\n"
+            "**Important context:** Facts, preferences, file paths, project names, "
+            "technical details needed for continuity\n\n"
+            "Rules:\n"
+            "- Write plain prose, no XML tags, no role markers (no <user>, "
+            "<assistant>, Human:, etc.)\n"
+            "- Drop: greetings, filler, repeated information, verbose tool outputs\n"
+            "- Keep under 600 words\n"
+            "- Provide only the merged summary, no preamble or explanation\n\n"
             f"{'Existing summary to incorporate:\\n' + existing_summary + '\\n\\n' if existing_summary else ''}"
-            f"New messages to compact:\n{chr(10).join(conv_text)}\n\n"
-            "Provide only the merged summary, no preamble. Keep under 600 words."
+            f"New messages to compact:\n{chr(10).join(conv_text)}"
         )
+
+        _compaction_scheduled.add(sf_key)
 
         if self._compaction_runner:
             # Use external runner (routes through bot's semaphore on low-resource machines)
@@ -338,6 +360,8 @@ class SessionManager:
 
     def _run_compaction_thread(self, prompt: str, summary_file: Path, batch_size: int):
         """Run compaction in a background thread via the thread pool."""
+        sf_key = str(summary_file)
+
         def run_compaction_background():
             try:
                 result = subprocess.run(
@@ -358,6 +382,8 @@ class SessionManager:
                 logger.error("Background compaction timed out")
             except Exception as e:
                 logger.error(f"Background compaction failed: {e}")
+            finally:
+                _compaction_scheduled.discard(sf_key)
 
         _executor.submit(run_compaction_background)
 
@@ -401,8 +427,15 @@ class SessionManager:
         return sanitized.strip('_')[:50]
 
 
+_session_managers: dict[int, SessionManager] = {}
+
+
 def get_session_manager(user_id: int, users_dir: Path, config: dict = None) -> SessionManager:
-    """Factory function to get a SessionManager for a user."""
+    """Factory function to get a SessionManager for a user (cached per user_id)."""
+    if user_id in _session_managers:
+        return _session_managers[user_id]
     user_dir = users_dir / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
-    return SessionManager(user_dir, config)
+    mgr = SessionManager(user_dir, config)
+    _session_managers[user_id] = mgr
+    return mgr

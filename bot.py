@@ -95,6 +95,10 @@ logger = logging.getLogger(__name__)
 # Per-user locks
 _user_locks: dict[int, asyncio.Lock] = {}
 
+# Cache conversation history from build_messages for reuse in _save_and_send,
+# avoiding redundant disk reads within the same request cycle.
+_conversation_cache: dict[int, list] = {}
+
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
     if user_id not in _user_locks:
@@ -140,6 +144,8 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
     This prevents the compaction subprocess from running concurrently with
     user-facing LLM calls on low-resource machines.
     """
+    from core.session import _compaction_scheduled
+    sf_key = str(summary_file)
     try:
         async with _get_llm_semaphore():
             proc = await asyncio.create_subprocess_exec(
@@ -171,6 +177,8 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
                 logger.warning(f"Compaction returned no output (exit {proc.returncode})")
     except Exception as e:
         logger.error(f"Semaphore-aware compaction failed: {e}")
+    finally:
+        _compaction_scheduled.discard(sf_key)
 
 
 def _extract_pdf_text(file_path: str, max_chars: int = 50000, max_ocr_pages: int = 5) -> str:
@@ -842,10 +850,22 @@ def build_system_prompt(user_id: int) -> str:
     session = get_session(user_id)
     summary = session.load_summary()
     if summary:
-        parts.append("### Conversation Summary (older context):")
+        # Sanitize role markers that the compaction LLM may have included
+        summary = sanitize_role_markers(summary)
         if len(summary) > 3000:
             summary = summary[:2800] + "\n\n[... summary truncated for context management]"
+        # Continuation injection: frame the summary as a session continuation
+        # so the LLM resumes naturally instead of recapping or asking about context
+        parts.append("### Session Continuation:")
+        parts.append(
+            "This session is being continued from a previous conversation that ran "
+            "out of context. The summary below covers the earlier portion of the "
+            "conversation."
+        )
+        parts.append("")
         parts.append(summary)
+        parts.append("")
+        parts.append("Recent messages are preserved verbatim below.")
         parts.append("")
 
     # Persistent memories
@@ -898,6 +918,14 @@ def build_system_prompt(user_id: int) -> str:
             parts.append(f"  /{name} → {expansion}")
         parts.append("")
 
+    # Continuation injection closing: tell the LLM to resume seamlessly
+    if summary:
+        parts.append(
+            "Resume the conversation naturally from where it left off. "
+            "Do not acknowledge the summary, do not recap, respond only "
+            "to the user's latest message."
+        )
+
     return "\n".join(parts)
 
 
@@ -912,6 +940,9 @@ def build_messages(user_id: int, new_message: str) -> list[Message]:
     else:
         history = session.load_conversation()
 
+    # Cache for _save_and_send to avoid redundant disk read
+    _conversation_cache[user_id] = history
+
     if len(history) > MAX_CONTEXT_MESSAGES:
         history = history[-MAX_CONTEXT_MESSAGES:]
 
@@ -923,6 +954,24 @@ def build_messages(user_id: int, new_message: str) -> list[Message]:
             messages.append(Message(role=role, content=content))
     messages.append(Message(role="user", content=new_message))
     return messages
+
+
+def sanitize_role_markers(content: str) -> str:
+    """Neutralize role markers in summaries to prevent hallucinated conversation turns.
+
+    Lighter than sanitize_response — doesn't truncate at "Assistant:", just
+    escapes markers so they don't look like conversation structure.
+    """
+    content = re.sub(r'\bHuman:', '[Human]:', content)
+    content = re.sub(r'\bUSER:', '[USER]:', content)
+    content = re.sub(r'\bUser:', '[User]:', content)
+    content = re.sub(r'<user>', '[user-tag]', content, flags=re.IGNORECASE)
+    content = re.sub(r'</user>', '[/user-tag]', content, flags=re.IGNORECASE)
+    content = re.sub(r'<human>', '[human-tag]', content, flags=re.IGNORECASE)
+    content = re.sub(r'</human>', '[/human-tag]', content, flags=re.IGNORECASE)
+    content = re.sub(r'<assistant>', '[assistant-tag]', content, flags=re.IGNORECASE)
+    content = re.sub(r'</assistant>', '[/assistant-tag]', content, flags=re.IGNORECASE)
+    return content
 
 
 def sanitize_response(content: str) -> str:
@@ -1000,6 +1049,8 @@ async def call_llm(user_id: int, message: str, chat=None) -> str:
                 # Write directly (atomic) to avoid save_conversation() re-running smart_trim
                 _atomic_save_json(session.conversation_file, trimmed)
                 session.compact_conversation(trimmed, session.summary_file)
+                # Invalidate cache — disk now has trimmed version
+                _conversation_cache.pop(user_id, None)
 
         if messages_dropped or trimmed_size < conv_size:
             logger.info(
@@ -1084,7 +1135,10 @@ def _save_and_send(user_id: int, user_message: str, response: str,
         history.append({"role": "assistant", "content": stored_response})
         session.save_topic_session(current_topic, history)
     else:
-        history = session.load_conversation()
+        # Use cached history from build_messages to avoid redundant disk read
+        history = _conversation_cache.pop(user_id, None)
+        if history is None:
+            history = session.load_conversation()
         history.append({"role": "user", "content": stored_user_msg})
         history.append({"role": "assistant", "content": stored_response})
         # Trigger compaction if conversation is getting long
