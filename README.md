@@ -69,6 +69,7 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 | Provider | Free? | Notes |
 |----------|-------|-------|
 | **Ollama** | Yes | Runs AI locally on your machine. No API key needed. Needs macOS 12+ or modern Linux. |
+| **Ollama Cloud** | Free tier available | Same models as local Ollama, hosted in the cloud. No GPU needed. Session limits reset every 5 hours. |
 | **OpenRouter** | Yes (200 req/day) | 19+ free models with tool-use. Easy to start with. |
 | **Gemini** | Limited free tier | Google's AI. Flash: 10 RPM / 250 RPD. Pro: 5 RPM / 100 RPD. |
 | **Grok** | $25 free credits | xAI's models. Vision on 4.1 Fast and 4.20. |
@@ -78,7 +79,7 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 | **Claude CLI** | With Pro/Max plan | Most capable. Uses your existing Anthropic subscription. |
 | **Claude API** | No | Pay-per-token. Text-only (no machine control). |
 
-**If you want free:** Start with Ollama (local, unlimited) or OpenRouter (cloud, 200 req/day).
+**If you want free:** Start with Ollama (local, unlimited), Ollama Cloud (no GPU needed), or OpenRouter (200 req/day).
 
 **If you want the best quality:** Claude CLI with a Pro subscription, or OpenAI GPT-5.4.
 
@@ -133,6 +134,7 @@ Strips the desktop, disables sleep, turns the machine into a dedicated bot appli
 | `/provider` | Show or switch AI provider |
 | `/model` | Change AI model |
 | `/apikey` | Set API key (message auto-deletes) |
+| `/skillstats` | View skill usage statistics |
 | `/cleanup` | Clean old files, rotate logs |
 | `/update` | Pull latest updates |
 | `/restart` | Restart the bot |
@@ -177,10 +179,10 @@ If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonde
 |---|---|---|
 | **Language** | Python | TypeScript |
 | **Install** | `curl ... \| bash` — works on decade-old hardware | `npm install -g openclaw` — requires Node 24 |
-| **AI providers** | 9 — Claude CLI, OpenAI, Gemini, Grok, Kimi, DeepSeek, OpenRouter, Ollama, Claude API | Primarily OpenAI, configurable profiles |
-| **Free/local AI** | Ollama (unlimited, local), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
+| **AI providers** | 10 — Claude CLI, OpenAI, Gemini, Grok, Kimi, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API | Primarily OpenAI, configurable profiles |
+| **Free/local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
-| **Skills** | 58 modular skills with auto-installing dependencies | 100+ AgentSkills |
+| **Skills** | 58 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux/macOS — runs on 1GB RAM with Ollama small models | Modern hardware recommended |
 | **Ownership** | Independent, MIT licensed | OpenAI-acquired (March 2026) |
 | **MCP support** | Client — connects to any MCP server for unlimited tool expansion | Native MCP client support |
@@ -252,7 +254,7 @@ The installer handles version mismatches automatically:
 - On first boot, the bot probes the system and reports which skills are ready vs. which need dependencies installed
 - Flatpak apps are detected by the system probe and reported alongside system-installed tools
 
-## Skills (58 total)
+## Skills (58)
 
 Skills are modular packages the bot loads automatically. Each has instructions the LLM reads, optional scripts, and a dependency manifest.
 
@@ -429,10 +431,16 @@ User (Telegram) → bot.py → core/llm.py (provider factory)
               ClaudeCLI    OpenAI-compat    Gemini
               (native      (OpenRouter,     (native
                tools)       OpenAI, Grok,    function
-                            DeepSeek,        calling)
-                            Ollama)
+                            DeepSeek, Kimi,  calling)
+                            Ollama, Ollama
+                            Cloud)
                     │           │               │
                     └───────────┼───────────────┘
+                                ↓
+                    utils/skill_hooks.py
+                    (pre-check RAM/disk,
+                     post-track usage,
+                     stop: cleanup)
                                 ↓
                          core/tools.py
                     ┌────────────────────┐
@@ -445,6 +453,32 @@ User (Telegram) → bot.py → core/llm.py (provider factory)
 ```
 
 The bot has 5 tools: `run_command` (execute shell commands, foreground or background), `read_file`, `write_file`, `list_directory`, and `check_process` (poll or kill background processes). Through these tools, it can do anything you could do at a terminal.
+
+## Skill hooks
+
+A middleware layer that runs before and after every skill invocation. Prevents resource exhaustion, kills orphaned processes, and tracks usage.
+
+**What it does:**
+
+- **Pre-execution checks** — blocks skills that would exceed available RAM or disk space. The browser, stems (Demucs), blender, upscale, and voice skills all have minimum resource thresholds. If your machine has 2GB free and stems needs 4GB, it tells you why it can't run instead of OOM-killing the bot.
+- **Post-execution tracking** — logs every skill invocation to SQLite (duration, RAM snapshot, success/failure). Query stats with `/skillstats` from Telegram or `python utils/skill_usage_cli.py` from the terminal.
+- **Session-end cleanup** — when a conversation ends, kills orphaned Chromium/Playwright, Blender, GIMP, Inkscape, Godot, Demucs, and aria2c processes. Removes stale temp files. Stops abandoned Docker containers.
+- **Startup cleanup** — on bot restart, sweeps for any processes orphaned by a previous crash. Cleans stale browser state files and old temp files.
+- **Denial alerts** — if a skill is blocked due to low resources, sends you a Telegram notification so you know it happened.
+
+**Coverage:**
+
+| Hook type | Skills |
+|-----------|--------|
+| RAM pre-check | browser, scraper, media, stems, blender, blender-video, upscale, voice, background-removal |
+| Disk pre-check | video-editing, downloads |
+| Process cleanup | browser, blender, stems, gimp, inkscape, godot, downloads, lighthouse |
+| Temp file cleanup | stems, video-editing, image-editing, presentations, audio-editing, lighthouse |
+| Docker cleanup | docker-services |
+
+Hooks work with all LLM providers, not just Claude. For Claude CLI, they use the native hook system (PreToolUse/PostToolUse/Stop events). For all other providers, they're embedded in the tool execution layer.
+
+18 skills have per-skill `hooks.json` configs. The remaining skills are lightweight enough to not need them.
 
 ## Health monitoring
 
@@ -488,10 +522,13 @@ Custom tests use YAML with assertion types: `contains`, `not_contains`, `matches
 - Bot runs as your user (not root)
 - API keys and tokens stripped from the execution environment
 - Command blocking for destructive patterns (`rm -rf /`, `mkfs`, fork bombs)
-- Write path blocklist protects system files
+- Write path blocklist protects system files and bot runtime
+- Bot self-protection prevents the LLM from modifying its own code, venv, or config
 - Telegram access restricted to your user ID
 - Sudo password stored with 600 permissions, used only for package installation
 - Atomic file writes prevent corruption on crash
+- Skill hooks enforce resource limits before heavy operations run
+- Orphaned process cleanup on session end and bot restart
 
 ## License
 
