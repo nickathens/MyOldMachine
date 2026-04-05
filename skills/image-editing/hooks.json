@@ -1,0 +1,5 @@
+{
+  "stop": {
+    "clean_patterns": ["/tmp/img_*.png", "/tmp/img_*.jpg", "/tmp/image_edit_*", "/tmp/edited_*.png", "/tmp/edited_*.jpg"]
+  }
+}

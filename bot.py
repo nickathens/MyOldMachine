@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -2399,6 +2400,271 @@ def _setup_reflection_job(scheduler):
     logger.info("Scheduled nightly reflection job at 3:00 AM")
 
 
+# --- Skill Stats ---
+
+def _fmt_skill_duration(ms) -> str:
+    """Format milliseconds to human-readable duration for /skillstats."""
+    if ms is None:
+        return "\u2014"
+    ms = int(round(ms))
+    if ms < 0:
+        return "0ms"
+    if ms < 1000:
+        return f"{ms}ms"
+    if ms < 60000:
+        return f"{ms / 1000:.1f}s"
+    return f"{ms / 60000:.1f}m"
+
+
+async def skillstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show skill usage statistics. Admin only."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Only admins can view skill stats.")
+        return
+
+    args = (update.message.text or "").split(maxsplit=1)
+    subcommand = args[1].strip().lower() if len(args) > 1 else "summary"
+
+    db_path = DATA_DIR / "skill_usage.db"
+    if not db_path.exists():
+        await update.message.reply_text("No skill usage data yet. Use skills with hooks active to start recording.")
+        return
+
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(str(db_path), timeout=5)
+    conn.row_factory = _sqlite3.Row
+
+    try:
+        if subcommand == "summary":
+            total = conn.execute("SELECT COUNT(*) FROM skill_invocations").fetchone()[0]
+            if total == 0:
+                await update.message.reply_text("No invocations recorded yet.")
+                return
+
+            rows = conn.execute("""
+                SELECT skill_name,
+                       COUNT(*) as cnt,
+                       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as ok,
+                       SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as fail,
+                       AVG(duration_ms) as avg_dur
+                FROM skill_invocations
+                GROUP BY skill_name
+                ORDER BY cnt DESC
+                LIMIT 15
+            """).fetchall()
+
+            text = f"Skill Usage ({total} total)\n\n"
+            for r in rows:
+                avg = _fmt_skill_duration(r["avg_dur"])
+                fail_str = f" / {r['fail']} fail" if r["fail"] else ""
+                text += f"  {r['skill_name']}: {r['cnt']}x ({r['ok']} ok{fail_str}) avg {avg}\n"
+
+            fails = conn.execute("SELECT COUNT(*) FROM skill_invocations WHERE success = 0").fetchone()[0]
+            if fails > 0:
+                text += f"\n{fails} total failures. Use /skillstats failures for details."
+
+            for chunk in split_message(text):
+                await update.message.reply_text(chunk)
+
+        elif subcommand == "recent":
+            rows = conn.execute("""
+                SELECT skill_name, started_at, duration_ms, success
+                FROM skill_invocations
+                ORDER BY started_at DESC
+                LIMIT 20
+            """).fetchall()
+            if not rows:
+                await update.message.reply_text("No invocations recorded yet.")
+                return
+
+            text = "Recent Skill Invocations\n\n"
+            for r in rows:
+                ts = datetime.fromtimestamp(r["started_at"]).strftime("%m-%d %H:%M")
+                dur = _fmt_skill_duration(r["duration_ms"])
+                status = "ok" if r["success"] == 1 else ("FAIL" if r["success"] == 0 else "?")
+                text += f"  {ts}  {r['skill_name']}  {dur}  {status}\n"
+
+            for chunk in split_message(text):
+                await update.message.reply_text(chunk)
+
+        elif subcommand == "failures":
+            rows = conn.execute("""
+                SELECT skill_name, started_at, duration_ms, error
+                FROM skill_invocations
+                WHERE success = 0
+                ORDER BY started_at DESC
+                LIMIT 15
+            """).fetchall()
+            if not rows:
+                await update.message.reply_text("No failures recorded.")
+                return
+
+            text = f"Skill Failures ({len(rows)} most recent)\n\n"
+            for r in rows:
+                ts = datetime.fromtimestamp(r["started_at"]).strftime("%m-%d %H:%M")
+                err = (r["error"] or "unknown")[:80].replace("\n", " ")
+                text += f"  {ts}  {r['skill_name']}\n    {err}\n\n"
+
+            for chunk in split_message(text):
+                await update.message.reply_text(chunk)
+
+        elif subcommand == "daily":
+            rows = conn.execute("""
+                SELECT date(started_at, 'unixepoch', 'localtime') as day,
+                       COUNT(*) as cnt,
+                       SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as fail,
+                       COUNT(DISTINCT skill_name) as unique_skills
+                FROM skill_invocations
+                WHERE started_at >= ?
+                GROUP BY day
+                ORDER BY day DESC
+            """, (time.time() - 30 * 86400,)).fetchall()
+            if not rows:
+                await update.message.reply_text("No invocations in the last 30 days.")
+                return
+
+            text = "Daily Skill Usage (last 30 days)\n\n"
+            for r in rows:
+                fail_str = f" / {r['fail']} fail" if r["fail"] else ""
+                text += f"  {r['day']}  {r['cnt']}x{fail_str}  ({r['unique_skills']} skills)\n"
+
+            for chunk in split_message(text):
+                await update.message.reply_text(chunk)
+
+        elif subcommand == "help":
+            await update.message.reply_text(
+                "/skillstats \u2014 Usage summary\n"
+                "/skillstats recent \u2014 Last 20 invocations\n"
+                "/skillstats failures \u2014 Recent failures\n"
+                "/skillstats daily \u2014 Daily breakdown (30 days)\n"
+                "/skillstats <name> \u2014 Stats for one skill"
+            )
+            return
+
+        else:
+            # Treat as skill name lookup
+            skill_name = subcommand
+            stats = conn.execute("""
+                SELECT COUNT(*) as cnt,
+                       SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as ok,
+                       SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as fail,
+                       AVG(duration_ms) as avg_dur,
+                       MIN(started_at) as first_use,
+                       MAX(started_at) as last_use
+                FROM skill_invocations
+                WHERE skill_name = ?
+            """, (skill_name,)).fetchone()
+
+            if stats["cnt"] == 0:
+                skills = conn.execute(
+                    "SELECT DISTINCT skill_name FROM skill_invocations ORDER BY skill_name"
+                ).fetchall()
+                skill_list = ", ".join(r["skill_name"] for r in skills) if skills else "none"
+                await update.message.reply_text(
+                    f"No data for '{skill_name}'.\n\nAvailable: {skill_list}"
+                )
+                return
+
+            first = datetime.fromtimestamp(stats["first_use"]).strftime("%Y-%m-%d")
+            last = datetime.fromtimestamp(stats["last_use"]).strftime("%Y-%m-%d %H:%M")
+            text = (
+                f"Skill: {skill_name}\n\n"
+                f"  Total: {stats['cnt']}\n"
+                f"  OK: {stats['ok']}  Failed: {stats['fail']}\n"
+                f"  Avg duration: {_fmt_skill_duration(stats['avg_dur'])}\n"
+                f"  First used: {first}\n"
+                f"  Last used: {last}\n"
+            )
+            await update.message.reply_text(text)
+
+    except Exception as e:
+        logger.error(f"Skillstats error: {e}")
+        await update.message.reply_text(f"Error querying stats: {e}")
+    finally:
+        conn.close()
+
+
+def _configure_claude_hooks():
+    """Auto-configure Claude Code hooks in ~/.claude/settings.json.
+
+    Adds PreToolUse/PostToolUse/PostToolUseFailure/Stop hooks for skill
+    monitoring when using Claude CLI as the provider. Merges with existing
+    settings without overwriting user configuration.
+
+    Called once at startup if Claude CLI is the active provider.
+    """
+    settings_file = Path.home() / ".claude" / "settings.json"
+    gate_script = str(BOT_DIR / "utils" / "skill_hook_gate.sh")
+    hooks_script = f"python3 {BOT_DIR / 'utils' / 'skill_hooks.py'}"
+
+    # Define the hooks we need
+    needed_hooks = {
+        "PreToolUse": [{
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": gate_script, "timeout": 10}]
+        }],
+        "PostToolUse": [{
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": gate_script, "timeout": 10}]
+        }],
+        "PostToolUseFailure": [{
+            "matcher": "Bash",
+            "hooks": [{"type": "command", "command": gate_script, "timeout": 10}]
+        }],
+        "Stop": [{
+            "matcher": "",
+            "hooks": [{"type": "command", "command": hooks_script, "timeout": 15}]
+        }],
+    }
+
+    try:
+        # Ensure ~/.claude/ exists
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Load existing settings
+        settings = {}
+        if settings_file.exists():
+            try:
+                settings = json.loads(settings_file.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        existing_hooks = settings.get("hooks", {})
+
+        # Check if our hooks are already configured (by checking for our gate script)
+        already_configured = any(
+            "skill_hook_gate.sh" in hook.get("command", "") or
+            "skill_hooks.py" in hook.get("command", "")
+            for event_hooks in existing_hooks.values()
+            if isinstance(event_hooks, list)
+            for entry in event_hooks
+            if isinstance(entry, dict)
+            for hook in entry.get("hooks", [])
+        )
+
+        if already_configured:
+            logger.debug("Claude Code skill hooks already configured")
+            return
+
+        # Merge our hooks into existing config
+        for event_name, hook_entries in needed_hooks.items():
+            if event_name not in existing_hooks:
+                existing_hooks[event_name] = []
+            existing_hooks[event_name].extend(hook_entries)
+
+        settings["hooks"] = existing_hooks
+
+        # Write back atomically
+        tmp_path = settings_file.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(settings, indent=2) + "\n")
+        tmp_path.replace(settings_file)
+
+        logger.info("Claude Code skill hooks configured in ~/.claude/settings.json")
+    except Exception as e:
+        logger.warning(f"Failed to configure Claude Code hooks (non-fatal): {e}")
+
+
 # --- Main ---
 
 def main():
@@ -2421,6 +2687,8 @@ def main():
     if isinstance(_llm_provider, ClaudeCLIProvider):
         _llm_provider.on_progress_save = save_task_progress
         _llm_provider.on_progress_clear = clear_task_progress
+        # Auto-configure Claude Code hooks for skill monitoring
+        _configure_claude_hooks()
 
     # Hardware-aware concurrency control: enable semaphore on low-resource machines
     # Note: actual asyncio.Semaphore is created lazily on first use inside the event
@@ -2440,6 +2708,16 @@ def main():
             f"LLM semaphore disabled (RAM: {ram_gb}GB, CPU cores: {cpu_cores}) — "
             f"full concurrency allowed"
         )
+
+    # Startup cleanup — kill orphaned skill processes from previous sessions
+    try:
+        from utils.startup_cleanup import run_startup_cleanup
+        cleanup_summary = run_startup_cleanup()
+        total_cleaned = sum(cleanup_summary.values())
+        if total_cleaned > 0:
+            logger.info(f"Startup cleanup: {cleanup_summary}")
+    except Exception as e:
+        logger.warning(f"Startup cleanup failed (non-fatal): {e}")
 
     # Initialize skills
     _skill_manager = SkillManager(SKILLS_DIR)
@@ -2499,6 +2777,7 @@ def main():
     app.add_handler(CommandHandler("apikey", apikey_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("alias", alias_command))
+    app.add_handler(CommandHandler("skillstats", skillstats_command))
 
     # Catch-all for unrecognized /commands — check aliases before rejecting
     async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

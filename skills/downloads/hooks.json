@@ -1,0 +1,8 @@
+{
+  "pre": {
+    "min_disk_mb": 1024
+  },
+  "stop": {
+    "kill_processes": ["aria2c"]
+  }
+}

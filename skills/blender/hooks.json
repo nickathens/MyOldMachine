@@ -1,0 +1,8 @@
+{
+  "pre": {
+    "min_ram_mb": 2048
+  },
+  "stop": {
+    "kill_processes": ["blender --background"]
+  }
+}

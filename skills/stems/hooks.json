@@ -1,0 +1,9 @@
+{
+  "pre": {
+    "min_ram_mb": 4096
+  },
+  "stop": {
+    "kill_processes": ["demucs"],
+    "clean_patterns": ["/tmp/demucs_*", "/tmp/separated/"]
+  }
+}

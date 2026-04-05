@@ -1,0 +1,7 @@
+{
+  "pre": {},
+  "stop": {
+    "kill_processes": ["lighthouse"],
+    "clean_patterns": ["/tmp/lighthouse.*"]
+  }
+}

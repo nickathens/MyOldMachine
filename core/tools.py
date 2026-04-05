@@ -1207,6 +1207,60 @@ async def _run_command(command: str, background: bool = False,
     # Check for risky operations — these produce warnings, not blocks
     risk_warnings = _check_risky_command(command)
 
+    # --- Skill hooks (application-level, for API providers) ---
+    # Claude CLI has its own hook system via settings.json.
+    # These hooks cover OpenAI, Gemini, Ollama, and other API providers.
+    _hook_skill = None
+    _hook_invocation_id = None
+    try:
+        from utils.skill_hooks import (
+            identify_skill, load_hooks_json, get_free_ram_mb,
+            get_free_disk_mb, touch_last_used, db_record_start,
+            send_denial_alert, log_action,
+        )
+        _hook_skill = identify_skill(command)
+        if _hook_skill:
+            config = load_hooks_json(_hook_skill)
+            pre = config.get("pre", {})
+
+            # RAM check
+            min_ram = pre.get("min_ram_mb")
+            if isinstance(min_ram, (int, float)):
+                free = get_free_ram_mb()
+                if free < min_ram:
+                    reason = (
+                        f"Insufficient RAM for {_hook_skill}. "
+                        f"Need {min_ram}MB free, only {free}MB available. "
+                        f"Close heavy processes or try a lighter operation."
+                    )
+                    log_action(f"APP-HOOK BLOCKED {_hook_skill}: need {min_ram}MB RAM, have {free}MB")
+                    send_denial_alert(_hook_skill, f"RAM: need {min_ram}MB, have {free}MB")
+                    return reason
+
+            # Disk check
+            min_disk = pre.get("min_disk_mb")
+            if isinstance(min_disk, (int, float)):
+                free_disk = get_free_disk_mb()
+                if free_disk < min_disk:
+                    reason = (
+                        f"Insufficient disk space for {_hook_skill}. "
+                        f"Need {min_disk}MB free, only {free_disk}MB available."
+                    )
+                    log_action(f"APP-HOOK BLOCKED {_hook_skill}: need {min_disk}MB disk, have {free_disk}MB")
+                    send_denial_alert(_hook_skill, f"Disk: need {min_disk}MB, have {free_disk}MB")
+                    return reason
+
+            touch_last_used(_hook_skill)
+
+            # Record invocation start
+            _hook_invocation_id = f"app-{uuid.uuid4().hex[:12]}"
+            ram = get_free_ram_mb()
+            db_record_start(_hook_invocation_id, "api-provider", _hook_skill, command, ram)
+    except ImportError:
+        pass  # Hooks not available — run command normally
+    except Exception as e:
+        logger.debug(f"Skill hook pre-check error (non-fatal): {e}")
+
     effective_timeout = timeout or (BACKGROUND_TIMEOUT if background else COMMAND_TIMEOUT)
     logger.info(f"Executing command (bg={background}): {command[:200]}")
 
@@ -1269,9 +1323,28 @@ async def _run_command(command: str, background: bool = False,
                 output += f"  - {w}\n"
             output += "Make sure the user is aware of these risks."
 
+        # Post-hook: record success/failure
+        if _hook_skill and _hook_invocation_id:
+            try:
+                from utils.skill_hooks import db_record_end, db_record_failure
+                success = managed.return_code == 0 or managed.return_code is None
+                if success:
+                    db_record_end(_hook_invocation_id, success=True)
+                else:
+                    db_record_failure(_hook_invocation_id, f"exit code {managed.return_code}")
+            except Exception:
+                pass
+
         return output
 
     except Exception as e:
+        # Post-hook: record failure on exception
+        if _hook_skill and _hook_invocation_id:
+            try:
+                from utils.skill_hooks import db_record_failure
+                db_record_failure(_hook_invocation_id, str(e)[:500])
+            except Exception:
+                pass
         return f"Error running command: {str(e)}"
 
 
