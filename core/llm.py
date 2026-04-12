@@ -11,6 +11,7 @@ structured tool calls, we execute them locally, and return results.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 class Message:
     role: str  # "user" or "assistant"
     content: str
+    images: list = None  # File paths for multimodal vision messages
 
 
 @dataclass
@@ -82,6 +84,88 @@ class LLMProvider(ABC):
     def supports_vision(self) -> bool:
         """Whether this provider/model supports image inputs."""
         return False
+
+
+# --- Multimodal image helpers ---
+
+def _encode_image_base64(path: str) -> tuple[str, str]:
+    """Encode an image file to base64 and determine MIME type."""
+    path_lower = path.lower()
+    if path_lower.endswith(".png"):
+        mime = "image/png"
+    elif path_lower.endswith(".gif"):
+        mime = "image/gif"
+    elif path_lower.endswith(".webp"):
+        mime = "image/webp"
+    else:
+        mime = "image/jpeg"
+    with open(path, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    return data, mime
+
+
+def _has_images(messages: list[Message]) -> bool:
+    """Check if any message in the list has image attachments."""
+    return any(m.images for m in messages)
+
+
+def _build_openai_messages(system_prompt: str, messages: list[Message]) -> list[dict]:
+    """Build OpenAI-format messages, embedding images as multimodal content."""
+    result = [{"role": "system", "content": system_prompt}]
+    for m in messages:
+        if m.images:
+            content_parts = [{"type": "text", "text": m.content}]
+            for img_path in m.images:
+                try:
+                    data, mime = _encode_image_base64(img_path)
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{data}"}
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to encode image {img_path}: {e}")
+            result.append({"role": m.role, "content": content_parts})
+        else:
+            result.append({"role": m.role, "content": m.content})
+    return result
+
+
+def _build_gemini_contents(messages: list[Message]) -> list[dict]:
+    """Build Gemini-format contents, embedding images as inline_data."""
+    contents = []
+    for m in messages:
+        role = "user" if m.role == "user" else "model"
+        parts = [{"text": m.content}]
+        if m.images:
+            for img_path in m.images:
+                try:
+                    data, mime = _encode_image_base64(img_path)
+                    parts.append({"inline_data": {"mime_type": mime, "data": data}})
+                except Exception as e:
+                    logger.warning(f"Failed to encode image {img_path}: {e}")
+        contents.append({"role": role, "parts": parts})
+    return contents
+
+
+def _build_claude_messages(messages: list[Message]) -> list[dict]:
+    """Build Claude API-format messages, embedding images as base64 source."""
+    result = []
+    for m in messages:
+        if m.images:
+            content = [{"type": "text", "text": m.content}]
+            for img_path in m.images:
+                try:
+                    data, mime = _encode_image_base64(img_path)
+                    content.append({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": mime, "data": data}
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to encode image {img_path}: {e}")
+            result.append({"role": m.role, "content": content})
+        else:
+            result.append({"role": m.role, "content": m.content})
+    return result
 
 
 class ClaudeCLIProvider(LLMProvider):
@@ -504,12 +588,17 @@ class ClaudeAPIProvider(LLMProvider):
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
+        # Use multimodal format if any message has images
+        if _has_images(messages):
+            api_messages = _build_claude_messages(messages)
+        else:
+            api_messages = [{"role": m.role, "content": m.content} for m in messages]
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "system": system_prompt,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": api_messages,
         }
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
@@ -757,13 +846,17 @@ class OpenAIProvider(LLMProvider):
         rejects_temperature = is_reasoning or is_gpt5
 
         token_key = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
+        if _has_images(messages) and self.supports_vision:
+            body_messages = _build_openai_messages(system_prompt, messages)
+        else:
+            body_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ]
         body = {
             "model": self.model,
             token_key: max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *[{"role": m.role, "content": m.content} for m in messages],
-            ],
+            "messages": body_messages,
         }
         if not rejects_temperature:
             body["temperature"] = temperature
@@ -790,7 +883,11 @@ class OpenRouterProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        return True
+        # Most OpenRouter models support vision, but some text-only models don't.
+        # Default to True — the API will error if the model can't handle images.
+        m = self.model.lower()
+        no_vision_keywords = ("nemotron", "hermes", "mixtral")
+        return not any(kw in m for kw in no_vision_keywords)
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
@@ -799,14 +896,18 @@ class OpenRouterProvider(LLMProvider):
             "HTTP-Referer": "https://github.com/nickathens/MyOldMachine",
             "X-Title": "MyOldMachine",
         }
+        if _has_images(messages) and self.supports_vision:
+            body_messages = _build_openai_messages(system_prompt, messages)
+        else:
+            body_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ]
         body = {
             "model": self.model,
             "max_completion_tokens": max_tokens,
             "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *[{"role": m.role, "content": m.content} for m in messages],
-            ],
+            "messages": body_messages,
         }
         return await _openai_tool_loop(
             url=f"{self.BASE_URL}/chat/completions",
@@ -833,11 +934,14 @@ class GeminiProvider(LLMProvider):
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         url = f"{self.API_URL}/{self.model}:generateContent"
 
-        # Build Gemini conversation format
-        contents = []
-        for m in messages:
-            role = "user" if m.role == "user" else "model"
-            contents.append({"role": role, "parts": [{"text": m.content}]})
+        # Build Gemini conversation format (with multimodal support)
+        if _has_images(messages):
+            contents = _build_gemini_contents(messages)
+        else:
+            contents = []
+            for m in messages:
+                role = "user" if m.role == "user" else "model"
+                contents.append({"role": role, "parts": [{"text": m.content}]})
 
         body = {
             "contents": contents,
@@ -1100,13 +1204,17 @@ class GrokProvider(LLMProvider):
         }
         is_reasoning = self._is_reasoning_model()
         token_key = "max_completion_tokens" if is_reasoning else "max_tokens"
+        if _has_images(messages) and self.supports_vision:
+            body_messages = _build_openai_messages(system_prompt, messages)
+        else:
+            body_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ]
         body = {
             "model": self.model,
             token_key: max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *[{"role": m.role, "content": m.content} for m in messages],
-            ],
+            "messages": body_messages,
         }
         if not is_reasoning:
             body["temperature"] = temperature
@@ -1150,14 +1258,18 @@ class KimiProvider(LLMProvider):
         }
         # Moonshot clamps temperature to [0, 1]
         clamped_temp = max(0.0, min(1.0, temperature))
+        if _has_images(messages) and self.supports_vision:
+            body_messages = _build_openai_messages(system_prompt, messages)
+        else:
+            body_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ]
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
             "temperature": clamped_temp,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *[{"role": m.role, "content": m.content} for m in messages],
-            ],
+            "messages": body_messages,
         }
         return await _openai_tool_loop(
             url=f"{self.BASE_URL}/chat/completions",
@@ -1196,14 +1308,18 @@ class MiniMaxProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if _has_images(messages) and self.supports_vision:
+            body_messages = _build_openai_messages(system_prompt, messages)
+        else:
+            body_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ]
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *[{"role": m.role, "content": m.content} for m in messages],
-            ],
+            "messages": body_messages,
         }
         return await _openai_tool_loop(
             url=f"{self.BASE_URL}/chat/completions",
@@ -1235,14 +1351,19 @@ class OllamaProvider(LLMProvider):
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         # OpenAI-compat endpoint uses max_tokens at root level, not options
+        # Ollama vision models (llava, bakllava, etc.) support images via OpenAI format
+        if _has_images(messages):
+            body_messages = _build_openai_messages(system_prompt, messages)
+        else:
+            body_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ]
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *[{"role": m.role, "content": m.content} for m in messages],
-            ],
+            "messages": body_messages,
         }
 
         # Check if Ollama is reachable before trying

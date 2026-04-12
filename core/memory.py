@@ -21,7 +21,10 @@ Tier-aware:
   The bot reads raw observations directly for context.
 """
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows — file locking unavailable
 import logging
 import os
 from datetime import datetime, timedelta
@@ -174,9 +177,11 @@ class MemoryManager:
         entry = f"[{timestamp}] ({obs_type}) {metadata_str} {content}\n"
 
         with open(obs_file, "a") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            if fcntl:
+                fcntl.flock(f, fcntl.LOCK_EX)
             f.write(entry)
-            fcntl.flock(f, fcntl.LOCK_UN)
+            if fcntl:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
         logger.info(f"Saved {obs_type} observation for user {user_id} (importance={importance})")
         return True
@@ -229,9 +234,11 @@ class MemoryManager:
         # read-modify-write cycle. This prevents add_observation() from
         # appending between our read and our atomic rename (which would
         # silently drop the appended observation).
-        lock_fd = os.open(str(obs_file), os.O_RDONLY)
+        lock_fd = None
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            if fcntl:
+                lock_fd = os.open(str(obs_file), os.O_RDONLY)
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
             content = obs_file.read_text()
             lines = content.split("\n")
@@ -277,8 +284,10 @@ class MemoryManager:
                 os.fsync(f.fileno())
             tmp.rename(obs_file)
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            os.close(lock_fd)
+            if fcntl and lock_fd is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            if lock_fd is not None:
+                os.close(lock_fd)
 
         logger.info(f"Archived {len(archive_lines)} observations for user {user_id}, "
                      f"kept {len(recent_lines)} recent")

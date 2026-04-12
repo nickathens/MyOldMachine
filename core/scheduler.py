@@ -138,8 +138,13 @@ def parse_natural_time(text: str) -> Optional[datetime]:
                     hour, minute = hm
             current_weekday = now.weekday()
             days_ahead = i - current_weekday
-            if days_ahead <= 0:
+            if days_ahead < 0:
                 days_ahead += 7
+            elif days_ahead == 0:
+                # Same day — use today if target time hasn't passed, else next week
+                target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if target_today <= now:
+                    days_ahead = 7
             target = now + timedelta(days=days_ahead)
             return target.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
@@ -473,14 +478,20 @@ async def _execute_command(job_id: str):
         except asyncio.TimeoutError:
             # Kill the process and its children before re-raising
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                if hasattr(os, 'killpg'):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                else:
+                    proc.terminate()
             except (ProcessLookupError, PermissionError, OSError):
                 proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5)
             except asyncio.TimeoutError:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    if hasattr(os, 'killpg'):
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    else:
+                        proc.kill()
                 except (ProcessLookupError, PermissionError, OSError):
                     proc.kill()
                 try:
@@ -677,6 +688,10 @@ class Scheduler:
                 weekdays: list = None, log_file: str = None,
                 created_context: str = "", end_date: datetime = None) -> Job:
         """Add a new job. end_date sets when recurring jobs stop firing."""
+        if end_date and run_at and end_date < run_at:
+            raise ValueError(
+                f"end_date ({end_date.isoformat()}) must be after run_at ({run_at.isoformat()})"
+            )
         job_id = str(uuid.uuid4())[:8]
 
         _save_meta(
@@ -923,7 +938,17 @@ class Scheduler:
             if run_at >= now:
                 continue
 
-            delay_minutes = int((now - run_at).total_seconds() / 60)
+            delay_seconds = (now - run_at).total_seconds()
+            delay_minutes = int(delay_seconds / 60)
+
+            # Skip jobs missed by more than 24 hours — stale reminders aren't useful
+            if delay_seconds > 86400:
+                logger.info(
+                    f"Discarding stale missed job {meta['job_id']} "
+                    f"({meta.get('name', '')}) — was due {delay_minutes}m ago (>24h)"
+                )
+                _delete_meta(meta["job_id"])
+                continue
             job_type = meta.get("job_type", "reminder")
             logger.warning(
                 f"Recovering missed {job_type} job {meta['job_id']} "

@@ -6,6 +6,7 @@ Triggered via /update command in Telegram.
 """
 
 import logging
+import os
 import platform
 import subprocess
 import sys
@@ -104,7 +105,8 @@ def restart_service() -> tuple[bool, str]:
     system = platform.system()
 
     if system == "Linux":
-        cmd = "sudo -S systemctl restart myoldmachine" if password else "sudo systemctl restart myoldmachine"
+        service_name = os.environ.get("SERVICE_NAME", "myoldmachine")
+        cmd = f"sudo -S systemctl restart {service_name}" if password else f"sudo systemctl restart {service_name}"
         stdin_data = (password + "\n") if password else None
         result = subprocess.run(cmd, shell=True, input=stdin_data, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:

@@ -699,8 +699,11 @@ class ProcessRegistry:
             pid = managed.process.pid
             # Kill process group on Unix to get children too
             try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
+                if hasattr(os, 'killpg'):
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                else:
+                    managed.process.terminate()
+            except (ProcessLookupError, PermissionError, OSError):
                 managed.process.terminate()
 
             # Give it 5 seconds to die
@@ -708,8 +711,11 @@ class ProcessRegistry:
                 await asyncio.wait_for(managed.process.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 try:
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                    if hasattr(os, 'killpg'):
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    else:
+                        managed.process.kill()
+                except (ProcessLookupError, PermissionError, OSError):
                     managed.process.kill()
                 await managed.process.wait()
 
@@ -1128,7 +1134,10 @@ async def _stream_process_output(managed: ManagedProcess, timeout: float):
             # Timeout — kill the process if it's foreground
             if not managed.is_background:
                 try:
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    if hasattr(os, 'killpg'):
+                        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    else:
+                        process.terminate()
                 except (ProcessLookupError, PermissionError, OSError):
                     process.terminate()
                 try:
@@ -1145,7 +1154,10 @@ async def _stream_process_output(managed: ManagedProcess, timeout: float):
         except asyncio.TimeoutError:
             # Process is stuck — kill it
             try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                if hasattr(os, 'killpg'):
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                else:
+                    process.kill()
             except (ProcessLookupError, PermissionError, OSError):
                 process.kill()
             try:

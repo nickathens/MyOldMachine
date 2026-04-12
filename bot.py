@@ -182,6 +182,33 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
         _compaction_scheduled.discard(sf_key)
 
 
+async def _auto_transcribe_voice(voice_path: str) -> str:
+    """Auto-transcribe a voice message using Whisper. Returns transcript or empty string."""
+    venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [venv_python, "-m", "whisper", voice_path,
+             "--model", "base", "--output_format", "txt",
+             "--output_dir", str(Path(voice_path).parent)],
+            capture_output=True, text=True, timeout=120,
+        )
+        txt_file = Path(voice_path).with_suffix(".txt")
+        if txt_file.exists():
+            transcript = txt_file.read_text().strip()
+            txt_file.unlink(missing_ok=True)
+            if transcript:
+                logger.info(f"Auto-transcribed voice ({len(transcript)} chars)")
+                return transcript
+    except FileNotFoundError:
+        logger.debug("Whisper not available for auto-transcription")
+    except subprocess.TimeoutExpired:
+        logger.warning("Voice auto-transcription timed out")
+    except Exception as e:
+        logger.warning(f"Voice auto-transcription failed: {e}")
+    return ""
+
+
 def _extract_pdf_text(file_path: str, max_chars: int = 50000, max_ocr_pages: int = 5) -> str:
     """Extract text from a PDF file. Falls back to OCR for scanned PDFs.
 
@@ -778,25 +805,35 @@ def build_system_prompt(user_id: int) -> str:
     # Memory dir used by project/topic listing below
     memory_dir = DATA_DIR / "memory"
 
-    # Custom instructions file
+    # Custom instructions file (cap at 8000 chars to prevent context bloat)
     instructions_file = DATA_DIR / "instructions.md"
     if instructions_file.exists():
         parts.append("### Custom Instructions:")
-        parts.append(instructions_file.read_text())
+        instructions_text = instructions_file.read_text()
+        if len(instructions_text) > 8000:
+            instructions_text = instructions_text[:7500] + "\n\n[... instructions truncated for context management]"
+        parts.append(instructions_text)
         parts.append("")
 
     # CLAUDE.md and SYSTEM-CONTEXT.md — only for tool-use providers
+    # Cap at 15000 chars each to prevent context bloat on small-context models
     if has_tool_use:
         claude_md = Path.home() / "CLAUDE.md"
         if claude_md.exists():
             parts.append("### Global Instructions (CLAUDE.md):")
-            parts.append(claude_md.read_text())
+            claude_md_text = claude_md.read_text()
+            if len(claude_md_text) > 15000:
+                claude_md_text = claude_md_text[:14000] + "\n\n[... CLAUDE.md truncated for context management]"
+            parts.append(claude_md_text)
             parts.append("")
 
         system_context = Path.home() / "SYSTEM-CONTEXT.md"
         if system_context.exists() and user_role == "admin":
             parts.append("### System Context:")
-            parts.append(system_context.read_text())
+            ctx_text = system_context.read_text()
+            if len(ctx_text) > 10000:
+                ctx_text = ctx_text[:9000] + "\n\n[... system context truncated]"
+            parts.append(ctx_text)
             parts.append("")
 
     # Active projects from memory (cap at 8 to prevent context bloat)
@@ -1002,10 +1039,18 @@ def sanitize_response(content: str) -> str:
     return content.strip()
 
 
-async def call_llm(user_id: int, message: str, chat=None) -> str:
-    """Call the configured LLM provider and return the response text."""
+async def call_llm(user_id: int, message: str, chat=None, images: list = None) -> str:
+    """Call the configured LLM provider and return the response text.
+
+    Args:
+        images: Optional list of file paths to images for multimodal vision.
+    """
     system_prompt = build_system_prompt(user_id)
     messages = build_messages(user_id, message)
+
+    # Attach images to the user's message for multimodal vision support
+    if images and messages:
+        messages[-1].images = images
 
     # Size-based conversation trimming: if system prompt + messages exceeds the
     # character budget, trim older conversation messages (not the new user message).
@@ -1455,7 +1500,8 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if job.job_type == "command":
         await update.message.reply_text(
             f"Job '{text}' is a system command ({job.name}). "
-            f"System jobs can't be cancelled via /cancel."
+            f"System jobs can't be cancelled via /cancel.\n\n"
+            f"To manage system jobs, use: /schedule list"
         )
         return
     scheduler.remove_job(text)
@@ -1548,7 +1594,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id):
         await update.message.reply_text("Admin only.")
         return
-    report = build_health_report(BOT_DIR)
+    report = await asyncio.to_thread(build_health_report, BOT_DIR)
     await update.message.reply_text(report)
 
 
@@ -1559,10 +1605,10 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("Checking for updates...")
     try:
-        result = full_update(BOT_DIR)
+        result = await asyncio.to_thread(full_update, BOT_DIR)
         # Re-run system probe to detect newly installed tools
         try:
-            probe_system(DATA_DIR)
+            await asyncio.to_thread(probe_system, DATA_DIR)
             result += "\n\nSystem capabilities re-probed."
         except Exception:
             pass
@@ -1606,7 +1652,7 @@ async def cleanup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Admin only.")
         return
     from utils.cleanup import run_cleanup
-    report = run_cleanup()
+    report = await asyncio.to_thread(run_cleanup)
     await update.message.reply_text(report)
 
 
@@ -1616,8 +1662,22 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Admin only.")
         return
     from core.updater import restart_service
-    await update.message.reply_text("Restarting in 2 seconds...")
-    await asyncio.sleep(2)
+    await update.message.reply_text("Shutting down gracefully, then restarting...")
+    # Graceful shutdown: stop scheduler and kill background processes before restart
+    scheduler = get_scheduler()
+    if scheduler:
+        scheduler.stop()
+    registry = get_process_registry()
+    running = registry.list_running()
+    if running:
+        await registry.cleanup_all()
+    if isinstance(_llm_provider, ClaudeCLIProvider):
+        # Give Claude CLI processes up to 10 seconds to finish
+        for _ in range(10):
+            if not _llm_provider._active_processes:
+                break
+            await asyncio.sleep(1)
+    await asyncio.sleep(1)
     success, msg = restart_service()
     if not success:
         await update.message.reply_text(f"Restart failed: {msg}")
@@ -1751,9 +1811,16 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _llm_provider.on_progress_clear = clear_task_progress
         logger.info(f"Provider switched to {new_provider}/{new_model} by user {user_id}")
         tool_use = "Yes" if _llm_provider.supports_tool_use else "No"
+        warning = ""
+        if not _llm_provider.supports_tool_use:
+            warning = (
+                "\n\nWARNING: This provider has no tool-use support. "
+                "You lose all skills, file management, scheduling, and "
+                "command execution. The bot becomes text-only."
+            )
         await update.message.reply_text(
             f"Switched to {new_provider} / {new_model}\n"
-            f"Tool-use: {tool_use}\n\n"
+            f"Tool-use: {tool_use}{warning}\n\n"
             f"No restart needed. Send a message to test."
         )
     except Exception as e:
@@ -2184,6 +2251,7 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
                 caption = upd.message.text or upd.message.caption or ""
 
         user_message = caption
+        image_paths = [str(p) for p, t in all_attachments if t == "image"] if all_attachments else []
         if all_attachments:
             info = "\n\n[Attachments:]"
             for path, ftype in all_attachments:
@@ -2210,7 +2278,8 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
             except Exception:
                 pass
 
-            response = await call_llm(user_id, user_message, chat=chat)
+            response = await call_llm(user_id, user_message, chat=chat,
+                                      images=image_paths or None)
 
             _save_and_send(user_id, user_message, response, session=session, message_id=first_msg_id)
 
@@ -2271,6 +2340,23 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
         attachments = await download_attachments(update, context)
         user_message = update.message.text or update.message.caption or ""
 
+        # Collect image paths for multimodal vision support
+        image_paths = [str(p) for p, t in attachments if t == "image"] if attachments else []
+
+        # Auto-transcribe voice for non-CLI providers (they can't invoke Whisper via tools)
+        if attachments and not isinstance(_llm_provider, ClaudeCLIProvider):
+            for path, ftype in attachments:
+                if ftype == "voice":
+                    transcript = await _auto_transcribe_voice(str(path))
+                    if transcript:
+                        # Replace voice path reference with transcript in the message
+                        attachments = [
+                            (p, t) if t != "voice" or str(p) != str(path)
+                            else (p, "voice_transcribed")
+                            for p, t in attachments
+                        ]
+                        user_message = (user_message + f"\n\n[Voice message transcribed]: {transcript}").strip()
+
         if attachments:
             info = "\n\n[Attachments:]"
             for path, ftype in attachments:
@@ -2280,6 +2366,8 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     info += f"\n  [PDF content pre-extracted — file not available for Read tool]\n{pdf_text}"
                 elif ftype == "image":
                     info += f"\n- {ftype}: {path} (viewable with Read tool)"
+                elif ftype == "voice_transcribed":
+                    continue  # Already included in user_message above
                 else:
                     info += f"\n- {ftype}: {path}"
             user_message = (user_message + info) if user_message else f"[Sent file(s)]{info}"
@@ -2297,7 +2385,8 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-            response = await call_llm(user_id, user_message, chat=update.message.chat)
+            response = await call_llm(user_id, user_message, chat=update.message.chat,
+                                      images=image_paths or None)
 
             # Save to current session (topic or main) with compaction
             _save_and_send(user_id, user_message, response, session=session,

@@ -164,11 +164,28 @@ class SessionManager:
         if self.summary_file.exists():
             self.summary_file.unlink()
             logger.info("Daily reset: cleared conversation summary")
+        # Archive old topic sessions (>30 days untouched)
+        self._cleanup_old_topics()
         meta = self.load_session_meta()
         meta["last_reset"] = datetime.now().isoformat()
         meta["message_count"] = 0
         self.save_session_meta(meta)
         return True
+
+    def _cleanup_old_topics(self, max_age_days: int = 30):
+        """Archive topic session files older than max_age_days."""
+        if not self.topics_dir.exists():
+            return
+        archive_dir = self.user_dir / "topics_archive"
+        cutoff = datetime.now().timestamp() - (max_age_days * 86400)
+        for topic_file in self.topics_dir.glob("*.json"):
+            try:
+                if topic_file.stat().st_mtime < cutoff:
+                    archive_dir.mkdir(parents=True, exist_ok=True)
+                    topic_file.rename(archive_dir / topic_file.name)
+                    logger.info(f"Daily reset: archived old topic {topic_file.stem}")
+            except Exception as e:
+                logger.warning(f"Failed to archive topic {topic_file}: {e}")
 
     def smart_trim_conversation(self, history: list) -> list:
         """
@@ -280,10 +297,11 @@ class SessionManager:
         if len(history) <= threshold:
             return history, ""
 
-        # Check if claude CLI is available — without it we can't summarize,
-        # and trimming without summarizing would lose context permanently
-        if not shutil.which("claude"):
-            logger.info("Compaction skipped — claude CLI not available")
+        # Check if claude CLI or an external compaction runner is available.
+        # Without either, we can't summarize, and trimming without
+        # summarizing would lose context permanently.
+        if not shutil.which("claude") and not self._compaction_runner:
+            logger.info("Compaction skipped — no claude CLI and no compaction runner configured")
             return history, ""
 
         # Dedup guard: skip if a compaction task is already running for this file
