@@ -901,6 +901,17 @@ def build_system_prompt(user_id: int) -> str:
             "conversation."
         )
         parts.append("")
+        parts.append(
+            "**WARNING: Tool results from the previous session are GONE.** "
+            "The summary below captures key decisions and state, but any tool "
+            "outputs (web scrapes, file reads, command results) from the prior "
+            "session are permanently lost. If the summary says research was "
+            "'attempted' or 'in progress', treat it as NOT DONE. If you cannot "
+            "find the actual delivered content in your visible context right now, "
+            "it does not exist. Never claim prior work was completed unless you "
+            "can quote the specific results."
+        )
+        parts.append("")
         parts.append(summary)
         parts.append("")
         parts.append("Recent messages are preserved verbatim below.")
@@ -961,7 +972,12 @@ def build_system_prompt(user_id: int) -> str:
         parts.append(
             "Resume the conversation naturally from where it left off. "
             "Do not acknowledge the summary, do not recap, respond only "
-            "to the user's latest message."
+            "to the user's latest message.\n\n"
+            "ANTI-CONFABULATION RULE: NEVER say 'as shown above', 'analysis is "
+            "complete above', 'already got everything', or reference prior results "
+            "unless you can see the actual content in your current context. If the "
+            "summary mentions work that was attempted or in progress, assume the "
+            "results are LOST and you must redo the work from scratch."
         )
 
     return "\n".join(parts)
@@ -1037,6 +1053,29 @@ def sanitize_response(content: str) -> str:
     content = re.sub(r'<human>', '[human-tag]', content, flags=re.IGNORECASE)
 
     return content.strip()
+
+
+# Patterns that indicate confabulated references to non-existent prior work.
+# These catch the specific failure mode where the model claims results exist
+# from a compressed/lost session. Only applied to SHORT responses (under 500 chars)
+# to avoid false positives in legitimate long responses.
+_CONFABULATION_PATTERNS = [
+    re.compile(r"\balready\b.{0,30}\b(?:got|have|had|obtained|gathered)\b.{0,30}\b(?:everything|all|data|results|info)\b.{0,20}\b(?:needed|from|we need)", re.IGNORECASE),
+    re.compile(r"\b(?:analysis|results?|research|findings?)\b.{0,20}\b(?:is|are)\b.{0,10}\bcomplete\b.{0,10}\babove\b", re.IGNORECASE),
+    re.compile(r"\bas (?:shown|detailed|presented|discussed|mentioned|noted|covered) above\b", re.IGNORECASE),
+    re.compile(r"\balready (?:did|done|completed|finished|covered|handled|went through)\b.{0,20}\bthat\b", re.IGNORECASE),
+]
+
+
+def _is_confabulated_response(text: str) -> bool:
+    """Detect responses that reference non-existent prior work.
+
+    Only flags SHORT responses (under 500 chars) that match confabulation patterns.
+    Long responses are unlikely to be pure confabulation -- they contain actual content.
+    """
+    if len(text) > 500:
+        return False
+    return any(p.search(text) for p in _CONFABULATION_PATTERNS)
 
 
 async def call_llm(user_id: int, message: str, chat=None, images: list = None) -> str:
@@ -1154,6 +1193,18 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
         return "No response generated. Try again or rephrase your message."
 
     text = sanitize_response(response.text)
+
+    # Detect confabulated references to non-existent prior work.
+    # Only triggers on short responses that match specific patterns.
+    if _is_confabulated_response(text):
+        logger.warning(
+            f"Confabulation detected for user {user_id}: {text[:200]!r}"
+        )
+        text = (
+            "I don't have the results from my previous session available. "
+            "Let me redo this work. Could you repeat what you need?"
+        )
+
     logger.info(f"LLM response for {user_id}: {len(text)} chars ({response.provider}/{response.model})")
     return text
 

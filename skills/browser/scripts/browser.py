@@ -69,12 +69,77 @@ STORAGE_FILE = "/tmp/browser_storage.json"
 REFS_FILE = "/tmp/browser_refs.json"
 
 MAX_TABS = 5  # Hard limit to prevent RAM exhaustion on 16GB machine
+MAX_BROWSER_INSTANCES = 2  # Max concurrent Chromium processes (daemon + legacy)
+BROWSER_LOCK_DIR = "/tmp/browser_locks"
 
 INTERACTIVE_ROLES = {
     "button", "link", "textbox", "checkbox", "radio", "combobox", "listbox",
     "menuitem", "menuitemcheckbox", "menuitemradio", "option", "searchbox",
     "slider", "spinbutton", "switch", "tab", "treeitem",
 }
+
+# ---------------------------------------------------------------------------
+# Browser instance limiter -- prevents RAM exhaustion from concurrent Chromiums
+# ---------------------------------------------------------------------------
+
+def _acquire_browser_slot():
+    """Acquire a browser instance slot using file locks.
+
+    Returns (fd, path) on success. Raises RuntimeError if all slots taken.
+    Locks auto-release when the process exits or fd is closed.
+    """
+    os.makedirs(BROWSER_LOCK_DIR, exist_ok=True)
+    for i in range(MAX_BROWSER_INSTANCES):
+        lock_path = os.path.join(BROWSER_LOCK_DIR, f"slot_{i}.lock")
+        fd = None
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY)
+            if sys.platform != "win32":
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode())
+            return (fd, lock_path)
+        except (OSError, BlockingIOError):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+            continue
+    raise RuntimeError(
+        f"Browser limit reached ({MAX_BROWSER_INSTANCES} concurrent Chromium instances). "
+        f"Close existing browsers first: 'browser.py stop' or wait for operations to complete."
+    )
+
+
+def _release_browser_slot(slot):
+    """Release a browser instance slot."""
+    if not slot:
+        return
+    fd, lock_path = slot
+    try:
+        if sys.platform != "win32":
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    except Exception:
+        pass
+    # Do NOT unlink lock files -- flock operates on inodes, not paths.
+    # Unlinking + recreating can cause two processes to lock different inodes
+    # at the same path, bypassing the slot limit. Files are tiny and /tmp
+    # is cleaned on reboot.
+
+
+class BrowserSlot:
+    """Context manager for browser instance limiting."""
+    def __enter__(self):
+        self._slot = _acquire_browser_slot()
+        return self
+
+    def __exit__(self, *args):
+        _release_browser_slot(self._slot)
+
 
 # ---------------------------------------------------------------------------
 # Ref system -- parse aria snapshots into numbered refs
@@ -527,6 +592,8 @@ async def run_daemon(url: str = None):
     """Run the browser daemon server."""
     import socket as sock
 
+    slot = _acquire_browser_slot()
+
     # Clean up old socket
     if os.path.exists(SOCKET_PATH):
         os.unlink(SOCKET_PATH)
@@ -595,6 +662,7 @@ async def run_daemon(url: str = None):
             await daemon.browser.close()
         if daemon.playwright:
             await daemon.playwright.stop()
+        _release_browser_slot(slot)
         print("Browser daemon stopped", file=sys.stderr)
 
 
@@ -652,11 +720,18 @@ def ensure_daemon(url: str = None):
     if pid == 0:
         # Child process -- become daemon
         os.setsid()
-        # Close stdio
-        sys.stdin.close()
-        devnull = open(os.devnull, 'w')
-        sys.stdout = devnull
-        sys.stderr = devnull
+        # Close inherited file descriptors properly (not just Python objects)
+        # This is critical: without closing the real fds, piped commands
+        # (e.g. browser.py goto ... | tail -3) will hang forever waiting for EOF
+        devnull_fd = os.open(os.devnull, os.O_RDWR)
+        os.dup2(devnull_fd, 0)  # stdin
+        os.dup2(devnull_fd, 1)  # stdout
+        os.dup2(devnull_fd, 2)  # stderr
+        if devnull_fd > 2:
+            os.close(devnull_fd)
+        sys.stdin = open(0, 'r')
+        sys.stdout = open(1, 'w')
+        sys.stderr = open(2, 'w')
 
         try:
             asyncio.run(run_daemon(url))
@@ -710,204 +785,210 @@ async def legacy_screenshot(args):
     """Legacy: screenshot <url> <output> [opts]"""
     from playwright.async_api import async_playwright
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        storage_state = None
-        session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
-        if session_file and session_file.exists():
+    with BrowserSlot():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            storage_state = None
+            session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
+            if session_file and session_file.exists():
+                try:
+                    storage_state = json.loads(session_file.read_text())
+                except Exception:
+                    pass
+
+            ctx = await browser.new_context(
+                viewport={"width": args.width, "height": args.height},
+                storage_state=storage_state,
+            )
+            page = await ctx.new_page()
             try:
-                storage_state = json.loads(session_file.read_text())
+                await page.goto(args.url, wait_until="networkidle", timeout=30000)
             except Exception:
-                pass
+                await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+            if args.wait > 0:
+                await asyncio.sleep(args.wait / 1000)
 
-        ctx = await browser.new_context(
-            viewport={"width": args.width, "height": args.height},
-            storage_state=storage_state,
-        )
-        page = await ctx.new_page()
-        try:
-            await page.goto(args.url, wait_until="networkidle", timeout=30000)
-        except Exception:
-            await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
-        if args.wait > 0:
-            await asyncio.sleep(args.wait / 1000)
-
-        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        await page.screenshot(path=args.output, full_page=args.full_page)
-        await browser.close()
-        print(f"Screenshot saved: {args.output}")
+            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=args.output, full_page=args.full_page)
+            await browser.close()
+            print(f"Screenshot saved: {args.output}")
 
 
 async def legacy_extract(args):
     """Legacy: extract <url> [opts]"""
     from playwright.async_api import async_playwright
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        ctx = await browser.new_context(viewport={"width": 1280, "height": 720})
-        page = await ctx.new_page()
-        try:
-            await page.goto(args.url, wait_until="networkidle", timeout=30000)
-        except Exception:
-            await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
-        if args.wait > 0:
-            await asyncio.sleep(args.wait / 1000)
+    with BrowserSlot():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            ctx = await browser.new_context(viewport={"width": 1280, "height": 720})
+            page = await ctx.new_page()
+            try:
+                await page.goto(args.url, wait_until="networkidle", timeout=30000)
+            except Exception:
+                await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+            if args.wait > 0:
+                await asyncio.sleep(args.wait / 1000)
 
-        if args.selector:
-            elements = await page.query_selector_all(args.selector)
-            if args.format == "html":
-                results = [await el.inner_html() for el in elements]
+            if args.selector:
+                elements = await page.query_selector_all(args.selector)
+                if args.format == "html":
+                    results = [await el.inner_html() for el in elements]
+                else:
+                    results = [await el.inner_text() for el in elements]
+                content = "\n\n".join(results)
             else:
-                results = [await el.inner_text() for el in elements]
-            content = "\n\n".join(results)
-        else:
-            if args.format == "html":
-                content = await page.content()
-            else:
-                content = await page.inner_text("body")
-        await browser.close()
-        print(content)
+                if args.format == "html":
+                    content = await page.content()
+                else:
+                    content = await page.inner_text("body")
+            await browser.close()
+            print(content)
 
 
 async def legacy_click(args):
     """Legacy: click <url> <selector>"""
     from playwright.async_api import async_playwright
 
-    session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        storage_state = None
-        if session_file and session_file.exists():
+    with BrowserSlot():
+        session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            storage_state = None
+            if session_file and session_file.exists():
+                try:
+                    storage_state = json.loads(session_file.read_text())
+                except Exception:
+                    pass
+            ctx = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                storage_state=storage_state,
+            )
+            page = await ctx.new_page()
             try:
-                storage_state = json.loads(session_file.read_text())
+                await page.goto(args.url, wait_until="networkidle", timeout=30000)
             except Exception:
-                pass
-        ctx = await browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            storage_state=storage_state,
-        )
-        page = await ctx.new_page()
-        try:
-            await page.goto(args.url, wait_until="networkidle", timeout=30000)
-        except Exception:
-            await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(1)
+                await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1)
 
-        await page.click(args.selector, timeout=10000)
-        await asyncio.sleep(1)
+            await page.click(args.selector, timeout=10000)
+            await asyncio.sleep(1)
 
-        if session_file:
-            storage = await ctx.storage_state()
-            session_file.write_text(json.dumps(storage, indent=2))
+            if session_file:
+                storage = await ctx.storage_state()
+                session_file.write_text(json.dumps(storage, indent=2))
 
-        print(f"Clicked: {args.selector}")
-        print(f"Current URL: {page.url}")
+            print(f"Clicked: {args.selector}")
+            print(f"Current URL: {page.url}")
 
-        if args.screenshot:
-            await page.screenshot(path=args.screenshot)
-            print(f"Screenshot: {args.screenshot}")
-        await browser.close()
+            if args.screenshot:
+                await page.screenshot(path=args.screenshot)
+                print(f"Screenshot: {args.screenshot}")
+            await browser.close()
 
 
 async def legacy_fill(args):
     """Legacy: fill <url> --field sel=val"""
     from playwright.async_api import async_playwright
 
-    session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        storage_state = None
-        if session_file and session_file.exists():
+    with BrowserSlot():
+        session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            storage_state = None
+            if session_file and session_file.exists():
+                try:
+                    storage_state = json.loads(session_file.read_text())
+                except Exception:
+                    pass
+            ctx = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                storage_state=storage_state,
+            )
+            page = await ctx.new_page()
             try:
-                storage_state = json.loads(session_file.read_text())
+                await page.goto(args.url, wait_until="networkidle", timeout=30000)
             except Exception:
-                pass
-        ctx = await browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            storage_state=storage_state,
-        )
-        page = await ctx.new_page()
-        try:
-            await page.goto(args.url, wait_until="networkidle", timeout=30000)
-        except Exception:
-            await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(1)
+                await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1)
 
-        for field_spec in args.field:
-            if "=" not in field_spec:
-                print(f"Invalid field format: {field_spec}", file=sys.stderr)
-                continue
-            selector, value = field_spec.split("=", 1)
-            await page.fill(selector, value, timeout=10000)
-            print(f"Filled: {selector}")
+            for field_spec in args.field:
+                if "=" not in field_spec:
+                    print(f"Invalid field format: {field_spec}", file=sys.stderr)
+                    continue
+                selector, value = field_spec.split("=", 1)
+                await page.fill(selector, value, timeout=10000)
+                print(f"Filled: {selector}")
 
-        if session_file:
-            storage = await ctx.storage_state()
-            session_file.write_text(json.dumps(storage, indent=2))
+            if session_file:
+                storage = await ctx.storage_state()
+                session_file.write_text(json.dumps(storage, indent=2))
 
-        if args.submit:
-            await page.click(args.submit, timeout=10000)
-            await asyncio.sleep(2)
-            print(f"Submitted via: {args.submit}")
-            print(f"Current URL: {page.url}")
+            if args.submit:
+                await page.click(args.submit, timeout=10000)
+                await asyncio.sleep(2)
+                print(f"Submitted via: {args.submit}")
+                print(f"Current URL: {page.url}")
 
-        if args.screenshot:
-            await page.screenshot(path=args.screenshot)
-            print(f"Screenshot: {args.screenshot}")
-        await browser.close()
+            if args.screenshot:
+                await page.screenshot(path=args.screenshot)
+                print(f"Screenshot: {args.screenshot}")
+            await browser.close()
 
 
 async def legacy_eval(args):
     """Legacy: eval <url> <javascript>"""
     from playwright.async_api import async_playwright
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        ctx = await browser.new_context(viewport={"width": 1280, "height": 720})
-        page = await ctx.new_page()
-        try:
-            await page.goto(args.url, wait_until="networkidle", timeout=30000)
-        except Exception:
-            await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(1)
-        result = await page.evaluate(args.javascript)
-        print(json.dumps(result, indent=2, default=str))
-        await browser.close()
+    with BrowserSlot():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            ctx = await browser.new_context(viewport={"width": 1280, "height": 720})
+            page = await ctx.new_page()
+            try:
+                await page.goto(args.url, wait_until="networkidle", timeout=30000)
+            except Exception:
+                await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1)
+            result = await page.evaluate(args.javascript)
+            print(json.dumps(result, indent=2, default=str))
+            await browser.close()
 
 
 async def legacy_session(args):
     """Legacy: session <url>"""
     from playwright.async_api import async_playwright
 
-    session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        storage_state = None
-        if session_file and session_file.exists():
+    with BrowserSlot():
+        session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            storage_state = None
+            if session_file and session_file.exists():
+                try:
+                    storage_state = json.loads(session_file.read_text())
+                except Exception:
+                    pass
+            ctx = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                storage_state=storage_state,
+            )
+            page = await ctx.new_page()
             try:
-                storage_state = json.loads(session_file.read_text())
+                await page.goto(args.url, wait_until="networkidle", timeout=30000)
             except Exception:
-                pass
-        ctx = await browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            storage_state=storage_state,
-        )
-        page = await ctx.new_page()
-        try:
-            await page.goto(args.url, wait_until="networkidle", timeout=30000)
-        except Exception:
-            await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(1)
+                await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1)
 
-        if session_file:
-            storage = await ctx.storage_state()
-            session_file.write_text(json.dumps(storage, indent=2))
+            if session_file:
+                storage = await ctx.storage_state()
+                session_file.write_text(json.dumps(storage, indent=2))
 
-        print(f"Session started: {args.url}")
-        print(f"Session file: {session_file}")
-        print(f"Current URL: {page.url}")
-        print(f"Title: {await page.title()}")
-        await browser.close()
+            print(f"Session started: {args.url}")
+            print(f"Session file: {session_file}")
+            print(f"Current URL: {page.url}")
+            print(f"Title: {await page.title()}")
+            await browser.close()
 
 
 # ---------------------------------------------------------------------------
