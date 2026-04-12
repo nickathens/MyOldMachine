@@ -156,12 +156,13 @@ utils/
 | DeepSeek | OpenAI-compat | deepseek-chat | V3.2. $0.28/$0.42/MTok. No vision |
 | Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | Vision on all models. 2M ctx. Grok 4.20 flagship |
 | Kimi (Moonshot) | OpenAI-compat | kimi-k2.5 | Multimodal, 256K ctx. $0.60/$3.00/MTok. Vision on K2.5 |
+| MiniMax | OpenAI-compat | MiniMax-M2.7 | Reasoning, 205K ctx. $0.30/$1.20/MTok. Vision on M2.5 |
 | Gemini | Native | gemini-2.5-flash | Free tier available. Gemini 3 series in preview |
 | Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
 | Ollama Cloud | OpenAI-compat | qwen3.5:cloud | Cloud-hosted, free, no local GPU needed |
 | OpenRouter | OpenAI-compat | nemotron-3-super-120b:free | 15 free models w/tool-use, 200 req/day |
 
-**Total: 10 providers.**
+**Total: 11 providers.**
 
 ## Boot Persistence
 
@@ -208,7 +209,7 @@ Full production readiness update — 166 unique users cloning, 0 issues filed:
 
 ## Model Refresh (Apr 12)
 
-All 10 providers verified against official API docs and pricing pages:
+All 11 providers verified against official API docs and pricing pages:
 1. **OpenAI**: Added GPT-5.4 Mini ($0.75/$4.50), GPT-5.4 Nano ($0.20/$1.25), o3-mini. Updated GPT-4.1 Mini pricing ($0.40/$1.60). Removed pinned snapshot.
 2. **Grok (xAI)**: Updated model IDs from `grok-4.20-beta-0309-*` to `grok-4.20-0309-*` (beta removed). Added Multi-Agent model. Removed retired models (grok-code-fast-1, grok-4-0709, grok-3, grok-3-mini).
 3. **Gemini**: Added Gemini 3 Flash Preview and 3.1 Flash-Lite Preview (both have free tier). Updated deprecation timeline (2.5 Flash/Pro shutdown June 17, Flash-Lite Jul-Oct). Noted gemini-2.0-flash is deprecated.
@@ -217,6 +218,7 @@ All 10 providers verified against official API docs and pricing pages:
 6. **OpenRouter**: Major free model churn. Removed 5 models no longer free (hunter-alpha, healer-alpha, step-3.5-flash, mistral-small-3.1, trinity-mini, qwen3-4b). Added 2 new (Gemma 4 26B/31B with vision+tools). Changed default from `openrouter/hunter-alpha` to `nvidia/nemotron-3-super-120b-a12b:free`.
 7. **Claude/DeepSeek**: No changes needed. Model lists already current.
 8. **Claude API**: Pinned `claude-sonnet-4-5-20250929` for the legacy entry.
+9. **MiniMax**: Added as 11th provider. M2.7 (reasoning, 205K ctx), M2.7-highspeed, M2.5 (vision), M2-her (dialogue). OpenAI-compat at api.minimax.io/v1. $0.30/$1.20/MTok.
 
 ## Known Issues
 

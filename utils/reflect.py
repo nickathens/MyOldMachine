@@ -337,6 +337,7 @@ def _call_api(prompt: str) -> str:
         "deepseek": ("https://api.deepseek.com/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
         "grok": ("https://api.x.ai/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
         "kimi": ("https://api.moonshot.ai/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
+        "minimax": ("https://api.minimax.io/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
         "openrouter": ("https://openrouter.ai/api/v1/chat/completions", "Authorization", f"Bearer {api_key}"),
         "claude-api": ("https://api.anthropic.com/v1/messages", None, None),
     }
@@ -466,7 +467,7 @@ def _call_api(prompt: str) -> str:
 
 # Providers capable enough for two-phase reflection (question generation + model update).
 # These are paid APIs or strong local models where the extra call is worth the quality gain.
-_CAPABLE_PROVIDERS = {"claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi"}
+_CAPABLE_PROVIDERS = {"claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "minimax"}
 
 # Large Ollama models that can handle two-phase reflection
 _CAPABLE_OLLAMA_SIZES = {"70b", "72b", "34b", "32b", "405b"}

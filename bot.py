@@ -4,7 +4,7 @@ MyOldMachine — LLM-Powered Telegram Bot
 
 A self-hosted, provider-agnostic Telegram bot that turns any old machine into
 a dedicated AI assistant. Supports Claude CLI (with full tool-use), Claude API,
-OpenAI, Gemini, Kimi, Ollama, and OpenRouter.
+OpenAI, Gemini, Kimi, MiniMax, Ollama, and OpenRouter.
 """
 
 import asyncio
@@ -881,7 +881,7 @@ def build_system_prompt(user_id: int) -> str:
     if _memory_manager:
         # Determine if we're in full mode (strong model) or lite mode
         provider = get_llm_provider()
-        full_mode = provider in ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "google")
+        full_mode = provider in ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "gemini", "google")
         # Ollama: full mode only if running a large model
         if provider == "ollama":
             model_name = get_llm_model().lower()
@@ -1643,6 +1643,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "deepseek": "deepseek-chat",
         "grok": "grok-4-1-fast-non-reasoning",
         "kimi": "kimi-k2.5",
+        "minimax": "MiniMax-M2.7",
         "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
         "ollama-cloud": "qwen3.5:cloud",
@@ -1699,7 +1700,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_model = default_models.get(new_provider, "")
 
     # Check if API key is needed but missing
-    needs_key = new_provider in ("openai", "deepseek", "grok", "kimi", "gemini", "openrouter", "claude-api")
+    needs_key = new_provider in ("openai", "deepseek", "grok", "kimi", "minimax", "gemini", "openrouter", "claude-api")
     current_key = get_llm_api_key()
     if needs_key and not current_key:
         await update.message.reply_text(
@@ -2360,7 +2361,7 @@ def _setup_reflection_job(scheduler):
     model = get_llm_model().lower()
 
     # Strong enough for reflection?
-    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "google", "ollama-cloud")
+    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "gemini", "google", "ollama-cloud")
     is_capable = provider in capable_providers
 
     # Ollama: only large models

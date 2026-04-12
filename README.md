@@ -74,6 +74,7 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 | **Gemini** | Limited free tier | Google's AI. Flash: 10 RPM / 250 RPD. Pro: 5 RPM / 100 RPD. |
 | **Grok** | $25 free credits | xAI's models. Vision on 4.1 Fast and 4.20. |
 | **Kimi** | No | Moonshot AI. K2.5 multimodal, 256K context. $0.60/$3.00 per MTok. |
+| **MiniMax** | No (very cheap) | M2.7 reasoning, 205K context. $0.30/$1.20 per MTok. |
 | **DeepSeek** | No (very cheap) | $0.28 per million tokens input. Great value. |
 | **OpenAI** | No | GPT-5.4, GPT-5 Mini/Nano, GPT-4.1. Vision + tools. |
 | **Claude CLI** | With Pro/Max plan | Most capable. Uses your existing Anthropic subscription. |
@@ -179,7 +180,7 @@ If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonde
 |---|---|---|
 | **Language** | Python | TypeScript |
 | **Install** | `curl ... \| bash` — works on decade-old hardware | `npm install -g openclaw` — requires Node 24 |
-| **AI providers** | 10 — Claude CLI, OpenAI, Gemini, Grok, Kimi, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API | Primarily OpenAI, configurable profiles |
+| **AI providers** | 11 — Claude CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API | Primarily OpenAI, configurable profiles |
 | **Free/local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
 | **Skills** | 58 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
@@ -432,8 +433,8 @@ User (Telegram) → bot.py → core/llm.py (provider factory)
               (native      (OpenRouter,     (native
                tools)       OpenAI, Grok,    function
                             DeepSeek, Kimi,  calling)
-                            Ollama, Ollama
-                            Cloud)
+                            MiniMax, Ollama,
+                            Ollama Cloud)
                     │           │               │
                     └───────────┼───────────────┘
                                 ↓

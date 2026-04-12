@@ -5,7 +5,7 @@ LLM Provider Abstraction Layer for MyOldMachine.
 PRIMARY: Claude Code CLI — runs as subprocess with full tool-use (bash, file
 read/write, etc.). This is how the bot actually controls the machine.
 
-API PROVIDERS: OpenAI, Google Gemini, Kimi, Ollama, OpenRouter — these use
+API PROVIDERS: OpenAI, Google Gemini, Kimi, MiniMax, Ollama, OpenRouter — these use
 httpx for API calls with function-calling / tool-use support. The LLM sends
 structured tool calls, we execute them locally, and return results.
 """
@@ -1168,6 +1168,52 @@ class KimiProvider(LLMProvider):
         )
 
 
+class MiniMaxProvider(LLMProvider):
+    """MiniMax API — OpenAI-compatible with tool-use support.
+
+    Uses api.minimax.io/v1 endpoint.
+    M2.7: text-only, strong reasoning, 205K ctx, $0.30/$1.20 per MTok.
+    M2.5: multimodal (vision + tools), 205K ctx.
+    M2.7-highspeed: faster variant (~100 TPS).
+    """
+
+    BASE_URL = "https://api.minimax.io/v1"
+
+    def __init__(self, model: str, api_key: str = ""):
+        super().__init__(model, api_key)
+
+    @property
+    def provider_name(self) -> str:
+        return "minimax"
+
+    @property
+    def supports_vision(self) -> bool:
+        # M2.5 is multimodal (vision), M2.7 and others are text-only
+        return "m2.5" in self.model.lower()
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ],
+        }
+        return await _openai_tool_loop(
+            url=f"{self.BASE_URL}/chat/completions",
+            headers=headers,
+            body=body,
+            model=self.model,
+            provider_name=self.provider_name,
+        )
+
+
 class OllamaProvider(LLMProvider):
     """Ollama models (local or cloud) with tool-use support."""
 
@@ -1315,6 +1361,7 @@ def create_provider(
         "xai": lambda: GrokProvider(model, api_key),
         "kimi": lambda: KimiProvider(model, api_key),
         "moonshot": lambda: KimiProvider(model, api_key),
+        "minimax": lambda: MiniMaxProvider(model, api_key),
     }
     factory = providers.get(provider.lower())
     if not factory:

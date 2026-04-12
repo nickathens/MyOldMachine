@@ -178,6 +178,7 @@ jobs:
               ('deepseek', 'deepseek-chat', 'test-key'),
               ('grok', 'grok-4-1-fast-non-reasoning', 'test-key'),
               ('kimi', 'kimi-k2.5', 'test-key'),
+              ('minimax', 'MiniMax-M2.7', 'test-key'),
               ('ollama', 'llama3.1:8b', ''),
           ]
 
@@ -215,6 +216,17 @@ jobs:
           # Test moonshot alias
           kimi_alias = create_provider('moonshot', 'kimi-k2.5', 'k')
           assert kimi_alias.provider_name == 'kimi', 'moonshot alias should create KimiProvider'
+
+          # Test MiniMax vision detection
+          mm_m27 = create_provider('minimax', 'MiniMax-M2.7', 'k')
+          assert not mm_m27.supports_vision, 'MiniMax-M2.7 should NOT support vision'
+          assert mm_m27.provider_name == 'minimax'
+
+          mm_m25 = create_provider('minimax', 'MiniMax-M2.5', 'k')
+          assert mm_m25.supports_vision, 'MiniMax-M2.5 should support vision'
+
+          mm_her = create_provider('minimax', 'MiniMax-M2-her', 'k')
+          assert not mm_her.supports_vision, 'MiniMax-M2-her should NOT support vision'
 
           print('All provider tests passed')
           "

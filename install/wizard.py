@@ -251,6 +251,7 @@ _ALL_LLM_PROVIDERS = [
     ("deepseek", "DeepSeek — extremely cheap ($0.28/$0.42 per MTok), 128K context, machine control"),
     ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
     ("kimi", "Moonshot Kimi — K2.5 multimodal, 256K context, $0.60/$3.00 per MTok, machine control"),
+    ("minimax", "MiniMax — M2.7 reasoning, 205K context, $0.30/$1.20 per MTok, machine control"),
     ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
     ("ollama-cloud", "Ollama Cloud — cloud-hosted models (free tier available), no local GPU needed"),
@@ -273,6 +274,7 @@ DEFAULT_MODELS = {
     "deepseek": "deepseek-chat",
     "grok": "grok-4-1-fast-non-reasoning",
     "kimi": "kimi-k2.5",
+    "minimax": "MiniMax-M2.7",
     "gemini": "gemini-2.5-flash",
     "ollama": "llama3.1:8b",
     "ollama-cloud": "qwen3.5:cloud",
@@ -329,6 +331,12 @@ PROVIDER_MODELS = {
         ("kimi-k2-thinking", "Kimi K2 Thinking — advanced reasoning, 256K ctx, $0.60/$2.50 per MTok"),
         ("kimi-k2", "Kimi K2 — text + code, 256K ctx, $0.60/$2.50 per MTok"),
     ],
+    "minimax": [
+        ("MiniMax-M2.7", "MiniMax M2.7 — self-evolving reasoning, 205K ctx, $0.30/$1.20 per MTok (recommended)"),
+        ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed — faster variant (~100 TPS), $0.30/$1.20 per MTok"),
+        ("MiniMax-M2.5", "MiniMax M2.5 — multimodal (vision + tools), 205K ctx, $0.30/$1.20 per MTok"),
+        ("MiniMax-M2-her", "MiniMax M2-her — dialogue/roleplay optimized, $0.30/$1.20 per MTok"),
+    ],
     "ollama-cloud": [
         ("qwen3.5:cloud", "Qwen 3.5 Cloud — largest, strong reasoning (recommended)"),
         ("glm-5.1:cloud", "GLM 5.1 — Zhipu AI, agentic engineering"),
@@ -368,7 +376,7 @@ OPENROUTER_FREE_MODELS = [
 ]
 
 # Providers that need an API key
-API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "kimi", "gemini", "ollama-cloud", "openrouter"}
+API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "gemini", "ollama-cloud", "openrouter"}
 
 # Step-by-step API key guides for each provider.
 # Shown during setup when the user picks a provider.
@@ -448,6 +456,22 @@ API_KEY_GUIDES = {
         "notes": [
             "OpenAI-compatible API — same format, different base URL.",
             "K2.5 supports vision and tool calling. 256K context.",
+        ],
+    },
+    "minimax": {
+        "name": "MiniMax",
+        "url": "https://platform.minimax.io",
+        "steps": [
+            "Go to platform.minimax.io and create an account",
+            "In the left sidebar, click 'API Keys'",
+            "Click 'Create new secret key', name it, and copy it immediately",
+            "  You may need to complete identity verification first",
+            "  Top up your balance (pay-as-you-go, no minimum)",
+        ],
+        "notes": [
+            "OpenAI-compatible API. Very competitive pricing.",
+            "M2.7: strong reasoning, 205K context, $0.30/$1.20 per MTok.",
+            "M2.5: multimodal (vision + tools).",
         ],
     },
     "gemini": {
@@ -1030,6 +1054,7 @@ def _run_wizard_steps(detected_os: str) -> dict:
     print(f"    - Claude API — requires Anthropic API credits (separate from Pro/Max plan)")
     print(f"    - OpenAI — requires OpenAI API credits")
     print(f"    - Kimi — Moonshot AI, multimodal, 256K context ($0.60/$3.00 per MTok)")
+    print(f"    - MiniMax — M2.7 reasoning, 205K context ($0.30/$1.20 per MTok)")
     print()
     available_providers = _get_available_providers()
     # Default to first available provider (claude if present, otherwise claude-api)
