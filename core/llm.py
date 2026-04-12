@@ -1072,18 +1072,16 @@ class GrokProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # Grok 4.1 Fast, 4 Fast, and 4.20 models accept image input.
-        # grok-4-0709 and grok-3 are text-only.
+        # All current Grok models (4.1 Fast, 4.20) support vision.
         m = self.model
         return ("vision" in m or "grok-4-1-fast" in m or "grok-4-fast" in m
                 or m.startswith("grok-4.20"))
 
     def _is_reasoning_model(self) -> bool:
         """Check if this is a Grok reasoning model (uses max_completion_tokens, no temperature)."""
-        # Non-reasoning models explicitly: grok-4-1-fast-non-reasoning, grok-4-fast-non-reasoning,
-        #   grok-4.20-beta-*-non-reasoning, grok-3, grok-code-fast-1.
-        # Reasoning models: grok-4-1-fast-reasoning, grok-4-fast-reasoning,
-        #   grok-4.20-beta-*-reasoning, grok-4.20-multi-agent-*, grok-4-0709, grok-3-mini.
+        # Non-reasoning: grok-4-1-fast-non-reasoning, grok-4.20-*-non-reasoning.
+        # Reasoning: grok-4-1-fast-reasoning, grok-4.20-*-reasoning,
+        #   grok-4.20-multi-agent-*.
         m = self.model
         if "non-reasoning" in m:
             return False
@@ -1124,9 +1122,11 @@ class GrokProvider(LLMProvider):
 class KimiProvider(LLMProvider):
     """Moonshot Kimi API — OpenAI-compatible with tool-use support.
 
-    Uses api.moonshot.ai/v1 endpoint. Kimi K2.5 is multimodal (vision + tools).
+    Uses api.moonshot.ai/v1 endpoint (redirects to api.kimi.ai).
+    Kimi K2.5 is multimodal (vision + tools), K2 Thinking for reasoning.
     256K context. $0.60/$3.00 per MTok (K2.5), $0.60/$2.50 (K2).
     Temperature clamped to [0, 1].
+    Note: kimi-latest was discontinued January 28, 2026.
     """
 
     BASE_URL = "https://api.moonshot.ai/v1"
@@ -1140,7 +1140,7 @@ class KimiProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # K2.5 is multimodal (vision), K2 and kimi-latest are text-only
+        # K2.5 is multimodal (vision), K2 variants are text-only
         return "k2.5" in self.model
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):

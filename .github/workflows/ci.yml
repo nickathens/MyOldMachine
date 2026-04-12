@@ -173,7 +173,7 @@ jobs:
           providers = [
               ('claude-api', 'claude-sonnet-4-6', 'test-key'),
               ('openai', 'gpt-5.4', 'test-key'),
-              ('openrouter', 'openrouter/hunter-alpha', 'test-key'),
+              ('openrouter', 'nvidia/nemotron-3-super-120b-a12b:free', 'test-key'),
               ('gemini', 'gemini-2.5-flash', 'test-key'),
               ('deepseek', 'deepseek-chat', 'test-key'),
               ('grok', 'grok-4-1-fast-non-reasoning', 'test-key'),
@@ -193,16 +193,16 @@ jobs:
           grok_reason = create_provider('grok', 'grok-4-1-fast-reasoning', 'k')
           assert grok_reason._is_reasoning_model(), 'grok-4-1-fast-reasoning should be reasoning'
 
-          grok_420_non = create_provider('grok', 'grok-4.20-beta-0309-non-reasoning', 'k')
+          grok_420_non = create_provider('grok', 'grok-4.20-0309-non-reasoning', 'k')
           assert not grok_420_non._is_reasoning_model(), 'grok-4.20 non-reasoning should NOT be reasoning'
           assert grok_420_non.supports_vision, 'grok-4.20 should support vision'
 
-          grok_420_reason = create_provider('grok', 'grok-4.20-beta-0309-reasoning', 'k')
+          grok_420_reason = create_provider('grok', 'grok-4.20-0309-reasoning', 'k')
           assert grok_420_reason._is_reasoning_model(), 'grok-4.20 reasoning should be reasoning'
 
-          grok_4 = create_provider('grok', 'grok-4-0709', 'k')
-          assert grok_4._is_reasoning_model(), 'grok-4-0709 should be reasoning'
-          assert not grok_4.supports_vision, 'grok-4-0709 should NOT support vision'
+          grok_multi = create_provider('grok', 'grok-4.20-multi-agent-0309', 'k')
+          assert grok_multi._is_reasoning_model(), 'grok-4.20 multi-agent should be reasoning'
+          assert grok_multi.supports_vision, 'grok-4.20 multi-agent should support vision'
 
           # Test Kimi vision detection
           kimi_k25 = create_provider('kimi', 'kimi-k2.5', 'k')

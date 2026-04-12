@@ -1646,7 +1646,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
         "ollama-cloud": "qwen3.5:cloud",
-        "openrouter": "openrouter/hunter-alpha",
+        "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
     }
 
     if not text:

@@ -152,14 +152,14 @@ utils/
 |----------|----------|---------------|-------|
 | Claude CLI | Native | claude-sonnet-4-6 | Full tool-use built into Claude's runtime |
 | Claude API | None | claude-sonnet-4-6 | Text-only, no machine control |
-| OpenAI | OpenAI-compat | gpt-5.4 | GPT-5.4/5-mini/4.1. Vision + tools |
+| OpenAI | OpenAI-compat | gpt-5.4 | GPT-5.4/5.4-mini/5.4-nano/4.1. Vision + tools |
 | DeepSeek | OpenAI-compat | deepseek-chat | V3.2. $0.28/$0.42/MTok. No vision |
-| Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | $25 free credits. Vision on 4.1 Fast. New: Grok 4.20 |
+| Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | Vision on all models. 2M ctx. Grok 4.20 flagship |
 | Kimi (Moonshot) | OpenAI-compat | kimi-k2.5 | Multimodal, 256K ctx. $0.60/$3.00/MTok. Vision on K2.5 |
-| Gemini | Native | gemini-2.5-flash | Free tier: 10 RPM / 250 RPD |
+| Gemini | Native | gemini-2.5-flash | Free tier available. Gemini 3 series in preview |
 | Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
-| Ollama Cloud | OpenAI-compat | qwen3.5:cloud | Cloud-hosted, free tier, no local GPU needed |
-| OpenRouter | OpenAI-compat | openrouter/hunter-alpha | 19+ free models w/tool-use, 200 req/day |
+| Ollama Cloud | OpenAI-compat | qwen3.5:cloud | Cloud-hosted, free, no local GPU needed |
+| OpenRouter | OpenAI-compat | nemotron-3-super-120b:free | 15 free models w/tool-use, 200 req/day |
 
 **Total: 10 providers.**
 
@@ -206,10 +206,23 @@ Full production readiness update — 166 unique users cloning, 0 issues filed:
 5. **README improvements**: Added prerequisites section, install resume note, better troubleshooting (OpenRouter rate limits, Gemini quotas).
 6. **GitHub Actions CI**: Python syntax check, shellcheck lint, provisioner dry-run on Ubuntu 22/24, tool schema validation, provider factory tests with Grok reasoning/vision assertions.
 
+## Model Refresh (Apr 12)
+
+All 10 providers verified against official API docs and pricing pages:
+1. **OpenAI**: Added GPT-5.4 Mini ($0.75/$4.50), GPT-5.4 Nano ($0.20/$1.25), o3-mini. Updated GPT-4.1 Mini pricing ($0.40/$1.60). Removed pinned snapshot.
+2. **Grok (xAI)**: Updated model IDs from `grok-4.20-beta-0309-*` to `grok-4.20-0309-*` (beta removed). Added Multi-Agent model. Removed retired models (grok-code-fast-1, grok-4-0709, grok-3, grok-3-mini).
+3. **Gemini**: Added Gemini 3 Flash Preview and 3.1 Flash-Lite Preview (both have free tier). Updated deprecation timeline (2.5 Flash/Pro shutdown June 17, Flash-Lite Jul-Oct). Noted gemini-2.0-flash is deprecated.
+4. **Kimi**: Removed discontinued `kimi-latest` (Jan 28, 2026). Added `kimi-k2-thinking`. Updated platform URL redirect.
+5. **Ollama Cloud**: Added GLM 5.1, Qwen3 Coder Next, Gemma 4. Standardized `:cloud` tags. Removed local size tags.
+6. **OpenRouter**: Major free model churn. Removed 5 models no longer free (hunter-alpha, healer-alpha, step-3.5-flash, mistral-small-3.1, trinity-mini, qwen3-4b). Added 2 new (Gemma 4 26B/31B with vision+tools). Changed default from `openrouter/hunter-alpha` to `nvidia/nemotron-3-super-120b-a12b:free`.
+7. **Claude/DeepSeek**: No changes needed. Model lists already current.
+8. **Claude API**: Pinned `claude-sonnet-4-5-20250929` for the legacy entry.
+
 ## Known Issues
 
 - Google free tier quota can change without notice, breaking Gemini models
-- `gemini-2.5-flash-lite` retiring March 31, 2026 — migrate to `gemini-3.1-flash-lite-preview`
+- `gemini-2.5-flash` and `gemini-2.5-pro` shutting down June 17, 2026 — migrate to Gemini 3 series
+- `gemini-2.5-flash-lite` shutting down July-Oct 2026
 - OpenRouter free model IDs can go stale — verify against their API
 - OpenRouter free tier: 200 req/day — tool-use multiplies consumption (5-6 iterations per real request)
 - macOS launchd service registration is fragile — `launchctl kickstart -k` is more reliable than unload/load
