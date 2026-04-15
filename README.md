@@ -55,6 +55,7 @@ Talk to it like you would any AI assistant — but this one has full access to a
 - "What's the weather in Athens?"
 - "Remind me to call the dentist tomorrow at 10am"
 - "Download this video: [url]"
+- "Generate an image of a cat in a spacesuit"
 - "Make a QR code for my website"
 - "Summarize this article: [url]"
 - "Convert this PDF to text"
@@ -183,7 +184,7 @@ If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonde
 | **AI providers** | 11 — Claude CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API | Primarily OpenAI, configurable profiles |
 | **Free/local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
-| **Skills** | 58 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
+| **Skills** | 59 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux/macOS — runs on 1GB RAM with Ollama small models | Modern hardware recommended |
 | **Ownership** | Independent, MIT licensed | OpenAI-acquired (March 2026) |
 | **MCP support** | Client — connects to any MCP server for unlimited tool expansion | Native MCP client support |
@@ -201,7 +202,7 @@ A dedicated MyOldMachine setup can replace several paid services:
 | ChatGPT Plus / Claude Pro | $20–25 | Use Ollama (free, local) or OpenRouter free tier |
 | Zapier / Make (automation) | $20–70 | `workflow` skill — YAML-defined multi-step pipelines |
 | Notion AI | $10 | `notes` skill + `database` skill |
-| Canva (basic) | $13 | `image-editing` + `inkscape` + `gimp` skills |
+| Canva (basic) | $13 | `image-gen` + `image-editing` + `inkscape` + `gimp` skills |
 | Descript (audio) | $24 | `audio-editing` + `stems` + `voice` skills |
 | Grammarly | $12 | Ask the bot to proofread — it has the full LLM |
 | Todoist / Reminders | $5 | Built-in scheduler with natural language |
@@ -255,7 +256,7 @@ The installer handles version mismatches automatically:
 - On first boot, the bot probes the system and reports which skills are ready vs. which need dependencies installed
 - Flatpak apps are detected by the system probe and reported alongside system-installed tools
 
-## Skills (58)
+## Skills (59)
 
 Skills are modular packages the bot loads automatically. Each has instructions the LLM reads, optional scripts, and a dependency manifest.
 
@@ -311,6 +312,7 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 
 | Skill | What it does |
 |-------|-------------|
+| image-gen | Generate images from text prompts (Pollinations.ai, free, no API key) |
 | background-removal | AI-powered background removal from images |
 | upscale | AI-powered image upscaling with Real-ESRGAN |
 | screenshot-diff | Visual regression testing for websites |

@@ -1,0 +1,5 @@
+{
+  "stop": {
+    "clean_patterns": ["/tmp/generated_image*.png", "/tmp/pollinations_*.png"]
+  }
+}
