@@ -595,7 +595,10 @@ def build_orientation_prompt(user_id: int) -> str:
         f"For example, instead of '15.5 GB RAM', say 'Your computer has plenty of memory'. "
         f"Instead of listing missing binaries, say which categories of skills are ready and "
         f"which ones would need a quick setup (and offer to do it for them).\n\n"
-        f"3. ASK the user about themselves. You want to learn:\n"
+        f"3. MENTION that you automatically keep the machine healthy: nightly system updates "
+        f"and cleanup are already running. If they have an external drive or a folder where "
+        f"they'd like automatic backups saved, they can set it up with /maintenance.\n\n"
+        f"4. ASK the user about themselves. You want to learn:\n"
         f"   - What they'd like to call themselves (or confirm their Telegram name)\n"
         f"   - What they're most interested in using you for\n"
         f"   - Any specific tasks they have in mind right now\n\n"
@@ -783,6 +786,14 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("2. **To reword a reminder, use `update`, NEVER delete+recreate.** The `update` subcommand changes the message text while preserving the job ID, trigger, and recurrence. Delete+recreate risks losing the reminder if the recreate step fails.")
         parts.append("3. **Always verify after creating.** Run `list` after adding a reminder to confirm it was stored correctly.")
         parts.append("4. **Never remove a recurring job unless the user explicitly asks to cancel it.** Modifying text is not a reason to remove a job.")
+        parts.append("")
+
+        # Maintenance system
+        parts.append("### Maintenance:")
+        parts.append("The bot runs nightly maintenance automatically (system updates at 4:00 AM, cleanup at 3:30 AM).")
+        parts.append("If the user wants automatic backups, they need to set a target path:")
+        parts.append("  /maintenance backup /path/to/drive")
+        parts.append("Other commands: /maintenance updates on|off, /maintenance cleanup on|off, /maintenance run backup|update|cleanup")
         parts.append("")
 
         # Memory system
@@ -2045,6 +2056,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /apikey — Set API key for a provider\n\n"
         "System:\n"
         "  /health — Check if everything is healthy\n"
+        "  /maintenance — Backup, updates, and cleanup settings\n"
         "  /update — Get the latest version\n"
         "  /restart — Restart me\n"
     )
@@ -2541,6 +2553,283 @@ def _setup_reflection_job(scheduler):
     logger.info("Scheduled nightly reflection job at 3:00 AM")
 
 
+def _setup_maintenance_jobs(scheduler):
+    """Set up nightly maintenance jobs (system update, cleanup, backup) if not already present."""
+    from core.scheduler import _get_all_meta
+    from utils.maintenance import load_config
+
+    existing = _get_all_meta()
+    existing_names = {meta.get("name") for meta in existing}
+
+    venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
+    allowed = get_allowed_users()
+    admin_id = allowed[0] if allowed else 0
+
+    config = load_config()
+
+    # --- Cleanup job: 3:30 AM ---
+    if "nightly-cleanup" not in existing_names and config.get("cleanup", True):
+        cleanup_script = str(BOT_DIR / "utils" / "cleanup.py")
+        run_at = datetime.now().replace(hour=3, minute=30, second=0, microsecond=0)
+        if run_at <= datetime.now():
+            run_at += timedelta(days=1)
+
+        scheduler.add_job(
+            user_id=admin_id,
+            message="Nightly cleanup",
+            run_at=run_at,
+            repeat="daily",
+            job_type="command",
+            name="nightly-cleanup",
+            notify=False,
+            command=f"{venv_python} {cleanup_script}",
+        )
+        logger.info("Scheduled nightly cleanup job at 3:30 AM")
+
+    # --- System update job: 4:00 AM ---
+    if "nightly-system-update" not in existing_names and config.get("system_updates", True):
+        update_script = str(BOT_DIR / "utils" / "system_update.py")
+        run_at = datetime.now().replace(hour=4, minute=0, second=0, microsecond=0)
+        if run_at <= datetime.now():
+            run_at += timedelta(days=1)
+
+        notify_args = ""
+        if admin_id:
+            notify_args = f" --notify --user-id {admin_id}"
+
+        scheduler.add_job(
+            user_id=admin_id,
+            message="Nightly system update",
+            run_at=run_at,
+            repeat="daily",
+            job_type="command",
+            name="nightly-system-update",
+            notify=False,
+            command=f"{venv_python} {update_script}{notify_args}",
+        )
+        logger.info("Scheduled nightly system update job at 4:00 AM")
+
+    # --- Backup job: 2:00 AM (only if backup is configured) ---
+    if ("nightly-backup" not in existing_names
+            and config.get("backup_enabled")
+            and config.get("backup_path")):
+        backup_script = str(BOT_DIR / "utils" / "backup.py")
+        run_at = datetime.now().replace(hour=2, minute=0, second=0, microsecond=0)
+        if run_at <= datetime.now():
+            run_at += timedelta(days=1)
+
+        notify_args = ""
+        if admin_id:
+            notify_args = f" --notify --user-id {admin_id}"
+
+        # Don't pass --target on command line (path may contain spaces/metacharacters).
+        # backup.py reads backup_path from maintenance.json when --target is omitted.
+        scheduler.add_job(
+            user_id=admin_id,
+            message="Nightly backup",
+            run_at=run_at,
+            repeat="daily",
+            job_type="command",
+            name="nightly-backup",
+            notify=False,
+            command=f"{venv_python} {backup_script} create{notify_args}",
+        )
+        logger.info(f"Scheduled nightly backup job at 2:00 AM -> {config['backup_path']}")
+
+
+async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Configure and view maintenance settings (backup, updates, cleanup)."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
+
+    from utils.maintenance import load_config, update_config, get_status_report
+    from core.scheduler import _get_all_meta
+
+    text = (update.message.text or "").replace("/maintenance", "", 1).strip()
+
+    # No arguments: show status
+    if not text:
+        report = get_status_report()
+
+        # Add scheduled job info
+        existing = _get_all_meta()
+        job_names = [m.get("name", "") for m in existing
+                     if m.get("name", "").startswith("nightly-")]
+        if job_names:
+            report += "\n\nScheduled jobs: " + ", ".join(sorted(job_names))
+        else:
+            report += "\n\nNo maintenance jobs scheduled."
+
+        report += (
+            "\n\nCommands:\n"
+            "  /maintenance backup /path/to/drive\n"
+            "  /maintenance updates on|off\n"
+            "  /maintenance cleanup on|off\n"
+            "  /maintenance backup off\n"
+            "  /maintenance run backup\n"
+            "  /maintenance run update\n"
+            "  /maintenance run cleanup"
+        )
+        await update.message.reply_text(report)
+        return
+
+    parts = text.split(None, 1)
+    subcmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    # --- /maintenance backup <path> or /maintenance backup off ---
+    if subcmd == "backup":
+        if not arg:
+            config = load_config()
+            if config.get("backup_enabled") and config.get("backup_path"):
+                from utils.backup import list_backups
+                report = await asyncio.to_thread(list_backups, config["backup_path"])
+                await update.message.reply_text(report)
+            else:
+                await update.message.reply_text(
+                    "Backup is not configured.\n\n"
+                    "Set it up with:\n"
+                    "  /maintenance backup /path/to/backup/drive\n\n"
+                    "Example:\n"
+                    "  /maintenance backup /mnt/external/backups\n"
+                    "  /maintenance backup ~/backups"
+                )
+            return
+
+        if arg.lower() == "off":
+            update_config(backup_enabled=False)
+            # Remove the scheduled job
+            scheduler = get_scheduler()
+            if scheduler:
+                existing = _get_all_meta()
+                for meta in existing:
+                    if meta.get("name") == "nightly-backup":
+                        scheduler.remove_job(meta.get("job_id", ""))
+                        break
+            await update.message.reply_text("Backup disabled.")
+            return
+
+        # Interpret as backup path
+        backup_path = os.path.expanduser(arg)
+        backup_path = os.path.abspath(backup_path)
+
+        # Validate path
+        target = Path(backup_path)
+        if not target.exists():
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                await update.message.reply_text(f"Cannot create directory: {e}")
+                return
+        if not os.access(backup_path, os.W_OK):
+            await update.message.reply_text(f"No write permission to {backup_path}")
+            return
+
+        # Save config
+        update_config(backup_enabled=True, backup_path=backup_path)
+
+        # Schedule backup job
+        scheduler = get_scheduler()
+        if scheduler:
+            # Remove existing backup job if any
+            existing = _get_all_meta()
+            for meta in existing:
+                if meta.get("name") == "nightly-backup":
+                    scheduler.remove_job(meta.get("job_id", ""))
+                    break
+            _setup_maintenance_jobs(scheduler)
+
+        await update.message.reply_text(
+            f"Backup enabled.\n"
+            f"Target: {backup_path}\n"
+            f"Schedule: nightly at 2:00 AM\n"
+            f"Retention: 7 backups\n\n"
+            f"Run /maintenance run backup to create one now."
+        )
+        return
+
+    # --- /maintenance updates on|off ---
+    if subcmd == "updates":
+        if arg.lower() in ("on", "true", "yes", "1"):
+            update_config(system_updates=True)
+            scheduler = get_scheduler()
+            if scheduler:
+                _setup_maintenance_jobs(scheduler)
+            await update.message.reply_text("System updates enabled (nightly at 4:00 AM).")
+        elif arg.lower() in ("off", "false", "no", "0"):
+            update_config(system_updates=False)
+            scheduler = get_scheduler()
+            if scheduler:
+                existing = _get_all_meta()
+                for meta in existing:
+                    if meta.get("name") == "nightly-system-update":
+                        scheduler.remove_job(meta.get("job_id", ""))
+                        break
+            await update.message.reply_text("System updates disabled.")
+        else:
+            await update.message.reply_text("Usage: /maintenance updates on|off")
+        return
+
+    # --- /maintenance cleanup on|off ---
+    if subcmd == "cleanup":
+        if arg.lower() in ("on", "true", "yes", "1"):
+            update_config(cleanup=True)
+            scheduler = get_scheduler()
+            if scheduler:
+                _setup_maintenance_jobs(scheduler)
+            await update.message.reply_text("Cleanup enabled (nightly at 3:30 AM).")
+        elif arg.lower() in ("off", "false", "no", "0"):
+            update_config(cleanup=False)
+            scheduler = get_scheduler()
+            if scheduler:
+                existing = _get_all_meta()
+                for meta in existing:
+                    if meta.get("name") == "nightly-cleanup":
+                        scheduler.remove_job(meta.get("job_id", ""))
+                        break
+            await update.message.reply_text("Cleanup disabled.")
+        else:
+            await update.message.reply_text("Usage: /maintenance cleanup on|off")
+        return
+
+    # --- /maintenance run <task> ---
+    if subcmd == "run":
+        task = arg.lower()
+        if task == "backup":
+            config = load_config()
+            if not config.get("backup_enabled") or not config.get("backup_path"):
+                await update.message.reply_text(
+                    "Backup not configured. Set it up first:\n"
+                    "  /maintenance backup /path/to/drive"
+                )
+                return
+            await update.message.reply_text("Running backup...")
+            from utils.backup import create_backup
+            result = await asyncio.to_thread(create_backup, config["backup_path"])
+            await update.message.reply_text(result)
+        elif task == "update":
+            await update.message.reply_text("Running system update...")
+            from utils.system_update import run_system_update
+            result = await asyncio.to_thread(run_system_update)
+            await update.message.reply_text(result)
+        elif task == "cleanup":
+            await update.message.reply_text("Running cleanup...")
+            from utils.cleanup import run_cleanup
+            result = await asyncio.to_thread(run_cleanup)
+            await update.message.reply_text(result)
+        else:
+            await update.message.reply_text(
+                "Usage: /maintenance run backup|update|cleanup"
+            )
+        return
+
+    await update.message.reply_text(
+        "Unknown subcommand. Use /maintenance to see available commands."
+    )
+
+
 # --- Skill Stats ---
 
 def _fmt_skill_duration(ms) -> str:
@@ -2910,6 +3199,7 @@ def main():
     app.add_handler(CommandHandler("jobs", jobs_command))
     app.add_handler(CommandHandler("health", health_command))
     app.add_handler(CommandHandler("cleanup", cleanup_command))
+    app.add_handler(CommandHandler("maintenance", maintenance_command))
     app.add_handler(CommandHandler("system", system_command))
     app.add_handler(CommandHandler("update", update_command))
     app.add_handler(CommandHandler("restart", restart_command))
@@ -2971,6 +3261,9 @@ def main():
 
         # Schedule nightly reflection job if not already present
         _setup_reflection_job(scheduler)
+
+        # Schedule maintenance jobs (system update, cleanup, backup) if not already present
+        _setup_maintenance_jobs(scheduler)
 
         # Start proactive health monitoring (system resources)
         asyncio.create_task(_health_monitor_loop(scheduler))
