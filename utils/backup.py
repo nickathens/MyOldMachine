@@ -277,16 +277,31 @@ def restore_backup(archive_path: str, restore_dir: str = None) -> str:
 
     try:
         with tarfile.open(str(archive), "r:gz") as tar:
-            # Security: check for path traversal
+            # Security: reject symlink/hardlink members outright, and validate
+            # every path for traversal. create_backup() archives with
+            # dereference=True, so legitimate archives never contain link
+            # members -- any such member here is a sign of tampering.
             resolved_target = target.resolve()
             for member in tar.getmembers():
+                if member.issym() or member.islnk():
+                    return (
+                        f"Restore aborted: archive contains link member "
+                        f"(type={member.type!r}): {member.name} -> {member.linkname}"
+                    )
+                if member.isdev() or member.isfifo():
+                    return (
+                        f"Restore aborted: archive contains special file: "
+                        f"{member.name}"
+                    )
                 member_path = Path(target / member.name).resolve()
                 if not member_path.is_relative_to(resolved_target):
                     return f"Restore aborted: archive contains unsafe path: {member.name}"
 
-            # Use tar filter for safe extraction (Python 3.12+)
+            # Use tar filter for safe extraction (Python 3.12+). Fall back to
+            # the unfiltered call on older Pythons; we've already rejected
+            # link/device members above so this is still safe.
             try:
-                tar.extractall(str(target), filter='tar')
+                tar.extractall(str(target), filter='data')
             except TypeError:
                 tar.extractall(str(target))
         return f"Restored from {archive.name} to {target}"

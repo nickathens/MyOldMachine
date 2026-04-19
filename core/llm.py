@@ -182,15 +182,36 @@ class ClaudeCLIProvider(LLMProvider):
 
     IDLE_TIMEOUT = 3600  # 1 hour of no output = stuck
     NO_TEXT_TIMEOUT = 600  # 10 min of tool activity with zero user-facing text = stuck
-    PROGRESS_INTERVAL = 300  # Send progress message every 5 min
+    ABSOLUTE_TIMEOUT = 3600  # 1 hour hard ceiling per request, even with continuous activity
+    PROGRESS_INTERVAL = 900  # Send progress message every 15 min
 
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
         self._active_processes: set = set()
+        # Maps user_id -> active subprocess so /stop can target a specific user's task.
+        self._user_processes: dict = {}
+        # Users who have issued /stop on an in-flight turn.
+        self._stop_requested: set = set()
         # Callbacks set by bot.py
         self.on_progress_save = None  # (user_id, message, partial, status, tool) -> None
         self.on_progress_clear = None  # (user_id) -> None
+
+    def stop_user(self, user_id: int) -> bool:
+        """Signal the active Claude process for user_id to stop.
+
+        Returns True if a process was killed, False if there was no active task.
+        """
+        proc = self._user_processes.get(user_id)
+        if proc is None:
+            return False
+        self._stop_requested.add(user_id)
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        return True
 
     @property
     def provider_name(self) -> str:
@@ -303,6 +324,12 @@ class ClaudeCLIProvider(LLMProvider):
                 limit=50 * 1024 * 1024,  # 50MB buffer for large JSON lines
             )
             self._active_processes.add(process)
+            if user_id is not None:
+                # Drop any stale stop flag from a previous turn before
+                # registering this process, so the incoming process isn't
+                # killed by a leftover request.
+                self._stop_requested.discard(user_id)
+                self._user_processes[user_id] = process
 
             # Write prompt to stdin
             process.stdin.write(prompt.encode())
@@ -314,6 +341,60 @@ class ClaudeCLIProvider(LLMProvider):
             while True:
                 current_time = asyncio.get_running_loop().time()
                 time_since_activity = current_time - last_activity
+                elapsed = current_time - start_time
+
+                # Honor /stop requests from the user
+                if user_id is not None and user_id in self._stop_requested:
+                    logger.info(f"Claude stop requested for user {user_id} after {int(elapsed)}s")
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+                    await process.wait()
+                    last_turn = "\n".join(last_turn_text_blocks).strip()
+                    fallback = final_result or last_turn or partial_text.strip()
+                    if self.on_progress_clear and user_id:
+                        self.on_progress_clear(user_id)
+                    if fallback:
+                        return LLMResponse(
+                            text=fallback + "\n\n[Stopped by /stop command]",
+                            model=self.model, provider=self.provider_name, tool_use=True,
+                        )
+                    return LLMResponse(
+                        text="Task stopped.",
+                        model=self.model, provider=self.provider_name, tool_use=True,
+                    )
+
+                # Absolute ceiling: kill the turn even if Claude is producing
+                # activity continuously. Prevents runaway multi-hour sessions.
+                if elapsed > self.ABSOLUTE_TIMEOUT:
+                    logger.warning(
+                        f"Claude absolute timeout for user {user_id} after {int(elapsed)}s. "
+                        f"Status: {current_status}, tool: {tool_in_progress}"
+                    )
+                    if self.on_progress_save and user_id:
+                        self.on_progress_save(user_id, original_message, partial_text,
+                                              f"absolute timeout after {int(elapsed)}s", tool_in_progress)
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+                    await process.wait()
+                    last_turn = "\n".join(last_turn_text_blocks).strip()
+                    fallback = final_result or last_turn or partial_text.strip()
+                    if self.on_progress_clear and user_id:
+                        self.on_progress_clear(user_id)
+                    if fallback:
+                        return LLMResponse(
+                            text=fallback + f"\n\n[Hit 1-hour time limit. Break into smaller steps.]",
+                            model=self.model, provider=self.provider_name, tool_use=True,
+                        )
+                    return LLMResponse(
+                        text="Claude hit the 1-hour time limit. Try breaking the task into smaller steps.",
+                        model=self.model, provider=self.provider_name,
+                    )
 
                 if time_since_activity > self.IDLE_TIMEOUT:
                     logger.warning(f"Claude idle timeout for user {user_id} after {self.IDLE_TIMEOUT}s. Last status: {current_status}, tool: {tool_in_progress}")
@@ -378,20 +459,36 @@ class ClaudeCLIProvider(LLMProvider):
                 time_since_progress = current_time - last_progress_message
                 if time_since_progress >= self.PROGRESS_INTERVAL and chat:
                     try:
+                        elapsed_min = int(elapsed // 60)
+                        remaining_min = max(0, int((self.ABSOLUTE_TIMEOUT - elapsed) // 60))
+                        header = f"Progress report ({elapsed_min} min elapsed, {remaining_min} min remaining):"
                         if tool_in_progress:
-                            await chat.send_message(f"Still working... (running {tool_in_progress})")
+                            status_line = f"Currently running: {tool_in_progress}"
                         else:
-                            await chat.send_message(f"Still working... ({current_status})")
+                            status_line = f"Status: {current_status}"
+                        snippet = ""
+                        if last_turn_text_blocks:
+                            snippet = last_turn_text_blocks[-1][-300:]
+                        elif partial_text:
+                            snippet = partial_text[-300:]
+                        snippet_line = f"Latest output: {snippet}" if snippet else ""
+                        msg = "\n".join(p for p in [header, status_line, snippet_line] if p)
+                        await chat.send_message(msg)
                         last_progress_message = current_time
                     except Exception:
                         pass
 
-                read_timeout = min(30, self.IDLE_TIMEOUT - time_since_activity)
+                # Cap the read timeout at 30s so the loop wakes up regularly
+                # for /stop checks, absolute-timeout checks, and progress reports.
+                # Floor at 1s so we never pass a non-positive value to wait_for.
+                idle_remaining = self.IDLE_TIMEOUT - time_since_activity
+                absolute_remaining = self.ABSOLUTE_TIMEOUT - elapsed
+                read_timeout = max(1.0, min(30.0, idle_remaining, absolute_remaining))
                 line = await read_line_with_timeout(process.stdout, timeout=read_timeout)
 
                 if line:
                     last_activity = asyncio.get_running_loop().time()
-                    line_str = line.decode().strip()
+                    line_str = line.decode(errors="replace").strip()
                     if line_str:
                         try:
                             data = json.loads(line_str)
@@ -550,19 +647,47 @@ class ClaudeCLIProvider(LLMProvider):
             if process:
                 self._active_processes.discard(process)
                 if process.returncode is None:
-                    process.kill()
+                    try:
+                        process.kill()
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
                     await process.wait()
+            if user_id is not None:
+                if self._user_processes.get(user_id) is process:
+                    self._user_processes.pop(user_id, None)
+                self._stop_requested.discard(user_id)
 
     async def graceful_shutdown(self):
-        """Wait for active Claude processes to complete."""
-        if self._active_processes:
-            logger.info(f"Waiting for {len(self._active_processes)} active Claude processes...")
-            for _ in range(300):
-                if not self._active_processes:
-                    break
-                await asyncio.sleep(1)
-            if self._active_processes:
-                logger.warning(f"Timeout: {len(self._active_processes)} processes still running")
+        """Wait briefly for active Claude processes, then force-kill.
+
+        Bounded at 10 seconds to align with systemd's TimeoutStopSec.
+        A long wait here previously caused the bot to hang during restart.
+        """
+        if not self._active_processes:
+            return
+
+        procs = list(self._active_processes)
+        logger.info(f"Waiting up to 10s for {len(procs)} active Claude processes...")
+        for _ in range(10):
+            if not self._active_processes:
+                return
+            await asyncio.sleep(1)
+
+        remaining = [p for p in self._active_processes if p.returncode is None]
+        if not remaining:
+            return
+
+        logger.warning(f"Force-killing {len(remaining)} Claude processes still running after 10s")
+        for proc in remaining:
+            try:
+                proc.kill()
+            except (ProcessLookupError, PermissionError, OSError) as e:
+                logger.warning(f"Failed to kill Claude process: {e}")
+        for proc in remaining:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                logger.warning("Claude process did not exit after SIGKILL within 5s")
 
 
 class ClaudeAPIProvider(LLMProvider):

@@ -189,8 +189,18 @@ def _init_meta_db():
         conn.execute("SELECT end_date FROM job_meta LIMIT 1")
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE job_meta ADD COLUMN end_date TEXT DEFAULT NULL")
+    # Add timeout_seconds column if missing (per-job command timeout override)
+    try:
+        conn.execute("SELECT timeout_seconds FROM job_meta LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE job_meta ADD COLUMN timeout_seconds INTEGER DEFAULT NULL")
     conn.commit()
     conn.close()
+
+
+# Default timeout for command-type jobs when no per-job override is set.
+# apt-get upgrade, tar backups, etc. routinely exceed 5 minutes on slow disks.
+DEFAULT_COMMAND_TIMEOUT = 1800
 
 
 def _init_history_db():
@@ -217,15 +227,16 @@ def _save_meta(job_id: str, user_id: int, message: str, job_type: str,
                log_file: str = None, repeat: str = None,
                weekdays: list = None, channel: str = "telegram",
                run_at: datetime = None, raw_at: str = "",
-               created_context: str = "", end_date: datetime = None):
+               created_context: str = "", end_date: datetime = None,
+               timeout_seconds: int = None):
     """Save job metadata to SQLite."""
     conn = _connect_db(DB_PATH)
     conn.execute("""
         INSERT OR REPLACE INTO job_meta
         (job_id, user_id, message, job_type, name, notify, command,
          log_file, repeat, weekdays, channel, created_at, run_at,
-         raw_at, created_context, end_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         raw_at, created_context, end_date, timeout_seconds)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job_id, user_id, message, job_type, name, int(notify),
         command, log_file, repeat,
@@ -234,6 +245,7 @@ def _save_meta(job_id: str, user_id: int, message: str, job_type: str,
         run_at.isoformat() if run_at else datetime.now().isoformat(),
         raw_at, created_context,
         end_date.isoformat() if end_date else None,
+        timeout_seconds,
     ))
     conn.commit()
     conn.close()
@@ -253,6 +265,8 @@ def _get_meta(job_id: str) -> Optional[dict]:
     # Ensure end_date key exists (may be missing on old schema)
     if "end_date" not in d:
         d["end_date"] = None
+    if "timeout_seconds" not in d:
+        d["timeout_seconds"] = None
     return d
 
 
@@ -272,6 +286,8 @@ def _get_all_meta(user_id: int = None) -> list[dict]:
         d["weekdays"] = json.loads(d["weekdays"]) if d["weekdays"] else None
         if "end_date" not in d:
             d["end_date"] = None
+        if "timeout_seconds" not in d:
+            d["timeout_seconds"] = None
         result.append(d)
     return result
 
@@ -460,8 +476,13 @@ async def _execute_command(job_id: str):
         _log_execution(job_id, meta["user_id"], "", False, "No command specified")
         return
 
+    # Per-job timeout: honor meta override, else default for command jobs.
+    # apt-get upgrade / tar backups routinely exceed 5 minutes on slow disks,
+    # so the default is 30 minutes. Caller can override via add_job(timeout_seconds=...).
+    cmd_timeout = meta.get("timeout_seconds") or DEFAULT_COMMAND_TIMEOUT
+
     try:
-        logger.info(f"Running command job {job_id} ({meta['name']}): {command[:80]}...")
+        logger.info(f"Running command job {job_id} ({meta['name']}) with timeout={cmd_timeout}s: {command[:80]}...")
 
         # Use sanitized environment (strips API keys/tokens)
         from core.tools import _build_command_env
@@ -474,7 +495,7 @@ async def _execute_command(job_id: str):
             start_new_session=(platform.system() != "Windows"),
         )
         try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=cmd_timeout)
         except asyncio.TimeoutError:
             # Kill the process and its children before re-raising
             try:
@@ -523,8 +544,8 @@ async def _execute_command(job_id: str):
         logger.info(f"Command job {job_id} finished (exit={proc.returncode})")
 
     except asyncio.TimeoutError:
-        logger.error(f"Command job {job_id} timed out after 300s")
-        _log_execution(job_id, meta["user_id"], "", False, "Timed out after 300s")
+        logger.error(f"Command job {job_id} timed out after {cmd_timeout}s")
+        _log_execution(job_id, meta["user_id"], "", False, f"Timed out after {cmd_timeout}s")
         await scheduler.send_message(meta["user_id"], f"Command job timed out: {meta['name']}")
     except Exception as e:
         logger.error(f"Command job {job_id} failed: {e}")
@@ -686,8 +707,13 @@ class Scheduler:
                 job_type: str = "reminder", name: str = None,
                 notify: bool = True, command: str = None,
                 weekdays: list = None, log_file: str = None,
-                created_context: str = "", end_date: datetime = None) -> Job:
-        """Add a new job. end_date sets when recurring jobs stop firing."""
+                created_context: str = "", end_date: datetime = None,
+                timeout_seconds: int = None) -> Job:
+        """Add a new job. end_date sets when recurring jobs stop firing.
+
+        timeout_seconds overrides the per-exec timeout for command jobs.
+        If None, command jobs fall back to DEFAULT_COMMAND_TIMEOUT at run time.
+        """
         if end_date and run_at and end_date < run_at:
             raise ValueError(
                 f"end_date ({end_date.isoformat()}) must be after run_at ({run_at.isoformat()})"
@@ -703,6 +729,7 @@ class Scheduler:
             raw_at=run_at.isoformat() if run_at else "",
             created_context=created_context or f"bot add_job: {message[:80]}",
             end_date=end_date,
+            timeout_seconds=timeout_seconds,
         )
 
         trigger = self._build_trigger(run_at, repeat, weekdays, end_date)

@@ -169,7 +169,7 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
             if proc.returncode == 0 and stdout.strip():
                 from utils.safe_json import save_json as _sj
                 _sj(summary_file, {
-                    "summary": stdout.decode().strip(),
+                    "summary": stdout.decode(errors="replace").strip(),
                     "updated": datetime.now().isoformat(),
                     "compacted_messages": batch_size,
                 })
@@ -958,6 +958,25 @@ def build_system_prompt(user_id: int) -> str:
             ))
             parts.append("")
 
+    # MemPalace conversation memory search (if installed)
+    if has_tool_use:
+        mempalace_python = BOT_DIR / "data" / "mempalace" / "venv" / "bin" / "python"
+        mempalace_palace = BOT_DIR / "data" / "mempalace" / "palace"
+        if mempalace_python.exists() and mempalace_palace.exists():
+            mp_py = str(mempalace_python)
+            mp_search = str(SKILLS_DIR / "mempalace" / "scripts" / "mempalace_search.py")
+            mp_wing = f"user_{user_id}"
+            parts.append("### Conversation Memory Search (MemPalace):")
+            parts.append(
+                "Semantic search over full conversation history. "
+                "Use ONLY when the user says 'remember', 'recall', 'what did we discuss about', "
+                "or when you cannot find something the user references in structured memory."
+            )
+            parts.append(f"  {mp_py} {mp_search} \"query\" --wing {mp_wing}")
+            parts.append(f"  {mp_py} {mp_search} \"query\" --wing {mp_wing} --results 10")
+            parts.append("Do NOT use for general queries or when the answer is in current context.")
+            parts.append("")
+
     # Skills — only relevant for providers that can execute tools
     if has_tool_use and _skill_manager:
         # Load system caps for resource-aware skill annotations
@@ -1570,6 +1589,29 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Reminder '{text}' cancelled.")
 
 
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kill the active Claude task for this user.
+
+    Only affects Claude CLI provider. Each user can only stop their own task.
+    The in-flight turn returns whatever partial output was accumulated,
+    with a '[Stopped by /stop command]' suffix.
+    """
+    user_id = update.effective_user.id
+    allowed = get_allowed_users()
+    if not allowed or user_id not in allowed:
+        return
+    if not isinstance(_llm_provider, ClaudeCLIProvider):
+        await update.message.reply_text(
+            "/stop is only supported for the Claude CLI provider."
+        )
+        return
+    killed = _llm_provider.stop_user(user_id)
+    if killed:
+        await update.message.reply_text("Stopping current task...")
+    else:
+        await update.message.reply_text("No active task to stop.")
+
+
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Schedule a Claude agent task (with full tool-use)."""
     user_id = update.effective_user.id
@@ -2044,7 +2086,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /memories — See what I remember about you\n"
         "  /remind — Set a reminder (e.g. /remind tomorrow 9am Call the dentist)\n"
         "  /reminders — See your upcoming reminders\n"
-        "  /cancel — Cancel a reminder\n\n"
+        "  /cancel — Cancel a reminder\n"
+        "  /stop — Stop the current AI task immediately\n\n"
         "Organization:\n"
         "  /topic — Switch to a separate conversation thread\n"
         "  /topics — See all your conversation threads\n\n"
@@ -3191,6 +3234,7 @@ def main():
     app.add_handler(CommandHandler("remind", remind_command))
     app.add_handler(CommandHandler("reminders", reminders_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("recover", recover_command))
     app.add_handler(CommandHandler("clear_recovery", clear_recovery_command))
     app.add_handler(CommandHandler("topic", topic_command))

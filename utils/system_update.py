@@ -120,7 +120,29 @@ def _run_cmd(cmd: str, use_sudo: bool = True, timeout: int = 300) -> tuple[int, 
 
 
 def _count_upgradable(mgr: str) -> int:
-    """Count how many packages are upgradable."""
+    """Count how many packages are upgradable.
+
+    dnf gets special handling: `dnf check-update` exits 0 when there are no
+    updates and 100 when updates are available. Any other non-zero exit code
+    is a genuine error (broken metadata, network failure, etc.) that we must
+    surface rather than silently report as 'no updates available'.
+    """
+    if mgr == "dnf":
+        rc, output = _run_cmd("dnf check-update -q", use_sudo=True, timeout=60)
+        if rc == 0:
+            return 0
+        if rc == 100:
+            # Count lines that start with an alphanumeric (package names).
+            # Blank lines and obsoletes sections have no leading alpha.
+            count = 0
+            for line in output.splitlines():
+                line = line.strip()
+                if line and line[0].isalnum():
+                    count += 1
+            return count
+        logger.warning(f"dnf check-update returned rc={rc}: {output[:200]}")
+        return 0
+
     cmd = _CHECK_UPGRADABLE_CMDS.get(mgr)
     if not cmd:
         return 0

@@ -23,6 +23,26 @@ PROJECTS_DIR = MEMORY_DIR / "projects"
 DECISIONS_DIR = MEMORY_DIR / "decisions"
 TOPICS_DIR = MEMORY_DIR / "topics"
 
+# Import atomic JSON writer. Prefer safe_json's save_json; fall back to an
+# inline atomic implementation if the module isn't importable (e.g. when
+# project_manager.py is invoked outside the bot's package layout).
+try:
+    from utils.safe_json import save_json as _atomic_save_json  # type: ignore
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        from safe_json import save_json as _atomic_save_json  # type: ignore
+    except ImportError:
+        import os as _os
+        def _atomic_save_json(path: Path, data, indent=2):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            with open(tmp, "w") as _f:
+                json.dump(data, _f, indent=indent, ensure_ascii=False)
+                _f.flush()
+                _os.fsync(_f.fileno())
+            tmp.rename(path)
+
 
 def slugify(name: str) -> str:
     """Convert name to filesystem-safe slug."""
@@ -58,7 +78,7 @@ def create_project(name: str, summary: str, location: str):
     }
 
     state_file = project_dir / "state.json"
-    state_file.write_text(json.dumps(state, indent=2) + "\n")
+    _atomic_save_json(state_file, state, indent=2)
 
     # Create the actual project directory if it doesn't exist
     project_path = Path(location)
@@ -136,7 +156,7 @@ def update_project(slug: str, status: str = None, next_step: str = None):
         if next_step not in state.get("next_steps", []):
             state.setdefault("next_steps", []).append(next_step)
 
-    state_file.write_text(json.dumps(state, indent=2) + "\n")
+    _atomic_save_json(state_file, state, indent=2)
     print(f"Updated project: {state['name']}")
 
 
