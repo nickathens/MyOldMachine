@@ -1,0 +1,6 @@
+{
+  "weight": "heavy",
+  "min_ram_gb": 4,
+  "min_disk_gb": 2,
+  "install_note": "Installs ChromaDB + embedding model in isolated venv (~500 MB). Run setup script to install."
+}
