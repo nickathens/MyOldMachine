@@ -32,6 +32,14 @@ SKILL_PROCESS_PATTERNS = [
     # browser/scraper/media (Playwright)
     "playwright",
     "browser.py",
+    # media: our headed Chromium launched under Xvfb for video recording
+    "record_video_chromium_",
+    # media: Xvfb virtual displays spawned by record_video.py (uses :50-:99)
+    "Xvfb :5",
+    "Xvfb :6",
+    "Xvfb :7",
+    "Xvfb :8",
+    "Xvfb :9",
     # blender
     "blender --background",
     "blender -b ",
@@ -66,6 +74,9 @@ TEMP_PATTERNS = [
     "/tmp/screenshot_*.png",
     "/tmp/scrape_*.html",
     "/tmp/moviepy_*",
+    # media skill: raw x11grab output + per-recording Chromium profile dirs
+    "/tmp/record_raw_*.mp4",
+    "/tmp/record_video_chromium_*",
     "/tmp/tmp*.mp4",
     "/tmp/tmp*.avi",
     "/tmp/tmp*.mkv",

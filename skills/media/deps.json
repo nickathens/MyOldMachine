@@ -1,11 +1,16 @@
 {
+  "apt": ["ffmpeg", "xvfb", "xdotool", "x11-utils"],
+  "brew": ["ffmpeg"],
   "pip": ["playwright"],
   "post_install": [
     "playwright install chromium",
     "playwright install-deps chromium"
   ],
+  "check": {
+    "ffmpeg": "ffmpeg -version"
+  },
   "weight": "medium",
   "min_ram_gb": 1,
   "min_disk_gb": 1,
-  "install_note": "Installs Playwright + Chromium browser (~400 MB)"
+  "install_note": "Installs Playwright + Chromium browser (~400 MB), plus ffmpeg, Xvfb, and xdotool for headless video recording on Linux. macOS installs ffmpeg only; video recording is Linux-only."
 }
