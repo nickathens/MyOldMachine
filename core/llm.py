@@ -262,6 +262,7 @@ class ClaudeCLIProvider(LLMProvider):
         last_activity = start_time
         last_text_output = start_time
         last_progress_message = start_time
+        last_progress_content = ""
         last_progress_save = start_time
         final_result = None
         partial_text = ""
@@ -472,7 +473,12 @@ class ClaudeCLIProvider(LLMProvider):
                         elif partial_text:
                             snippet = partial_text[-300:]
                         snippet_line = f"Latest output: {snippet}" if snippet else ""
-                        msg = "\n".join(p for p in [header, status_line, snippet_line] if p)
+                        content_fingerprint = "\n".join(p for p in [status_line, snippet_line] if p)
+                        if content_fingerprint == last_progress_content:
+                            msg = f"Still working... ({elapsed_min} min elapsed, {remaining_min} min remaining)"
+                        else:
+                            last_progress_content = content_fingerprint
+                            msg = "\n".join(p for p in [header, status_line, snippet_line] if p)
                         await chat.send_message(msg)
                         last_progress_message = current_time
                     except Exception:
