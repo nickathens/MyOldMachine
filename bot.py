@@ -2679,6 +2679,31 @@ def _setup_maintenance_jobs(scheduler):
         )
         logger.info(f"Scheduled nightly backup job at 2:00 AM -> {config['backup_path']}")
 
+    # --- System probe job: 4:30 AM (after system update) ---
+    if "nightly-system-probe" not in existing_names:
+        run_at = datetime.now().replace(hour=4, minute=30, second=0, microsecond=0)
+        if run_at <= datetime.now():
+            run_at += timedelta(days=1)
+
+        bot_dir_s = str(BOT_DIR)
+        data_dir_s = str(DATA_DIR)
+        probe_cmd = (
+            f"cd '{bot_dir_s}' && {venv_python} -c "
+            f"\"from pathlib import Path; from core.system_probe import probe_system; "
+            f"probe_system(Path('{data_dir_s}'))\""
+        )
+        scheduler.add_job(
+            user_id=admin_id,
+            message="Nightly system probe",
+            run_at=run_at,
+            repeat="daily",
+            job_type="command",
+            name="nightly-system-probe",
+            notify=False,
+            command=probe_cmd,
+        )
+        logger.info("Scheduled nightly system probe job at 4:30 AM")
+
 
 async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Configure and view maintenance settings (backup, updates, cleanup)."""
