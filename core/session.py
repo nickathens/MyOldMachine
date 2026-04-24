@@ -360,8 +360,8 @@ class SessionManager:
             "Mark attempted work clearly so the next session knows to redo it.\n"
             "- Keep under 600 words\n"
             "- Provide only the merged summary, no preamble or explanation\n\n"
-            f"{'Existing summary to incorporate:\\n' + existing_summary + '\\n\\n' if existing_summary else ''}"
-            f"New messages to compact:\n{chr(10).join(conv_text)}"
+            + (f"Existing summary to incorporate:{chr(10)}{existing_summary}{chr(10)}{chr(10)}" if existing_summary else "")
+            + f"New messages to compact:{chr(10)}{chr(10).join(conv_text)}"
         )
 
         _compaction_scheduled.add(sf_key)

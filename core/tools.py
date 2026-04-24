@@ -1339,7 +1339,7 @@ async def _run_command(command: str, background: bool = False,
         if _hook_skill and _hook_invocation_id:
             try:
                 from utils.skill_hooks import db_record_end, db_record_failure
-                success = managed.return_code == 0 or managed.return_code is None
+                success = managed.return_code == 0
                 if success:
                     db_record_end(_hook_invocation_id, success=True)
                 else:

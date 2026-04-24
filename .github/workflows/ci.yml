@@ -194,16 +194,15 @@ jobs:
           grok_reason = create_provider('grok', 'grok-4-1-fast-reasoning', 'k')
           assert grok_reason._is_reasoning_model(), 'grok-4-1-fast-reasoning should be reasoning'
 
-          grok_420_non = create_provider('grok', 'grok-4.20-0309-non-reasoning', 'k')
-          assert not grok_420_non._is_reasoning_model(), 'grok-4.20 non-reasoning should NOT be reasoning'
-          assert grok_420_non.supports_vision, 'grok-4.20 should support vision'
+          grok_0709 = create_provider('grok', 'grok-4-0709', 'k')
+          assert grok_0709._is_reasoning_model(), 'grok-4-0709 should be reasoning'
+          assert grok_0709.supports_vision, 'grok-4-0709 should support vision'
 
-          grok_420_reason = create_provider('grok', 'grok-4.20-0309-reasoning', 'k')
-          assert grok_420_reason._is_reasoning_model(), 'grok-4.20 reasoning should be reasoning'
+          grok_code = create_provider('grok', 'grok-code-fast-1', 'k')
+          assert not grok_code._is_reasoning_model(), 'grok-code-fast-1 should NOT be reasoning'
 
-          grok_multi = create_provider('grok', 'grok-4.20-multi-agent-0309', 'k')
-          assert grok_multi._is_reasoning_model(), 'grok-4.20 multi-agent should be reasoning'
-          assert grok_multi.supports_vision, 'grok-4.20 multi-agent should support vision'
+          grok_mini = create_provider('grok', 'grok-3-mini', 'k')
+          assert grok_mini._is_reasoning_model(), 'grok-3-mini should be reasoning'
 
           # Test Kimi vision detection
           kimi_k25 = create_provider('kimi', 'kimi-k2.5', 'k')
@@ -225,8 +224,8 @@ jobs:
           mm_m25 = create_provider('minimax', 'MiniMax-M2.5', 'k')
           assert mm_m25.supports_vision, 'MiniMax-M2.5 should support vision'
 
-          mm_her = create_provider('minimax', 'MiniMax-M2-her', 'k')
-          assert not mm_her.supports_vision, 'MiniMax-M2-her should NOT support vision'
+          mm_hs = create_provider('minimax', 'MiniMax-M2.7-highspeed', 'k')
+          assert not mm_hs.supports_vision, 'MiniMax-M2.7-highspeed should NOT support vision'
 
           print('All provider tests passed')
           "

@@ -1308,16 +1308,15 @@ class GrokProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # All current Grok models (4.1 Fast, 4.20) support vision.
+        # Current Grok vision-capable: 4.1 Fast (both variants), 4-0709, any *vision* model.
         m = self.model
         return ("vision" in m or "grok-4-1-fast" in m or "grok-4-fast" in m
-                or m.startswith("grok-4.20"))
+                or m == "grok-4-0709")
 
     def _is_reasoning_model(self) -> bool:
         """Check if this is a Grok reasoning model (uses max_completion_tokens, no temperature)."""
-        # Non-reasoning: grok-4-1-fast-non-reasoning, grok-4.20-*-non-reasoning.
-        # Reasoning: grok-4-1-fast-reasoning, grok-4.20-*-reasoning,
-        #   grok-4.20-multi-agent-*.
+        # Non-reasoning: grok-4-1-fast-non-reasoning, grok-code-fast-1.
+        # Reasoning: grok-4-1-fast-reasoning, grok-4-0709, grok-3-mini.
         m = self.model
         if "non-reasoning" in m:
             return False
@@ -1382,7 +1381,7 @@ class KimiProvider(LLMProvider):
     @property
     def supports_vision(self) -> bool:
         # K2.5 is multimodal (vision), K2 variants are text-only
-        return "k2.5" in self.model
+        return "k2.5" in self.model.lower()
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {

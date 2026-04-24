@@ -1,6 +1,6 @@
 # MyOldMachine — Project Context
 
-Last updated: 2026-03-17
+Last updated: 2026-04-24
 
 ## Overview
 
@@ -67,16 +67,21 @@ core/
   self_install.py   — Runtime dependency installer
   memory.py         — Deep memory system (person models, observations, reflection)
   health.py         — Health check endpoint
+  message_log.py    — FTS5 SQLite log of user/assistant messages and attachments
+  mcp_client.py     — MCP server client (AsyncExitStack, env sanitization)
+  system_probe.py   — Hardware/OS probe for benchmarking and model recommendations
 install/
   wizard.py         — Interactive setup (provider, API key, Telegram token)
   provisioner.py    — OS-level provisioning (disable sleep, auto-login, etc.)
   ollama_setup.py   — Ollama auto-install + hardware benchmark + model recommendation
   os_detect.py      — Linux/macOS detection
   service.py        — systemd/launchd service registration
+  compat.py         — Cross-platform compatibility shims
   templates/        — Service file templates
   cleanup_lists/    — Per-OS cleanup targets
 install.sh          — One-command installer (curl | bash entry point)
 skills/             — Modular skills (weather, translate, ocr, etc.)
+tests/              — Unit/integration tests
 utils/
   scheduler_cli.py  — CLI for managing scheduled jobs
   send_to_telegram.py — Send files/messages to users
@@ -85,6 +90,13 @@ utils/
   reflect.py        — Nightly reflection script (updates person models)
   cleanup.py        — Data cleanup utilities
   safe_json.py      — Atomic JSON read/write
+  backup.py         — State backup/restore helpers
+  maintenance.py    — Periodic maintenance tasks
+  skill_hooks.py    — Pre/post-hook machinery for skill invocations
+  skill_hook_gate.sh — Shell gate invoked before skill scripts
+  skill_usage_cli.py — CLI to inspect/summarize skill invocation history
+  startup_cleanup.py — Clears transient state on bot startup
+  system_update.py  — Host OS update orchestration
 ```
 
 ## Tools (5 total)
