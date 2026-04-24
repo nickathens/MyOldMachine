@@ -71,7 +71,7 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 |----------|-------|-------|
 | **Ollama** | Yes | Runs AI locally on your machine. No API key needed. Needs macOS 12+ or modern Linux. |
 | **Ollama Cloud** | Free tier available | Same models as local Ollama, hosted in the cloud. No GPU needed. Session limits reset every 5 hours. |
-| **OpenRouter** | Yes (~200 req/day) | ~15 free models with tool-use. Easy to start with. |
+| **OpenRouter** | Yes (~200 req/day) | ~16 free models with tool-use. Easy to start with. |
 | **Gemini** | Limited free tier | Google's AI. Flash Preview: 10 RPM / 250 RPD. Pro: 5 RPM / 100 RPD. |
 | **Grok** | $25 free credits | xAI's models. Vision on 4.1 Fast and 4-0709. 4.1 Fast has 2M context. |
 | **Kimi** | No | Moonshot AI. K2.6 long-horizon coding, 256K context. $0.95/$4.00 per MTok. |
@@ -130,6 +130,7 @@ Strips the desktop, disables sleep, turns the machine into a dedicated bot appli
 | `/jobs` | Show all scheduled jobs |
 | `/topic <name>` | Switch to a named conversation topic |
 | `/topics` | List all topics |
+| `/stop` | Kill the current task (Claude CLI only) |
 | `/recover` | Show interrupted task |
 | `/clear_recovery` | Delete recovery data |
 | `/alias` | Manage custom command shortcuts |
@@ -137,6 +138,7 @@ Strips the desktop, disables sleep, turns the machine into a dedicated bot appli
 | `/model` | Change AI model |
 | `/apikey` | Set API key (message auto-deletes) |
 | `/skillstats` | View skill usage statistics |
+| `/maintenance` | Configure nightly backup, updates, and cleanup (admin) |
 | `/cleanup` | Clean old files, rotate logs |
 | `/update` | Pull latest updates |
 | `/restart` | Restart the bot |
