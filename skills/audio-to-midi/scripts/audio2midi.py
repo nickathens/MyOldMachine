@@ -17,9 +17,7 @@ from pathlib import Path
 def transcribe_audio(input_path: str, output_path: str = None) -> dict:
     """Transcribe audio to MIDI using basic-pitch."""
     try:
-        from basic_pitch.inference import predict_and_save, predict
-        from basic_pitch import ICASSP_2022_MODEL_PATH
-        import numpy as np
+        from basic_pitch.inference import predict_and_save
     except ImportError:
         return {"error": "basic-pitch not installed. Run: pip install basic-pitch"}
 

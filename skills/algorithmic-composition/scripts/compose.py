@@ -5,9 +5,8 @@ Algorithmic composition engine using mingus, pretty_midi, and music theory
 import argparse
 import random
 import uuid
-from mingus.core import chords, scales, notes, progressions
-from mingus.containers import Note, NoteContainer, Bar, Track, Composition
-from mingus.midi import midi_file_out
+from mingus.core import chords, notes, progressions
+from mingus.containers import Note, Track
 import pretty_midi
 
 # Scale patterns (intervals from root)

@@ -11,9 +11,7 @@ Usage:
 """
 
 import argparse
-import json
 import sys
-from pathlib import Path
 
 
 def get_browser():
@@ -95,7 +93,7 @@ def get_links(url: str, external_only: bool = False) -> dict:
     """Extract all links from a webpage."""
     try:
         from playwright.sync_api import sync_playwright
-        from urllib.parse import urlparse, urljoin
+        from urllib.parse import urlparse
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)

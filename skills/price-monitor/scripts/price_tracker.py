@@ -3,7 +3,6 @@
 Price monitoring and tracking system
 """
 import json
-import os
 import re
 import sys
 import argparse

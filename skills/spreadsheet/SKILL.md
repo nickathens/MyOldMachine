@@ -8,36 +8,38 @@ Create, read, edit, and export Excel/ODS spreadsheets. Full formula support, cha
 
 Full Excel compatibility with formula evaluation, charts, and format conversion. Must use system Python (`/usr/bin/python3`) because UNO bindings aren't in the venv.
 
-**Helper script:** `/home/ntouri/claude-telegram-bot/utils/excel_lo.py`
+**Helper script:** `skills/spreadsheet/scripts/excel_lo.py`
+
+Run from the MyOldMachine repo root:
 
 ```bash
 # File info (sheets, dimensions)
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py info /path/to/file.xlsx
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py info /path/to/file.xlsx
 
 # Read a sheet (outputs JSON)
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py read /path/to/file.xlsx --sheet "Sheet1"
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py read /path/to/file.xlsx --sheet "Sheet1" --range A1:E10
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py read /path/to/file.xlsx --sheet "Sheet1"
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py read /path/to/file.xlsx --sheet "Sheet1" --range A1:E10
 
 # Write a cell value
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py write /path/to/file.xlsx --sheet "Sheet1" --cell A1 --value "text"
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py write /path/to/file.xlsx --sheet "Sheet1" --cell A1 --value "text"
 
 # Insert rows from JSON
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py add-rows /path/to/file.xlsx --sheet "Sheet1" --after 5 --data /tmp/rows.json
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py add-rows /path/to/file.xlsx --sheet "Sheet1" --after 5 --data /tmp/rows.json
 
 # Set a formula
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py formula /path/to/file.xlsx --sheet "Sheet1" --cell C1 --formula "=SUM(A1:B1)"
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py formula /path/to/file.xlsx --sheet "Sheet1" --cell C1 --formula "=SUM(A1:B1)"
 
 # Add a new sheet
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py add-sheet /path/to/file.xlsx --name "NewSheet"
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py add-sheet /path/to/file.xlsx --name "NewSheet"
 
 # Export to another format (xlsx, xls, csv, pdf, ods)
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py save-as /path/to/file.xlsx --output /tmp/output.pdf --format pdf
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py save-as /path/to/file.xlsx --output /tmp/output.pdf --format pdf
 
 # Recalculate all formulas
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py eval-formulas /path/to/file.xlsx
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py eval-formulas /path/to/file.xlsx
 
 # Stop LibreOffice process
-/usr/bin/python3 ~/claude-telegram-bot/utils/excel_lo.py stop
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py stop
 ```
 
 ### 2. openpyxl (Python library)
@@ -132,6 +134,6 @@ plt.close()
 ## Important Notes
 
 - LibreOffice UNO requires `/usr/bin/python3` (system Python), NOT the venv Python
-- openpyxl, xlsxwriter, pandas, seaborn are all in the venv (`~/.venvs/main`)
+- openpyxl, xlsxwriter, pandas, seaborn are all in the bot's venv (installed by `deps.json`)
 - LibreOffice starts/stops automatically per command -- no manual management needed
 - Supported formats: xlsx, xls, ods, csv, pdf

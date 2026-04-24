@@ -4,24 +4,26 @@ Advanced web scraping with Playwright - handles JavaScript-rendered pages.
 
 ## Usage
 
+Run from the MyOldMachine repo root:
+
 ```bash
 # Take a screenshot
-python ~/claude-telegram-bot/skills/scraper/scripts/scrape.py screenshot "https://example.com" output.png
+python skills/scraper/scripts/scrape.py screenshot "https://example.com" output.png
 
 # Get page content as text
-python ~/claude-telegram-bot/skills/scraper/scripts/scrape.py content "https://example.com"
+python skills/scraper/scripts/scrape.py content "https://example.com"
 
 # Get specific elements by CSS selector
-python ~/claude-telegram-bot/skills/scraper/scripts/scrape.py content "https://example.com" --selector "h1, h2"
+python skills/scraper/scripts/scrape.py content "https://example.com" --selector "h1, h2"
 
 # Save page as PDF
-python ~/claude-telegram-bot/skills/scraper/scripts/scrape.py pdf "https://example.com" output.pdf
+python skills/scraper/scripts/scrape.py pdf "https://example.com" output.pdf
 
 # Extract all links
-python ~/claude-telegram-bot/skills/scraper/scripts/scrape.py links "https://example.com"
+python skills/scraper/scripts/scrape.py links "https://example.com"
 
 # Extract tables
-python ~/claude-telegram-bot/skills/scraper/scripts/scrape.py tables "https://example.com"
+python skills/scraper/scripts/scrape.py tables "https://example.com"
 ```
 
 ## Examples

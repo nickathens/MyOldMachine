@@ -11,7 +11,6 @@ Outputs: vocals.wav, drums.wav, bass.wav, other.wav
 """
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path

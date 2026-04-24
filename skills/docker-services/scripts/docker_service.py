@@ -14,7 +14,6 @@ Usage:
 import argparse
 import subprocess
 import sys
-from typing import Optional
 
 # Pre-configured services
 SERVICES = {

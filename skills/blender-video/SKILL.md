@@ -22,8 +22,11 @@ blender --background --python scripts/video_edit.py -- --input video.mp4 --cut 1
 # Add text overlay
 blender --background --python scripts/video_edit.py -- --input video.mp4 --text "Title" --position top --output titled.mp4
 
-# Color grade with LUT
-blender --background --python scripts/video_edit.py -- --input video.mp4 --lut cinematic.cube --output graded.mp4
+# Basic color grade (brightness/contrast/saturation)
+blender --background --python scripts/video_edit.py -- --input video.mp4 --brightness 0.1 --contrast 1.2 --saturation 1.1 --output graded.mp4
+
+# Black and white
+blender --background --python scripts/video_edit.py -- --input video.mp4 --bw --output bw.mp4
 
 # Concatenate videos
 blender --background --python scripts/video_edit.py -- --concat video1.mp4 video2.mp4 --output combined.mp4
@@ -35,7 +38,7 @@ blender --background --python scripts/video_edit.py -- --input video.mp4 --speed
 blender --background --python scripts/video_edit.py -- --input video.mp4 --fade-in 1.0 --fade-out 1.0 --output faded.mp4
 
 # Cross dissolve transition between clips
-blender --background --python scripts/video_edit.py -- --concat video1.mp4 video2.mp4 --transition dissolve --duration 1.0 --output merged.mp4
+blender --background --python scripts/video_edit.py -- --concat video1.mp4 video2.mp4 --transition dissolve --transition-duration 1.0 --output merged.mp4
 ```
 
 ## Script Location
@@ -44,12 +47,10 @@ blender --background --python scripts/video_edit.py -- --concat video1.mp4 video
 
 ## Color Grading Options
 
-- `--brightness` - Adjust brightness (-1.0 to 1.0)
-- `--contrast` - Adjust contrast (0.0 to 2.0)
-- `--saturation` - Adjust saturation (0.0 to 2.0)
-- `--gamma` - Adjust gamma (0.1 to 3.0)
-- `--lut` - Apply LUT file (.cube format)
-- `--tint` - Apply color tint (hex color)
+- `--brightness` - Adjust brightness (-1.0 to 1.0, default 0)
+- `--contrast` - Adjust contrast (0.0 to 2.0, default 1)
+- `--saturation` - Adjust saturation (0.0 to 2.0, default 1)
+- `--bw` - Convert to black & white
 
 ## Examples
 
