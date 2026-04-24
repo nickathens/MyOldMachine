@@ -246,6 +246,18 @@ All 11 providers re-verified against live docs and pricing pages (12 days after 
 9. **Claude**: No change needed. Sonnet 4.6 remains default; Opus 4.7 already listed.
 10. Files updated: `install/wizard.py`, `bot.py`, `core/llm.py`, `.env.example`, `README.md`, `tests/prompt_eval.py`, `.github/workflows/ci.yml`, `CONTEXT.md`.
 
+## New Skill: screenplay (Apr 24)
+
+Ported from the private claude-telegram-bot. Fountain markup screenwriting toolkit.
+
+- **Tools:** `screenplain` (pip, exports PDF/HTML/FDX) + `afterwriting` (npm, PDF + analytics)
+- **Commands:** `create`, `save`, `export`, `analyze`, `versions`, `restore`, `diff`
+- **Versioned project layout:** `draft.fountain`, `versions/vN_YYYY-MM-DD.fountain`, `exports/`, `metadata.json`
+- **Docs bundled:** `fountain-spec.md`, `structure.md` (3-act, Save the Cat, Story Circle), `craft.md`, `formatting.md`, `short-film.md`
+- **Audit fixes applied during port:** added 60s/120s timeouts on screenplain/afterwriting subprocess, sanitized export filename slug, switched analyze tmpfile cleanup to try/finally, removed dead `action_blocks` counter
+
+Skill count: 59 → 61 (also retroactively counted `mempalace` which was added without README update).
+
 ## Known Issues
 
 - Google free tier quota can change without notice, breaking Gemini models
@@ -287,7 +299,7 @@ All skills have:
 - `deps.json` for self-install system (apt, brew, pip, npm, check)
 - Scripts in `scripts/` directory
 - Python syntax validated
-- Skill loader verified (all 58 skills load correctly)
+- Skill loader verified (all 61 skills load correctly)
 
 ## Resource-Aware Dependency Gating (Mar 17)
 

@@ -1,0 +1,8 @@
+{
+  "pip": ["screenplain"],
+  "npm": ["afterwriting"],
+  "check": {
+    "screenplain": "screenplain --help",
+    "afterwriting": "afterwriting --help"
+  }
+}

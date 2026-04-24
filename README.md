@@ -184,7 +184,7 @@ If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonde
 | **AI providers** | 11 — Claude CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API | Primarily OpenAI, configurable profiles |
 | **Free/local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
-| **Skills** | 59 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
+| **Skills** | 61 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux/macOS — runs on 1GB RAM with Ollama small models | Modern hardware recommended |
 | **Ownership** | Independent, MIT licensed | OpenAI-acquired (March 2026) |
 | **MCP support** | Client — connects to any MCP server for unlimited tool expansion | Native MCP client support |
@@ -256,7 +256,7 @@ The installer handles version mismatches automatically:
 - On first boot, the bot probes the system and reports which skills are ready vs. which need dependencies installed
 - Flatpak apps are detected by the system probe and reported alongside system-installed tools
 
-## Skills (59)
+## Skills (61)
 
 Skills are modular packages the bot loads automatically. Each has instructions the LLM reads, optional scripts, and a dependency manifest.
 
@@ -338,6 +338,8 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | bookmarks | Bookmark management with buku |
 | cloud-sync | Sync files to cloud storage (Google Drive, Dropbox, S3) via rclone |
 | web-build | Static site generation and web development |
+| screenplay | Write, version, and export Fountain screenplays to PDF/HTML/FDX |
+| mempalace | Semantic search over conversation history |
 
 ### Adding your own skills
 
