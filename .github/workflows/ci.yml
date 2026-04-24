@@ -172,12 +172,12 @@ jobs:
           # Test all API providers can be instantiated
           providers = [
               ('claude-api', 'claude-sonnet-4-6', 'test-key'),
-              ('openai', 'gpt-5.4', 'test-key'),
+              ('openai', 'gpt-5.5', 'test-key'),
               ('openrouter', 'nvidia/nemotron-3-super-120b-a12b:free', 'test-key'),
-              ('gemini', 'gemini-2.5-flash', 'test-key'),
-              ('deepseek', 'deepseek-chat', 'test-key'),
+              ('gemini', 'gemini-3-flash-preview', 'test-key'),
+              ('deepseek', 'deepseek-v4-flash', 'test-key'),
               ('grok', 'grok-4-1-fast-non-reasoning', 'test-key'),
-              ('kimi', 'kimi-k2.5', 'test-key'),
+              ('kimi', 'kimi-k2.6', 'test-key'),
               ('minimax', 'MiniMax-M2.7', 'test-key'),
               ('ollama', 'llama3.1:8b', ''),
           ]

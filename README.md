@@ -71,25 +71,25 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 |----------|-------|-------|
 | **Ollama** | Yes | Runs AI locally on your machine. No API key needed. Needs macOS 12+ or modern Linux. |
 | **Ollama Cloud** | Free tier available | Same models as local Ollama, hosted in the cloud. No GPU needed. Session limits reset every 5 hours. |
-| **OpenRouter** | Yes (200 req/day) | 19+ free models with tool-use. Easy to start with. |
-| **Gemini** | Limited free tier | Google's AI. Flash: 10 RPM / 250 RPD. Pro: 5 RPM / 100 RPD. |
-| **Grok** | $25 free credits | xAI's models. Vision on 4.1 Fast and 4.20. |
-| **Kimi** | No | Moonshot AI. K2.5 multimodal, 256K context. $0.60/$3.00 per MTok. |
+| **OpenRouter** | Yes (~200 req/day) | ~15 free models with tool-use. Easy to start with. |
+| **Gemini** | Limited free tier | Google's AI. Flash Preview: 10 RPM / 250 RPD. Pro: 5 RPM / 100 RPD. |
+| **Grok** | $25 free credits | xAI's models. Vision on 4.1 Fast and 4-0709. 4.1 Fast has 2M context. |
+| **Kimi** | No | Moonshot AI. K2.6 long-horizon coding, 256K context. $0.95/$4.00 per MTok. |
 | **MiniMax** | No (very cheap) | M2.7 reasoning, 205K context. $0.30/$1.20 per MTok. |
-| **DeepSeek** | No (very cheap) | $0.28 per million tokens input. Great value. |
-| **OpenAI** | No | GPT-5.4, GPT-5 Mini/Nano, GPT-4.1. Vision + tools. |
+| **DeepSeek** | No (very cheap) | V4 Flash at $0.14/$0.28 per million tokens, 1M context. Great value. |
+| **OpenAI** | No | GPT-5.5, GPT-5.5 Pro, GPT-5.4 family, GPT-4.1. Vision + tools. |
 | **Claude CLI** | With Pro/Max plan | Most capable. Uses your existing Anthropic subscription. |
 | **Claude API** | No | Pay-per-token. Text-only (no machine control). |
 
-**If you want free:** Start with Ollama (local, unlimited), Ollama Cloud (no GPU needed), or OpenRouter (200 req/day).
+**If you want free:** Start with Ollama (local, unlimited), Ollama Cloud (no GPU needed), or OpenRouter (~200 req/day).
 
-**If you want the best quality:** Claude CLI with a Pro subscription, or OpenAI GPT-5.4.
+**If you want the best quality:** Claude CLI with a Pro subscription, or OpenAI GPT-5.5.
 
-**If you want cheap and good:** DeepSeek at $0.28/$0.42 per million tokens.
+**If you want cheap and good:** DeepSeek V4 Flash at $0.14/$0.28 per million tokens.
 
 Switch providers anytime:
 ```
-/provider openai gpt-5.4
+/provider openai gpt-5.5
 /model gpt-5-mini
 /apikey sk-abc123...
 ```

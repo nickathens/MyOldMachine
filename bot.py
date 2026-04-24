@@ -1798,17 +1798,17 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.replace("/provider", "").strip()
 
     # Default models per provider — keep in sync with install/wizard.py DEFAULT_MODELS
-    # Last updated: March 17, 2026
+    # Last updated: April 24, 2026
     default_models = {
         "claude": "claude-sonnet-4-6",
         "claude-cli": "claude-sonnet-4-6",
         "claude-api": "claude-sonnet-4-6",
-        "openai": "gpt-5.4",
-        "deepseek": "deepseek-chat",
+        "openai": "gpt-5.5",
+        "deepseek": "deepseek-v4-flash",
         "grok": "grok-4-1-fast-non-reasoning",
-        "kimi": "kimi-k2.5",
+        "kimi": "kimi-k2.6",
         "minimax": "MiniMax-M2.7",
-        "gemini": "gemini-2.5-flash",
+        "gemini": "gemini-3-flash-preview",
         "ollama": "llama3.1:8b",
         "ollama-cloud": "qwen3.5:cloud",
         "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
@@ -1839,9 +1839,9 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  /model <model> — change model only\n"
             f"  /apikey <key> — set API key for current provider\n\n"
             f"Example:\n"
-            f"  /provider openrouter google/gemini-2.0-flash-001\n"
+            f"  /provider openrouter nvidia/nemotron-3-super-120b-a12b:free\n"
             f"  /provider grok\n"
-            f"  /model gpt-4o-mini"
+            f"  /model gpt-5.4-mini"
         )
         await update.message.reply_text(msg)
         return
@@ -1946,7 +1946,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Current model: {get_llm_model()}\n"
             f"Provider: {get_llm_provider()}\n\n"
             f"Usage: /model <model-name>\n"
-            f"Example: /model google/gemini-2.0-flash-001"
+            f"Example: /model gemini-3-flash-preview"
         )
         return
 

@@ -152,15 +152,15 @@ utils/
 |----------|----------|---------------|-------|
 | Claude CLI | Native | claude-sonnet-4-6 | Full tool-use built into Claude's runtime |
 | Claude API | None | claude-sonnet-4-6 | Text-only, no machine control |
-| OpenAI | OpenAI-compat | gpt-5.4 | GPT-5.4/5.4-mini/5.4-nano/4.1. Vision + tools |
-| DeepSeek | OpenAI-compat | deepseek-chat | V3.2. $0.28/$0.42/MTok. No vision |
-| Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | Vision on all models. 2M ctx. Grok 4.20 flagship |
-| Kimi (Moonshot) | OpenAI-compat | kimi-k2.5 | Multimodal, 256K ctx. $0.60/$3.00/MTok. Vision on K2.5 |
+| OpenAI | OpenAI-compat | gpt-5.5 | GPT-5.5 ($5/$30)/5.5 Pro/5.4 family/4.1. Vision + tools |
+| DeepSeek | OpenAI-compat | deepseek-v4-flash | V4 Flash ($0.14/$0.28)/Pro ($1.74/$3.48), V3.2 legacy. No vision |
+| Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | Vision on 4.1 Fast/4-0709. 4.1 Fast = 2M ctx |
+| Kimi (Moonshot) | OpenAI-compat | kimi-k2.6 | K2.6 $0.95/$4.00, K2.5 $0.60/$3.00. 256K ctx. Vision on K2.5 |
 | MiniMax | OpenAI-compat | MiniMax-M2.7 | Reasoning, 205K ctx. $0.30/$1.20/MTok. Vision on M2.5 |
-| Gemini | Native | gemini-2.5-flash | Free tier available. Gemini 3 series in preview |
+| Gemini | Native | gemini-3-flash-preview | Free tier on 3 Flash Preview, 3.1 Flash-Lite, 2.5 family. 3.1 Pro paid only |
 | Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
 | Ollama Cloud | OpenAI-compat | qwen3.5:cloud | Cloud-hosted, free, no local GPU needed |
-| OpenRouter | OpenAI-compat | nemotron-3-super-120b:free | 15 free models w/tool-use, 200 req/day |
+| OpenRouter | OpenAI-compat | nemotron-3-super-120b:free | ~15 free models w/tool-use, ~200 req/day |
 
 **Total: 11 providers.**
 
@@ -219,6 +219,20 @@ All 11 providers verified against official API docs and pricing pages:
 7. **Claude/DeepSeek**: No changes needed. Model lists already current.
 8. **Claude API**: Pinned `claude-sonnet-4-5-20250929` for the legacy entry.
 9. **MiniMax**: Added as 11th provider. M2.7 (reasoning, 205K ctx), M2.7-highspeed, M2.5 (vision), M2-her (dialogue). OpenAI-compat at api.minimax.io/v1. $0.30/$1.20/MTok.
+
+## Model Refresh (Apr 24)
+
+All 11 providers re-verified against live docs and pricing pages (12 days after Apr 12 pass):
+1. **OpenAI**: GPT-5.5 released as flagship ($5/$30 per MTok, 1M ctx). Added GPT-5.5 Pro ($30/$180). GPT-5.4 demoted to "Also available". Default: `gpt-5.4` → `gpt-5.5`.
+2. **DeepSeek**: Major version bump. V4 Flash ($0.14/$0.28, 1M ctx) as new default. V4 Pro added ($1.74/$3.48, 1M ctx). `deepseek-chat` and `deepseek-reasoner` preserved as V3.2 legacy aliases (still work per docs, 128K ctx). Default: `deepseek-chat` → `deepseek-v4-flash`.
+3. **Kimi**: K2.6 released ($0.95/$4.00 per MTok). Added as default, K2.5 demoted to "Also available". Vision check left on K2.5 only (K2.6 vision not yet confirmed in docs). Default: `kimi-k2.5` → `kimi-k2.6`.
+4. **Gemini**: 3 Flash Preview promoted to default ($0.50/$3, free tier active). 2.5 Flash/Pro/Flash-Lite still have free tiers per ai.google.dev docs. 3.1 Pro Preview remains paid-only. Reordered model list (3-series first). Default: `gemini-2.5-flash` → `gemini-3-flash-preview`.
+5. **Grok**: Removed unverifiable `grok-4.20-0309-*` variants (3 entries). Added `grok-code-fast-1`, `grok-4-0709`, `grok-3-mini` back. Kept 4.1 Fast family as default.
+6. **MiniMax**: Removed unconfirmed `MiniMax-M2-her`. Kept M2.7/M2.7-highspeed/M2.5.
+7. **Ollama Cloud**: Refreshed DeepSeek cloud tag V3.2 → V4 Flash. Added `kimi-k2.6:cloud`. Removed `gemini-3-flash-preview:cloud` (not confirmed on Ollama's roster).
+8. **OpenRouter**: Added 3 free models (`tencent/hy3-preview:free`, `inclusionai/ling-2.6-flash:free`, `openrouter/free`). Removed 2 no longer free (`arcee-ai/trinity-large-preview:free`, `google/gemma-3-27b-it:free`). Default unchanged.
+9. **Claude**: No change needed. Sonnet 4.6 remains default; Opus 4.7 already listed.
+10. Files updated: `install/wizard.py`, `bot.py`, `core/llm.py`, `.env.example`, `README.md`, `tests/prompt_eval.py`, `.github/workflows/ci.yml`, `CONTEXT.md`.
 
 ## Known Issues
 

@@ -274,15 +274,15 @@ def _get_available_providers() -> dict[str, Any]:
         async def call_openai(sp, msg, tools=None):
             return await _call_openai_compat(
                 "https://api.openai.com/v1/chat/completions",
-                openai_key, "gpt-4.1-mini", sp, msg, tools,
+                openai_key, "gpt-5.4-mini", sp, msg, tools,
             )
-        providers["openai"] = {"call": call_openai, "model": "gpt-4.1-mini"}
+        providers["openai"] = {"call": call_openai, "model": "gpt-5.4-mini"}
 
     gemini_key = os.environ.get("GOOGLE_API_KEY", "")
     if gemini_key:
         async def call_gemini(sp, msg, tools=None):
-            return await _call_gemini(gemini_key, "gemini-2.0-flash", sp, msg, tools)
-        providers["gemini"] = {"call": call_gemini, "model": "gemini-2.0-flash"}
+            return await _call_gemini(gemini_key, "gemini-3-flash-preview", sp, msg, tools)
+        providers["gemini"] = {"call": call_gemini, "model": "gemini-3-flash-preview"}
 
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
     if openrouter_key:
@@ -293,18 +293,18 @@ def _get_available_providers() -> dict[str, Any]:
             }
             return await _call_openai_compat(
                 "https://openrouter.ai/api/v1/chat/completions",
-                openrouter_key, "meta-llama/llama-4-scout", sp, msg, tools,
+                openrouter_key, "nvidia/nemotron-3-super-120b-a12b:free", sp, msg, tools,
             )
-        providers["openrouter"] = {"call": call_openrouter, "model": "meta-llama/llama-4-scout"}
+        providers["openrouter"] = {"call": call_openrouter, "model": "nvidia/nemotron-3-super-120b-a12b:free"}
 
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if deepseek_key:
         async def call_deepseek(sp, msg, tools=None):
             return await _call_openai_compat(
                 "https://api.deepseek.com/v1/chat/completions",
-                deepseek_key, "deepseek-chat", sp, msg, tools,
+                deepseek_key, "deepseek-v4-flash", sp, msg, tools,
             )
-        providers["deepseek"] = {"call": call_deepseek, "model": "deepseek-chat"}
+        providers["deepseek"] = {"call": call_deepseek, "model": "deepseek-v4-flash"}
 
     # Ollama — check if server is running
     try:

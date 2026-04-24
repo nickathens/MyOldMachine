@@ -248,9 +248,9 @@ _ALL_LLM_PROVIDERS = [
     ("claude", "Claude Code CLI — uses your Pro/Max plan (no API key needed), full machine control"),
     ("claude-api", "Anthropic Claude API — requires paid API credits ($), chat only, no machine control"),
     ("openai", "OpenAI — requires API key ($), machine control via function calling"),
-    ("deepseek", "DeepSeek — extremely cheap ($0.28/$0.42 per MTok), 128K context, machine control"),
+    ("deepseek", "DeepSeek — extremely cheap ($0.14/$0.28 per MTok), 1M context, machine control"),
     ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
-    ("kimi", "Moonshot Kimi — K2.5 multimodal, 256K context, $0.60/$3.00 per MTok, machine control"),
+    ("kimi", "Moonshot Kimi — K2.6 long-horizon coding, 256K context, $0.95/$4.00 per MTok, machine control"),
     ("minimax", "MiniMax — M2.7 reasoning, 205K context, $0.30/$1.20 per MTok, machine control"),
     ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
@@ -270,12 +270,12 @@ def _get_available_providers() -> list:
 DEFAULT_MODELS = {
     "claude": "claude-sonnet-4-6",
     "claude-api": "claude-sonnet-4-6",
-    "openai": "gpt-5.4",
-    "deepseek": "deepseek-chat",
+    "openai": "gpt-5.5",
+    "deepseek": "deepseek-v4-flash",
     "grok": "grok-4-1-fast-non-reasoning",
-    "kimi": "kimi-k2.5",
+    "kimi": "kimi-k2.6",
     "minimax": "MiniMax-M2.7",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3-flash-preview",
     "ollama": "llama3.1:8b",
     "ollama-cloud": "qwen3.5:cloud",
     "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
@@ -283,20 +283,24 @@ DEFAULT_MODELS = {
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
-# Last updated: April 12, 2026 — verified against official API docs/pricing pages
+# Last updated: April 24, 2026 — verified against official API docs/pricing pages
 PROVIDER_MODELS = {
     "claude": [
-        ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning (recommended)"),
-        ("claude-opus-4-6", "Claude Opus 4.6 — most capable, complex tasks"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning, 1M ctx (recommended)"),
+        ("claude-opus-4-7", "Claude Opus 4.7 — most capable, best agentic coding, 1M ctx"),
+        ("claude-opus-4-6", "Claude Opus 4.6 — legacy flagship, 1M ctx"),
     ],
     "claude-api": [
-        ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning, $3/$15 per MTok (recommended)"),
-        ("claude-opus-4-6", "Claude Opus 4.6 — most capable, $5/$25 per MTok"),
-        ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, $1/$5 per MTok"),
-        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5 — legacy, $3/$15 per MTok (retires no sooner than Sep 29)"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, 1M ctx, $3/$15 per MTok (recommended)"),
+        ("claude-opus-4-7", "Claude Opus 4.7 — most capable, best agentic coding, 1M ctx, $5/$25 per MTok"),
+        ("claude-opus-4-6", "Claude Opus 4.6 — legacy flagship, 1M ctx, $5/$25 per MTok"),
+        ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, 200K ctx, $1/$5 per MTok"),
+        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5 — legacy, 200K ctx, $3/$15 per MTok"),
     ],
     "openai": [
-        ("gpt-5.4", "GPT-5.4 — latest frontier, vision + tools, 1.1M ctx, $2.50/$15 per MTok (recommended)"),
+        ("gpt-5.5", "GPT-5.5 — latest frontier, vision + tools, 1M ctx, $5/$30 per MTok (recommended)"),
+        ("gpt-5.5-pro", "GPT-5.5 Pro — max intelligence, 1M ctx, $30/$180 per MTok"),
+        ("gpt-5.4", "GPT-5.4 — prior frontier, vision + tools, 1.1M ctx, $2.50/$15 per MTok"),
         ("gpt-5.4-mini", "GPT-5.4 Mini — fast, vision + tools, $0.75/$4.50 per MTok"),
         ("gpt-5.4-nano", "GPT-5.4 Nano — cheapest 5.4-class, $0.20/$1.25 per MTok"),
         ("gpt-5-mini", "GPT-5 Mini — fast, 400K ctx, $0.25/$2 per MTok"),
@@ -308,71 +312,74 @@ PROVIDER_MODELS = {
         ("o3-mini", "o3-mini — reasoning model, 200K ctx, $0.55/$2.20 per MTok"),
     ],
     "grok": [
-        ("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast — cheapest, vision, 2M ctx, $0.20/$0.50 per MTok (recommended)"),
-        ("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning — chain-of-thought, vision, 2M ctx, $0.20/$0.50"),
-        ("grok-4.20-0309-non-reasoning", "Grok 4.20 — flagship, vision, 2M ctx, $2/$6 per MTok"),
-        ("grok-4.20-0309-reasoning", "Grok 4.20 Reasoning — chain-of-thought, vision, 2M ctx, $2/$6 per MTok"),
-        ("grok-4.20-multi-agent-0309", "Grok 4.20 Multi-Agent — agentic tasks, vision, 2M ctx, $2/$6 per MTok"),
+        ("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast — cheapest, 2M ctx, $0.20/$0.50 per MTok (recommended)"),
+        ("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning — chain-of-thought, 2M ctx, $0.20/$0.50"),
+        ("grok-code-fast-1", "Grok Code Fast 1 — coding-tuned, 256K ctx, $0.20/$1.50 per MTok"),
+        ("grok-4-0709", "Grok 4 — flagship, 256K ctx, $3/$15 per MTok"),
+        ("grok-3-mini", "Grok 3 Mini — budget, 131K ctx, $0.30/$0.50 per MTok"),
     ],
     "gemini": [
-        ("gemini-2.5-flash", "Gemini 2.5 Flash — fast, free tier available, $0.30/$2.50 per MTok (recommended)"),
-        ("gemini-3-flash-preview", "Gemini 3 Flash Preview — frontier performance, free tier, $0.50/$3 per MTok"),
+        ("gemini-3-flash-preview", "Gemini 3 Flash Preview — frontier, free tier, $0.50/$3 per MTok (recommended)"),
         ("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite Preview — cheapest next-gen, free tier, $0.25/$1.50"),
-        ("gemini-2.5-pro", "Gemini 2.5 Pro — best reasoning, paid only, $1.25/$10 per MTok"),
         ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview — most capable, paid only, $2/$12 per MTok"),
-        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — budget, free tier, $0.10/$0.40 per MTok"),
+        ("gemini-2.5-flash", "Gemini 2.5 Flash — legacy, paid only as of Apr 1 2026, $0.30/$2.50 per MTok"),
+        ("gemini-2.5-pro", "Gemini 2.5 Pro — legacy, paid only, $1.25/$10 per MTok"),
+        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — legacy budget, paid only, $0.10/$0.40 per MTok"),
     ],
     "deepseek": [
-        ("deepseek-chat", "DeepSeek V3.2 Chat — fast, strong, 128K ctx, $0.28/$0.42 per MTok (recommended)"),
-        ("deepseek-reasoner", "DeepSeek V3.2 Reasoner — thinking mode, 128K ctx, $0.28/$0.42 per MTok"),
+        ("deepseek-v4-flash", "DeepSeek V4 Flash — 1M ctx, 384K output, $0.14/$0.28 per MTok (recommended)"),
+        ("deepseek-v4-pro", "DeepSeek V4 Pro — flagship, 1M ctx, 384K output, $1.74/$3.48 per MTok"),
+        ("deepseek-chat", "DeepSeek V3.2 Chat — legacy alias, 128K ctx, $0.28/$0.42 per MTok"),
+        ("deepseek-reasoner", "DeepSeek V3.2 Reasoner — legacy thinking alias, 128K ctx, $0.28/$0.42 per MTok"),
     ],
     "kimi": [
-        ("kimi-k2.5", "Kimi K2.5 — multimodal (vision + tools), 256K ctx, $0.60/$3.00 per MTok (recommended)"),
+        ("kimi-k2.6", "Kimi K2.6 — latest, long-horizon coding, $0.95/$4.00 per MTok (recommended)"),
+        ("kimi-k2.5", "Kimi K2.5 — multimodal (vision + tools), 256K ctx, $0.60/$3.00 per MTok"),
         ("kimi-k2-thinking", "Kimi K2 Thinking — advanced reasoning, 256K ctx, $0.60/$2.50 per MTok"),
         ("kimi-k2", "Kimi K2 — text + code, 256K ctx, $0.60/$2.50 per MTok"),
     ],
     "minimax": [
         ("MiniMax-M2.7", "MiniMax M2.7 — self-evolving reasoning, 205K ctx, $0.30/$1.20 per MTok (recommended)"),
-        ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed — faster variant (~100 TPS), $0.30/$1.20 per MTok"),
+        ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed — faster variant, $0.60/$2.40 per MTok"),
         ("MiniMax-M2.5", "MiniMax M2.5 — multimodal (vision + tools), 205K ctx, $0.30/$1.20 per MTok"),
-        ("MiniMax-M2-her", "MiniMax M2-her — dialogue/roleplay optimized, $0.30/$1.20 per MTok"),
     ],
     "ollama-cloud": [
-        ("qwen3.5:cloud", "Qwen 3.5 Cloud — largest, strong reasoning (recommended)"),
-        ("glm-5.1:cloud", "GLM 5.1 — Zhipu AI, agentic engineering"),
+        ("qwen3.5:cloud", "Qwen 3.5 Cloud — multimodal, strong reasoning (recommended)"),
+        ("glm-5.1:cloud", "GLM 5.1 — Zhipu AI, SOTA on SWE-Bench Pro, agentic engineering"),
+        ("kimi-k2.6:cloud", "Kimi K2.6 — Moonshot, long-horizon coding agent"),
+        ("deepseek-v4-flash:cloud", "DeepSeek V4 Flash — 284B MoE, 1M ctx, efficient reasoning"),
         ("qwen3-coder-next:cloud", "Qwen3 Coder Next — coding-focused"),
-        ("deepseek-v3.2:cloud", "DeepSeek V3.2 — 671B MoE, strong reasoning"),
-        ("nemotron-3-super:cloud", "Nemotron 3 Super — NVIDIA, strong tool-use"),
-        ("devstral-2:cloud", "Devstral 2 — Mistral, coding-focused"),
+        ("nemotron-3-super:cloud", "Nemotron 3 Super — NVIDIA, 120B MoE, strong tool-use"),
+        ("devstral-2:cloud", "Devstral 2 — Mistral, software engineering agent"),
         ("glm-5:cloud", "GLM-5 — Zhipu AI, general-purpose"),
         ("minimax-m2.7:cloud", "MiniMax M2.7 — fast, general-purpose"),
         ("kimi-k2.5:cloud", "Kimi K2.5 — Moonshot, multimodal"),
-        ("gemma4:cloud", "Gemma 4 — Google, open model"),
-        ("gemini-3-flash-preview:cloud", "Gemini 3 Flash Preview — Google, fast"),
+        ("gemma4:cloud", "Gemma 4 — Google, reasoning + agentic"),
     ],
 }
 
 # Free models available on OpenRouter (no billing required)
-# Updated April 12, 2026 — verified against costgoat.com/pricing/openrouter-free-models
+# Updated April 24, 2026 — verified against costgoat.com/pricing/openrouter-free-models
 # IMPORTANT: Only models with tool-use/function-calling support are listed.
 # MyOldMachine needs tool-use to control the machine.
 # Rate limits: 20 requests/minute, 200 requests/day.
 OPENROUTER_FREE_MODELS = [
     ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron Super 120B — NVIDIA, tools + reasoning, 262K ctx (recommended)"),
+    ("tencent/hy3-preview:free", "Tencent Hunyuan 3 Preview — tools, 262K ctx"),
+    ("inclusionai/ling-2.6-flash:free", "Ling 2.6 Flash — InclusionAI, tools, 262K ctx"),
     ("google/gemma-4-31b-it:free", "Gemma 4 31B — Google, vision + tools, 262K ctx"),
     ("google/gemma-4-26b-a4b-it:free", "Gemma 4 26B — Google, vision + tools, 262K ctx"),
     ("qwen/qwen3-coder:free", "Qwen3 Coder — Alibaba, coding + tool-use, 262K ctx"),
     ("qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3 Next 80B — large MoE, tool-use, 262K ctx"),
     ("nvidia/nemotron-3-nano-30b-a3b:free", "Nemotron Nano 30B — NVIDIA, tool-use, 256K ctx"),
+    ("openrouter/free", "OpenRouter Free Router — auto-routes free models, vision + tools, 200K ctx"),
     ("minimax/minimax-m2.5:free", "MiniMax M2.5 — tool-use, 197K ctx"),
     ("openai/gpt-oss-120b:free", "GPT-OSS 120B — OpenAI open-source, strong tool-use, 131K ctx"),
     ("openai/gpt-oss-20b:free", "GPT-OSS 20B — OpenAI open-source, fast, tool-use, 131K ctx"),
     ("z-ai/glm-4.5-air:free", "GLM 4.5 Air — Zhipu AI, tool-use, 131K ctx"),
-    ("arcee-ai/trinity-large-preview:free", "Arcee Trinity Large — reasoning + tool-use, 131K ctx"),
     ("nvidia/nemotron-nano-12b-v2-vl:free", "Nemotron Nano 12B VL — NVIDIA, vision + tool-use, 128K ctx"),
     ("nvidia/nemotron-nano-9b-v2:free", "Nemotron Nano 9B — NVIDIA, tool-use, 128K ctx"),
     ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — Meta, solid all-rounder, tool-use, 66K ctx"),
-    ("google/gemma-3-27b-it:free", "Gemma 3 27B — Google, vision + tool-use, 131K ctx"),
 ]
 
 # Providers that need an API key
@@ -419,7 +426,7 @@ API_KEY_GUIDES = {
         "steps": [
             "Go to platform.deepseek.com/api_keys",
             "Sign up with email, Google, or GitHub",
-            "Top up your balance (very cheap — $0.28/$0.42 per MTok)",
+            "Top up your balance (very cheap — V4 Flash at $0.14/$0.28 per MTok)",
             "Click 'Create API Key', name it, and copy it immediately",
             "  The full key is shown only once — starts with sk-",
         ],

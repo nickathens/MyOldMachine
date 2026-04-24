@@ -1244,9 +1244,10 @@ class GeminiProvider(LLMProvider):
 class DeepSeekProvider(LLMProvider):
     """DeepSeek API — OpenAI-compatible with tool-use support.
 
-    Uses api.deepseek.com/v1 endpoint. DeepSeek V3.2.
-    $0.28/$0.42 per MTok ($0.028 cached input — 90% discount).
-    128K context. Both deepseek-chat and deepseek-reasoner support tool calls.
+    Uses api.deepseek.com/v1 endpoint. DeepSeek V4 (Flash and Pro), V3.2 legacy.
+    V4 Flash: $0.14/$0.28 per MTok. V4 Pro: $1.74/$3.48 per MTok.
+    Cached input discounted ~90%. V4 has 1M context; V3.2 aliases have 128K.
+    deepseek-v4-flash/pro, deepseek-chat, deepseek-reasoner all support tool calls.
     No vision support in the API.
     """
 
@@ -1261,7 +1262,7 @@ class DeepSeekProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        return False  # DeepSeek V3.2 API does not support vision
+        return False  # DeepSeek V4 API does not support vision
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
@@ -1362,8 +1363,9 @@ class KimiProvider(LLMProvider):
     """Moonshot Kimi API — OpenAI-compatible with tool-use support.
 
     Uses api.moonshot.ai/v1 endpoint (redirects to api.kimi.ai).
-    Kimi K2.5 is multimodal (vision + tools), K2 Thinking for reasoning.
-    256K context. $0.60/$3.00 per MTok (K2.5), $0.60/$2.50 (K2).
+    K2.6 is latest (long-horizon coding agent), K2.5 multimodal (vision + tools),
+    K2 Thinking for reasoning.
+    256K context. K2.6: $0.95/$4.00, K2.5: $0.60/$3.00, K2: $0.60/$2.50 per MTok.
     Temperature clamped to [0, 1].
     Note: kimi-latest was discontinued January 28, 2026.
     """
