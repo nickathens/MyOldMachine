@@ -1024,7 +1024,7 @@ class Scheduler:
     def stop(self):
         """Stop the APScheduler and sync loop."""
         self._sync_running = False
-        if hasattr(self, '_sync_task') and self._sync_task:
+        if self._sync_task:
             self._sync_task.cancel()
         if self._aps.running:
             self._aps.shutdown(wait=False)

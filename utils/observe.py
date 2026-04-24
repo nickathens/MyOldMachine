@@ -47,7 +47,7 @@ _DEDUP_STOPWORDS = frozenset({
     "were", "been", "has", "have", "had", "do", "does", "did", "will",
     "can", "could", "should", "would", "may", "might", "you", "your",
     "he", "she", "they", "them", "his", "her", "its", "our", "we",
-    "bot", "the", "also", "just", "about", "been", "being",
+    "bot", "also", "just", "about", "being",
     "into", "more", "than", "very", "same", "other", "which",
     "user", "person", "people",
 })

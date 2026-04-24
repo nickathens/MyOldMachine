@@ -1399,17 +1399,9 @@ async def _check_process(process_id: str, action: str = "status") -> str:
         # Finished and LLM has already seen the output — don't re-dump
         result += f"\n(Process finished. Output already shown — {len(managed.full_output)} chars total)"
     else:
-        # Finished but LLM never polled — show full output once
-        managed.consume_new_output()  # Advance read offset so we don't show again
-        full = managed.full_output
-        if full:
-            result += f"\n--- Full output ({len(full)} chars) ---\n"
-            if len(full) > MAX_OUTPUT_CHARS:
-                result += full[:MAX_OUTPUT_CHARS] + "\n[Truncated]"
-            else:
-                result += full
-        else:
-            result += "\n(No output produced)"
+        # Finished with no output (consume_new_output on line above already
+        # drained any buffered output and advanced the read offset).
+        result += "\n(No output produced)"
 
     return result
 

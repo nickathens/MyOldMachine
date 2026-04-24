@@ -159,12 +159,15 @@ async def _call_openai_compat(
     url: str, api_key: str, model: str,
     system_prompt: str, user_message: str,
     tools: list[dict] | None = None,
+    extra_headers: dict | None = None,
 ) -> tuple[str, list[str]]:
     """Call an OpenAI-compatible API. Returns (response_text, tool_call_names)."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": 2048,
@@ -294,6 +297,7 @@ def _get_available_providers() -> dict[str, Any]:
             return await _call_openai_compat(
                 "https://openrouter.ai/api/v1/chat/completions",
                 openrouter_key, "nvidia/nemotron-3-super-120b-a12b:free", sp, msg, tools,
+                extra_headers=headers_extra,
             )
         providers["openrouter"] = {"call": call_openrouter, "model": "nvidia/nemotron-3-super-120b-a12b:free"}
 

@@ -48,7 +48,7 @@ def slugify(name: str) -> str:
     """Convert name to filesystem-safe slug."""
     slug = re.sub(r'[^\w\s-]', '', name.lower())
     slug = re.sub(r'[\s_]+', '-', slug)
-    return slug.strip('-')[:50]
+    return slug.strip('-')[:50].rstrip('-')
 
 
 def ensure_dirs():

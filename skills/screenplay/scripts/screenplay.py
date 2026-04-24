@@ -312,8 +312,6 @@ def cmd_analyze(args):
                 if base not in ("FADE OUT", "FADE IN", "THE END", "BLACKOUT", "CUT TO"):
                     # Could be a character
                     char_name = stripped.split("(")[0].strip()
-                    # Remove CONT'D suffix
-                    char_name = char_name.replace("(CONT'D)", "").replace("(CONT'D)", "").strip()
                     if char_name and len(char_name) < 40:
                         characters.add(char_name)
                         current_char = char_name
