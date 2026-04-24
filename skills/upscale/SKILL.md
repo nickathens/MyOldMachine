@@ -4,26 +4,31 @@ AI-powered image upscaling using Real-ESRGAN.
 
 ## Capabilities
 
-- **Upscale**: 2x, 4x resolution increase
-- **Denoise**: Remove noise while upscaling
-- **Face enhance**: Better face restoration
+- **Upscale**: 2x or 4x resolution increase
+- **Face enhance**: Better face restoration via GFPGAN
+- **Tile-based**: Low-memory tiling for CPU-only systems
 
 ## Commands
 
+The `python -m realesrgan` CLI does not ship in `realesrgan 0.3.0`. Use the wrapper script:
+
 ```bash
-# Basic 4x upscale
-python -m realesrgan -i input.jpg -o output.png -s 4
-
 # 2x upscale
-python -m realesrgan -i input.jpg -o output.png -s 2
+python $SKILL_DIR/scripts/upscale.py input.jpg output.png --scale 2
 
-# With face enhancement
-python -m realesrgan -i input.jpg -o output.png -s 4 --face_enhance
+# 4x upscale
+python $SKILL_DIR/scripts/upscale.py input.jpg output.png --scale 4
+
+# With face enhancement (uses GFPGAN, downloads ~350 MB weights on first run)
+python $SKILL_DIR/scripts/upscale.py input.jpg output.png --scale 4 --face
+
+# Custom tile size (0 = no tiling, requires more RAM)
+python $SKILL_DIR/scripts/upscale.py input.jpg output.png --scale 2 --tile 512
 ```
 
 ## Script Location
 
-`scripts/upscale.py` - Upscaling wrapper
+`scripts/upscale.py` — Python API wrapper around `RealESRGANer` + `RRDBNet`.
 
 ## Examples
 
@@ -34,7 +39,8 @@ python -m realesrgan -i input.jpg -o output.png -s 4 --face_enhance
 
 ## Notes
 
-- First run downloads model (~60MB)
-- 4x upscale: 512x512 → 2048x2048
-- CPU only (GTX 970 not supported)
-- Processing time depends on image size
+- First run downloads model weights to `~/.cache/realesrgan/` (~65 MB for x2plus, ~65 MB for x4plus, ~350 MB for GFPGAN face enhance).
+- 2x upscale: 768×432 → 1536×864 (~15 s on i5-6600K with `--tile 256`).
+- 4x upscale: 512×512 → 2048×2048 (minutes on CPU; scale quadratically).
+- CPU only on this machine: the GTX 970 is unsupported by the CUDA wheels Real-ESRGAN uses.
+- The script auto-patches `torchvision.transforms.functional_tensor` (removed in torchvision ≥0.17) to keep `basicsr` happy. No manual site-packages edits needed.
