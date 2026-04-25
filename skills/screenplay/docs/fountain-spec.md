@@ -152,7 +152,7 @@ Bracket with > and <:
 ```fountain
 >THE END<
 
->A film by Nick Athens<
+>A film by Jane Doe<
 ```
 
 ## Emphasis

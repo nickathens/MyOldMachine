@@ -480,7 +480,7 @@ A middleware layer that runs before and after every skill invocation. Prevents r
 | RAM pre-check | browser, scraper, media, stems, blender, blender-video, upscale, voice, background-removal |
 | Disk pre-check | video-editing, downloads |
 | Process cleanup | browser, blender, stems, gimp, inkscape, godot, downloads, lighthouse |
-| Temp file cleanup | stems, video-editing, image-editing, presentations, audio-editing, lighthouse |
+| Temp file cleanup | stems, video-editing, image-editing, audio-editing, lighthouse |
 | Docker cleanup | docker-services |
 
 Hooks work with all LLM providers, not just Claude. For Claude CLI, they use the native hook system (PreToolUse/PostToolUse/Stop events). For all other providers, they're embedded in the tool execution layer.
