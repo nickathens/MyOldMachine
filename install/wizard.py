@@ -246,6 +246,7 @@ def detect_machine_specs():
 
 _ALL_LLM_PROVIDERS = [
     ("claude", "Claude Code CLI — uses your Pro/Max plan (no API key needed), full machine control"),
+    ("codex", "OpenAI Codex CLI — uses your ChatGPT Plus/Pro plan (no API key needed), full machine control"),
     ("claude-api", "Anthropic Claude API — requires paid API credits ($), chat only, no machine control"),
     ("openai", "OpenAI — requires API key ($), machine control via function calling"),
     ("deepseek", "DeepSeek — extremely cheap ($0.14/$0.28 per MTok), 1M context, machine control"),
@@ -270,6 +271,7 @@ def _get_available_providers() -> list:
 DEFAULT_MODELS = {
     "claude": "claude-sonnet-4-6",
     "claude-api": "claude-sonnet-4-6",
+    "codex": "gpt-5.5",
     "openai": "gpt-5.5",
     "deepseek": "deepseek-v4-flash",
     "grok": "grok-4-1-fast-non-reasoning",
@@ -283,12 +285,19 @@ DEFAULT_MODELS = {
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
-# Last updated: April 24, 2026 — verified against official API docs/pricing pages
+# Last updated: April 28, 2026 — verified against official API docs/pricing pages
 PROVIDER_MODELS = {
     "claude": [
         ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning, 1M ctx (recommended)"),
         ("claude-opus-4-7", "Claude Opus 4.7 — most capable, best agentic coding, 1M ctx"),
         ("claude-opus-4-6", "Claude Opus 4.6 — legacy flagship, 1M ctx"),
+    ],
+    "codex": [
+        ("gpt-5.5", "GPT-5.5 — Codex CLI default, vision + tools, 1M ctx (recommended)"),
+        ("gpt-5.5-pro", "GPT-5.5 Pro — max intelligence, slower, 1M ctx"),
+        ("gpt-5.4", "GPT-5.4 — prior frontier, vision + tools, 1.1M ctx"),
+        ("gpt-5.4-mini", "GPT-5.4 Mini — fast, vision + tools"),
+        ("gpt-5-codex", "GPT-5 Codex — coding-tuned variant"),
     ],
     "claude-api": [
         ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, 1M ctx, $3/$15 per MTok (recommended)"),
@@ -314,6 +323,9 @@ PROVIDER_MODELS = {
     "grok": [
         ("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast — cheapest, 2M ctx, $0.20/$0.50 per MTok (recommended)"),
         ("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning — chain-of-thought, 2M ctx, $0.20/$0.50"),
+        ("grok-4.20-0309-non-reasoning", "Grok 4.20 — newest flagship, 2M ctx, vision + tools, $2/$6 per MTok"),
+        ("grok-4.20-0309-reasoning", "Grok 4.20 Reasoning — newest flagship w/ reasoning, 2M ctx, $2/$6 per MTok"),
+        ("grok-4.20-multi-agent-0309", "Grok 4.20 Multi-Agent — orchestrated agents, 2M ctx"),
         ("grok-code-fast-1", "Grok Code Fast 1 — coding-tuned, 256K ctx, $0.20/$1.50 per MTok"),
         ("grok-4-0709", "Grok 4 — flagship, 256K ctx, $3/$15 per MTok"),
         ("grok-3-mini", "Grok 3 Mini — budget, 131K ctx, $0.30/$0.50 per MTok"),
@@ -359,12 +371,13 @@ PROVIDER_MODELS = {
 }
 
 # Free models available on OpenRouter (no billing required)
-# Updated April 24, 2026 — verified against costgoat.com/pricing/openrouter-free-models
+# Updated April 28, 2026 — verified against openrouter.ai and provider docs.
 # IMPORTANT: Only models with tool-use/function-calling support are listed.
 # MyOldMachine needs tool-use to control the machine.
 # Rate limits: 20 requests/minute, 200 requests/day.
 OPENROUTER_FREE_MODELS = [
     ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron Super 120B — NVIDIA, tools + reasoning, 262K ctx (recommended)"),
+    ("inclusionai/ling-2.6-1t:free", "Ling 2.6 1T — InclusionAI flagship, SWE-bench SOTA, tools, 262K ctx"),
     ("tencent/hy3-preview:free", "Tencent Hunyuan 3 Preview — tools, 262K ctx"),
     ("inclusionai/ling-2.6-flash:free", "Ling 2.6 Flash — InclusionAI, tools, 262K ctx"),
     ("google/gemma-4-31b-it:free", "Gemma 4 31B — Google, vision + tools, 262K ctx"),
@@ -418,6 +431,22 @@ API_KEY_GUIDES = {
         "notes": [
             "The API platform account is separate from ChatGPT.",
             "You must add credits before API calls will work.",
+        ],
+    },
+    "codex": {
+        "name": "OpenAI Codex CLI",
+        "url": "https://chatgpt.com",
+        "steps": [
+            "Codex CLI is auto-installed during setup — no key needed if you have a ChatGPT plan.",
+            "After install, run: codex login",
+            "  Sign in with your ChatGPT Plus / Pro / Business / Edu / Enterprise account.",
+            "  Your subscription covers usage — no API credits required.",
+            "OR (headless / no ChatGPT plan):",
+            "  Set OPENAI_API_KEY in .env. Buy credits at platform.openai.com.",
+        ],
+        "notes": [
+            "Recommended path: ChatGPT plan + `codex login`. Free with subscription.",
+            "API key path is for CI / non-interactive setups only.",
         ],
     },
     "deepseek": {
@@ -873,6 +902,81 @@ def main():
                 else:
                     _switch_provider_fallback()
 
+    # --- Codex CLI install (if provider is codex) ---
+    if config.get("llm_provider") == "codex" and not checkpoint_done("codex_cli"):
+        import shutil as _shutil
+
+        def _find_npm_codex():
+            npm = _shutil.which("npm")
+            if npm:
+                return npm
+            for candidate in [
+                "/usr/local/bin/npm",
+                "/opt/homebrew/bin/npm",
+                str(Path.home() / ".nvm/current/bin/npm"),
+            ]:
+                if Path(candidate).exists():
+                    return candidate
+            return None
+
+        def _switch_codex_fallback():
+            """Codex CLI failed — let user pick a different provider without restarting."""
+            print()
+            warn("Codex CLI requires Node.js and npm, which could not be installed.")
+            print()
+            print(f"  {GREEN}You can switch to a different provider now.{NC}")
+            print(f"  {GREEN}Tip: OpenRouter has free models and doesn't need Node.js.{NC}")
+            print()
+            providers_without_codex = [p for p in _ALL_LLM_PROVIDERS if p[0] != "codex"]
+            new_provider = ask_choice(
+                "Pick a different provider:", providers_without_codex, default="openrouter",
+            )
+            config["llm_provider"] = new_provider
+            _select_model_for_provider(config, new_provider)
+
+            if new_provider in API_KEY_PROVIDERS:
+                _print_api_key_guide(new_provider)
+                guide = API_KEY_GUIDES.get(new_provider, {})
+                key_label = f"{guide.get('name', new_provider)} API key"
+                config["llm_api_key"] = ask(key_label, secret=True)
+            else:
+                config["llm_api_key"] = ""
+
+            write_env(repo_dir, config)
+            ok(f"Switched to {new_provider} ({config['llm_model']})")
+            checkpoint_set("codex_cli")
+
+        if _shutil.which("codex"):
+            ok("OpenAI Codex CLI already installed")
+            print(f"  {YELLOW}Run 'codex login' to authenticate with your ChatGPT plan.{NC}")
+            checkpoint_set("codex_cli")
+        else:
+            npm_path = _find_npm_codex()
+            if not npm_path:
+                _switch_codex_fallback()
+            else:
+                info("Installing OpenAI Codex CLI...")
+                try:
+                    result = subprocess.run(
+                        [npm_path, "install", "-g", "@openai/codex"],
+                        timeout=180,
+                    )
+                except subprocess.TimeoutExpired:
+                    result = None
+                if result and result.returncode == 0:
+                    ok("OpenAI Codex CLI installed")
+                    print()
+                    print(f"  {BOLD}IMPORTANT: You need to authenticate before the bot can work.{NC}")
+                    print(f"  {YELLOW}Run this command now:{NC}")
+                    print(f"    codex login")
+                    print(f"  {YELLOW}This opens your browser to sign in with your ChatGPT account.{NC}")
+                    print(f"  {YELLOW}Your Plus/Pro plan covers usage — no API credits needed.{NC}")
+                    print(f"  {YELLOW}(For headless setups, set OPENAI_API_KEY in .env instead.){NC}")
+                    print()
+                    checkpoint_set("codex_cli")
+                else:
+                    _switch_codex_fallback()
+
     # --- Ollama install (if provider is ollama) ---
     if config.get("llm_provider") == "ollama" and not checkpoint_done("ollama_setup"):
         from install.ollama_setup import (
@@ -1151,6 +1255,20 @@ def _run_wizard_steps(detected_os: str) -> dict:
             print(f"  {YELLOW}Claude Code CLI will be installed automatically after provisioning.{NC}")
         print(f"  {YELLOW}After install, run: claude login{NC}")
         print(f"  {YELLOW}This opens your browser to authenticate — no key to copy-paste.{NC}")
+    elif config["llm_provider"] == "codex":
+        # Codex CLI — authenticates via 'codex login' using existing ChatGPT Plus/Pro plan.
+        # No API key. Node.js is installed during provisioning if missing.
+        config["llm_api_key"] = ""
+        import shutil as _shutil
+        print()
+        print(f"  {GREEN}OpenAI Codex CLI uses your existing ChatGPT Plus/Pro/Business plan.{NC}")
+        print(f"  {GREEN}No API key or credits needed — it authenticates via your browser.{NC}")
+        if not _shutil.which("codex"):
+            if not _shutil.which("npm") and not _shutil.which("node"):
+                print(f"  {YELLOW}Node.js will be installed automatically during system provisioning.{NC}")
+            print(f"  {YELLOW}Codex CLI will be installed automatically after provisioning.{NC}")
+        print(f"  {YELLOW}After install, run: codex login{NC}")
+        print(f"  {YELLOW}If you don't have a ChatGPT plan, set OPENAI_API_KEY in .env instead.{NC}")
     elif config["llm_provider"] == "ollama":
         config["llm_api_key"] = ""
         config["ollama_url"] = "http://localhost:11434"

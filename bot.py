@@ -35,7 +35,12 @@ from core.config import (
     get_ollama_base_url, get_user_profile, is_admin,
     LOG_DIR,
 )
-from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider
+from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider, CodexCLIProvider
+
+# Both subprocess CLI providers share progress callbacks, /stop semantics, and
+# graceful shutdown. Anywhere the bot needs to gate CLI-specific behavior,
+# isinstance against this tuple instead of either class alone.
+_CLI_PROVIDERS = (ClaudeCLIProvider, CodexCLIProvider)
 from core.tools import get_process_registry
 from core.skill_loader import SkillManager
 from core.session import SessionManager, get_session_manager
@@ -621,7 +626,7 @@ def build_system_prompt(user_id: int) -> str:
     user_name = profile.get("name", "User")
     user_role = profile.get("role", "user")
     blocked_skills = profile.get("blocked_skills", [])
-    is_claude_cli = isinstance(_llm_provider, ClaudeCLIProvider)
+    is_cli_provider = isinstance(_llm_provider, _CLI_PROVIDERS)
     has_tool_use = _llm_provider.supports_tool_use if _llm_provider else False
 
     parts = []
@@ -633,7 +638,7 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("You have full access to the operating system through tool calls. "
                      "You can run commands, read and write files, install software, "
                      "manage files, and configure services.")
-        if not is_claude_cli:
+        if not is_cli_provider:
             parts.append(
                 "You have 5 tools available:\n"
                 "  - run_command: Execute shell commands. Set background=true for long-running "
@@ -668,7 +673,7 @@ def build_system_prompt(user_id: int) -> str:
             parts.append("These additional tools are available from connected MCP servers:")
             for t in mcp_tools:
                 parts.append(f"  - {t.name} [{t.server_name}]: {t.description}")
-            if not is_claude_cli:
+            if not is_cli_provider:
                 parts.append("Call MCP tools just like built-in tools — they appear in the tool list.")
         parts.append("")
         parts.append("### Communication Style:")
@@ -743,7 +748,7 @@ def build_system_prompt(user_id: int) -> str:
     # Only show sudo info to Claude CLI (which already has full access via
     # --dangerously-skip-permissions).  API providers — especially weak/free
     # models — are prompt-injection targets and should not know the sudo path.
-    if has_tool_use and user_role == "admin" and is_claude_cli:
+    if has_tool_use and user_role == "admin" and is_cli_provider:
         parts.append(f"Sudo password is stored at ~/.sudo_pass — use it for privileged commands.")
         parts.append("")
 
@@ -1177,7 +1182,7 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
     # Semaphore serializes LLM calls on low-resource machines (no-op on capable ones)
     async with _get_llm_semaphore():
         # For Claude CLI provider, pass extra kwargs for progress tracking
-        if isinstance(_llm_provider, ClaudeCLIProvider):
+        if isinstance(_llm_provider, _CLI_PROVIDERS):
             response: LLMResponse = await _llm_provider.complete(
                 system_prompt=system_prompt,
                 messages=messages,
@@ -1590,19 +1595,19 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kill the active Claude task for this user.
+    """Kill the active CLI task for this user.
 
-    Only affects Claude CLI provider. Each user can only stop their own task.
-    The in-flight turn returns whatever partial output was accumulated,
-    with a '[Stopped by /stop command]' suffix.
+    Only affects subprocess CLI providers (Claude CLI, Codex CLI). Each user can
+    only stop their own task. The in-flight turn returns whatever partial output
+    was accumulated, with a '[Stopped by /stop command]' suffix.
     """
     user_id = update.effective_user.id
     allowed = get_allowed_users()
     if not allowed or user_id not in allowed:
         return
-    if not isinstance(_llm_provider, ClaudeCLIProvider):
+    if not isinstance(_llm_provider, _CLI_PROVIDERS):
         await update.message.reply_text(
-            "/stop is only supported for the Claude CLI provider."
+            "/stop is only supported for CLI providers (Claude CLI, Codex CLI)."
         )
         return
     killed = _llm_provider.stop_user(user_id)
@@ -1730,8 +1735,9 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     branch = get_current_branch(BOT_DIR)
     skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
     provider = get_llm_provider()
-    if isinstance(_llm_provider, ClaudeCLIProvider):
-        tool_use = "Yes (Claude CLI — native)"
+    if isinstance(_llm_provider, _CLI_PROVIDERS):
+        cli_label = "Codex CLI" if isinstance(_llm_provider, CodexCLIProvider) else "Claude CLI"
+        tool_use = f"Yes ({cli_label} — native)"
     elif _llm_provider and _llm_provider.supports_tool_use:
         tool_use = "Yes (function calling)"
     else:
@@ -1775,7 +1781,7 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     running = registry.list_running()
     if running:
         await registry.cleanup_all()
-    if isinstance(_llm_provider, ClaudeCLIProvider):
+    if isinstance(_llm_provider, _CLI_PROVIDERS):
         # Give Claude CLI processes up to 10 seconds to finish
         for _ in range(10):
             if not _llm_provider._active_processes:
@@ -1910,7 +1916,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kwargs["base_url"] = get_ollama_base_url()
     try:
         _llm_provider = create_provider(new_provider, new_model, api_key, **kwargs)
-        if isinstance(_llm_provider, ClaudeCLIProvider):
+        if isinstance(_llm_provider, _CLI_PROVIDERS):
             _llm_provider.on_progress_save = save_task_progress
             _llm_provider.on_progress_clear = clear_task_progress
         logger.info(f"Provider switched to {new_provider}/{new_model} by user {user_id}")
@@ -1978,7 +1984,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kwargs["base_url"] = get_ollama_base_url()
     try:
         _llm_provider = create_provider(current_provider, new_model, api_key, **kwargs)
-        if isinstance(_llm_provider, ClaudeCLIProvider):
+        if isinstance(_llm_provider, _CLI_PROVIDERS):
             _llm_provider.on_progress_save = save_task_progress
             _llm_provider.on_progress_clear = clear_task_progress
         logger.info(f"Model switched to {new_model} by user {user_id}")
@@ -2039,7 +2045,7 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kwargs["base_url"] = get_ollama_base_url()
     try:
         _llm_provider = create_provider(current_provider, current_model, new_key, **kwargs)
-        if isinstance(_llm_provider, ClaudeCLIProvider):
+        if isinstance(_llm_provider, _CLI_PROVIDERS):
             _llm_provider.on_progress_save = save_task_progress
             _llm_provider.on_progress_clear = clear_task_progress
         logger.info(f"API key updated for {current_provider} by user {user_id}")
@@ -2450,7 +2456,7 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_paths = [str(p) for p, t in attachments if t == "image"] if attachments else []
 
         # Auto-transcribe voice for non-CLI providers (they can't invoke Whisper via tools)
-        if attachments and not isinstance(_llm_provider, ClaudeCLIProvider):
+        if attachments and not isinstance(_llm_provider, _CLI_PROVIDERS):
             for path, ftype in attachments:
                 if ftype == "voice":
                     transcript = await _auto_transcribe_voice(str(path))
@@ -3181,11 +3187,13 @@ def main():
     logger.info(f"LLM provider: {_llm_provider.provider_name} / {model} "
                 f"(tool-use: {_llm_provider.supports_tool_use})")
 
-    # Wire up progress callbacks for Claude CLI
-    if isinstance(_llm_provider, ClaudeCLIProvider):
+    # Wire up progress callbacks for both CLI providers (Claude, Codex)
+    if isinstance(_llm_provider, _CLI_PROVIDERS):
         _llm_provider.on_progress_save = save_task_progress
         _llm_provider.on_progress_clear = clear_task_progress
-        # Auto-configure Claude Code hooks for skill monitoring
+    # ~/.claude/settings.json hooks are Claude-CLI-specific. Codex CLI uses
+    # ~/.codex/ and does not honor these hooks.
+    if isinstance(_llm_provider, ClaudeCLIProvider):
         _configure_claude_hooks()
 
     # Hardware-aware concurrency control: enable semaphore on low-resource machines
@@ -3429,7 +3437,7 @@ def main():
         if running:
             logger.info(f"Killing {len(running)} background processes on shutdown...")
             await registry.cleanup_all()
-        if isinstance(_llm_provider, ClaudeCLIProvider):
+        if isinstance(_llm_provider, _CLI_PROVIDERS):
             await _llm_provider.graceful_shutdown()
 
     app.post_init = post_init

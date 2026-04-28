@@ -5,6 +5,10 @@ LLM Provider Abstraction Layer for MyOldMachine.
 PRIMARY: Claude Code CLI — runs as subprocess with full tool-use (bash, file
 read/write, etc.). This is how the bot actually controls the machine.
 
+PARALLEL: OpenAI Codex CLI — same pattern as Claude Code, runs `codex exec
+--json` as subprocess and parses the JSON Lines event stream. Authenticates
+via `codex login` (ChatGPT Plus/Pro/Business plan) or OPENAI_API_KEY.
+
 API PROVIDERS: OpenAI, Google Gemini, Kimi, MiniMax, Ollama, OpenRouter — these use
 httpx for API calls with function-calling / tool-use support. The LLM sends
 structured tool calls, we execute them locally, and return results.
@@ -306,9 +310,11 @@ class ClaudeCLIProvider(LLMProvider):
             # dangerous env vars (other provider API keys, bot tokens, DB passwords, etc.)
             cli_env = {k: v for k, v in os.environ.items()
                        if k not in {"OPENAI_API_KEY", "OPENROUTER_API_KEY",
-                                    "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
+                                    "GOOGLE_API_KEY", "GEMINI_API_KEY",
+                                    "DEEPSEEK_API_KEY",
                                     "XAI_API_KEY", "GROK_API_KEY",
-                                    "MOONSHOT_API_KEY",
+                                    "MOONSHOT_API_KEY", "MINIMAX_API_KEY",
+                                    "CODEX_API_KEY",
                                     "LLM_API_KEY", "TELEGRAM_BOT_TOKEN",
                                     "TELEGRAM_TOKEN", "BOT_TOKEN",
                                     "DATABASE_URL", "DATABASE_PASSWORD",
@@ -694,6 +700,536 @@ class ClaudeCLIProvider(LLMProvider):
                 await asyncio.wait_for(proc.wait(), timeout=5)
             except asyncio.TimeoutError:
                 logger.warning("Claude process did not exit after SIGKILL within 5s")
+
+
+class CodexCLIProvider(LLMProvider):
+    """
+    OpenAI Codex CLI provider — parallel to ClaudeCLIProvider.
+
+    Runs `codex exec --json` as a subprocess with --sandbox danger-full-access,
+    giving the LLM full tool-use (bash, file edits, web search, MCP tools, etc.).
+
+    Auth: either `codex login` (ChatGPT Plus/Pro/Business/Edu/Enterprise plan,
+    no API credits needed) or OPENAI_API_KEY in the environment.
+
+    Stdout is a JSON Lines stream of events: thread.started, turn.started,
+    turn.completed (with usage), turn.failed, item.started/completed.
+    The final answer is the last item.completed with item.type == "agent_message".
+    """
+
+    IDLE_TIMEOUT = 3600
+    NO_TEXT_TIMEOUT = 600
+    ABSOLUTE_TIMEOUT = 3600
+    PROGRESS_INTERVAL = 900
+
+    def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
+        super().__init__(model, api_key)
+        self._bot_dir = Path(__file__).parent.parent
+        self._active_processes: set = set()
+        self._user_processes: dict = {}
+        self._stop_requested: set = set()
+        self.on_progress_save = None
+        self.on_progress_clear = None
+
+    def stop_user(self, user_id: int) -> bool:
+        proc = self._user_processes.get(user_id)
+        if proc is None:
+            return False
+        self._stop_requested.add(user_id)
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        return True
+
+    @property
+    def provider_name(self) -> str:
+        return "codex-cli"
+
+    @property
+    def supports_tool_use(self) -> bool:
+        return True
+
+    @property
+    def supports_vision(self) -> bool:
+        # GPT-5.x and GPT-4o families used by Codex CLI all support vision input
+        return True
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7,
+                       chat=None, user_id: int = None, original_message: str = "") -> LLMResponse:
+        prompt = system_prompt + "\n\n"
+        for msg in messages:
+            prompt += f"<{msg.role}>{msg.content}</{msg.role}>\n"
+        prompt += "\nContinue the conversation naturally, responding to the latest message."
+
+        cmd = [
+            "codex",
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--sandbox", "danger-full-access",
+            "-m", self.model,
+            "-",  # Read prompt from stdin
+        ]
+
+        typing_task = None
+        process = None
+        start_time = asyncio.get_running_loop().time()
+        last_activity = start_time
+        last_text_output = start_time
+        last_progress_message = start_time
+        last_progress_content = ""
+        last_progress_save = start_time
+        agent_message_blocks: list = []
+        partial_text = ""
+        total_input = 0
+        total_output = 0
+        current_status = "thinking"
+        tool_in_progress = None
+        turn_failed_message = None
+
+        async def send_typing_periodically():
+            while True:
+                try:
+                    if chat:
+                        await chat.send_action("typing")
+                    await asyncio.sleep(3)
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    await asyncio.sleep(3)
+
+        async def read_line_with_timeout(stream, timeout: float):
+            try:
+                return await asyncio.wait_for(stream.readline(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return None
+            except (asyncio.LimitOverrunError, ValueError) as e:
+                logger.warning(f"Oversized output line ({e}), draining buffer")
+                try:
+                    chunk = await asyncio.wait_for(
+                        stream.read(len(stream._buffer) if stream._buffer else 1024),
+                        timeout=5,
+                    )
+                    logger.warning(f"Drained {len(chunk)} bytes from oversized line")
+                except Exception as drain_err:
+                    logger.warning(f"Buffer drain failed: {drain_err}")
+                return b'\n'
+
+        try:
+            if chat:
+                typing_task = asyncio.create_task(send_typing_periodically())
+
+            # Codex CLI needs OPENAI_API_KEY (or the OAuth token from
+            # `codex login` stored under ~/.codex/auth.json). Strip every other
+            # provider's keys + bot/db secrets to prevent contamination.
+            cli_env = {k: v for k, v in os.environ.items()
+                       if k not in {"ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+                                    "GOOGLE_API_KEY", "GEMINI_API_KEY",
+                                    "DEEPSEEK_API_KEY",
+                                    "XAI_API_KEY", "GROK_API_KEY",
+                                    "MOONSHOT_API_KEY", "MINIMAX_API_KEY",
+                                    "LLM_API_KEY", "TELEGRAM_BOT_TOKEN",
+                                    "TELEGRAM_TOKEN", "BOT_TOKEN",
+                                    "DATABASE_URL", "DATABASE_PASSWORD",
+                                    "REDIS_URL", "REDIS_PASSWORD"}}
+            cli_env["HOME"] = str(Path.home())
+            # If a per-provider api_key was supplied at construction, expose it
+            # to the CLI as OPENAI_API_KEY so headless setups work without login.
+            if self.api_key:
+                cli_env["OPENAI_API_KEY"] = self.api_key
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self._bot_dir),
+                env=cli_env,
+                limit=50 * 1024 * 1024,
+            )
+            self._active_processes.add(process)
+            if user_id is not None:
+                self._stop_requested.discard(user_id)
+                self._user_processes[user_id] = process
+
+            process.stdin.write(prompt.encode())
+            await process.stdin.drain()
+            process.stdin.close()
+            await process.stdin.wait_closed()
+
+            while True:
+                current_time = asyncio.get_running_loop().time()
+                time_since_activity = current_time - last_activity
+                elapsed = current_time - start_time
+
+                if user_id is not None and user_id in self._stop_requested:
+                    logger.info(f"Codex stop requested for user {user_id} after {int(elapsed)}s")
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+                    await process.wait()
+                    fallback = "\n\n".join(agent_message_blocks).strip() or partial_text.strip()
+                    if self.on_progress_clear and user_id:
+                        self.on_progress_clear(user_id)
+                    if fallback:
+                        return LLMResponse(
+                            text=fallback + "\n\n[Stopped by /stop command]",
+                            model=self.model, provider=self.provider_name, tool_use=True,
+                        )
+                    return LLMResponse(
+                        text="Task stopped.",
+                        model=self.model, provider=self.provider_name, tool_use=True,
+                    )
+
+                if elapsed > self.ABSOLUTE_TIMEOUT:
+                    logger.warning(
+                        f"Codex absolute timeout for user {user_id} after {int(elapsed)}s. "
+                        f"Status: {current_status}, tool: {tool_in_progress}"
+                    )
+                    if self.on_progress_save and user_id:
+                        self.on_progress_save(user_id, original_message, partial_text,
+                                              f"absolute timeout after {int(elapsed)}s", tool_in_progress)
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+                    await process.wait()
+                    fallback = "\n\n".join(agent_message_blocks).strip() or partial_text.strip()
+                    if self.on_progress_clear and user_id:
+                        self.on_progress_clear(user_id)
+                    if fallback:
+                        return LLMResponse(
+                            text=fallback + "\n\n[Hit 1-hour time limit. Break into smaller steps.]",
+                            model=self.model, provider=self.provider_name, tool_use=True,
+                        )
+                    return LLMResponse(
+                        text="Codex hit the 1-hour time limit. Try breaking the task into smaller steps.",
+                        model=self.model, provider=self.provider_name,
+                    )
+
+                if time_since_activity > self.IDLE_TIMEOUT:
+                    logger.warning(f"Codex idle timeout for user {user_id} after {self.IDLE_TIMEOUT}s. Last status: {current_status}, tool: {tool_in_progress}")
+                    if self.on_progress_save and user_id:
+                        self.on_progress_save(user_id, original_message, partial_text,
+                                              f"timeout after {self.IDLE_TIMEOUT}s", tool_in_progress)
+                    process.kill()
+                    await process.wait()
+                    fallback = "\n\n".join(agent_message_blocks).strip()
+                    if fallback:
+                        if self.on_progress_clear and user_id:
+                            self.on_progress_clear(user_id)
+                        return LLMResponse(
+                            text=fallback + "\n\n[Task incomplete - Codex stopped responding after 1 hour]",
+                            model=self.model, provider=self.provider_name, tool_use=True,
+                        )
+                    timeout_msg = "Codex stopped responding after 1 hour of inactivity."
+                    if tool_in_progress:
+                        timeout_msg += f" Was running: {tool_in_progress}"
+                    if partial_text:
+                        timeout_msg += "\n\nPartial progress was saved. Use /recover to see it."
+                    else:
+                        timeout_msg += " The task may have been too complex. Try breaking it into smaller steps."
+                    return LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name)
+
+                time_since_text = current_time - last_text_output
+                time_since_start = current_time - start_time
+                if time_since_text > self.NO_TEXT_TIMEOUT and tool_in_progress and time_since_start > 120:
+                    logger.warning(
+                        f"Codex no-text timeout for user {user_id}: {int(time_since_text)}s "
+                        f"without user-facing text. Tool: {tool_in_progress}, status: {current_status}"
+                    )
+                    if self.on_progress_save and user_id:
+                        self.on_progress_save(user_id, original_message, partial_text,
+                                              f"no-text timeout after {int(time_since_text)}s", tool_in_progress)
+                    process.kill()
+                    await process.wait()
+                    fallback = "\n\n".join(agent_message_blocks).strip() or partial_text.strip()
+                    if fallback:
+                        if self.on_progress_clear and user_id:
+                            self.on_progress_clear(user_id)
+                        return LLMResponse(
+                            text=fallback + f"\n\n[Stopped: ran {tool_in_progress} for {int(time_since_text)}s with no response text.]",
+                            model=self.model, provider=self.provider_name, tool_use=True,
+                        )
+                    return LLMResponse(
+                        text=f"Codex was running {tool_in_progress} for {int(time_since_text // 60)} minutes "
+                             f"without producing any response. The task may need to be broken into smaller steps.",
+                        model=self.model, provider=self.provider_name,
+                    )
+
+                if time_since_activity > self.IDLE_TIMEOUT * 0.8 and time_since_activity <= self.IDLE_TIMEOUT * 0.8 + 30:
+                    logger.warning(f"Codex approaching idle timeout for user {user_id}: {int(time_since_activity)}s idle. Status: {current_status}")
+
+                time_since_progress = current_time - last_progress_message
+                if time_since_progress >= self.PROGRESS_INTERVAL and chat:
+                    try:
+                        elapsed_min = int(elapsed // 60)
+                        remaining_min = max(0, int((self.ABSOLUTE_TIMEOUT - elapsed) // 60))
+                        header = f"Progress report ({elapsed_min} min elapsed, {remaining_min} min remaining):"
+                        if tool_in_progress:
+                            status_line = f"Currently running: {tool_in_progress}"
+                        else:
+                            status_line = f"Status: {current_status}"
+                        snippet = ""
+                        if agent_message_blocks:
+                            snippet = agent_message_blocks[-1][-300:]
+                        elif partial_text:
+                            snippet = partial_text[-300:]
+                        snippet_line = f"Latest output: {snippet}" if snippet else ""
+                        content_fingerprint = "\n".join(p for p in [status_line, snippet_line] if p)
+                        if content_fingerprint == last_progress_content:
+                            msg = f"Still working... ({elapsed_min} min elapsed, {remaining_min} min remaining)"
+                        else:
+                            last_progress_content = content_fingerprint
+                            msg = "\n".join(p for p in [header, status_line, snippet_line] if p)
+                        await chat.send_message(msg)
+                        last_progress_message = current_time
+                    except Exception:
+                        pass
+
+                idle_remaining = self.IDLE_TIMEOUT - time_since_activity
+                absolute_remaining = self.ABSOLUTE_TIMEOUT - elapsed
+                read_timeout = max(1.0, min(30.0, idle_remaining, absolute_remaining))
+                line = await read_line_with_timeout(process.stdout, timeout=read_timeout)
+
+                if line:
+                    last_activity = asyncio.get_running_loop().time()
+                    line_str = line.decode(errors="replace").strip()
+                    if line_str:
+                        try:
+                            data = json.loads(line_str)
+                            evt_type = data.get("type")
+
+                            if evt_type == "turn.started":
+                                current_status = "thinking"
+                                tool_in_progress = None
+                            elif evt_type == "turn.completed":
+                                current_status = "done"
+                                tool_in_progress = None
+                                usage = data.get("usage") or {}
+                                total_input += usage.get("input_tokens", 0) or 0
+                                total_output += usage.get("output_tokens", 0) or 0
+                            elif evt_type == "turn.failed":
+                                err = data.get("error") or {}
+                                turn_failed_message = err.get("message") if isinstance(err, dict) else str(err)
+                                logger.warning(f"Codex turn.failed for user {user_id}: {turn_failed_message}")
+                            elif evt_type == "error":
+                                turn_failed_message = data.get("message") or "stream error"
+                                logger.warning(f"Codex stream error for user {user_id}: {turn_failed_message}")
+                            elif evt_type in ("item.started", "item.updated", "item.completed"):
+                                item = data.get("item") or {}
+                                item_type = item.get("type")
+                                if item_type == "agent_message":
+                                    if evt_type == "item.completed":
+                                        text = item.get("text") or ""
+                                        if text:
+                                            agent_message_blocks.append(text)
+                                            last_text_output = asyncio.get_running_loop().time()
+                                            partial_text += text + "\n"
+                                            if len(partial_text) > 102400:
+                                                partial_text = partial_text[-102400:]
+                                        current_status = "generating response"
+                                elif item_type == "command_execution":
+                                    cmd_str = item.get("command") or "command"
+                                    if evt_type == "item.started":
+                                        tool_in_progress = f"shell: {cmd_str[:80]}"
+                                        current_status = f"running {tool_in_progress}"
+                                    elif evt_type == "item.completed":
+                                        tool_in_progress = None
+                                        current_status = "processing result"
+                                elif item_type == "file_change":
+                                    if evt_type == "item.completed":
+                                        changes = item.get("changes") or []
+                                        paths = ", ".join((c.get("path") or "?") for c in changes[:3])
+                                        tool_in_progress = None
+                                        current_status = f"edited {paths}"
+                                elif item_type == "mcp_tool_call":
+                                    server = item.get("server") or "mcp"
+                                    tool = item.get("tool") or "tool"
+                                    if evt_type == "item.started":
+                                        tool_in_progress = f"{server}.{tool}"
+                                        current_status = f"calling {tool_in_progress}"
+                                    elif evt_type == "item.completed":
+                                        tool_in_progress = None
+                                        current_status = "processing result"
+                                elif item_type == "web_search":
+                                    if evt_type == "item.completed":
+                                        q = item.get("query") or ""
+                                        current_status = f"web_search: {q[:80]}"
+                                elif item_type == "reasoning":
+                                    # Reasoning items aren't user-visible; don't reset last_text_output
+                                    if evt_type == "item.completed":
+                                        current_status = "thinking"
+
+                            current_time = asyncio.get_running_loop().time()
+                            if current_time - last_progress_save >= 30:
+                                if self.on_progress_save and user_id:
+                                    self.on_progress_save(user_id, original_message,
+                                                          partial_text, current_status,
+                                                          tool_in_progress)
+                                last_progress_save = current_time
+                        except json.JSONDecodeError:
+                            pass
+                elif line == b'':
+                    break
+
+                if process.returncode is not None:
+                    break
+
+            await process.wait()
+            stderr_bytes = await process.stderr.read()
+            stderr_text = stderr_bytes.decode(errors="replace").strip()
+
+            if process.returncode != 0 and not agent_message_blocks:
+                logger.error(f"Codex error for user {user_id} (exit {process.returncode}): {stderr_text}")
+                is_oom = (
+                    process.returncode == -9
+                    or "out of memory" in stderr_text.lower()
+                    or "killed" in stderr_text.lower()
+                )
+                fallback_text = partial_text.strip()
+                if fallback_text:
+                    if self.on_progress_clear and user_id:
+                        self.on_progress_clear(user_id)
+                    suffix = ""
+                    if is_oom:
+                        elapsed = int(asyncio.get_running_loop().time() - start_time)
+                        suffix = (
+                            f"\n\n[Hit memory limit after {elapsed // 60}m {elapsed % 60}s. "
+                            f"Last action: {tool_in_progress or current_status}. "
+                            f"Partial work above may be incomplete. "
+                            f"Use /recover if needed.]"
+                        )
+                    return LLMResponse(
+                        text=fallback_text + suffix, model=self.model,
+                        provider=self.provider_name, tool_use=True,
+                    )
+                if self.on_progress_save and user_id:
+                    self.on_progress_save(user_id, original_message, partial_text,
+                                          f"error: {stderr_text[:100]}", tool_in_progress)
+                if is_oom:
+                    elapsed = int(asyncio.get_running_loop().time() - start_time)
+                    oom_msg = (
+                        f"Codex hit the memory limit and was killed after "
+                        f"{elapsed // 60}m {elapsed % 60}s."
+                    )
+                    if tool_in_progress:
+                        oom_msg += f" It was running: {tool_in_progress}."
+                    oom_msg += (
+                        "\n\nThis usually happens when Codex reads too many large files "
+                        "or accumulates too much tool output in a single session. "
+                        "Try breaking the task into smaller steps, or use /clear to reset context."
+                    )
+                    return LLMResponse(
+                        text=oom_msg, model=self.model, provider=self.provider_name,
+                        error="OOM killed",
+                    )
+                err_detail = turn_failed_message or stderr_text[:500] or f"exit {process.returncode}"
+                hint = ""
+                if "auth" in err_detail.lower() or "login" in err_detail.lower() or "unauthor" in err_detail.lower():
+                    hint = "\n\nRun `codex login` to authenticate with your ChatGPT plan, or set OPENAI_API_KEY."
+                return LLMResponse(
+                    text=f"Codex error: {err_detail}{hint}",
+                    model=self.model, provider=self.provider_name,
+                    error=err_detail[:200],
+                )
+
+            if self.on_progress_clear and user_id:
+                self.on_progress_clear(user_id)
+
+            final_text = "\n\n".join(agent_message_blocks).strip()
+            if final_text:
+                return LLMResponse(
+                    text=final_text, model=self.model,
+                    provider=self.provider_name, tool_use=True,
+                    input_tokens=total_input, output_tokens=total_output,
+                )
+
+            fallback_text = partial_text.strip()
+            if fallback_text:
+                logger.warning(f"No agent_message for Codex user {user_id}, returning fallback ({len(fallback_text)} chars)")
+                return LLMResponse(
+                    text=fallback_text, model=self.model,
+                    provider=self.provider_name, tool_use=True,
+                    input_tokens=total_input, output_tokens=total_output,
+                )
+
+            if turn_failed_message:
+                return LLMResponse(
+                    text=f"Codex failed: {turn_failed_message}",
+                    model=self.model, provider=self.provider_name,
+                    error=turn_failed_message[:200],
+                )
+            if stderr_text:
+                logger.warning(f"No response from Codex for user {user_id}. Stderr: {stderr_text[:500]}")
+            return LLMResponse(
+                text="Codex produced no response. This can happen when the context is too large. Try /clear to reset, or send a shorter message.",
+                model=self.model, provider=self.provider_name,
+                error="No output",
+            )
+
+        except FileNotFoundError:
+            return LLMResponse(
+                text="Codex CLI is not installed. Install it with `npm install -g @openai/codex` "
+                     "(requires Node.js 22+), then run `codex login` or set OPENAI_API_KEY.",
+                model=self.model, provider=self.provider_name,
+                error="codex binary not found",
+            )
+        except Exception as e:
+            logger.exception(f"Failed to call Codex for user {user_id}")
+            return LLMResponse(
+                text=f"Error: {str(e)}", model=self.model,
+                provider=self.provider_name, error=str(e),
+            )
+        finally:
+            if typing_task:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
+            if process:
+                self._active_processes.discard(process)
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                    await process.wait()
+            if user_id is not None:
+                if self._user_processes.get(user_id) is process:
+                    self._user_processes.pop(user_id, None)
+                self._stop_requested.discard(user_id)
+
+    async def graceful_shutdown(self):
+        if not self._active_processes:
+            return
+        procs = list(self._active_processes)
+        logger.info(f"Waiting up to 10s for {len(procs)} active Codex processes...")
+        for _ in range(10):
+            if not self._active_processes:
+                return
+            await asyncio.sleep(1)
+        remaining = [p for p in self._active_processes if p.returncode is None]
+        if not remaining:
+            return
+        logger.warning(f"Force-killing {len(remaining)} Codex processes still running after 10s")
+        for proc in remaining:
+            try:
+                proc.kill()
+            except (ProcessLookupError, PermissionError, OSError) as e:
+                logger.warning(f"Failed to kill Codex process: {e}")
+        for proc in remaining:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                logger.warning("Codex process did not exit after SIGKILL within 5s")
 
 
 class ClaudeAPIProvider(LLMProvider):
@@ -1308,10 +1844,11 @@ class GrokProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # Current Grok vision-capable: 4.1 Fast (both variants), 4-0709, any *vision* model.
+        # Current Grok vision-capable: 4.20 family, 4.1 Fast, 4-0709, any *vision* model.
         m = self.model
         return ("vision" in m or "grok-4-1-fast" in m or "grok-4-fast" in m
-                or m == "grok-4-0709")
+                or m == "grok-4-0709"
+                or "grok-4.20" in m or "grok-4-20" in m)
 
     def _is_reasoning_model(self) -> bool:
         """Check if this is a Grok reasoning model (uses max_completion_tokens, no temperature)."""
@@ -1599,6 +2136,8 @@ def create_provider(
         "claude-cli": lambda: ClaudeCLIProvider(model, api_key),
         "claude-api": lambda: ClaudeAPIProvider(model, api_key),
         "anthropic": lambda: ClaudeAPIProvider(model, api_key),
+        "codex": lambda: CodexCLIProvider(model, api_key),
+        "codex-cli": lambda: CodexCLIProvider(model, api_key),
         "openai": lambda: OpenAIProvider(model, api_key),
         "gemini": lambda: GeminiProvider(model, api_key),
         "google": lambda: GeminiProvider(model, api_key),

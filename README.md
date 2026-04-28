@@ -79,6 +79,7 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 | **DeepSeek** | No (very cheap) | V4 Flash at $0.14/$0.28 per million tokens, 1M context. Great value. |
 | **OpenAI** | No | GPT-5.5, GPT-5.5 Pro, GPT-5.4 family, GPT-4.1. Vision + tools. |
 | **Claude CLI** | With Pro/Max plan | Most capable. Uses your existing Anthropic subscription. |
+| **Codex CLI** | With ChatGPT Plus/Pro plan | OpenAI's parallel to Claude CLI. Same subprocess + JSON-stream pattern, full machine control. |
 | **Claude API** | No | Pay-per-token. Text-only (no machine control). |
 
 **If you want free:** Start with Ollama (local, unlimited), Ollama Cloud (no GPU needed), or OpenRouter (~200 req/day).
@@ -183,7 +184,7 @@ If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonde
 |---|---|---|
 | **Language** | Python | TypeScript |
 | **Install** | `curl ... \| bash` — works on decade-old hardware | `npm install -g openclaw` — requires Node 24 |
-| **AI providers** | 11 — Claude CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API | Primarily OpenAI, configurable profiles |
+| **AI providers** | 12 — Claude CLI, Codex CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API | Primarily OpenAI, configurable profiles |
 | **Free/local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
 | **Skills** | 61 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |

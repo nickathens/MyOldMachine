@@ -180,11 +180,17 @@ jobs:
               ('kimi', 'kimi-k2.6', 'test-key'),
               ('minimax', 'MiniMax-M2.7', 'test-key'),
               ('ollama', 'llama3.1:8b', ''),
+              ('codex', 'gpt-5.5', ''),
+              ('codex-cli', 'gpt-5.5', ''),
           ]
 
           for name, model, key in providers:
               p = create_provider(name, model, key)
-              assert p.provider_name == name or name in ('claude-api', 'xai'), f'{name} provider_name mismatch'
+              # provider_name normalizes a few aliases
+              expected = name
+              if name == 'codex':
+                  expected = 'codex-cli'
+              assert p.provider_name == expected or name in ('claude-api', 'xai'), f'{name} provider_name mismatch (got {p.provider_name})'
               print(f'  {name}: {p.__class__.__name__} (vision={p.supports_vision}, tools={p.supports_tool_use})')
 
           # Test Grok reasoning detection
@@ -203,6 +209,18 @@ jobs:
 
           grok_mini = create_provider('grok', 'grok-3-mini', 'k')
           assert grok_mini._is_reasoning_model(), 'grok-3-mini should be reasoning'
+
+          # Grok 4.20 family
+          grok_420_nr = create_provider('grok', 'grok-4.20-0309-non-reasoning', 'k')
+          assert not grok_420_nr._is_reasoning_model(), 'grok-4.20-0309-non-reasoning should NOT be reasoning'
+          assert grok_420_nr.supports_vision, 'grok-4.20-0309-non-reasoning should support vision'
+
+          grok_420_r = create_provider('grok', 'grok-4.20-0309-reasoning', 'k')
+          assert grok_420_r._is_reasoning_model(), 'grok-4.20-0309-reasoning should be reasoning'
+          assert grok_420_r.supports_vision, 'grok-4.20-0309-reasoning should support vision'
+
+          grok_420_ma = create_provider('grok', 'grok-4.20-multi-agent-0309', 'k')
+          assert grok_420_ma.supports_vision, 'grok-4.20-multi-agent-0309 should support vision'
 
           # Test Kimi vision detection
           kimi_k25 = create_provider('kimi', 'kimi-k2.5', 'k')
