@@ -132,9 +132,9 @@ def load_user_profiles() -> dict:
     if not USERS_PROFILES_FILE.exists():
         return {}
     try:
-        with open(USERS_PROFILES_FILE) as f:
+        with open(USERS_PROFILES_FILE, encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (json.JSONDecodeError, IOError, UnicodeDecodeError):
         return {}
 
 

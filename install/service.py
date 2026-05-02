@@ -46,7 +46,7 @@ def error(msg):
 def get_sudo_password():
     sudo_file = Path.home() / ".sudo_pass"
     if sudo_file.exists():
-        return sudo_file.read_text().strip()
+        return sudo_file.read_text(encoding="utf-8").strip()
     return None
 
 
@@ -88,7 +88,7 @@ def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) ->
         error(f"Service template not found: {template_path}")
         return False
 
-    content = template_path.read_text()
+    content = template_path.read_text(encoding="utf-8")
     content = content.replace("{{USER}}", username)
     content = content.replace("{{WORKING_DIR}}", str(repo_dir))
     content = content.replace("{{PYTHON}}", str(venv_python))
@@ -160,7 +160,7 @@ def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
         error(f"Plist template not found: {template_path}")
         return False
 
-    content = template_path.read_text()
+    content = template_path.read_text(encoding="utf-8")
     content = content.replace("{{PYTHON}}", str(venv_python))
     content = content.replace("{{WORKING_DIR}}", str(repo_dir))
     content = content.replace("{{BOT_PY}}", str(repo_dir / "bot.py"))
@@ -176,7 +176,7 @@ def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
     plist_path = plist_dir / "com.myoldmachine.bot.plist"
 
     try:
-        plist_path.write_text(content)
+        plist_path.write_text(content, encoding="utf-8")
     except Exception as e:
         error(f"Failed to write plist: {e}")
         return False
@@ -211,7 +211,7 @@ def _setup_macos_launch_daemon(repo_dir: Path, orchestrator_user: str,
 
     orchestrator_home = repo_dir / "data" / "orchestrator"
 
-    content = template_path.read_text()
+    content = template_path.read_text(encoding="utf-8")
     content = content.replace("{{ORCHESTRATOR_USER}}", orchestrator_user)
     content = content.replace("{{PYTHON}}", str(venv_python))
     content = content.replace("{{WORKING_DIR}}", str(repo_dir))

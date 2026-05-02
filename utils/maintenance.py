@@ -33,12 +33,12 @@ def load_config() -> dict:
     """Load maintenance config, returning defaults if missing."""
     if CONFIG_FILE.exists():
         try:
-            config = json.loads(CONFIG_FILE.read_text())
+            config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             # Merge with defaults for any missing keys
             merged = dict(DEFAULT_CONFIG)
             merged.update(config)
             return merged
-        except (json.JSONDecodeError, OSError) as e:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             logger.warning(f"Failed to read maintenance config: {e}")
     return dict(DEFAULT_CONFIG)
 

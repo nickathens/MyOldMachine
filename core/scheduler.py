@@ -526,7 +526,7 @@ async def _execute_command(job_id: str):
 
         if meta.get("log_file"):
             try:
-                with open(meta["log_file"], "a") as f:
+                with open(meta["log_file"], "a", encoding="utf-8") as f:
                     f.write(output)
             except Exception as e:
                 logger.warning(f"Failed to write log for job {job_id}: {e}")

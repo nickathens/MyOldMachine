@@ -37,6 +37,11 @@ _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="compaction")
 # during first-compaction (no summary exists yet, so disk isn't trimmed).
 _compaction_scheduled: set[str] = set()
 
+# Strong references to fire-and-forget compaction tasks. Without this set,
+# asyncio.create_task() returns are eligible for garbage collection and the
+# background coroutine can be cancelled mid-run.
+_compaction_tasks: set = set()
+
 # Default configuration
 DEFAULT_CONFIG = {
     "daily_reset_enabled": True,
@@ -314,10 +319,10 @@ class SessionManager:
         existing_summary = ""
         if summary_file.exists():
             try:
-                with open(summary_file) as f:
+                with open(summary_file, encoding="utf-8") as f:
                     data = json.load(f)
                     existing_summary = data.get("summary", "")
-            except (json.JSONDecodeError, KeyError):
+            except (json.JSONDecodeError, KeyError, OSError):
                 pass
 
         # Take the oldest batch
@@ -371,11 +376,14 @@ class SessionManager:
             try:
                 import asyncio
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._compaction_runner(prompt, summary_file, batch_size))
+                task = loop.create_task(self._compaction_runner(prompt, summary_file, batch_size))
+                # Hold a strong ref so the task isn't GC'd before completion
+                _compaction_tasks.add(task)
+                task.add_done_callback(_compaction_tasks.discard)
                 logger.info(f"Scheduled semaphore-aware compaction of {batch_size} messages "
                             f"({len(remaining_history)} remaining)")
             except RuntimeError:
-                logger.warning("No running event loop — falling back to thread pool compaction")
+                logger.warning("No running event loop, falling back to thread pool compaction")
                 self._run_compaction_thread(prompt, summary_file, batch_size)
         else:
             # Legacy: thread pool compaction (used on capable machines or non-bot usage)
@@ -464,9 +472,25 @@ def get_session_manager(user_id: int, user_dir: Path, config: dict = None) -> Se
     multi-user slot mapping if applicable). The caller is responsible for
     creating the directory in single-user mode; in multi-user mode the
     installer provisions it with the correct ownership.
+
+    The cache holds the resolved user_dir, so callers must invoke
+    clear_session_manager(user_id) whenever the slot binding changes
+    (e.g., /removeuser archives the slot dir, /adduser binds a new
+    Telegram ID to a recycled slot).
     """
-    if user_id in _session_managers:
-        return _session_managers[user_id]
+    cached = _session_managers.get(user_id)
+    if cached is not None and cached.user_dir == user_dir:
+        return cached
     mgr = SessionManager(user_dir, config)
     _session_managers[user_id] = mgr
     return mgr
+
+
+def clear_session_manager(user_id: int) -> None:
+    """Drop the cached SessionManager for a user.
+
+    Call this whenever a user's slot binding changes so the next request
+    rebuilds the manager against the current data dir. Without this, the
+    cache from before /removeuser still points at the archived slot path.
+    """
+    _session_managers.pop(user_id, None)

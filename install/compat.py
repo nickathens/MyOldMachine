@@ -225,7 +225,7 @@ def _get_ram_gb() -> float:
             if result.returncode == 0:
                 return round(int(result.stdout.strip()) / (1024**3), 1)
         else:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 for line in f:
                     if "MemTotal" in line:
                         kb = int(line.split()[1])

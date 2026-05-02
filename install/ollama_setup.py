@@ -63,7 +63,7 @@ def get_ram_gb() -> float:
             )
             return int(result.stdout.strip()) / (1024 ** 3)
         else:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 for line in f:
                     if "MemTotal" in line:
                         kb = int(line.split()[1])
@@ -91,7 +91,7 @@ def get_cpu_name() -> str:
             )
             return result.stdout.strip()
         else:
-            with open("/proc/cpuinfo") as f:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
                 for line in f:
                     if "model name" in line:
                         return line.split(":")[1].strip()

@@ -387,7 +387,7 @@ def _detect_linux(info: OSInfo):
     os_release = Path("/etc/os-release")
     if os_release.exists():
         data = {}
-        for line in os_release.read_text().splitlines():
+        for line in os_release.read_text(encoding="utf-8").splitlines():
             if "=" in line:
                 key, _, value = line.partition("=")
                 data[key] = value.strip('"')

@@ -34,9 +34,9 @@ def _load() -> dict:
     if not USERS_JSON.exists():
         return {}
     try:
-        with open(USERS_JSON) as f:
+        with open(USERS_JSON, encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return {}
 
 
@@ -46,8 +46,8 @@ def _save(data: dict) -> bool:
         return False
     tmp = USERS_JSON.with_suffix(".json.tmp")
     try:
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2, sort_keys=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
             f.write("\n")
         os.chmod(tmp, 0o600)
         tmp.rename(USERS_JSON)

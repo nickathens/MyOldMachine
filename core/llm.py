@@ -140,6 +140,22 @@ class LLMProvider(ABC):
         """Whether this provider/model supports image inputs."""
         return False
 
+    @property
+    def has_active_processes(self) -> bool:
+        """Whether this provider has subprocesses currently running.
+
+        Only meaningful for CLI providers that spawn subprocesses; API
+        providers always return False.
+        """
+        return False
+
+    async def graceful_shutdown(self):
+        """Wait for any active processes to finish, then force-kill.
+
+        Default no-op for providers that don't manage subprocesses.
+        """
+        return
+
 
 # --- Multimodal image helpers ---
 
@@ -734,6 +750,10 @@ class ClaudeCLIProvider(LLMProvider):
                     self._user_processes.pop(user_id, None)
                 self._stop_requested.discard(user_id)
 
+    @property
+    def has_active_processes(self) -> bool:
+        return bool(self._active_processes)
+
     async def graceful_shutdown(self):
         """Wait briefly for active Claude processes, then force-kill.
 
@@ -1280,6 +1300,10 @@ class CodexCLIProvider(LLMProvider):
                 if self._user_processes.get(user_id) is process:
                     self._user_processes.pop(user_id, None)
                 self._stop_requested.discard(user_id)
+
+    @property
+    def has_active_processes(self) -> bool:
+        return bool(self._active_processes)
 
     async def graceful_shutdown(self):
         if not self._active_processes:

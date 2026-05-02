@@ -190,7 +190,7 @@ def _get_ram_gb() -> float:
                 common = [1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]
                 return min(common, key=lambda x: abs(x - raw_gb))
         else:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 for line in f:
                     if "MemTotal" in line:
                         kb = int(line.split()[1])
@@ -218,7 +218,7 @@ def _get_cpu_info() -> dict:
             pass
     else:
         try:
-            with open("/proc/cpuinfo") as f:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
                 for line in f:
                     if "model name" in line:
                         cpu = line.split(":", 1)[1].strip()
@@ -602,7 +602,7 @@ def probe_system(data_dir: Path) -> dict:
     # Save to disk
     caps_file = data_dir / "system_caps.json"
     data_dir.mkdir(parents=True, exist_ok=True)
-    caps_file.write_text(json.dumps(caps, indent=2) + "\n")
+    caps_file.write_text(json.dumps(caps, indent=2) + "\n", encoding="utf-8")
     logger.info(f"System probe complete: {ready_count}/{len(skill_status)} skills ready")
 
     return caps
@@ -626,7 +626,7 @@ def _get_os_release() -> str:
 
     # Fallback: /etc/os-release
     try:
-        with open("/etc/os-release") as f:
+        with open("/etc/os-release", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("PRETTY_NAME="):
                     return line.split("=", 1)[1].strip().strip('"')
@@ -641,8 +641,8 @@ def load_caps(data_dir: Path) -> dict:
     caps_file = data_dir / "system_caps.json"
     if caps_file.exists():
         try:
-            return json.loads(caps_file.read_text())
-        except (json.JSONDecodeError, IOError):
+            return json.loads(caps_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, IOError, UnicodeDecodeError):
             return {}
     return {}
 

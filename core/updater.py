@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 def get_sudo_password():
     sudo_file = Path.home() / ".sudo_pass"
     if sudo_file.exists():
-        return sudo_file.read_text().strip()
+        return sudo_file.read_text(encoding="utf-8").strip()
     return None
 
 

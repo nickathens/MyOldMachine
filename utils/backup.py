@@ -55,8 +55,8 @@ def get_maintenance_config() -> dict:
     config_file = DATA_DIR / "maintenance.json"
     if config_file.exists():
         try:
-            return json.loads(config_file.read_text())
-        except (json.JSONDecodeError, OSError):
+            return json.loads(config_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             pass
     return {}
 
@@ -90,7 +90,7 @@ def create_backup(target_dir: str, notify_fn=None) -> str:
     def log(msg: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
-            with open(log_file, "a") as f:
+            with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"[{timestamp}] {msg}\n")
         except Exception:
             pass
@@ -106,8 +106,8 @@ def create_backup(target_dir: str, notify_fn=None) -> str:
     # Rotate log
     try:
         if log_file.exists() and log_file.stat().st_size > 200_000:
-            lines = log_file.read_text().splitlines()
-            log_file.write_text("\n".join(lines[-100:]) + "\n")
+            lines = log_file.read_text(encoding="utf-8").splitlines()
+            log_file.write_text("\n".join(lines[-100:]) + "\n", encoding="utf-8")
     except Exception:
         pass
 

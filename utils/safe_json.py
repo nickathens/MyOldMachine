@@ -15,9 +15,9 @@ def load_json(path: Path, default=None):
     if not path.exists():
         return default if default is not None else {}
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (json.JSONDecodeError, IOError, UnicodeDecodeError):
         return default if default is not None else {}
 
 
@@ -25,7 +25,7 @@ def save_json(path: Path, data, indent=2):
     """Save JSON atomically: write to temp file, fsync, rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=indent, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())

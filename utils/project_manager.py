@@ -37,7 +37,7 @@ except ImportError:
         def _atomic_save_json(path: Path, data, indent=2):
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".json.tmp")
-            with open(tmp, "w") as _f:
+            with open(tmp, "w", encoding="utf-8") as _f:
                 json.dump(data, _f, indent=indent, ensure_ascii=False)
                 _f.flush()
                 _os.fsync(_f.fileno())
@@ -102,9 +102,9 @@ def list_projects():
         if not state_file.exists():
             continue
         try:
-            state = json.loads(state_file.read_text())
+            state = json.loads(state_file.read_text(encoding="utf-8"))
             projects.append(state)
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, IOError, UnicodeDecodeError):
             continue
 
     if not projects:
@@ -125,7 +125,7 @@ def get_project_status(slug: str):
         print(f"Project '{slug}' not found.")
         sys.exit(1)
 
-    state = json.loads(state_file.read_text())
+    state = json.loads(state_file.read_text(encoding="utf-8"))
     print(f"Project: {state['name']}")
     print(f"  Status: {state.get('status', 'unknown')}")
     print(f"  Location: {state.get('location', 'unknown')}")
@@ -149,7 +149,7 @@ def update_project(slug: str, status: str = None, next_step: str = None):
         print(f"Project '{slug}' not found.")
         sys.exit(1)
 
-    state = json.loads(state_file.read_text())
+    state = json.loads(state_file.read_text(encoding="utf-8"))
     if status:
         state["status"] = status
     if next_step:

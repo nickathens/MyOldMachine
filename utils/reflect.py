@@ -65,7 +65,7 @@ def log(msg: str):
     log_entry = f"{timestamp} | REFLECT | {msg}"
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a") as f:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(log_entry + "\n")
     except Exception:
         pass
@@ -139,7 +139,7 @@ def get_recent_observations(user_id: int, mm: MemoryManager, days: int = 7) -> l
     if not obs_file.exists():
         return []
 
-    content = obs_file.read_text()
+    content = obs_file.read_text(encoding="utf-8")
     lines = [l for l in content.split("\n") if l.startswith("[")]
 
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -207,9 +207,9 @@ def route_project_observations(records: list, mm: MemoryManager, user_id: int) -
 def _append_lesson_to_project(state_file: Path, record: dict):
     """Append a lesson entry to a project's state.json."""
     try:
-        with open(state_file) as f:
+        with open(state_file, encoding="utf-8") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return
 
     if "lessons" not in data:
@@ -236,7 +236,7 @@ def _append_lesson_to_project(state_file: Path, record: dict):
 
     # Atomic write: temp file + fsync + rename to prevent corruption
     tmp = state_file.with_suffix(".json.tmp")
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
         f.write("\n")
         f.flush()
@@ -262,7 +262,7 @@ def _mark_observations_reflected(user_id: int, mm: MemoryManager, records: list)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-        content = obs_file.read_text()
+        content = obs_file.read_text(encoding="utf-8")
 
         # Build a set of raw lines to match
         raw_lines = {r["raw"] for r in records}
@@ -281,7 +281,7 @@ def _mark_observations_reflected(user_id: int, mm: MemoryManager, records: list)
 
         if marked > 0:
             tmp = obs_file.with_suffix(".md.tmp")
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write("\n".join(new_lines))
                 f.flush()
                 os.fsync(f.fileno())

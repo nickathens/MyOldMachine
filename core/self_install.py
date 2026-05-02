@@ -28,7 +28,7 @@ def get_sudo_password() -> Optional[str]:
     """Read stored sudo password."""
     sudo_file = Path.home() / ".sudo_pass"
     if sudo_file.exists():
-        return sudo_file.read_text().strip()
+        return sudo_file.read_text(encoding="utf-8").strip()
     return None
 
 
@@ -175,8 +175,8 @@ def load_deps(skill_path: Path) -> Optional[dict]:
     if not deps_file.exists():
         return None
     try:
-        return json.loads(deps_file.read_text())
-    except (json.JSONDecodeError, IOError) as e:
+        return json.loads(deps_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
         logger.error(f"Failed to load deps.json for {skill_path.name}: {e}")
         return None
 

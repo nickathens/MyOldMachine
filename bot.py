@@ -43,7 +43,7 @@ from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider, C
 _CLI_PROVIDERS = (ClaudeCLIProvider, CodexCLIProvider)
 from core.tools import get_process_registry
 from core.skill_loader import SkillManager
-from core.session import SessionManager, get_session_manager
+from core.session import SessionManager, clear_session_manager, get_session_manager
 from core.memory import MemoryManager
 from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
 from core.health import (
@@ -200,7 +200,7 @@ async def _auto_transcribe_voice(voice_path: str) -> str:
         )
         txt_file = Path(voice_path).with_suffix(".txt")
         if txt_file.exists():
-            transcript = txt_file.read_text().strip()
+            transcript = txt_file.read_text(encoding="utf-8").strip()
             txt_file.unlink(missing_ok=True)
             if transcript:
                 logger.info(f"Auto-transcribed voice ({len(transcript)} chars)")
@@ -343,9 +343,9 @@ def _load_aliases(user_id: int) -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (json.JSONDecodeError, IOError, UnicodeDecodeError):
         return {}
 
 
@@ -354,8 +354,8 @@ def _save_aliases(user_id: int, aliases: dict[str, str]):
     path = _get_aliases_file(user_id)
     tmp = path.with_suffix(".json.tmp")
     try:
-        with open(tmp, "w") as f:
-            json.dump(aliases, f, indent=2)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(aliases, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
         tmp.rename(path)
@@ -377,7 +377,7 @@ def _atomic_env_write(env_file: Path, new_content: str):
     """Write .env file atomically via temp file + rename, preserving 0600 permissions."""
     tmp = env_file.with_suffix(".env.tmp")
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(new_content)
             f.flush()
             os.fsync(f.fileno())
@@ -448,7 +448,7 @@ def save_task_progress(user_id: int, original_message: str, partial_text: str,
     started = datetime.now().isoformat()
     if progress_file.exists():
         try:
-            with open(progress_file) as f:
+            with open(progress_file, encoding="utf-8") as f:
                 existing = json.load(f)
                 started = existing.get("started", started)
         except Exception:
@@ -465,8 +465,8 @@ def save_task_progress(user_id: int, original_message: str, partial_text: str,
     # Atomic write to prevent corruption on crash
     tmp = progress_file.with_suffix(".json.tmp")
     try:
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
         tmp.rename(progress_file)
@@ -485,7 +485,7 @@ def get_incomplete_task(user_id: int) -> dict | None:
     progress_file = get_progress_file(user_id)
     if progress_file.exists():
         try:
-            with open(progress_file) as f:
+            with open(progress_file, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return None
@@ -509,8 +509,8 @@ def save_pending_message(user_id: int, message_text: str, message_id: int):
         }
         target = _pending_message_path(user_id)
         tmp = target.with_suffix(".json.tmp")
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
         tmp.rename(target)
@@ -549,7 +549,7 @@ async def recover_pending_messages(bot):
         if not pending_file.exists():
             continue
         try:
-            with open(pending_file) as f:
+            with open(pending_file, encoding="utf-8") as f:
                 data = json.load(f)
             user_id = data.get("user_id")
             text = data.get("text", "")
@@ -851,7 +851,7 @@ def build_system_prompt(user_id: int) -> str:
     instructions_file = DATA_DIR / "instructions.md"
     if instructions_file.exists():
         parts.append("### Custom Instructions:")
-        instructions_text = instructions_file.read_text()
+        instructions_text = instructions_file.read_text(encoding="utf-8")
         if len(instructions_text) > 8000:
             instructions_text = instructions_text[:7500] + "\n\n[... instructions truncated for context management]"
         parts.append(instructions_text)
@@ -863,7 +863,7 @@ def build_system_prompt(user_id: int) -> str:
         claude_md = Path.home() / "CLAUDE.md"
         if claude_md.exists():
             parts.append("### Global Instructions (CLAUDE.md):")
-            claude_md_text = claude_md.read_text()
+            claude_md_text = claude_md.read_text(encoding="utf-8")
             if len(claude_md_text) > 15000:
                 claude_md_text = claude_md_text[:14000] + "\n\n[... CLAUDE.md truncated for context management]"
             parts.append(claude_md_text)
@@ -872,7 +872,7 @@ def build_system_prompt(user_id: int) -> str:
         system_context = Path.home() / "SYSTEM-CONTEXT.md"
         if system_context.exists() and user_role == "admin":
             parts.append("### System Context:")
-            ctx_text = system_context.read_text()
+            ctx_text = system_context.read_text(encoding="utf-8")
             if len(ctx_text) > 10000:
                 ctx_text = ctx_text[:9000] + "\n\n[... system context truncated]"
             parts.append(ctx_text)
@@ -890,7 +890,7 @@ def build_system_prompt(user_id: int) -> str:
             if not state_file.exists():
                 continue
             try:
-                with open(state_file) as f:
+                with open(state_file, encoding="utf-8") as f:
                     state = json.load(f)
                 if state.get("status") != "in_progress":
                     continue
@@ -1326,6 +1326,19 @@ def _save_and_send(user_id: int, user_message: str, response: str,
     return response
 
 
+def command_body(text: str) -> str:
+    """Return the message body after the leading command token.
+
+    Robust to bot suffixes (/cmd@BotName), newlines after the command, and
+    bodies that contain the same command string later (which a naive
+    str.replace would also strip).
+    """
+    if not text:
+        return ""
+    parts = text.split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
 def split_message(text: str, max_length: int = 4000) -> list[str]:
     if len(text) <= max_length:
         return [text]
@@ -1411,7 +1424,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text.replace("/remember", "").strip()
+    text = command_body(update.message.text)
     if not text:
         await update.message.reply_text("Usage: /remember <fact to remember>")
         return
@@ -1435,7 +1448,7 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text.replace("/forget", "").strip()
+    text = command_body(update.message.text)
     if not text.isdigit():
         await update.message.reply_text("Usage: /forget <number>")
         return
@@ -1493,7 +1506,7 @@ async def clear_recovery_command(update: Update, context: ContextTypes.DEFAULT_T
 async def topic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Switch to a topic-specific session or back to main."""
     user_id = update.effective_user.id
-    text = update.message.text.replace("/topic", "").strip()
+    text = command_body(update.message.text)
     session = get_session(user_id)
     if not text:
         current = session.get_current_topic()
@@ -1529,7 +1542,7 @@ async def list_topics_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text.replace("/remind", "").strip()
+    text = command_body(update.message.text)
     if not text:
         await update.message.reply_text(
             "Usage: /remind <time> <message>\n\n"
@@ -1606,7 +1619,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text.replace("/cancel", "").strip()
+    text = command_body(update.message.text)
     if not text:
         await update.message.reply_text("Usage: /cancel <reminder_id>")
         return
@@ -1658,7 +1671,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Schedule a Claude agent task (with full tool-use)."""
     user_id = update.effective_user.id
-    text = update.message.text.replace("/schedule", "").strip()
+    text = command_body(update.message.text)
     if not text:
         await update.message.reply_text(
             "Usage: /schedule <time> | <task>\n\n"
@@ -1874,6 +1887,11 @@ async def removeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
+    # Drop the cached SessionManager so any future request from this tid
+    # (e.g., re-bound via /adduser to a different slot) rebuilds against
+    # the new data dir instead of writing into the now-archived path.
+    clear_session_manager(tid)
+
     await update.message.reply_text(msg + archive_msg)
 
 
@@ -2051,9 +2069,9 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if running:
         await registry.cleanup_all()
     if isinstance(_llm_provider, _CLI_PROVIDERS):
-        # Give Claude CLI processes up to 10 seconds to finish
+        # Give CLI processes up to 10 seconds to finish before restart
         for _ in range(10):
-            if not _llm_provider._active_processes:
+            if not _llm_provider.has_active_processes:
                 break
             await asyncio.sleep(1)
     await asyncio.sleep(1)
@@ -2070,7 +2088,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Admin only.")
         return
 
-    text = update.message.text.replace("/provider", "").strip()
+    text = command_body(update.message.text)
 
     # Default models per provider — keep in sync with install/wizard.py DEFAULT_MODELS
     # Last updated: April 24, 2026
@@ -2152,7 +2170,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Update .env file
     env_file = Path(__file__).parent / ".env"
     if env_file.exists():
-        lines = env_file.read_text().splitlines()
+        lines = env_file.read_text(encoding="utf-8").splitlines()
         new_lines = []
         found_provider = False
         found_model = False
@@ -2215,7 +2233,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Admin only.")
         return
 
-    text = update.message.text.replace("/model", "").strip()
+    text = command_body(update.message.text)
     if not text:
         await update.message.reply_text(
             f"Current model: {get_llm_model()}\n"
@@ -2231,7 +2249,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Update .env
     env_file = Path(__file__).parent / ".env"
     if env_file.exists():
-        lines = env_file.read_text().splitlines()
+        lines = env_file.read_text(encoding="utf-8").splitlines()
         new_lines = []
         found = False
         for line in lines:
@@ -2275,7 +2293,7 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Admin only.")
         return
 
-    text = update.message.text.replace("/apikey", "").strip()
+    text = command_body(update.message.text)
     if not text:
         has_key = bool(get_llm_api_key())
         await update.message.reply_text(
@@ -2291,7 +2309,7 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Update .env
     env_file = Path(__file__).parent / ".env"
     if env_file.exists():
-        lines = env_file.read_text().splitlines()
+        lines = env_file.read_text(encoding="utf-8").splitlines()
         new_lines = []
         found = False
         for line in lines:
@@ -2384,7 +2402,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def alias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manage custom command shortcuts."""
     user_id = update.effective_user.id
-    text = update.message.text.replace("/alias", "").strip()
+    text = command_body(update.message.text)
 
     aliases = _load_aliases(user_id)
 
@@ -3403,8 +3421,8 @@ def _configure_claude_hooks():
         settings = {}
         if settings_file.exists():
             try:
-                settings = json.loads(settings_file.read_text())
-            except (json.JSONDecodeError, OSError):
+                settings = json.loads(settings_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
 
         existing_hooks = settings.get("hooks", {})
@@ -3434,7 +3452,7 @@ def _configure_claude_hooks():
 
         # Write back atomically
         tmp_path = settings_file.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(settings, indent=2) + "\n")
+        tmp_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
         tmp_path.replace(settings_file)
 
         logger.info("Claude Code skill hooks configured in ~/.claude/settings.json")

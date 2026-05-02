@@ -34,7 +34,7 @@ class Skill:
     def _load(self):
         skill_md = self.path / "SKILL.md"
         if skill_md.exists():
-            content = skill_md.read_text()
+            content = skill_md.read_text(encoding="utf-8")
             lines = content.strip().split("\n")
             start = 1 if lines and lines[0].startswith("#") else 0
             desc_lines = []
@@ -51,10 +51,10 @@ class Skill:
         config_file = self.path / "config.json"
         if config_file.exists():
             try:
-                self.config = json.loads(config_file.read_text())
+                self.config = json.loads(config_file.read_text(encoding="utf-8"))
                 self.enabled = self.config.get("enabled", True)
                 self.system_deps = self.config.get("system_deps", [])
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                 logger.error(f"Failed to load {self.name} config: {e}")
 
     def get_scripts_dir(self) -> Optional[Path]:

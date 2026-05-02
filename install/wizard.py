@@ -35,14 +35,14 @@ CHECKPOINT_FILE = os.environ.get("MYOLDMACHINE_CHECKPOINT_FILE",
 
 def checkpoint_done(name: str) -> bool:
     try:
-        with open(CHECKPOINT_FILE) as f:
+        with open(CHECKPOINT_FILE, encoding="utf-8") as f:
             return name in [line.strip() for line in f]
     except FileNotFoundError:
         return False
 
 
 def checkpoint_set(name: str):
-    with open(CHECKPOINT_FILE, "a") as f:
+    with open(CHECKPOINT_FILE, "a", encoding="utf-8") as f:
         f.write(name + "\n")
 
 
@@ -121,7 +121,7 @@ def detect_timezone():
     except ImportError:
         pass
     try:
-        tz = Path("/etc/timezone").read_text().strip()
+        tz = Path("/etc/timezone").read_text(encoding="utf-8").strip()
         if tz:
             return tz
     except FileNotFoundError:
@@ -178,7 +178,7 @@ def _quick_ram_gb() -> float:
             if result.returncode == 0:
                 return int(result.stdout.strip()) / (1024 ** 3)
         else:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("MemTotal"):
                         return int(line.split()[1]) / (1024 ** 2)
@@ -206,7 +206,7 @@ def detect_machine_specs():
             )
             specs["cpu"] = result.stdout.strip()
         else:
-            with open("/proc/cpuinfo") as f:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
                 for line in f:
                     if "model name" in line:
                         specs["cpu"] = line.split(":")[1].strip()
@@ -223,7 +223,7 @@ def detect_machine_specs():
             )
             specs["ram_gb"] = round(int(result.stdout.strip()) / (1024**3))
         else:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 for line in f:
                     if "MemTotal" in line:
                         kb = int(line.split()[1])
@@ -677,7 +677,7 @@ def write_env(repo_dir: Path, config: dict):
         lines.append("MULTIUSER_ENABLED=0")
 
     env_file = repo_dir / ".env"
-    env_file.write_text("\n".join(lines) + "\n")
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
     ok(f"Configuration saved to {env_file}")
 
@@ -699,7 +699,7 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
         }
     }
     profiles_file = data_dir / "users.json"
-    profiles_file.write_text(json.dumps(profiles, indent=2) + "\n")
+    profiles_file.write_text(json.dumps(profiles, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     memories = [
         {
@@ -715,7 +715,7 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
         },
     ]
     memories_file = users_dir / "memories.json"
-    memories_file.write_text(json.dumps(memories, indent=2) + "\n")
+    memories_file.write_text(json.dumps(memories, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     # Memory directory structure
     memory_dir = data_dir / "memory"
@@ -728,7 +728,7 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
 def store_sudo_password(password: str):
     """Store sudo password securely."""
     sudo_file = Path.home() / ".sudo_pass"
-    sudo_file.write_text(password + "\n")
+    sudo_file.write_text(password + "\n", encoding="utf-8")
     sudo_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
     ok("Sudo password stored")
 
@@ -1402,7 +1402,7 @@ def main():
         # Update .env with the confirmed model
         env_file = repo_dir / ".env"
         if env_file.exists():
-            env_content = env_file.read_text()
+            env_content = env_file.read_text(encoding="utf-8")
             lines = env_content.splitlines()
             new_lines = []
             for line in lines:
@@ -1410,7 +1410,7 @@ def main():
                     new_lines.append(f"LLM_MODEL={model}")
                 else:
                     new_lines.append(line)
-            env_file.write_text("\n".join(new_lines) + "\n")
+            env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
             env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
         print()
 
@@ -1741,7 +1741,7 @@ def _load_config_from_env(repo_dir: Path) -> dict:
     config = {}
     env_file = repo_dir / ".env"
     if env_file.exists():
-        for line in env_file.read_text().splitlines():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
             if "=" in line and not line.startswith("#"):
                 key, _, value = line.partition("=")
                 key = key.strip()

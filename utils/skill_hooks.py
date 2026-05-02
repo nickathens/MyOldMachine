@@ -118,7 +118,7 @@ def get_free_ram_mb() -> int:
 def _get_free_ram_linux() -> int:
     """Linux: read MemAvailable from /proc/meminfo."""
     try:
-        with open("/proc/meminfo") as f:
+        with open("/proc/meminfo", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
                     parts = line.split()
@@ -179,9 +179,9 @@ def load_hooks_json(skill_name: str) -> dict:
     path = SKILLS_DIR / skill_name / "hooks.json"
     if path.is_file():
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             pass
     return {}
 
@@ -196,12 +196,12 @@ def load_all_stop_hooks() -> dict[str, dict]:
             hooks_file = skill_dir / "hooks.json"
             if hooks_file.is_file():
                 try:
-                    with open(hooks_file) as f:
+                    with open(hooks_file, encoding="utf-8") as f:
                         config = json.load(f)
                     stop = config.get("stop", {})
                     if stop:
                         results[skill_dir.name] = stop
-                except (json.JSONDecodeError, OSError):
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                     pass
     except OSError:
         pass
@@ -257,7 +257,7 @@ def get_daemon_pid() -> int | None:
     if not BROWSER_PID_FILE.exists():
         return None
     try:
-        pid = int(BROWSER_PID_FILE.read_text().strip())
+        pid = int(BROWSER_PID_FILE.read_text(encoding="utf-8").strip())
         os.kill(pid, 0)  # Check if alive (signal 0)
         if not _verify_pid_is_browser(pid):
             return None  # PID was reused by a different process
@@ -447,9 +447,9 @@ def log_action(message: str):
     log_path = HOOK_STATE_DIR / "hook.log"
     try:
         if log_path.exists() and log_path.stat().st_size > 100_000:
-            lines = log_path.read_text().splitlines()
-            log_path.write_text("\n".join(lines[-200:]) + "\n")
-        with open(log_path, "a") as f:
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            log_path.write_text("\n".join(lines[-200:]) + "\n", encoding="utf-8")
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
     except OSError:
         pass
@@ -461,7 +461,7 @@ def _get_admin_user_id() -> str | None:
     if not users_file.is_file():
         return None
     try:
-        with open(users_file) as f:
+        with open(users_file, encoding="utf-8") as f:
             users = json.load(f)
         if isinstance(users, dict):
             for uid, profile in users.items():

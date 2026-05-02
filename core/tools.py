@@ -1439,7 +1439,7 @@ def _read_file(path: str) -> str:
         return f"Error: {p.name} appears to be a binary file ({p.suffix}). Use run_command to inspect it (e.g., file, hexdump, strings)."
 
     try:
-        content = p.read_text(errors="replace")
+        content = p.read_text(encoding="utf-8", errors="replace")
         if len(content) > MAX_OUTPUT_CHARS:
             original_len = len(content)
             content = content[:MAX_OUTPUT_CHARS] + f"\n\n[Truncated — {original_len} chars total]"
@@ -1466,7 +1466,7 @@ def _write_file(path: str, content: str) -> str:
 
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content)
+        p.write_text(content, encoding="utf-8")
 
         result = f"Written {len(content)} bytes to {path}"
 

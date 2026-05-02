@@ -81,7 +81,7 @@ def _get_sudo_password() -> str:
     """Read sudo password from storage."""
     sudo_file = Path.home() / ".sudo_pass"
     if sudo_file.exists():
-        return sudo_file.read_text().strip()
+        return sudo_file.read_text(encoding="utf-8").strip()
     return ""
 
 
@@ -173,7 +173,7 @@ def run_system_update(notify_fn=None) -> str:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{timestamp}] {msg}\n"
         try:
-            with open(log_file, "a") as f:
+            with open(log_file, "a", encoding="utf-8") as f:
                 f.write(line)
         except Exception:
             pass
@@ -189,8 +189,8 @@ def run_system_update(notify_fn=None) -> str:
     # Rotate log if too large
     try:
         if log_file.exists() and log_file.stat().st_size > 500_000:
-            lines = log_file.read_text().splitlines()
-            log_file.write_text("\n".join(lines[-200:]) + "\n")
+            lines = log_file.read_text(encoding="utf-8").splitlines()
+            log_file.write_text("\n".join(lines[-200:]) + "\n", encoding="utf-8")
     except Exception:
         pass
 

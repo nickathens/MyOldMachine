@@ -237,7 +237,7 @@ def _load_config() -> list[dict]:
         return []
 
     try:
-        with open(_CONFIG_FILE) as f:
+        with open(_CONFIG_FILE, encoding="utf-8") as f:
             data = json.load(f)
 
         if isinstance(data, dict):

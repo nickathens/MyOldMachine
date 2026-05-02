@@ -68,7 +68,7 @@ def save_action_log(repo_dir):
     log_dir = Path(repo_dir) / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"provision_{datetime.now():%Y%m%d_%H%M%S}.json"
-    log_file.write_text(json.dumps(_action_log, indent=2) + "\n")
+    log_file.write_text(json.dumps(_action_log, indent=2) + "\n", encoding="utf-8")
     ok(f"Action log saved to {log_file}")
 
 
@@ -76,7 +76,7 @@ def get_sudo_password():
     """Read sudo password from storage."""
     sudo_file = Path.home() / ".sudo_pass"
     if sudo_file.exists():
-        return sudo_file.read_text().strip()
+        return sudo_file.read_text(encoding="utf-8").strip()
     return None
 
 
@@ -652,7 +652,7 @@ def _configure_linux(os_info: OSInfo, password):
     if logind_conf.exists():
         info("Configuring lid close behavior...")
         try:
-            content = logind_conf.read_text()
+            content = logind_conf.read_text(encoding="utf-8")
         except PermissionError:
             result = subprocess.run(
                 "sudo cat /etc/systemd/logind.conf", shell=True,
@@ -1248,9 +1248,9 @@ def _add_brew_to_profile(os_info: OSInfo, brew_path):
 
     for profile in profile_candidates:
         if profile.exists():
-            content = profile.read_text()
+            content = profile.read_text(encoding="utf-8")
             if shellenv_line not in content:
-                with open(profile, "a") as f:
+                with open(profile, "a", encoding="utf-8") as f:
                     f.write(f"\n# Added by MyOldMachine\n{shellenv_line}\n")
                 log_action("add_brew_profile", str(profile))
             return
@@ -1260,7 +1260,7 @@ def _add_brew_to_profile(os_info: OSInfo, brew_path):
         profile = Path.home() / ".zprofile"
     else:
         profile = Path.home() / ".bash_profile"
-    profile.write_text(f"# Added by MyOldMachine\n{shellenv_line}\n")
+    profile.write_text(f"# Added by MyOldMachine\n{shellenv_line}\n", encoding="utf-8")
     log_action("create_profile", str(profile))
 
 

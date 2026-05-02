@@ -55,7 +55,7 @@ def get_system_uptime() -> str:
                 delta = timedelta(seconds=int(elapsed))
                 return str(delta)
         else:
-            with open("/proc/uptime") as f:
+            with open("/proc/uptime", encoding="utf-8") as f:
                 seconds = float(f.read().split()[0])
                 delta = timedelta(seconds=int(seconds))
                 days = delta.days
@@ -131,7 +131,7 @@ def get_memory_usage() -> dict:
                 "percent": round(used / total * 100, 1) if total > 0 else 0,
             }
         else:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 info = {}
                 for line in f:
                     parts = line.split(":")
@@ -266,7 +266,7 @@ def get_swap_usage() -> dict:
                 "percent": round(used / total * 100, 1) if total > 0 else 0,
             }
         else:
-            with open("/proc/meminfo") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 info = {}
                 for line in f:
                     parts = line.split(":")

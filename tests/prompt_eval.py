@@ -578,7 +578,7 @@ def _load_yaml_config(path: str) -> list[TestSuite]:
         print("Error: PyYAML not installed. Run: pip install pyyaml", file=sys.stderr)
         sys.exit(1)
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     suites = []

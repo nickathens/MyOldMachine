@@ -94,7 +94,7 @@ class MemoryManager:
         """Get the current person model for a user. Returns empty string if none."""
         model_file = self._user_dir(user_id) / "model.md"
         if model_file.exists():
-            return model_file.read_text()
+            return model_file.read_text(encoding="utf-8")
         return ""
 
     def set_model(self, user_id: int, content: str):
@@ -108,7 +108,7 @@ class MemoryManager:
             versions_dir.mkdir(parents=True, exist_ok=True)
             version_name = datetime.now().strftime("%Y-%m-%d_%H%M%S")
             version_file = versions_dir / f"model_{version_name}.md"
-            version_file.write_text(model_file.read_text())
+            version_file.write_text(model_file.read_text(encoding="utf-8"), encoding="utf-8")
             # Keep only last 14 versions
             versions = sorted(versions_dir.glob("model_*.md"), reverse=True)
             for old in versions[14:]:
@@ -117,7 +117,7 @@ class MemoryManager:
         # Atomic write: temp file + fsync + rename to avoid race with
         # concurrent readers
         tmp = model_file.with_suffix(".md.tmp")
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
@@ -163,7 +163,8 @@ class MemoryManager:
             obs_file.write_text(
                 f"# Observations — User {user_id}\n\n"
                 "Append-only log. Each entry is a raw behavioral observation.\n"
-                "Format: [YYYY-MM-DD HH:MM] (type) [metadata] observation\n\n---\n\n"
+                "Format: [YYYY-MM-DD HH:MM] (type) [metadata] observation\n\n---\n\n",
+                encoding="utf-8",
             )
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -176,7 +177,7 @@ class MemoryManager:
 
         entry = f"[{timestamp}] ({obs_type}) {metadata_str} {content}\n"
 
-        with open(obs_file, "a") as f:
+        with open(obs_file, "a", encoding="utf-8") as f:
             if fcntl:
                 fcntl.flock(f, fcntl.LOCK_EX)
             f.write(entry)
@@ -192,7 +193,7 @@ class MemoryManager:
         if not obs_file.exists():
             return ""
 
-        content = obs_file.read_text()
+        content = obs_file.read_text(encoding="utf-8")
         lines = [l for l in content.split("\n") if l.startswith("[")]
 
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -218,7 +219,7 @@ class MemoryManager:
         if not obs_file.exists():
             return []
 
-        content = obs_file.read_text()
+        content = obs_file.read_text(encoding="utf-8")
         lines = [l for l in content.split("\n") if l.startswith("[")]
         if skip_reflected:
             lines = [l for l in lines if "[reflected]" not in l]
@@ -240,7 +241,7 @@ class MemoryManager:
                 lock_fd = os.open(str(obs_file), os.O_RDONLY)
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-            content = obs_file.read_text()
+            content = obs_file.read_text(encoding="utf-8")
             lines = content.split("\n")
 
             cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
@@ -268,7 +269,7 @@ class MemoryManager:
             # Append to archive
             archive_file = self._user_dir(user_id) / "observations_archive.md"
             needs_header = not archive_file.exists() or archive_file.stat().st_size == 0
-            with open(archive_file, "a") as f:
+            with open(archive_file, "a", encoding="utf-8") as f:
                 if needs_header:
                     f.write(f"# Observation Archive — User {user_id}\n\n---\n\n")
                 for line in archive_lines:
@@ -276,7 +277,7 @@ class MemoryManager:
 
             # Atomic rewrite of observations file while lock is held
             tmp = obs_file.with_suffix(".md.tmp")
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write("\n".join(header_lines).rstrip() + "\n\n")
                 for line in recent_lines:
                     f.write(line + "\n")
@@ -387,7 +388,7 @@ class MemoryManager:
         reflection_file = self.reflections_dir / f"{today}.md"
 
         mode = "a" if reflection_file.exists() else "w"
-        with open(reflection_file, mode) as f:
+        with open(reflection_file, mode, encoding="utf-8") as f:
             if mode == "w":
                 weekday = datetime.now().strftime("%A")
                 f.write(f"# Daily Reflection — {today} ({weekday})\n\n")
