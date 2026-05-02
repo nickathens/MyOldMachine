@@ -42,6 +42,14 @@ data/users/user1/      data/users/user2/   ← kernel-enforced isolation
 
 The admin role is a **controller**, not a data viewer. The admin can add or remove users, see system health, and restart the bot: but cannot read another user's conversations, files, or memories. That separation is enforced by the OS, not by application logic.
 
+### Scope of the kernel-enforced isolation
+
+Kernel-enforced privacy applies to **CLI providers** (Claude CLI, Codex CLI). Each user's CLI subprocess runs as their slot system user, so its tool calls (`run_command`, `read_file`, etc.) inherit that slot's UID and cannot reach another slot's directory.
+
+**API providers (OpenAI, Gemini, Claude API, Ollama, etc.) currently do NOT get the same isolation.** The bot calls these APIs in-process and executes their tool requests as `mom_orchestrator`, which has group read access to every slot directory by design. If you run an API provider in multi-user mode, treat the LLM as if it could read any slot's data: the boundary is enforced only by application logic and the LLM's own behavior, not the kernel.
+
+If kernel-enforced privacy matters to you, configure each slot to use a CLI provider. If you are the only user or you trust everyone on the box, the in-process API path is fine.
+
 ## Choosing the right number of users
 
 Each slot consumes RAM proportional to the LLM you run. As a rough guide:

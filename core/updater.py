@@ -83,15 +83,21 @@ def pull_updates(bot_dir: Path) -> tuple[bool, str]:
 
     new = get_current_version(bot_dir)
 
-    # Reinstall pip deps in case requirements changed
+    # Reinstall pip deps in case requirements changed.
+    # Use list-form subprocess to avoid shell-quoting issues on paths with spaces.
     venv_pip = bot_dir / ".venv" / "bin" / "pip"
     if venv_pip.exists():
-        pip_result = _run(
-            f"{venv_pip} install --quiet -r {bot_dir / 'requirements.txt'}",
-            cwd=str(bot_dir)
-        )
-        if pip_result.returncode != 0:
-            logger.warning(f"pip install after update had issues: {pip_result.stderr[:200]}")
+        try:
+            pip_result = subprocess.run(
+                [str(venv_pip), "install", "--quiet", "-r",
+                 str(bot_dir / "requirements.txt")],
+                capture_output=True, text=True,
+                cwd=str(bot_dir), timeout=300,
+            )
+            if pip_result.returncode != 0:
+                logger.warning(f"pip install after update had issues: {pip_result.stderr[:200]}")
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.warning(f"pip install after update failed to run: {e}")
 
     return True, f"Updated: {current} → {new}"
 
