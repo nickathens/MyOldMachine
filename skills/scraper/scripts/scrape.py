@@ -14,14 +14,6 @@ import argparse
 import sys
 
 
-def get_browser():
-    """Get Playwright browser instance."""
-    from playwright.sync_api import sync_playwright
-    playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=True)
-    return playwright, browser
-
-
 def take_screenshot(url: str, output_path: str, full_page: bool = True) -> dict:
     """Take a screenshot of a webpage."""
     try:

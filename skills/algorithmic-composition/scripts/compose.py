@@ -5,7 +5,6 @@ Algorithmic composition engine using mingus, pretty_midi, and music theory
 import argparse
 import random
 import uuid
-from mingus.core import chords
 import pretty_midi
 
 # Scale patterns (intervals from root)
@@ -306,9 +305,9 @@ if __name__ == '__main__':
 
     elif args.action == 'full':
         # Generate a full arrangement
-        chords = generate_chord_progression(args.root, args.progression, args.bars)
+        chord_midi = generate_chord_progression(args.root, args.progression, args.bars)
         melody = generate_melody(args.root, args.scale, args.bars, octave=5)
         drums = generate_drums(args.bars, 'basic', args.tempo)
-        combine_midi([chords, melody, drums], args.output)
+        combine_midi([chord_midi, melody, drums], args.output)
 
     print(f"Generated: {args.output}")
