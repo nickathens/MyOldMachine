@@ -118,7 +118,7 @@ You can share one machine with up to 4 people while keeping each person's data, 
 
 See [docs/MULTIUSER.md](docs/MULTIUSER.md) for the full walkthrough, the privacy model, and the admin commands.
 
-Linux only in v1. macOS multi-user is planned but not yet shipped.
+Works on both Linux and macOS.
 
 ## Telegram commands
 

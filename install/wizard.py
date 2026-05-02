@@ -743,12 +743,8 @@ def _run_multiuser_step(config: dict):
     """
     print(f"\n{BOLD}Step 5: Multi-User Setup{NC}")
 
-    # v1: multi-user isolation is Linux-only. macOS needs a LaunchDaemon
-    # to switch the bot's user, which is more invasive (planned for v1.5).
-    if platform.system() != "Linux":
-        warn("Multi-user mode is Linux-only in this release.")
-        warn("macOS support is planned but requires a system-level service")
-        warn("(LaunchDaemon) which is more invasive. Coming in a follow-up.")
+    if platform.system() not in ("Linux", "Darwin"):
+        warn(f"Multi-user mode is not supported on {platform.system()}.")
         config["multiuser_num_slots"] = 1
         config["multiuser_enabled"] = False
         config["multiuser_queue_enabled"] = False
@@ -1482,6 +1478,12 @@ def main():
         print(f"    sudo systemctl status myoldmachine")
         print(f"    sudo systemctl restart myoldmachine")
         print(f"    journalctl -u myoldmachine -f")
+    elif config.get("multiuser_enabled"):
+        print(f"  Service management (LaunchDaemon, requires sudo):")
+        print(f"    sudo launchctl list | grep myoldmachine")
+        print(f"    sudo launchctl unload /Library/LaunchDaemons/com.myoldmachine.bot.plist")
+        print(f"    sudo launchctl load -w /Library/LaunchDaemons/com.myoldmachine.bot.plist")
+        print(f"    tail -f {repo_dir}/data/logs/bot.log")
     else:
         print(f"  Service management:")
         print(f"    launchctl list | grep myoldmachine")

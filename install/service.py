@@ -146,15 +146,8 @@ def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) ->
     return True
 
 
-def setup_macos_service(repo_dir: Path, os_info=None,
-                        orchestrator_user: str | None = None) -> bool:
-    """Create and load launchd plist (version-aware). Returns True on success.
-
-    Multi-user mode is Linux-only in v1. The wizard refuses to enable it on
-    macOS, so orchestrator_user should always be None here.
-    """
-    if orchestrator_user:
-        warn(f"macOS multi-user not yet supported. Running as install user.")
+def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
+    """Install a per-user LaunchAgent (single-user mode). Returns True on success."""
     venv_python = repo_dir / ".venv" / "bin" / "python"
 
     if not venv_python.exists():
@@ -176,10 +169,8 @@ def setup_macos_service(repo_dir: Path, os_info=None,
     content = content.replace("{{VENV_BIN}}", str(repo_dir / ".venv" / "bin"))
     content = content.replace("{{HOME}}", str(Path.home()))
 
-    # Ensure log directory exists
     (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)
 
-    # Write plist
     plist_dir = Path.home() / "Library" / "LaunchAgents"
     plist_dir.mkdir(parents=True, exist_ok=True)
     plist_path = plist_dir / "com.myoldmachine.bot.plist"
@@ -190,54 +181,166 @@ def setup_macos_service(repo_dir: Path, os_info=None,
         error(f"Failed to write plist: {e}")
         return False
 
-    # Unload if already loaded
-    try:
-        subprocess.run(
-            ["launchctl", "unload", str(plist_path)],
-            capture_output=True, timeout=10
-        )
-    except Exception:
-        pass
-
-    # Load the service
-    info("Loading launchd service...")
-    try:
-        result = subprocess.run(
-            ["launchctl", "load", "-w", str(plist_path)],
-            capture_output=True, text=True, timeout=10
-        )
-    except subprocess.TimeoutExpired:
-        warn("launchctl load timed out")
-        result = type("R", (), {"returncode": 1, "stderr": "Timed out"})()
-    except Exception as e:
-        warn(f"launchctl load failed: {e}")
-        result = type("R", (), {"returncode": 1, "stderr": str(e)})()
-
-    if result.returncode != 0:
-        # On Ventura+ try modern bootstrap syntax
-        if os_info and os_info._mac_version_gte(13):
-            info("Trying modern launchctl bootstrap syntax...")
-            try:
-                uid_result = subprocess.run(
-                    ["id", "-u"], capture_output=True, text=True, timeout=5
-                )
-                uid = uid_result.stdout.strip()
-                result2 = subprocess.run(
-                    ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
-                    capture_output=True, text=True, timeout=10
-                )
-                if result2.returncode != 0:
-                    warn(f"launchctl bootstrap warning: {result2.stderr}")
-                else:
-                    ok("Service loaded via bootstrap")
-            except Exception as e:
-                warn(f"Bootstrap attempt failed: {e}")
-        else:
-            warn(f"launchctl load warning: {result.stderr}")
+    _launchctl_load(plist_path, os_info, system_wide=False)
 
     ok(f"LaunchAgent installed at {plist_path}")
     ok("Service will start on boot and restart on crash")
     return True
+
+
+def _setup_macos_launch_daemon(repo_dir: Path, orchestrator_user: str,
+                                os_info=None) -> bool:
+    """Install a system-wide LaunchDaemon (multi-user mode). Returns True on success.
+
+    The daemon runs as the orchestrator user and lives in /Library/LaunchDaemons/
+    so it starts at boot regardless of which user is logged in (or if nobody is).
+    Installation requires root (sudo).
+    """
+    password = get_sudo_password()
+    venv_python = repo_dir / ".venv" / "bin" / "python"
+
+    if not venv_python.exists():
+        error(f"Virtual environment not found at {venv_python}")
+        warn("Run the installer again to create it")
+        return False
+
+    template_path = repo_dir / "install" / "templates" / "com.myoldmachine.daemon.plist"
+    if not template_path.exists():
+        error(f"Daemon plist template not found: {template_path}")
+        return False
+
+    orchestrator_home = repo_dir / "data" / "orchestrator"
+
+    content = template_path.read_text()
+    content = content.replace("{{ORCHESTRATOR_USER}}", orchestrator_user)
+    content = content.replace("{{PYTHON}}", str(venv_python))
+    content = content.replace("{{WORKING_DIR}}", str(repo_dir))
+    content = content.replace("{{BOT_PY}}", str(repo_dir / "bot.py"))
+    content = content.replace("{{LOG_DIR}}", str(repo_dir / "data" / "logs"))
+    content = content.replace("{{ENV_FILE}}", str(repo_dir / ".env"))
+    content = content.replace("{{VENV_BIN}}", str(repo_dir / ".venv" / "bin"))
+    content = content.replace("{{HOME}}", str(orchestrator_home))
+
+    (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)
+
+    # If a single-user LaunchAgent exists from a prior install, unload and
+    # remove it. Both use the same label (com.myoldmachine.bot) and launchd
+    # would try to load both, causing a conflict.
+    old_agent = Path.home() / "Library" / "LaunchAgents" / "com.myoldmachine.bot.plist"
+    if old_agent.exists():
+        info("Removing old single-user LaunchAgent to avoid label conflict...")
+        try:
+            subprocess.run(
+                ["launchctl", "unload", str(old_agent)],
+                capture_output=True, timeout=10
+            )
+        except Exception:
+            pass
+        try:
+            old_agent.unlink()
+            ok("Old LaunchAgent removed")
+        except OSError as e:
+            warn(f"Could not remove old LaunchAgent at {old_agent}: {e}")
+
+    daemon_path = "/Library/LaunchDaemons/com.myoldmachine.bot.plist"
+    import shlex
+    fd, tmp_name = tempfile.mkstemp(suffix=".plist", prefix="myoldmachine_daemon_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        result = sudo_run(f"cp {shlex.quote(tmp_name)} {daemon_path}", password)
+        if result.returncode != 0:
+            error(f"Failed to install daemon plist: {result.stderr}")
+            return False
+        sudo_run(f"chmod 644 {daemon_path}", password)
+        sudo_run(f"chown root:wheel {daemon_path}", password)
+    finally:
+        Path(tmp_name).unlink(missing_ok=True)
+
+    _launchctl_load(Path(daemon_path), os_info, system_wide=True, password=password)
+
+    ok(f"LaunchDaemon installed at {daemon_path}")
+    ok(f"Service runs as {orchestrator_user}, starts at boot, restarts on crash")
+    return True
+
+
+def _launchctl_load(plist_path: Path, os_info=None, *,
+                    system_wide: bool = False, password: str | None = None):
+    """Load a plist via launchctl. Handles legacy load and modern bootstrap."""
+    # Unload first if already loaded
+    if system_wide:
+        sudo_run(f"launchctl unload {plist_path}", password, timeout=10)
+    else:
+        try:
+            subprocess.run(
+                ["launchctl", "unload", str(plist_path)],
+                capture_output=True, timeout=10
+            )
+        except Exception:
+            pass
+
+    info("Loading launchd service...")
+    if system_wide:
+        if os_info and os_info._mac_version_gte(13):
+            result = sudo_run(
+                f"launchctl bootstrap system {plist_path}", password, timeout=10
+            )
+            if result.returncode == 0:
+                ok("Service loaded via bootstrap (system domain)")
+                return
+            warn(f"launchctl bootstrap warning: {result.stderr.strip()[:200]}")
+
+        result = sudo_run(f"launchctl load -w {plist_path}", password, timeout=10)
+        if result.returncode != 0:
+            warn(f"launchctl load warning: {result.stderr.strip()[:200]}")
+        else:
+            ok("Service loaded (system domain)")
+    else:
+        try:
+            result = subprocess.run(
+                ["launchctl", "load", "-w", str(plist_path)],
+                capture_output=True, text=True, timeout=10
+            )
+        except subprocess.TimeoutExpired:
+            warn("launchctl load timed out")
+            return
+        except Exception as e:
+            warn(f"launchctl load failed: {e}")
+            return
+
+        if result.returncode != 0:
+            if os_info and os_info._mac_version_gte(13):
+                info("Trying modern launchctl bootstrap syntax...")
+                try:
+                    uid_result = subprocess.run(
+                        ["id", "-u"], capture_output=True, text=True, timeout=5
+                    )
+                    uid = uid_result.stdout.strip()
+                    result2 = subprocess.run(
+                        ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    if result2.returncode != 0:
+                        warn(f"launchctl bootstrap warning: {result2.stderr}")
+                    else:
+                        ok("Service loaded via bootstrap")
+                except Exception as e:
+                    warn(f"Bootstrap attempt failed: {e}")
+            else:
+                warn(f"launchctl load warning: {result.stderr}")
+
+
+def setup_macos_service(repo_dir: Path, os_info=None,
+                        orchestrator_user: str | None = None) -> bool:
+    """Create and load launchd plist (version-aware). Returns True on success.
+
+    Single-user: installs a LaunchAgent in ~/Library/LaunchAgents/.
+    Multi-user: installs a LaunchDaemon in /Library/LaunchDaemons/ that runs
+    as the orchestrator user, independent of any login session.
+    """
+    if orchestrator_user:
+        return _setup_macos_launch_daemon(repo_dir, orchestrator_user, os_info)
+    return _setup_macos_launch_agent(repo_dir, os_info)
 
 
 def main():

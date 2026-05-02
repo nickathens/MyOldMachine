@@ -2,15 +2,15 @@
 
 Share one machine with up to 4 people while keeping each person's data, conversations, memories, and skill state fully private. The kernel enforces the boundaries.
 
-> **Linux only in v1.** macOS multi-user is planned. Existing single-user installs continue to work unchanged.
+> Supports **Linux** and **macOS**. Existing single-user installs continue to work unchanged.
 
 ## How it works
 
 When you choose 2-4 users at install time, the wizard provisions:
 
-- One **orchestrator** system user (`mom_orchestrator`) that runs the bot process. This account reads `.env`, the slot table, and shared resources. It cannot read any user's private data.
+- One **orchestrator** system user (`mom_orchestrator`) that runs the bot process. On Linux this is created via `useradd`; on macOS via `sysadminctl -addUser ... -roleAccount`. This account reads `.env`, the slot table, and shared resources. It cannot read any user's private data.
 - One **slot** system user per allowed user (`mom_user1`, `mom_user2`, ...). Each slot owns its own data directory and is the identity the CLI subprocess runs as when that user sends a message.
-- A **sudoers fragment** at `/etc/sudoers.d/myoldmachine` granting the orchestrator the right to spawn only the configured CLI binaries (`claude`, `codex`) as only the slot accounts. No shells, no other commands, no other targets.
+- A **sudoers fragment** at `/etc/sudoers.d/myoldmachine` granting the orchestrator the right to spawn only the configured CLI binaries (`claude`, `codex`) as only the slot accounts. No shells, no other commands, no other targets. Works identically on Linux and macOS.
 
 When a Telegram message arrives, the bot looks up which slot is bound to the sender's Telegram ID, then dispatches the LLM call as `sudo -u mom_userN claude ...` with the working directory set to that slot's data folder. The Linux kernel enforces filesystem permissions: `mom_user2` cannot enter `mom_user1`'s directory, period.
 
@@ -167,7 +167,34 @@ Until a slot user has authenticated, the bot's first call for that slot will fai
 - **Recovery:** The slot table at `data/orchestrator/users.json` is the source of truth. If it's lost, the wizard can rebuild it, but bound Telegram IDs need to be re-added by the admin.
 - **Re-binding a slot after `/removeuser`:** the archive step renames the slot dir into `_archived/`, leaving no slot dir behind. The orchestrator cannot recreate it with the correct ownership at runtime (it would need root). Before binding a new user to a previously-removed slot, re-run `./install.sh` once to re-provision the empty slot dir. Until then, CLI calls for that slot will fail with a logged error and the new user's first message will surface the missing-dir state.
 - **Backups:** Each slot's data lives at `data/users/userN/`. Standard tar/rsync of `data/users/` (run as root) captures everything. `data/users/_archived/` contains removed users' historical data and is safe to back up too.
-- **Removing multi-user:** There is no automatic teardown. Manually delete `/etc/sudoers.d/myoldmachine`, run `userdel mom_orchestrator mom_user1 mom_user2 ...`, and remove `data/orchestrator/`. The bot then runs in single-user mode again.
+- **Removing multi-user (Linux):** There is no automatic teardown. Manually delete `/etc/sudoers.d/myoldmachine`, run `userdel mom_orchestrator mom_user1 mom_user2 ...`, and remove `data/orchestrator/`. The bot then runs in single-user mode again.
+- **Removing multi-user (macOS):** Unload the daemon with `sudo launchctl unload /Library/LaunchDaemons/com.myoldmachine.bot.plist`, delete the plist, remove `/etc/sudoers.d/myoldmachine`, run `sudo sysadminctl -deleteUser mom_orchestrator` (and each `mom_userN`), and remove `data/orchestrator/`.
+
+## macOS-specific notes
+
+On macOS, the multi-user service runs as a **LaunchDaemon** (`/Library/LaunchDaemons/com.myoldmachine.bot.plist`) instead of a per-user LaunchAgent. Key differences from single-user mode:
+
+- The daemon starts at boot, before any user logs in. No login session is needed.
+- Installation requires `sudo` (the wizard handles this during setup).
+- The `UserName` key in the plist runs the bot as `mom_orchestrator`.
+- System users are created as macOS "role accounts" via `sysadminctl`. They have no login shell and cannot be used interactively.
+- `sudoers` works identically to Linux. The same fragment at `/etc/sudoers.d/myoldmachine` grants the orchestrator CLI dispatch rights.
+
+Service management commands on macOS:
+
+```bash
+# Check if the daemon is running
+sudo launchctl list | grep myoldmachine
+
+# Stop the daemon
+sudo launchctl unload /Library/LaunchDaemons/com.myoldmachine.bot.plist
+
+# Start the daemon
+sudo launchctl load -w /Library/LaunchDaemons/com.myoldmachine.bot.plist
+
+# View logs
+tail -f <repo_dir>/data/logs/bot.log
+```
 
 ## Why this design
 
@@ -211,6 +238,15 @@ After installing multi-user mode, run these checks on the target host. Anything 
 - [ ] After `systemctl restart myoldmachine`, the slot table survives and bound users can still talk to the bot.
 - [ ] `data/orchestrator/users.json` is mode 0600 owned by `mom_orchestrator:mom_orchestrator`.
 - [ ] `/etc/sudoers.d/myoldmachine` is mode 0440 owned by `root:root`.
+
+**macOS-specific (run these on macOS installs)**
+
+- [ ] `sudo launchctl list | grep myoldmachine` shows the daemon is loaded and running (PID column is nonzero).
+- [ ] `/Library/LaunchDaemons/com.myoldmachine.bot.plist` exists with mode 0644 and owner `root:wheel`.
+- [ ] `ps aux | grep bot.py` shows the process running as `mom_orchestrator` (not the install user).
+- [ ] `id mom_orchestrator` succeeds (role account exists).
+- [ ] `id mom_user1` succeeds (slot account exists).
+- [ ] After reboot (no user login), the bot starts automatically and responds on Telegram.
 
 **Queue (only if `concurrent_requests=1`)**
 

@@ -1,6 +1,6 @@
 # Multi-User Implementation Plan
 
-**Status:** Planning. No code yet. Awaiting plan sign-off.
+**Status:** Implemented. Linux multi-user shipped in `5cd72da`. macOS multi-user added (pending test on real Mac).
 **Decision log:** `~/memory/nick/decisions/2026-05-02_myoldmachine-multiuser-architecture.md`
 **Locked decisions:** Slot-based (4 max), Linux users + filesystem perms, shared LLM provider (v1), admin-bound at install, others via `/adduser`, no migration for existing single-user installs.
 
@@ -189,6 +189,23 @@ Verification checklist before declaring done.
 - [ ] Uninstall test: removing the package cleans up sudoers fragment, leaves slot users in place (data preservation)
 
 ---
+
+## macOS Multi-User (added 2026-05-02)
+
+**What was added:**
+- `install/templates/com.myoldmachine.daemon.plist`: LaunchDaemon template with `UserName` key for orchestrator
+- `install/service.py`: `_setup_macos_launch_daemon()` installs daemon to `/Library/LaunchDaemons/` via sudo
+- `install/wizard.py`: macOS gate removed; multi-user setup now runs on both Linux and Darwin
+- `docs/MULTIUSER.md`: Linux-only caveat dropped, macOS section and verification checklist added
+
+**How it works on macOS:**
+- LaunchDaemon (not LaunchAgent): starts at boot, before any user logs in
+- Installed to `/Library/LaunchDaemons/com.myoldmachine.bot.plist` via `sudo cp` + `chown root:wheel` + `chmod 644`
+- `UserName` key runs the process as `mom_orchestrator`
+- Role accounts via `sysadminctl -addUser ... -roleAccount` (no login shell)
+- Same sudoers fragment as Linux; `/etc/sudoers.d/` works identically on macOS
+
+**Pending:** real-hardware test on Mac (scheduled Tuesday 2026-05-05)
 
 ## Out of Scope (v2+)
 
