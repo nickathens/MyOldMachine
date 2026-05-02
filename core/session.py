@@ -457,12 +457,16 @@ class SessionManager:
 _session_managers: dict[int, SessionManager] = {}
 
 
-def get_session_manager(user_id: int, users_dir: Path, config: dict = None) -> SessionManager:
-    """Factory function to get a SessionManager for a user (cached per user_id)."""
+def get_session_manager(user_id: int, user_dir: Path, config: dict = None) -> SessionManager:
+    """Factory function to get a SessionManager for a user (cached per user_id).
+
+    user_dir is the resolved per-user directory (already accounting for
+    multi-user slot mapping if applicable). The caller is responsible for
+    creating the directory in single-user mode; in multi-user mode the
+    installer provisions it with the correct ownership.
+    """
     if user_id in _session_managers:
         return _session_managers[user_id]
-    user_dir = users_dir / str(user_id)
-    user_dir.mkdir(parents=True, exist_ok=True)
     mgr = SessionManager(user_dir, config)
     _session_managers[user_id] = mgr
     return mgr

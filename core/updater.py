@@ -105,21 +105,50 @@ def restart_service() -> tuple[bool, str]:
     system = platform.system()
 
     if system == "Linux":
+        import re as _re
         service_name = os.environ.get("SERVICE_NAME", "myoldmachine")
-        cmd = f"sudo -S systemctl restart {service_name}" if password else f"sudo systemctl restart {service_name}"
+        if not _re.fullmatch(r"[a-zA-Z0-9_@.-]+", service_name):
+            return False, f"Invalid SERVICE_NAME: {service_name!r}"
+        cmd = ["sudo", "-S", "systemctl", "restart", service_name] if password else ["sudo", "systemctl", "restart", service_name]
         stdin_data = (password + "\n") if password else None
-        result = subprocess.run(cmd, shell=True, input=stdin_data, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, input=stdin_data, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             return True, "Service restarting..."
         return False, f"Restart failed: {result.stderr[:200]}"
 
     elif system == "Darwin":
-        plist = Path.home() / "Library" / "LaunchAgents" / "com.myoldmachine.bot.plist"
-        if plist.exists():
-            # Write a restart script and run it via nohup in a new session.
-            # This survives our process being killed by launchctl unload.
-            # The script waits 3s (for our Telegram response to send),
-            # then unloads + reloads the plist.
+        daemon_plist = Path("/Library/LaunchDaemons/com.myoldmachine.bot.plist")
+        agent_plist = Path.home() / "Library" / "LaunchAgents" / "com.myoldmachine.bot.plist"
+
+        if daemon_plist.exists():
+            import tempfile
+            sudo_pass_file = Path.home() / ".sudo_pass"
+            restart_script = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.sh', delete=False, prefix='mom_restart_'
+            )
+            if sudo_pass_file.exists():
+                sudo_cmd = f'cat "{sudo_pass_file}" | sudo -S'
+            else:
+                sudo_cmd = 'sudo -n'
+            restart_script.write(
+                f'#!/bin/bash\n'
+                f'sleep 3\n'
+                f'{sudo_cmd} launchctl unload "{daemon_plist}" 2>/dev/null\n'
+                f'sleep 1\n'
+                f'{sudo_cmd} launchctl load -w "{daemon_plist}"\n'
+                f'rm -f "{restart_script.name}"\n'
+            )
+            restart_script.close()
+            os.chmod(restart_script.name, 0o700)
+            subprocess.Popen(
+                [restart_script.name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return True, "Service restarting (LaunchDaemon)..."
+
+        if agent_plist.exists():
             import tempfile
             restart_script = tempfile.NamedTemporaryFile(
                 mode='w', suffix='.sh', delete=False, prefix='mom_restart_'
@@ -127,23 +156,22 @@ def restart_service() -> tuple[bool, str]:
             restart_script.write(
                 f'#!/bin/bash\n'
                 f'sleep 3\n'
-                f'launchctl unload "{plist}" 2>/dev/null\n'
+                f'launchctl unload "{agent_plist}" 2>/dev/null\n'
                 f'sleep 1\n'
-                f'launchctl load -w "{plist}"\n'
+                f'launchctl load -w "{agent_plist}"\n'
                 f'rm -f "{restart_script.name}"\n'
             )
             restart_script.close()
-            import os
-            os.chmod(restart_script.name, 0o755)
+            os.chmod(restart_script.name, 0o700)
             subprocess.Popen(
-                f'nohup "{restart_script.name}" >/dev/null 2>&1 &',
-                shell=True,
+                [restart_script.name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            return True, "Service restarting..."
-        return False, "LaunchAgent plist not found"
+            return True, "Service restarting (LaunchAgent)..."
+
+        return False, "No LaunchDaemon or LaunchAgent plist found"
 
     return False, f"Unsupported OS: {system}"
 

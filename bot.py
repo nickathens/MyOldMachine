@@ -429,7 +429,7 @@ def get_attachments_dir(user_id: int) -> Path:
 
 
 def get_session(user_id: int) -> SessionManager:
-    session = get_session_manager(user_id, USERS_DIR)
+    session = get_session_manager(user_id, get_user_dir(user_id))
     if _semaphore_active:
         session.set_compaction_runner(_run_compaction_under_semaphore)
     return session
@@ -2475,7 +2475,11 @@ async def download_attachments(update: Update, context: ContextTypes.DEFAULT_TYP
     async def save_file(file_obj, file_type, ext, original_name=None, index=None):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         idx_suffix = f"_{index}" if index is not None else ""
-        name = f"{ts}{idx_suffix}_{original_name}" if original_name else f"{ts}{idx_suffix}_{file_type}{ext}"
+        if original_name:
+            safe_name = original_name.replace("/", "_").replace("\\", "_").replace("\0", "_")
+            name = f"{ts}{idx_suffix}_{safe_name}"
+        else:
+            name = f"{ts}{idx_suffix}_{file_type}{ext}"
         path = attachments_dir / name
         try:
             await file_obj.download_to_drive(path)

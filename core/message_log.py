@@ -15,8 +15,8 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Per-user database directory — matches config.USERS_DIR
-_USERS_DIR = Path(__file__).parent.parent / "data" / "users"
+_BOT_DIR = Path(__file__).parent.parent
+_USERS_DIR = _BOT_DIR / "data" / "users"
 
 # Regex patterns for stripping attachment blocks from content before indexing
 _ATTACHMENT_BLOCK_RE = re.compile(
@@ -37,9 +37,20 @@ def _strip_attachment_paths(content: str) -> str | None:
 
 
 def _get_db_path(user_id: int) -> Path:
-    """Return the path to a user's message log database."""
-    user_dir = _USERS_DIR / str(user_id)
-    user_dir.mkdir(parents=True, exist_ok=True)
+    """Return the path to a user's message log database.
+
+    Multi-user mode: uses slot dir (data/users/userN/).
+    Single-user mode: uses Telegram ID dir (data/users/<id>/).
+    """
+    try:
+        from core.users import resolve_user_dir, is_multiuser_enabled, lookup_slot
+        user_dir = resolve_user_dir(user_id)
+        multiuser = is_multiuser_enabled() and lookup_slot(user_id) is not None
+    except ImportError:
+        user_dir = _USERS_DIR / str(user_id)
+        multiuser = False
+    if not multiuser:
+        user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir / "message_log.db"
 
 

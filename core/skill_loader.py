@@ -54,7 +54,7 @@ class Skill:
                 self.config = json.loads(config_file.read_text())
                 self.enabled = self.config.get("enabled", True)
                 self.system_deps = self.config.get("system_deps", [])
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, OSError) as e:
                 logger.error(f"Failed to load {self.name} config: {e}")
 
     def get_scripts_dir(self) -> Optional[Path]:
