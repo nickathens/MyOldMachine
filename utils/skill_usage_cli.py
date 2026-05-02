@@ -236,7 +236,7 @@ def cmd_skill(args):
         if stats["avg_ram"] is not None:
             print(f"  Avg RAM at start:   {int(stats['avg_ram'])} MB free")
 
-        print(f"\n  Last 10 invocations:")
+        print("\n  Last 10 invocations:")
         print(f"  {'Time':<20} {'Duration':>10} {'Status':>8} {'RAM Free':>10}")
         print(f"  {'-' * 52}")
         rows = conn.execute("""

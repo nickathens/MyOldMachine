@@ -405,7 +405,7 @@ def smart_install(
             logger.warning(result.skipped_reason)
 
     if dry_run:
-        result.notes = f"[DRY RUN] Would try: system pkg → flatpak fallback"
+        result.notes = "[DRY RUN] Would try: system pkg → flatpak fallback"
         return result
 
     is_linux = platform.system() == "Linux"

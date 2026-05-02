@@ -619,10 +619,10 @@ def _select_model_for_provider(config: dict, provider: str):
             print(f"    {i}. {desc}")
             print(f"       ID: {model_id}")
         print()
-        print(f"  Or enter any OpenRouter model ID (see openrouter.ai/models)")
+        print("  Or enter any OpenRouter model ID (see openrouter.ai/models)")
         print()
         default_model = DEFAULT_MODELS["openrouter"]
-        raw = ask(f"Model (number or ID)", default=default_model)
+        raw = ask("Model (number or ID)", default=default_model)
         if raw.isdigit() and 1 <= int(raw) <= len(OPENROUTER_FREE_MODELS):
             config["llm_model"] = OPENROUTER_FREE_MODELS[int(raw) - 1][0]
         else:
@@ -635,17 +635,17 @@ def _select_model_for_provider(config: dict, provider: str):
             print(f"    {i}. {desc}")
             print(f"       ID: {model_id}")
         print()
-        print(f"  Or enter any model ID manually.")
+        print("  Or enter any model ID manually.")
         print()
         default_model = DEFAULT_MODELS.get(provider, models[0][0])
-        raw = ask(f"Model (number or ID)", default=default_model)
+        raw = ask("Model (number or ID)", default=default_model)
         if raw.isdigit() and 1 <= int(raw) <= len(models):
             config["llm_model"] = models[int(raw) - 1][0]
         else:
             config["llm_model"] = raw
     else:
         default_model = DEFAULT_MODELS.get(provider, "")
-        config["llm_model"] = ask(f"Model", default=default_model)
+        config["llm_model"] = ask("Model", default=default_model)
 
 
 def write_env(repo_dir: Path, config: dict):
@@ -659,7 +659,7 @@ def write_env(repo_dir: Path, config: dict):
         f"BOT_NAME={config['bot_name']}",
         f"TIMEZONE={config['timezone']}",
         f"INSTALL_MODE={config.get('takeover', 'workstation')}",
-        f"WEBHOOK_PORT=0",
+        "WEBHOOK_PORT=0",
     ]
     if config["llm_provider"] == "ollama":
         lines.append(f"OLLAMA_BASE_URL={config.get('ollama_url', 'http://localhost:11434')}")
@@ -753,9 +753,9 @@ def _run_multiuser_step(config: dict):
     print("  How many people will use this machine?")
     print(f"    {GREEN}1{NC}     Just you. Nothing extra is set up.")
     print(f"    {GREEN}2-4{NC}   Multiple people share this machine.")
-    print(f"            Each person gets a private data directory.")
-    print(f"            The OS kernel enforces the privacy boundary;")
-    print(f"            no one can read anyone else's files.")
+    print("            Each person gets a private data directory.")
+    print("            The OS kernel enforces the privacy boundary;")
+    print("            no one can read anyone else's files.")
     print()
 
     while True:
@@ -782,13 +782,13 @@ def _run_multiuser_step(config: dict):
     print()
     admin_name = config.get("user_name", "you")
     print(f"  {BOLD}You ({admin_name}) become the admin (slot 1).{NC}")
-    print(f"  Admin role:")
-    print(f"    • Add/remove other users via Telegram (/adduser, /removeuser, /users)")
-    print(f"    • View system health (/health)")
-    print(f"    • Restart the bot if needed")
+    print("  Admin role:")
+    print("    • Add/remove other users via Telegram (/adduser, /removeuser, /users)")
+    print("    • View system health (/health)")
+    print("    • Restart the bot if needed")
     print(f"  {YELLOW}You CANNOT read other users' data.{NC} Privacy is enforced by the kernel,")
-    print(f"  not by the bot's code. If something breaks and you need to read")
-    print(f"  another user's files, log in to the machine and use sudo directly.")
+    print("  not by the bot's code. If something breaks and you need to read")
+    print("  another user's files, log in to the machine and use sudo directly.")
     print()
     if num_users >= 2:
         print(f"  Slots 2-{num_users} are reserved but unbound. After install, add users via:")
@@ -814,8 +814,8 @@ def _run_multiuser_step(config: dict):
         print(f"  {YELLOW}Could not detect RAM. Recommending queue by default.{NC}")
         queue_default = "y"
 
-    print(f"  The queue runs one user's request at a time. Others get a")
-    print(f"  'next in line' message and wait. Prevents OOM on small machines.")
+    print("  The queue runs one user's request at a time. Others get a")
+    print("  'next in line' message and wait. Prevents OOM on small machines.")
     print()
     answer = ask("Enable request queue?", default=queue_default).strip().lower()
     config["multiuser_queue_enabled"] = answer in ("y", "yes")
@@ -838,7 +838,7 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
     from install.multiuser import (
         ORCHESTRATOR_USER, SUDOERS_FRAGMENT_PATH,
         create_system_user, find_cli_binary, grant_sudo,
-        set_owner, set_perms, slot_user, system_user_exists,
+        set_owner, set_perms, slot_user,
     )
 
     sudo_pass = config.get("sudo_pass")
@@ -1027,9 +1027,9 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
             return False, f"failed to write users.json: {result.stderr.strip()[:300]}"
 
         if not set_owner(target, ORCHESTRATOR_USER, ORCHESTRATOR_USER, password=sudo_pass):
-            return False, f"failed to chown users.json"
+            return False, "failed to chown users.json"
         if not set_perms(target, 0o600, password=sudo_pass):
-            return False, f"failed to chmod users.json"
+            return False, "failed to chmod users.json"
     finally:
         try:
             os.unlink(tmp_path)
@@ -1240,7 +1240,7 @@ def main():
                     print()
                     print(f"  {BOLD}IMPORTANT: You need to authenticate before the bot can work.{NC}")
                     print(f"  {YELLOW}Run this command now:{NC}")
-                    print(f"    claude login")
+                    print("    claude login")
                     print(f"  {YELLOW}This opens your browser to sign in with your Anthropic account.{NC}")
                     print(f"  {YELLOW}Your Pro/Max plan covers usage — no API credits needed.{NC}")
                     print()
@@ -1314,7 +1314,7 @@ def main():
                     print()
                     print(f"  {BOLD}IMPORTANT: You need to authenticate before the bot can work.{NC}")
                     print(f"  {YELLOW}Run this command now:{NC}")
-                    print(f"    codex login")
+                    print("    codex login")
                     print(f"  {YELLOW}This opens your browser to sign in with your ChatGPT account.{NC}")
                     print(f"  {YELLOW}Your Plus/Pro plan covers usage — no API credits needed.{NC}")
                     print(f"  {YELLOW}(For headless setups, set OPENAI_API_KEY in .env instead.){NC}")
@@ -1461,32 +1461,32 @@ def main():
     print(f"{BOLD}╚══════════════════════════════════════╝{NC}")
     print()
     print(f"  Your bot ({config.get('bot_name', 'MyOldMachine')}) is now running.")
-    print(f"  Open Telegram and send /start to your bot.")
+    print("  Open Telegram and send /start to your bot.")
     print()
     print(f"  {GREEN}The bot is registered as a system service.{NC}")
-    print(f"  It will start automatically on boot and restart on crash.")
-    print(f"  You can close this terminal — the bot keeps running.")
+    print("  It will start automatically on boot and restart on crash.")
+    print("  You can close this terminal — the bot keeps running.")
     print()
-    print(f"  Useful commands:")
-    print(f"    /status  — Check bot status")
-    print(f"    /health  — System health report")
-    print(f"    /update  — Update to latest version")
-    print(f"    /help    — See all commands")
+    print("  Useful commands:")
+    print("    /status  — Check bot status")
+    print("    /health  — System health report")
+    print("    /update  — Update to latest version")
+    print("    /help    — See all commands")
     print()
     if detected_os == "linux":
-        print(f"  Service management:")
-        print(f"    sudo systemctl status myoldmachine")
-        print(f"    sudo systemctl restart myoldmachine")
-        print(f"    journalctl -u myoldmachine -f")
+        print("  Service management:")
+        print("    sudo systemctl status myoldmachine")
+        print("    sudo systemctl restart myoldmachine")
+        print("    journalctl -u myoldmachine -f")
     elif config.get("multiuser_enabled"):
-        print(f"  Service management (LaunchDaemon, requires sudo):")
-        print(f"    sudo launchctl list | grep myoldmachine")
-        print(f"    sudo launchctl unload /Library/LaunchDaemons/com.myoldmachine.bot.plist")
-        print(f"    sudo launchctl load -w /Library/LaunchDaemons/com.myoldmachine.bot.plist")
+        print("  Service management (LaunchDaemon, requires sudo):")
+        print("    sudo launchctl list | grep myoldmachine")
+        print("    sudo launchctl unload /Library/LaunchDaemons/com.myoldmachine.bot.plist")
+        print("    sudo launchctl load -w /Library/LaunchDaemons/com.myoldmachine.bot.plist")
         print(f"    tail -f {repo_dir}/data/logs/bot.log")
     else:
-        print(f"  Service management:")
-        print(f"    launchctl list | grep myoldmachine")
+        print("  Service management:")
+        print("    launchctl list | grep myoldmachine")
         print(f"    tail -f {repo_dir}/data/logs/bot.log")
     print()
     print(f"  {YELLOW}If this worked for you, consider giving it a star:{NC}")
@@ -1526,18 +1526,18 @@ def _run_wizard_steps(detected_os: str) -> dict:
     print("  Choose which AI model will power your assistant.")
     print()
     print(f"  {GREEN}FREE options:{NC}")
-    print(f"    - Claude Code CLI — uses your existing Anthropic Pro/Max subscription")
-    print(f"    - Ollama — runs a local model on this machine (no internet needed)")
-    print(f"    - Ollama Cloud — cloud-hosted models, free tier (no local GPU needed)")
-    print(f"    - OpenRouter — has free models (20 RPM, 200 req/day)")
-    print(f"    - Gemini — free tier with real quota (5-15 RPM, 100-1000 RPD)")
-    print(f"    - Grok — $25 free credits on signup")
+    print("    - Claude Code CLI — uses your existing Anthropic Pro/Max subscription")
+    print("    - Ollama — runs a local model on this machine (no internet needed)")
+    print("    - Ollama Cloud — cloud-hosted models, free tier (no local GPU needed)")
+    print("    - OpenRouter — has free models (20 RPM, 200 req/day)")
+    print("    - Gemini — free tier with real quota (5-15 RPM, 100-1000 RPD)")
+    print("    - Grok — $25 free credits on signup")
     print()
     print(f"  {YELLOW}PAID options:{NC}")
-    print(f"    - Claude API — requires Anthropic API credits (separate from Pro/Max plan)")
-    print(f"    - OpenAI — requires OpenAI API credits")
-    print(f"    - Kimi — Moonshot AI, multimodal, 256K context ($0.60/$3.00 per MTok)")
-    print(f"    - MiniMax — M2.7 reasoning, 205K context ($0.30/$1.20 per MTok)")
+    print("    - Claude API — requires Anthropic API credits (separate from Pro/Max plan)")
+    print("    - OpenAI — requires OpenAI API credits")
+    print("    - Kimi — Moonshot AI, multimodal, 256K context ($0.60/$3.00 per MTok)")
+    print("    - MiniMax — M2.7 reasoning, 205K context ($0.30/$1.20 per MTok)")
     print()
     available_providers = _get_available_providers()
     # Default to first available provider (claude if present, otherwise claude-api)
@@ -1681,10 +1681,10 @@ def _run_wizard_steps(detected_os: str) -> dict:
 
     # Step 6: Install mode
     print(f"\n{BOLD}Step 6: Install Mode{NC}")
-    print(f"  All modes register the bot as a system service that:")
-    print(f"    - Starts automatically on boot")
-    print(f"    - Restarts automatically on crash")
-    print(f"    - Runs 24/7 without you touching a terminal")
+    print("  All modes register the bot as a system service that:")
+    print("    - Starts automatically on boot")
+    print("    - Restarts automatically on crash")
+    print("    - Runs 24/7 without you touching a terminal")
     print()
     config["takeover"] = ask_choice(
         "Choose your install mode:",

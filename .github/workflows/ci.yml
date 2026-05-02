@@ -8,13 +8,17 @@ on:
 
 jobs:
   lint-and-syntax:
-    name: Python syntax check
+    name: Python lint and syntax check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install ruff
+        run: pip install -q ruff
+      - name: Lint with ruff
+        run: ruff check bot.py core/ utils/ install/ tests/
       - name: Check Python syntax (all .py files)
         run: python -m py_compile bot.py && find core/ install/ utils/ -name '*.py' -exec python -m py_compile {} +
       - name: Check for obvious import errors

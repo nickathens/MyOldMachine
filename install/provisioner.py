@@ -533,7 +533,7 @@ def _install_linux_deps(os_info: OSInfo, password):
     result = sudo_run(install_cmd_tpl.format(pkgs=pkgs), password)
     if result.returncode != 0:
         # Try one by one — some packages may not exist on this distro
-        warn(f"Batch install had issues. Installing packages individually...")
+        warn("Batch install had issues. Installing packages individually...")
         installed_count = 0
         for pkg in packages:
             r = sudo_run(install_cmd_tpl.format(pkgs=pkg), password)
@@ -868,7 +868,7 @@ def _install_macos_deps(os_info: OSInfo, password=None):
             )
             log_action("install_homebrew", f"rc={result.returncode}")
             if result.returncode != 0:
-                warn(f"Homebrew install may have had issues (check output above)")
+                warn("Homebrew install may have had issues (check output above)")
 
         brew = _find_brew()
         if not brew:
@@ -1079,7 +1079,6 @@ def _install_ffmpeg_direct(os_info: OSInfo) -> bool:
     """
     import shutil as _shutil
 
-    arch = platform.machine()
     # evermeet.cx only provides x86_64 builds (Intel). For ARM, the binary runs via Rosetta.
     # On truly old Macs (all Intel), this works directly.
     info("Downloading ffmpeg static build from evermeet.cx...")

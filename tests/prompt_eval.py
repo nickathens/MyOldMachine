@@ -57,7 +57,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -220,7 +220,8 @@ async def _call_gemini(
     text = ""
     tool_calls = []
     for candidate in data.get("candidates", []):
-        for part in candidate.get("content", {}).get("parts", []):
+        content = candidate.get("content") or {}
+        for part in content.get("parts") or []:
             if "text" in part:
                 text += part["text"]
             if "functionCall" in part:
@@ -630,7 +631,7 @@ async def main(args):
         print("  Or run Ollama: ollama serve")
         sys.exit(1)
 
-    print(f"Providers: {', '.join(f'{k} ({v['model']})' for k, v in providers.items())}")
+    print("Providers: " + ", ".join(f"{k} ({v['model']})" for k, v in providers.items()))
     print()
 
     # Load test suites

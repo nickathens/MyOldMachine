@@ -13,7 +13,7 @@ import platform
 import re
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -97,28 +97,18 @@ def get_memory_usage() -> dict:
             result = subprocess.run(
                 ["vm_stat"], capture_output=True, text=True, timeout=5
             )
-            page_size = 4096  # Intel default; Apple Silicon uses 16384 — parsed below
-            pages_free = 0
+            page_size = 4096  # Intel default; Apple Silicon uses 16384
             pages_active = 0
-            pages_inactive = 0
             pages_wired = 0
             for line in result.stdout.splitlines():
                 if "page size" in line.lower():
                     m = re.search(r"(\d+)", line)
                     if m:
                         page_size = int(m.group(1))
-                if "Pages free" in line:
-                    m = re.search(r"(\d+)", line.split(":")[1])
-                    if m:
-                        pages_free = int(m.group(1))
                 if "Pages active" in line:
                     m = re.search(r"(\d+)", line.split(":")[1])
                     if m:
                         pages_active = int(m.group(1))
-                if "Pages inactive" in line:
-                    m = re.search(r"(\d+)", line.split(":")[1])
-                    if m:
-                        pages_inactive = int(m.group(1))
                 if "Pages wired" in line:
                     m = re.search(r"(\d+)", line.split(":")[1])
                     if m:
@@ -219,7 +209,6 @@ def build_health_report(bot_dir: Optional[Path] = None) -> str:
 
     # Bot data directory
     if bot_dir:
-        data_disk = get_disk_usage(str(bot_dir))
         data_dir = bot_dir / "data"
         if data_dir.exists():
             data_size = sum(

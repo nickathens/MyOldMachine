@@ -25,7 +25,6 @@ Key compatibility boundaries:
 """
 
 import platform
-import re
 import subprocess
 import sys
 from dataclasses import dataclass, field

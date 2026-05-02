@@ -553,7 +553,10 @@ async def _execute_command(job_id: str):
         await scheduler.send_message(meta["user_id"], f"Command job error: {meta['name']}\n{str(e)[:200]}")
 
     if not meta.get("repeat"):
-        _delete_meta(job_id)
+        if success:
+            _delete_meta(job_id)
+        else:
+            logger.error(f"One-shot command job {job_id} FAILED -- metadata kept for recovery")
 
 
 async def _execute_agent(job_id: str):

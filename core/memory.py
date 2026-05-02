@@ -194,7 +194,7 @@ class MemoryManager:
             return ""
 
         content = obs_file.read_text(encoding="utf-8")
-        lines = [l for l in content.split("\n") if l.startswith("[")]
+        lines = [line for line in content.split("\n") if line.startswith("[")]
 
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         recent = []
@@ -220,9 +220,9 @@ class MemoryManager:
             return []
 
         content = obs_file.read_text(encoding="utf-8")
-        lines = [l for l in content.split("\n") if l.startswith("[")]
+        lines = [line for line in content.split("\n") if line.startswith("[")]
         if skip_reflected:
-            lines = [l for l in lines if "[reflected]" not in l]
+            lines = [line for line in lines if "[reflected]" not in line]
         return lines[-limit:]
 
     def archive_old_observations(self, user_id: int, keep_days: int = 14):

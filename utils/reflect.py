@@ -29,7 +29,10 @@ Usage:
 """
 
 import argparse
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import json
 import logging
 import os
@@ -140,7 +143,7 @@ def get_recent_observations(user_id: int, mm: MemoryManager, days: int = 7) -> l
         return []
 
     content = obs_file.read_text(encoding="utf-8")
-    lines = [l for l in content.split("\n") if l.startswith("[")]
+    lines = [line for line in content.split("\n") if line.startswith("[")]
 
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
@@ -368,7 +371,8 @@ def _call_api(prompt: str) -> str:
                     data = resp.json()
                     choices = data.get("choices", [])
                     if choices:
-                        return choices[0].get("message", {}).get("content", "")
+                        msg = choices[0].get("message") or {}
+                        return msg.get("content", "")
                 else:
                     log(f"Ollama API returned {resp.status_code}")
             return ""
@@ -383,7 +387,9 @@ def _call_api(prompt: str) -> str:
                 resp = client.post(url, headers={"x-goog-api-key": api_key}, json=body)
                 if resp.status_code == 200:
                     data = resp.json()
-                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    candidates = data.get("candidates") or [{}]
+                    content = candidates[0].get("content") or {}
+                    parts = content.get("parts") or []
                     return "".join(p.get("text", "") for p in parts)
                 else:
                     log(f"Gemini API returned {resp.status_code}")
@@ -453,7 +459,8 @@ def _call_api(prompt: str) -> str:
                     data = resp.json()
                     choices = data.get("choices", [])
                     if choices:
-                        return choices[0].get("message", {}).get("content", "")
+                        msg = choices[0].get("message") or {}
+                        return msg.get("content", "")
                 else:
                     log(f"{provider} API returned {resp.status_code}")
             return ""

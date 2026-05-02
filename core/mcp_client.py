@@ -156,7 +156,7 @@ class MCPManager:
         name = config.get("name", "unnamed")
         command = config.get("command", "")
         args = config.get("args", [])
-        env_overrides = config.get("env", {})
+        env_overrides = config.get("env") or {}
 
         if not command:
             return f"Error: no command specified for server '{name}'"

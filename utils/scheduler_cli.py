@@ -131,7 +131,7 @@ def cmd_update(args):
         print(f"  New message: {args.message}")
     if args.name is not None:
         print(f"  New name: {args.name}")
-    print(f"  Schedule unchanged. Job ID, trigger, and recurrence preserved.")
+    print("  Schedule unchanged. Job ID, trigger, and recurrence preserved.")
     return 0
 
 
@@ -185,7 +185,7 @@ def cmd_remove(args):
 
     if meta.get("job_type") == "command" and not args.force:
         print(f"ERROR: Job '{args.id}' is a system command ({meta.get('name', '')}).")
-        print(f"  Use --force to remove system command jobs.")
+        print("  Use --force to remove system command jobs.")
         return 1
 
     _delete_meta(args.id)

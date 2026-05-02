@@ -245,7 +245,8 @@ def list_drafts(limit: int = 10) -> list:
     for d in drafts:
         draft_data = service.users().drafts().get(userId='me', id=d['id'], format='metadata').execute()
         msg = draft_data.get('message', {})
-        headers = {h['name']: h['value'] for h in msg.get('payload', {}).get('headers', [])}
+        payload = msg.get('payload') or {}
+        headers = {h['name']: h['value'] for h in payload.get('headers', [])}
         items.append({
             "id": d['id'],
             "to": headers.get('To', ''),

@@ -133,11 +133,11 @@ def get_project_status(slug: str):
     if state.get("summary"):
         print(f"  Summary: {state['summary']}")
     if state.get("next_steps"):
-        print(f"  Next steps:")
+        print("  Next steps:")
         for step in state["next_steps"]:
             print(f"    - {step}")
     if state.get("blockers"):
-        print(f"  Blockers:")
+        print("  Blockers:")
         for b in state["blockers"]:
             print(f"    - {b}")
 

@@ -476,7 +476,7 @@ class ClaudeCLIProvider(LLMProvider):
                         self.on_progress_clear(user_id)
                     if fallback:
                         return LLMResponse(
-                            text=fallback + f"\n\n[Hit 1-hour time limit. Break into smaller steps.]",
+                            text=fallback + "\n\n[Hit 1-hour time limit. Break into smaller steps.]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
                     return LLMResponse(
@@ -591,8 +591,8 @@ class ClaudeCLIProvider(LLMProvider):
                                 current_status = "generating response"
                                 tool_in_progress = None
                                 last_turn_text_blocks = []
-                                msg_data = data.get("message", {})
-                                for block in msg_data.get("content", []):
+                                msg_data = data.get("message") or {}
+                                for block in msg_data.get("content") or []:
                                     if block.get("type") == "text":
                                         text = block.get("text", "")
                                         if text:
@@ -1376,7 +1376,8 @@ class ClaudeAPIProvider(LLMProvider):
                         error=f"Claude API returned non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}"
                     )
                 if resp.status_code != 200:
-                    error_msg = data.get("error", {}).get("message", str(data))
+                    error_obj = data.get("error") or {}
+                    error_msg = error_obj.get("message", str(data)) if isinstance(error_obj, dict) else str(error_obj)
                     return LLMResponse(
                         text="", model=self.model, provider=self.provider_name,
                         error=f"Claude API error: {error_msg}"
@@ -1450,7 +1451,7 @@ async def _openai_tool_loop(
                 )
 
             if resp.status_code != 200:
-                error_obj = data.get("error", {})
+                error_obj = data.get("error") or {}
                 if isinstance(error_obj, dict):
                     error_msg = error_obj.get("message", str(data))
                 else:
@@ -1473,9 +1474,7 @@ async def _openai_tool_loop(
                 )
 
             choice = choices[0]
-            message = choice.get("message", {})
-            finish_reason = choice.get("finish_reason", "")
-
+            message = choice.get("message") or {}
             # Check if the model wants to call tools
             # finish_reason varies by provider: "tool_calls" (OpenAI), "stop" (some OpenRouter models),
             # empty string, or None. Check tool_calls presence regardless of finish_reason.
@@ -1491,7 +1490,7 @@ async def _openai_tool_loop(
                 # Execute each tool call and append results
                 for tc in tool_calls:
                     tc_id = tc.get("id", "")
-                    func = tc.get("function", {})
+                    func = tc.get("function") or {}
                     func_name = func.get("name", "")
                     try:
                         func_args = json.loads(func.get("arguments", "{}"))
@@ -1747,7 +1746,8 @@ class GeminiProvider(LLMProvider):
                     )
 
                 if resp.status_code != 200:
-                    error_msg = data.get("error", {}).get("message", str(data))
+                    error_obj = data.get("error") or {}
+                    error_msg = error_obj.get("message", str(data)) if isinstance(error_obj, dict) else str(error_obj)
                     return LLMResponse(
                         text="", model=self.model, provider=self.provider_name,
                         error=f"Gemini API error: {error_msg}",
@@ -1765,7 +1765,8 @@ class GeminiProvider(LLMProvider):
                         error="Gemini returned no candidates",
                     )
 
-                parts = candidates[0].get("content", {}).get("parts", [])
+                content = candidates[0].get("content") or {}
+                parts = content.get("parts") or []
 
                 # Check for function calls in the response parts
                 function_calls = [p for p in parts if "functionCall" in p]
@@ -2173,7 +2174,7 @@ class OllamaProvider(LLMProvider):
 
         # If the OpenAI-compat endpoint returned an error, fall back to native API
         if result.error and ("404" in result.error or "not found" in result.error.lower()):
-            logger.info(f"Ollama OpenAI-compat endpoint unavailable, falling back to native API")
+            logger.info("Ollama OpenAI-compat endpoint unavailable, falling back to native API")
             url = f"{self.base_url}/api/chat"
             native_body = {
                 "model": self.model,
@@ -2205,7 +2206,8 @@ class OllamaProvider(LLMProvider):
                             text="", model=self.model, provider=self.provider_name,
                             error=f"Ollama error: {data}"
                         )
-                    text = data.get("message", {}).get("content", "")
+                    msg = data.get("message") or {}
+                    text = msg.get("content", "")
                     return LLMResponse(
                         text=text, model=self.model, provider=self.provider_name,
                         input_tokens=data.get("prompt_eval_count", 0),

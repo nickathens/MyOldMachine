@@ -17,7 +17,6 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 from datetime import datetime, timedelta
@@ -191,7 +190,7 @@ async def _auto_transcribe_voice(voice_path: str) -> str:
     """Auto-transcribe a voice message using Whisper. Returns transcript or empty string."""
     venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
     try:
-        result = await asyncio.to_thread(
+        await asyncio.to_thread(
             subprocess.run,
             [venv_python, "-m", "whisper", voice_path,
              "--model", "base", "--output_format", "txt",
@@ -775,7 +774,7 @@ def build_system_prompt(user_id: int) -> str:
     # --dangerously-skip-permissions).  API providers — especially weak/free
     # models — are prompt-injection targets and should not know the sudo path.
     if has_tool_use and user_role == "admin" and is_cli_provider:
-        parts.append(f"Sudo password is stored at ~/.sudo_pass — use it for privileged commands.")
+        parts.append("Sudo password is stored at ~/.sudo_pass — use it for privileged commands.")
         parts.append("")
 
     # Tool-use-only sections (skip for text-only providers)
@@ -841,7 +840,7 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("")
         parts.append("**Decision Logs:**")
         parts.append(f"  Log significant decisions to {memory_dir}/decisions/YYYY-MM-DD_description.md")
-        parts.append(f"  Include: what was decided, options considered, rationale")
+        parts.append("  Include: what was decided, options considered, rationale")
         parts.append("")
 
     # Memory dir used by project/topic listing below
@@ -1475,7 +1474,7 @@ async def recover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = incomplete.get("status", "unknown")
     started = incomplete.get("started", "unknown")
     tool = incomplete.get("current_tool")
-    response = f"**Interrupted Task**\n\n"
+    response = "**Interrupted Task**\n\n"
     response += f"Started: {started}\n"
     response += f"Original request: {original}\n"
     response += f"Last status: {status}"
@@ -2126,15 +2125,15 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             marker = " (active)" if p == current else ""
             msg += f"  {p} — default: {default_m}{marker}\n"
         msg += (
-            f"\nUsage:\n"
-            f"  /provider <name> — switch provider (uses default model)\n"
-            f"  /provider <name> <model> — switch provider + model\n"
-            f"  /model <model> — change model only\n"
-            f"  /apikey <key> — set API key for current provider\n\n"
-            f"Example:\n"
-            f"  /provider openrouter nvidia/nemotron-3-super-120b-a12b:free\n"
-            f"  /provider grok\n"
-            f"  /model gpt-5.4-mini"
+            "\nUsage:\n"
+            "  /provider <name> — switch provider (uses default model)\n"
+            "  /provider <name> <model> — switch provider + model\n"
+            "  /model <model> — change model only\n"
+            "  /apikey <key> — set API key for current provider\n\n"
+            "Example:\n"
+            "  /provider openrouter nvidia/nemotron-3-super-120b-a12b:free\n"
+            "  /provider grok\n"
+            "  /model gpt-5.4-mini"
         )
         await update.message.reply_text(msg)
         return

@@ -78,7 +78,7 @@ def get_status_report() -> str:
     if config.get("backup_enabled"):
         path = config.get("backup_path", "not set")
         retention = config.get("backup_retention", 7)
-        lines.append(f"Backup: ON (nightly)")
+        lines.append("Backup: ON (nightly)")
         lines.append(f"  Target: {path}")
         lines.append(f"  Retention: {retention} backups")
     else:

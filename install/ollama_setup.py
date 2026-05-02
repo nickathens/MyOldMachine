@@ -262,7 +262,7 @@ def recommend_model(specs: dict) -> tuple[str, str]:
         )
 
     if gpu_type == "apple":
-        explanation += f"\n  Apple Silicon detected — model will run on GPU (Metal), fast inference."
+        explanation += "\n  Apple Silicon detected — model will run on GPU (Metal), fast inference."
     elif gpu_type == "nvidia" and gpu.get("vram_gb", 0) >= ram_needed:
         explanation += f"\n  NVIDIA GPU detected ({gpu['name']}) — model will use GPU acceleration."
     elif gpu_type == "nvidia":
@@ -341,7 +341,7 @@ def install_ollama() -> bool:
         # Verify it actually works (binary might be incompatible)
         compatible, reason = check_ollama_compatibility()
         if not compatible:
-            error(f"Ollama is installed but cannot run on this system.")
+            error("Ollama is installed but cannot run on this system.")
             print(f"  {reason}")
             return False
         ok("Ollama is already installed")
@@ -406,10 +406,10 @@ def install_ollama() -> bool:
 
         # Final fallback: direct download instructions
         error("Automatic installation failed.")
-        print(f"  Install Ollama manually:")
-        print(f"    Option 1: brew install ollama")
-        print(f"    Option 2: Download from https://ollama.com/download/mac")
-        print(f"  Then re-run the installer.")
+        print("  Install Ollama manually:")
+        print("    Option 1: brew install ollama")
+        print("    Option 2: Download from https://ollama.com/download/mac")
+        print("  Then re-run the installer.")
         return False
 
     else:
@@ -580,7 +580,7 @@ def print_specs(specs: dict):
         vram = f" ({gpu['vram_gb']}GB VRAM)" if gpu.get("vram_gb") else ""
         print(f"  GPU:  {gpu['name']}{vram} [{gpu['type']}]")
     else:
-        print(f"  GPU:  None detected (CPU inference only)")
+        print("  GPU:  None detected (CPU inference only)")
     print(f"  OS:   {specs['os']} {specs['arch']}")
     print()
 
@@ -623,7 +623,7 @@ def main():
 
     if model_tag is None:
         error("Hardware doesn't meet minimum requirements for local models.")
-        print(f"  Consider using OpenRouter (free models available) instead.")
+        print("  Consider using OpenRouter (free models available) instead.")
         sys.exit(1)
 
     # Determine which model to install
@@ -631,8 +631,8 @@ def main():
 
     if not args.auto and not args.model:
         # Interactive mode
-        print(f"  Enter a model name or press Enter to accept recommendation.")
-        print(f"  See all models at: https://ollama.com/library")
+        print("  Enter a model name or press Enter to accept recommendation.")
+        print("  See all models at: https://ollama.com/library")
         print()
         try:
             choice = input(f"  Model [{target_model}]: ").strip()
@@ -661,7 +661,7 @@ def main():
 
     print()
     ok(f"Ollama setup complete. Model: {target_model}")
-    print(f"  The bot will use this model for AI responses with tool-use capability.")
+    print("  The bot will use this model for AI responses with tool-use capability.")
 
     # Output the final model for the wizard to capture
     print(f"\nOLLAMA_MODEL={target_model}")

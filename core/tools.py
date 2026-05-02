@@ -511,7 +511,7 @@ def _is_command_blocked(command: str) -> str | None:
     """
     for pattern in _COMPILED_BLOCKED:
         if pattern.search(command):
-            return f"Blocked: dangerous command pattern detected"
+            return "Blocked: dangerous command pattern detected"
 
     # Protect the bot's own venv and core files from LLM modification.
     # The LLM might try to "fix" things by rebuilding the venv, which
@@ -916,7 +916,7 @@ def extract_tool_calls_from_text(text: str) -> list[dict]:
         is_tool_code_tag = lang_tag == "tool_code"
 
         # Skip blocks that are clearly just output/examples (multi-line with no commands)
-        lines = [l.strip() for l in block_content.split("\n") if l.strip()]
+        lines = [line.strip() for line in block_content.split("\n") if line.strip()]
         if not lines:
             continue
 
@@ -928,7 +928,7 @@ def extract_tool_calls_from_text(text: str) -> list[dict]:
         if first_line.startswith(("#!", "#!/")):
             # Shebang — this is a script, treat the whole block as a script to run
             calls.append({"name": "run_command", "arguments": {"command": block_content}})
-            logger.info(f"[fallback] Extracted script from code block")
+            logger.info("[fallback] Extracted script from code block")
             break
 
         if first_line.startswith("#") or first_line.startswith("//"):
@@ -984,10 +984,10 @@ def extract_tool_calls_from_text(text: str) -> list[dict]:
         # anything that looks remotely executable, treat it as a command
         if not is_command and is_tool_code_tag:
             # If tagged tool_code and has any content at all, it's meant to be executed
-            non_comment = [l for l in lines if not l.startswith("#")]
+            non_comment = [line for line in lines if not line.startswith("#")]
             if non_comment:
                 is_command = True
-                logger.info(f"[fallback] tool_code tag detected, treating as command")
+                logger.info("[fallback] tool_code tag detected, treating as command")
 
         # Skip blocks that look like documentation/code examples (not commands)
         # Only skip if NOT tagged as tool_code and has import/def/class patterns
@@ -998,7 +998,7 @@ def extract_tool_calls_from_text(text: str) -> list[dict]:
 
         if is_command:
             # Build the command from the block content
-            cmd_lines = [l.lstrip("$ ") for l in lines if l.strip() and not l.strip().startswith("#")]
+            cmd_lines = [line.lstrip("$ ") for line in lines if line.strip() and not line.strip().startswith("#")]
 
             if not cmd_lines:
                 continue
@@ -1164,7 +1164,7 @@ async def _stream_process_output(managed: ManagedProcess, timeout: float):
                 await asyncio.wait_for(process.wait(), timeout=5)
             except asyncio.TimeoutError:
                 pass
-            managed.output_chunks.append(f"\n[Process killed after timeout]\n")
+            managed.output_chunks.append("\n[Process killed after timeout]\n")
 
     managed.return_code = process.returncode
     managed.finished_at = time.time()

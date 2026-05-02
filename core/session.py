@@ -380,6 +380,7 @@ class SessionManager:
                 # Hold a strong ref so the task isn't GC'd before completion
                 _compaction_tasks.add(task)
                 task.add_done_callback(_compaction_tasks.discard)
+                task.add_done_callback(lambda _t: _compaction_scheduled.discard(sf_key))
                 logger.info(f"Scheduled semaphore-aware compaction of {batch_size} messages "
                             f"({len(remaining_history)} remaining)")
             except RuntimeError:
