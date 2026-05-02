@@ -67,7 +67,7 @@ def _acquire_lock() -> None:
         if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
             holder = ""
             try:
-                holder = Path(LOCK_PATH).read_text().strip()
+                holder = Path(LOCK_PATH).read_text(encoding="utf-8").strip()
             except OSError:
                 pass
             msg = f"another recording is in progress (lock at {LOCK_PATH})"

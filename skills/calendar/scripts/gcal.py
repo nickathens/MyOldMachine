@@ -35,7 +35,7 @@ if not TIMEZONE:
         # Try /etc/timezone first (Debian/Ubuntu)
         tz_file = Path("/etc/timezone")
         if tz_file.exists():
-            TIMEZONE = tz_file.read_text().strip()
+            TIMEZONE = tz_file.read_text(encoding="utf-8").strip()
         # Try /etc/localtime symlink (most Linux, some macOS)
         elif Path("/etc/localtime").is_symlink():
             link = os.readlink("/etc/localtime")
@@ -87,7 +87,7 @@ def get_credentials():
             creds = flow.run_local_server(port=8085)
 
         # Save credentials for next run
-        with open(TOKEN_FILE, "w") as token:
+        with open(TOKEN_FILE, "w", encoding="utf-8") as token:
             token.write(creds.to_json())
 
     return creds

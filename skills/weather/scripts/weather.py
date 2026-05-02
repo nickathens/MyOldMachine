@@ -98,7 +98,7 @@ def format_current(data: dict, city: str) -> str:
 
     lines = [
         f"Weather in {city}",
-        f"",
+        "",
         f"Condition: {condition}",
         f"Temperature: {temp}{units['temperature_2m']}",
         f"Feels like: {feels_like}{units['apparent_temperature']}",
@@ -112,7 +112,6 @@ def format_current(data: dict, city: str) -> str:
 def format_forecast(data: dict, city: str) -> str:
     """Format weather forecast."""
     daily = data["daily"]
-    units = data["daily_units"]
 
     lines = [f"7-Day Forecast for {city}", ""]
 

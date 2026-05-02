@@ -5,8 +5,7 @@ Algorithmic composition engine using mingus, pretty_midi, and music theory
 import argparse
 import random
 import uuid
-from mingus.core import chords, notes, progressions
-from mingus.containers import Note, Track
+from mingus.core import chords
 import pretty_midi
 
 # Scale patterns (intervals from root)
@@ -205,7 +204,6 @@ def generate_drums(bars=4, style='basic', tempo=120):
     SNARE = 38
     HIHAT_CLOSED = 42
     HIHAT_OPEN = 46
-    CRASH = 49
     RIDE = 51
 
     beat_duration = 60 / tempo

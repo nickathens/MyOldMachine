@@ -4,7 +4,6 @@ import argparse
 import subprocess
 import uuid
 from PIL import Image
-import os
 
 
 def compare_images(image1_path, image2_path, output_path=None, threshold=0.1):

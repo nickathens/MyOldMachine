@@ -6,7 +6,6 @@ import numpy as np
 from scipy import signal
 from scipy.io import wavfile
 import argparse
-import os
 import uuid
 
 SAMPLE_RATE = 44100
@@ -202,8 +201,6 @@ def synth_pad(freq=220, duration=4.0, voices=4, detune=0.02):
 
 def synth_bass(freq=55, duration=1.0):
     """Synthesize a bass sound"""
-    t = np.linspace(0, duration, int(duration * SAMPLE_RATE), endpoint=False)
-
     # Sub + harmonics
     sub = oscillator(freq, duration, 'sine')
     harm = oscillator(freq * 2, duration, 'square') * 0.3

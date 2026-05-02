@@ -3,7 +3,6 @@
 Inkscape vector graphics automation
 """
 import subprocess
-import os
 import sys
 import argparse
 import uuid
@@ -24,7 +23,7 @@ def create_svg(width=1080, height=1080, bg_color=None):
     })
 
     if bg_color:
-        rect = ET.SubElement(svg, 'rect', {
+        ET.SubElement(svg, 'rect', {
             'width': '100%',
             'height': '100%',
             'fill': bg_color

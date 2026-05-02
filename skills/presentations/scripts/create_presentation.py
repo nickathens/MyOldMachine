@@ -391,7 +391,7 @@ def render_cards(s: dict) -> str:
         parts.append(f'            <div class="{card_class}">')
         parts.append(f'                <div class="{name_class}">{name}</div>')
         parts.append(f'                <div class="{desc_class}">{desc}</div>')
-        parts.append(f'            </div>')
+        parts.append('            </div>')
     parts.append('        </div>')
     parts.append('    </div>')
     parts.append('</section>')
@@ -1744,7 +1744,7 @@ def main():
         sys.exit(1)
 
     try:
-        data = json.loads(json_path.read_text())
+        data = json.loads(json_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON in {json_path}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1755,7 +1755,7 @@ def main():
     # exclusively from the aesthetic reference or explicit treatment values.
     if args.aesthetic:
         try:
-            from references import load_reference, apply_reference  # noqa: WPS433
+            from references import load_reference, apply_reference
             ref = load_reference(args.aesthetic)
             data = apply_reference(data, ref)
             print(f"Applied aesthetic reference: {args.aesthetic}")
@@ -1765,7 +1765,7 @@ def main():
 
     if args.brand_url:
         try:
-            from ingest_brand import ingest_brand, merge_into, BrandIngestError  # noqa: WPS433
+            from ingest_brand import ingest_brand, merge_into, BrandIngestError
             partial = ingest_brand(args.brand_url)
             cover_only = {}
             if "cover" in partial:
@@ -1781,12 +1781,12 @@ def main():
         print(f"Error: Theme CSS not found: {theme_path}", file=sys.stderr)
         sys.exit(1)
 
-    theme_css = theme_path.read_text()
+    theme_css = theme_path.read_text(encoding="utf-8")
     html_content = build_html(data, theme_css)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html_content)
+    output_path.write_text(html_content, encoding="utf-8")
     print(f"Treatment written to {output_path}")
 
     if args.pdf:

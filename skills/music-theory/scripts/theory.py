@@ -10,7 +10,7 @@ import sys
 
 def cmd_analyze(args):
     """Full analysis of a music file."""
-    from music21 import converter, analysis
+    from music21 import converter
 
     score = converter.parse(args.input)
 
@@ -202,7 +202,7 @@ def cmd_transpose_chords(args):
             ch = harmony.ChordSymbol(ch_name)
             ch.transpose(intv, inPlace=True)
             transposed.append(ch.figure)
-        except Exception as e:
+        except Exception:
             transposed.append(f"[{ch_name}?]")
 
     result = {

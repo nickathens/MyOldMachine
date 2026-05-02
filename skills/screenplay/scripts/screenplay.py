@@ -51,7 +51,7 @@ def load_metadata(project_dir: Path) -> dict:
         return _safe_load(meta_path, default={})
     if not meta_path.exists():
         return {}
-    with open(meta_path) as f:
+    with open(meta_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -60,7 +60,7 @@ def save_metadata(project_dir: Path, meta: dict):
     if USE_SAFE_JSON:
         _safe_save(meta_path, meta)
     else:
-        with open(meta_path, "w") as f:
+        with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
 
 
@@ -101,7 +101,7 @@ def cmd_create(args):
         date=date_str,
         script_type=SCRIPT_TYPES[script_type]["label"],
     )
-    (project_dir / "draft.fountain").write_text(draft_content)
+    (project_dir / "draft.fountain").write_text(draft_content, encoding="utf-8")
 
     # Write metadata
     meta = {
@@ -254,7 +254,7 @@ def cmd_analyze(args):
 
     # afterwriting generates a PDF and we can count pages
     # For detailed stats, we parse the fountain file directly
-    content = source_path.read_text()
+    content = source_path.read_text(encoding="utf-8")
     lines = content.split("\n")
 
     # Basic stats from parsing
@@ -262,7 +262,6 @@ def cmd_analyze(args):
     dialogue_blocks = 0
     characters = set()
     locations = set()
-    current_char = None
     in_title_page = True
     seen_title_key = False
 
@@ -300,7 +299,6 @@ def cmd_analyze(args):
                 loc = stripped
             loc = loc.lstrip(".")
             locations.add(loc.strip())
-            current_char = None
             continue
 
         # Character (uppercase line, not a scene heading, not empty)
@@ -314,19 +312,16 @@ def cmd_analyze(args):
                     char_name = stripped.split("(")[0].strip()
                     if char_name and len(char_name) < 40:
                         characters.add(char_name)
-                        current_char = char_name
                         dialogue_blocks += 1
                     continue
 
-        if stripped == "":
-            current_char = None
 
     # Estimate page count: ~56 lines per page including blank lines for spacing
     # Count all lines after title page (blank lines between elements matter for pacing)
     body_lines = 0
     past_title = False
-    for l in lines:
-        s = l.strip()
+    for line in lines:
+        s = line.strip()
         if not past_title:
             if s and ":" in s and s.split(":")[0].strip() in (
                 "Title", "Credit", "Author", "Authors", "Source",
@@ -436,8 +431,8 @@ def cmd_restore(args):
 
     # Auto-save current draft before overwriting
     if draft_path.exists():
-        current_content = draft_path.read_text()
-        restore_content = version_path.read_text()
+        current_content = draft_path.read_text(encoding="utf-8")
+        restore_content = version_path.read_text(encoding="utf-8")
         if current_content == restore_content:
             print(f"Draft is already at v{version_num}. No changes needed.")
             return

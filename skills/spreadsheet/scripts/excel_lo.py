@@ -262,7 +262,7 @@ def cmd_add_rows(args):
         sheets = doc.getSheets()
         sheet = sheets.getByName(args.sheet)
 
-        with open(args.data, 'r') as f:
+        with open(args.data, 'r', encoding='utf-8') as f:
             rows_data = json.load(f)
 
         insert_row = args.after  # 1-based row number

@@ -203,8 +203,8 @@ def scrape_page(url, selector=None, extract_links=False):
                 }
                 if extract_links:
                     links = elem.select('a[href]')
-                    item['links'] = [{'text': l.get_text(strip=True),
-                                     'href': l.get('href')} for l in links]
+                    item['links'] = [{'text': link.get_text(strip=True),
+                                     'href': link.get('href')} for link in links]
                 results.append(item)
         else:
             # Extract basic page info
@@ -306,7 +306,7 @@ def export_data(format='json', output=None, data_type='articles'):
         output_text = '\n'.join(lines)
 
     if output:
-        Path(output).write_text(output_text)
+        Path(output).write_text(output_text, encoding="utf-8")
         print(f"Exported to: {output}")
     else:
         print(output_text)

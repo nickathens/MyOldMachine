@@ -5,7 +5,6 @@ blender --background --python render.py -- [args]
 """
 import bpy
 import sys
-import os
 import math
 import argparse
 import mathutils

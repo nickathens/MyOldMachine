@@ -360,7 +360,7 @@ def export_research(analysis_id: int, topic: str = None, research_dir: str = Non
             counter += 1
 
     content = format_analysis(a)
-    filepath.write_text(content)
+    filepath.write_text(content, encoding="utf-8")
 
     print(f"Exported to: {filepath}")
     return str(filepath)
@@ -441,7 +441,7 @@ if __name__ == '__main__':
 
     if args.command == 'store':
         if args.input:
-            raw = Path(args.input).read_text()
+            raw = Path(args.input).read_text(encoding="utf-8")
         else:
             raw = sys.stdin.read()
 

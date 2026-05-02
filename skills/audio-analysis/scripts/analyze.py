@@ -57,10 +57,7 @@ def analyze_audio(input_path: str, output_dir: str = None) -> dict:
         # Check relative minor/major strength
         minor_idx = (estimated_key_idx + 9) % 12
         if chroma_mean[minor_idx] > chroma_mean[estimated_key_idx] * 0.9:
-            mode = "minor"
             estimated_key = key_names[minor_idx] + "m"
-        else:
-            mode = "major"
 
         # Loudness (RMS)
         rms = librosa.feature.rms(y=y)
@@ -92,7 +89,6 @@ def generate_waveform(input_path: str, output_path: str = None) -> dict:
         import librosa
         import librosa.display
         import matplotlib.pyplot as plt
-        import numpy as np
     except ImportError:
         return {"error": "Required packages not installed"}
 

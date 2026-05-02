@@ -114,7 +114,7 @@ def get_links(url: str, external_only: bool = False) -> dict:
         # Filter external only if requested
         if external_only:
             base_domain = urlparse(url).netloc
-            links = [l for l in links if urlparse(l['href']).netloc != base_domain]
+            links = [link for link in links if urlparse(link['href']).netloc != base_domain]
 
         return {"success": True, "url": url, "links": links, "count": len(links)}
     except Exception as e:
@@ -194,7 +194,7 @@ def main():
             print(f"Error: {result['error']}")
             return 1
         print(f"Title: {result['title']}")
-        print(f"\n--- Content ---\n")
+        print("\n--- Content ---\n")
         if isinstance(result['content'], list):
             for item in result['content']:
                 print(f"- {item}")

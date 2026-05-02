@@ -50,7 +50,7 @@ def user_wing(user_id):
 def load_sync_state():
     if SYNC_STATE_FILE.exists():
         try:
-            return json.loads(SYNC_STATE_FILE.read_text())
+            return json.loads(SYNC_STATE_FILE.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
     return {}
@@ -60,7 +60,7 @@ def save_sync_state(state):
     MEMPALACE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = str(SYNC_STATE_FILE) + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
     os.replace(tmp, str(SYNC_STATE_FILE))
 
@@ -120,12 +120,12 @@ def write_session_files(by_date, output_dir):
         new_content = json.dumps(messages, indent=2, ensure_ascii=False)
         if path.exists():
             try:
-                if path.read_text() == new_content:
+                if path.read_text(encoding="utf-8") == new_content:
                     continue
             except OSError:
                 pass
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(new_content)
         written.append(str(path))
     return written

@@ -128,7 +128,7 @@ class WorkflowRun:
         }
         # Write atomically
         tmp = self.state_file.with_suffix(".tmp")
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         tmp.rename(self.state_file)
 
@@ -139,7 +139,7 @@ class WorkflowRun:
         if not state_file.exists():
             raise FileNotFoundError(f"No run state found for {run_id}")
 
-        with open(state_file) as f:
+        with open(state_file, encoding="utf-8") as f:
             data = json.load(f)
 
         run = cls(data["workflow"], data["run_id"], data.get("variables", {}))
@@ -242,7 +242,7 @@ class WorkflowEngine:
         if not path.exists():
             raise FileNotFoundError(f"Workflow not found: {path}")
 
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             wf = yaml.safe_load(f)
 
         # Validate
@@ -441,7 +441,7 @@ class WorkflowEngine:
         history = []
         if HISTORY_FILE.exists():
             try:
-                with open(HISTORY_FILE) as f:
+                with open(HISTORY_FILE, encoding="utf-8") as f:
                     history = json.load(f)
             except (json.JSONDecodeError, IOError):
                 history = []
@@ -462,7 +462,7 @@ class WorkflowEngine:
         # Keep last 100 entries
         history = history[-100:]
 
-        with open(HISTORY_FILE, "w") as f:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
 
 
@@ -491,7 +491,7 @@ def cmd_run(args):
             if state_file.name == "history.json":
                 continue
             try:
-                with open(state_file) as f:
+                with open(state_file, encoding="utf-8") as f:
                     data = json.load(f)
                 if data.get("name") == wf_name and data.get("status") in ("running", "failed"):
                     found = data["run_id"]
@@ -522,7 +522,7 @@ def cmd_list(args):
 
     for wf_file in sorted(WORKFLOW_DIR.glob("*.yaml")) + sorted(WORKFLOW_DIR.glob("*.yml")):
         try:
-            with open(wf_file) as f:
+            with open(wf_file, encoding="utf-8") as f:
                 wf = yaml.safe_load(f)
             name = wf.get("name", wf_file.stem)
             desc = wf.get("description", "")
@@ -534,7 +534,7 @@ def cmd_list(args):
 
     if not found:
         print(f"No workflows found in {WORKFLOW_DIR}")
-        print(f"Create .yaml files there to define workflows.")
+        print("Create .yaml files there to define workflows.")
 
     return 0
 
@@ -586,7 +586,7 @@ def cmd_history(args):
         print("No workflow history yet.")
         return 0
 
-    with open(HISTORY_FILE) as f:
+    with open(HISTORY_FILE, encoding="utf-8") as f:
         history = json.load(f)
 
     limit = args.limit or 10

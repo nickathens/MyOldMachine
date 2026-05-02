@@ -64,7 +64,7 @@ def _load_api_key() -> str:
     for ancestor in (script_dir.parent.parent.parent, Path.home()):
         env_file = ancestor / ".env"
         if env_file.exists():
-            for line in env_file.read_text().splitlines():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if line.startswith("FIRECRAWL_API_KEY="):
                     val = line.split("=", 1)[1].strip().strip('"').strip("'")
@@ -287,7 +287,7 @@ def main() -> int:
 
     text = json.dumps(partial, indent=2, ensure_ascii=False)
     if args.out:
-        Path(args.out).write_text(text)
+        Path(args.out).write_text(text, encoding="utf-8")
         print(f"Wrote {args.out}")
     else:
         print(text)

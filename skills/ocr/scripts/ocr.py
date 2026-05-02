@@ -99,7 +99,7 @@ def main():
     output = json.dumps(result, indent=2) if args.json else result["text"]
 
     if args.output:
-        Path(args.output).write_text(output)
+        Path(args.output).write_text(output, encoding="utf-8")
         print(f"Saved to {args.output}")
     else:
         print(output)

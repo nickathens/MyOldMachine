@@ -34,7 +34,6 @@ _patch_torchvision()
 
 # Heavy imports only after the patch is in place.
 import cv2  # noqa: E402
-import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from basicsr.archs.rrdbnet_arch import RRDBNet  # noqa: E402
 from realesrgan import RealESRGANer  # noqa: E402

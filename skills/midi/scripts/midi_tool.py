@@ -144,7 +144,6 @@ def cmd_notes(args):
     names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
     notes = []
-    abs_time = 0
 
     for track_idx, track in enumerate(mid.tracks):
         time = 0

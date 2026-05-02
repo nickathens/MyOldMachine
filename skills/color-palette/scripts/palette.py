@@ -19,14 +19,14 @@ def hex_to_rgb(hex_color):
 def rgb_to_hsl(r, g, b):
     """Convert RGB to HSL."""
     r, g, b = r/255, g/255, b/255
-    h, l, s = colorsys.rgb_to_hls(r, g, b)
-    return (int(h*360), int(s*100), int(l*100))
+    h, lgt, s = colorsys.rgb_to_hls(r, g, b)
+    return (int(h*360), int(s*100), int(lgt*100))
 
 
-def hsl_to_rgb(h, s, l):
+def hsl_to_rgb(h, s, lgt):
     """Convert HSL to RGB."""
-    h, s, l = h/360, s/100, l/100
-    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    h, s, lgt = h/360, s/100, lgt/100
+    r, g, b = colorsys.hls_to_rgb(h, lgt, s)
     return (int(r*255), int(g*255), int(b*255))
 
 
@@ -50,21 +50,21 @@ def extract_palette(image_path, num_colors=5):
 def complementary(hex_color):
     """Get complementary color."""
     rgb = hex_to_rgb(hex_color)
-    h, s, l = rgb_to_hsl(*rgb)
+    h, s, lgt = rgb_to_hsl(*rgb)
     comp_h = (h + 180) % 360
-    comp_rgb = hsl_to_rgb(comp_h, s, l)
+    comp_rgb = hsl_to_rgb(comp_h, s, lgt)
     return rgb_to_hex(*comp_rgb)
 
 
 def analogous(hex_color, angle=30):
     """Get analogous colors."""
     rgb = hex_to_rgb(hex_color)
-    h, s, l = rgb_to_hsl(*rgb)
+    h, s, lgt = rgb_to_hsl(*rgb)
 
     colors = []
     for offset in [-angle, 0, angle]:
         new_h = (h + offset) % 360
-        new_rgb = hsl_to_rgb(new_h, s, l)
+        new_rgb = hsl_to_rgb(new_h, s, lgt)
         colors.append(rgb_to_hex(*new_rgb))
 
     return colors
@@ -73,12 +73,12 @@ def analogous(hex_color, angle=30):
 def triadic(hex_color):
     """Get triadic colors."""
     rgb = hex_to_rgb(hex_color)
-    h, s, l = rgb_to_hsl(*rgb)
+    h, s, lgt = rgb_to_hsl(*rgb)
 
     colors = []
     for offset in [0, 120, 240]:
         new_h = (h + offset) % 360
-        new_rgb = hsl_to_rgb(new_h, s, l)
+        new_rgb = hsl_to_rgb(new_h, s, lgt)
         colors.append(rgb_to_hex(*new_rgb))
 
     return colors
@@ -87,12 +87,12 @@ def triadic(hex_color):
 def split_complementary(hex_color):
     """Get split-complementary colors."""
     rgb = hex_to_rgb(hex_color)
-    h, s, l = rgb_to_hsl(*rgb)
+    h, s, lgt = rgb_to_hsl(*rgb)
 
     colors = [hex_color]
     for offset in [150, 210]:
         new_h = (h + offset) % 360
-        new_rgb = hsl_to_rgb(new_h, s, l)
+        new_rgb = hsl_to_rgb(new_h, s, lgt)
         colors.append(rgb_to_hex(*new_rgb))
 
     return colors
@@ -101,11 +101,11 @@ def split_complementary(hex_color):
 def monochromatic(hex_color, variations=5):
     """Get monochromatic variations."""
     rgb = hex_to_rgb(hex_color)
-    h, s, l = rgb_to_hsl(*rgb)
+    h, s, lgt = rgb_to_hsl(*rgb)
 
     colors = []
     for i in range(variations):
-        new_l = int(20 + (60 / (variations - 1)) * i) if variations > 1 else l
+        new_l = int(20 + (60 / (variations - 1)) * i) if variations > 1 else lgt
         new_rgb = hsl_to_rgb(h, s, new_l)
         colors.append(rgb_to_hex(*new_rgb))
 

@@ -32,16 +32,16 @@ def init_db():
     """Initialize database directory and file"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not DB_FILE.exists():
-        DB_FILE.write_text('{}')
+        DB_FILE.write_text('{}', encoding="utf-8")
 
 def load_db():
     """Load products database"""
     init_db()
-    return json.loads(DB_FILE.read_text())
+    return json.loads(DB_FILE.read_text(encoding="utf-8"))
 
 def save_db(data):
     """Save products database"""
-    DB_FILE.write_text(json.dumps(data, indent=2))
+    DB_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 def extract_price(text):
     """Extract numeric price from text"""

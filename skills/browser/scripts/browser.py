@@ -255,7 +255,7 @@ class BrowserDaemon:
         storage_state = None
         if Path(STORAGE_FILE).exists():
             try:
-                storage_state = json.loads(Path(STORAGE_FILE).read_text())
+                storage_state = json.loads(Path(STORAGE_FILE).read_text(encoding="utf-8"))
             except Exception:
                 pass
 
@@ -300,15 +300,15 @@ class BrowserDaemon:
         for idx, page in self.pages.items():
             if not page.is_closed():
                 state["tabs"][str(idx)] = {"url": page.url}
-        Path(STATE_FILE).write_text(json.dumps(state, indent=2))
+        Path(STATE_FILE).write_text(json.dumps(state, indent=2), encoding="utf-8")
 
     def _save_refs(self):
-        Path(REFS_FILE).write_text(json.dumps(self.refs, indent=2))
+        Path(REFS_FILE).write_text(json.dumps(self.refs, indent=2), encoding="utf-8")
 
     def _load_refs(self):
         if Path(REFS_FILE).exists():
             try:
-                self.refs = json.loads(Path(REFS_FILE).read_text())
+                self.refs = json.loads(Path(REFS_FILE).read_text(encoding="utf-8"))
             except Exception:
                 self.refs = {}
 
@@ -317,7 +317,7 @@ class BrowserDaemon:
         if ctx:
             try:
                 storage = await ctx.storage_state()
-                Path(STORAGE_FILE).write_text(json.dumps(storage, indent=2))
+                Path(STORAGE_FILE).write_text(json.dumps(storage, indent=2), encoding="utf-8")
             except Exception:
                 pass
 
@@ -602,7 +602,7 @@ async def run_daemon(url: str = None):
     await daemon.start(url)
 
     # Write PID
-    Path(PID_FILE).write_text(str(os.getpid()))
+    Path(PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
 
     server_socket = sock.socket(sock.AF_UNIX, sock.SOCK_STREAM)
     server_socket.bind(SOCKET_PATH)
@@ -641,13 +641,17 @@ async def run_daemon(url: str = None):
         finally:
             conn.close()
 
+    _client_tasks = set()
+
     try:
         while daemon.running:
             try:
                 conn, _ = await asyncio.wait_for(
                     loop.sock_accept(server_socket), timeout=1.0
                 )
-                asyncio.create_task(handle_client(conn))
+                task = asyncio.create_task(handle_client(conn))
+                _client_tasks.add(task)
+                task.add_done_callback(_client_tasks.discard)
             except asyncio.TimeoutError:
                 continue
             except Exception:
@@ -701,7 +705,7 @@ def daemon_is_running() -> bool:
         return False
     if os.path.exists(PID_FILE):
         try:
-            pid = int(Path(PID_FILE).read_text().strip())
+            pid = int(Path(PID_FILE).read_text(encoding="utf-8").strip())
             os.kill(pid, 0)
             return True
         except (OSError, ValueError):
@@ -755,13 +759,13 @@ def stop_daemon():
         return
 
     try:
-        result = send_command({"action": "stop"})
+        send_command({"action": "stop"})
         print("Daemon stopped")
     except Exception:
         # Force kill
         if os.path.exists(PID_FILE):
             try:
-                pid = int(Path(PID_FILE).read_text().strip())
+                pid = int(Path(PID_FILE).read_text(encoding="utf-8").strip())
                 os.kill(pid, signal.SIGTERM)
                 print("Daemon killed")
             except Exception:
@@ -792,7 +796,7 @@ async def legacy_screenshot(args):
             session_file = Path(f"/tmp/browser_session_{args.session_id}.json") if args.session_id else None
             if session_file and session_file.exists():
                 try:
-                    storage_state = json.loads(session_file.read_text())
+                    storage_state = json.loads(session_file.read_text(encoding="utf-8"))
                 except Exception:
                     pass
 
@@ -857,7 +861,7 @@ async def legacy_click(args):
             storage_state = None
             if session_file and session_file.exists():
                 try:
-                    storage_state = json.loads(session_file.read_text())
+                    storage_state = json.loads(session_file.read_text(encoding="utf-8"))
                 except Exception:
                     pass
             ctx = await browser.new_context(
@@ -876,7 +880,7 @@ async def legacy_click(args):
 
             if session_file:
                 storage = await ctx.storage_state()
-                session_file.write_text(json.dumps(storage, indent=2))
+                session_file.write_text(json.dumps(storage, indent=2), encoding="utf-8")
 
             print(f"Clicked: {args.selector}")
             print(f"Current URL: {page.url}")
@@ -898,7 +902,7 @@ async def legacy_fill(args):
             storage_state = None
             if session_file and session_file.exists():
                 try:
-                    storage_state = json.loads(session_file.read_text())
+                    storage_state = json.loads(session_file.read_text(encoding="utf-8"))
                 except Exception:
                     pass
             ctx = await browser.new_context(
@@ -922,7 +926,7 @@ async def legacy_fill(args):
 
             if session_file:
                 storage = await ctx.storage_state()
-                session_file.write_text(json.dumps(storage, indent=2))
+                session_file.write_text(json.dumps(storage, indent=2), encoding="utf-8")
 
             if args.submit:
                 await page.click(args.submit, timeout=10000)
@@ -966,7 +970,7 @@ async def legacy_session(args):
             storage_state = None
             if session_file and session_file.exists():
                 try:
-                    storage_state = json.loads(session_file.read_text())
+                    storage_state = json.loads(session_file.read_text(encoding="utf-8"))
                 except Exception:
                     pass
             ctx = await browser.new_context(
@@ -982,7 +986,7 @@ async def legacy_session(args):
 
             if session_file:
                 storage = await ctx.storage_state()
-                session_file.write_text(json.dumps(storage, indent=2))
+                session_file.write_text(json.dumps(storage, indent=2), encoding="utf-8")
 
             print(f"Session started: {args.url}")
             print(f"Session file: {session_file}")
