@@ -1,0 +1,5 @@
+{
+  "stop": {
+    "clean_patterns": ["/tmp/presentation_*", "/tmp/*-presentation/"]
+  }
+}

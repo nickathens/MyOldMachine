@@ -1,0 +1,20 @@
+{
+  "pip": ["requests"],
+  "check": {
+    "requests": "python3 -c 'import requests'"
+  },
+  "optional": {
+    "pip": ["playwright"],
+    "apt": ["ffmpeg", "xdotool", "x11-utils"],
+    "brew": ["ffmpeg"],
+    "post_install": [
+      "playwright install chromium",
+      "playwright install-deps chromium"
+    ],
+    "note": "Playwright + ffmpeg needed only for PDF and video export. HTML generation works without them."
+  },
+  "weight": "light",
+  "min_ram_gb": 0.5,
+  "min_disk_gb": 0.1,
+  "install_note": "Core presentation generation requires only requests (for brand ingestion). PDF export needs Playwright, video export needs ffmpeg + xdotool (Linux only)."
+}
