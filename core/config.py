@@ -62,7 +62,37 @@ def get_telegram_api_base() -> Optional[str]:
 
 
 def get_allowed_users() -> list[int]:
-    return _env_list("ALLOWED_USERS")
+    """Return the list of allowed Telegram IDs.
+
+    In multi-user mode, this is the union of:
+    - Telegram IDs bound to slots (data/orchestrator/users.json)
+    - The ALLOWED_USERS env var (kept so the admin's ID is always allowed
+      even if the slot table is empty or missing).
+
+    In single-user mode, returns just ALLOWED_USERS.
+    """
+    base = _env_list("ALLOWED_USERS")
+    try:
+        from core.users import is_multiuser_enabled, list_slots
+    except ImportError:
+        return base
+    if not is_multiuser_enabled():
+        return base
+    bound: list[int] = []
+    for info in list_slots().values():
+        if not info:
+            continue
+        try:
+            bound.append(int(info["telegram_id"]))
+        except (ValueError, TypeError, KeyError):
+            continue
+    seen: set[int] = set()
+    merged: list[int] = []
+    for uid in base + bound:
+        if uid not in seen:
+            seen.add(uid)
+            merged.append(uid)
+    return merged
 
 
 def get_bot_name() -> str:
@@ -128,4 +158,15 @@ def get_user_profile(user_id: int) -> dict:
 
 
 def is_admin(user_id: int) -> bool:
+    """True if the Telegram ID has admin privileges.
+
+    Multi-user mode: checks the orchestrator's slot table for is_admin=True.
+    Single-user mode: checks the legacy data/users.json profile role.
+    """
+    try:
+        from core.users import is_multiuser_enabled, is_multiuser_admin
+    except ImportError:
+        return get_user_profile(user_id).get("role") == "admin"
+    if is_multiuser_enabled():
+        return is_multiuser_admin(user_id)
     return get_user_profile(user_id).get("role") == "admin"

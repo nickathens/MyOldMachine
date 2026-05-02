@@ -162,6 +162,31 @@ def detect_timezone():
     return "UTC"
 
 
+def _quick_ram_gb() -> float:
+    """Best-effort RAM detection that doesn't depend on the full specs probe.
+
+    Returns total RAM in GB as a float, or 0.0 if it can't tell.
+    Used by the multi-user wizard step to recommend the request queue
+    before the heavier machine_specs probe runs.
+    """
+    try:
+        if platform.system() == "Darwin":
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                return int(result.stdout.strip()) / (1024 ** 3)
+        else:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal"):
+                        return int(line.split()[1]) / (1024 ** 2)
+    except Exception:
+        pass
+    return 0.0
+
+
 def detect_machine_specs():
     """Detect basic machine specs."""
     import platform
@@ -639,6 +664,18 @@ def write_env(repo_dir: Path, config: dict):
     if config["llm_provider"] == "ollama":
         lines.append(f"OLLAMA_BASE_URL={config.get('ollama_url', 'http://localhost:11434')}")
 
+    # Multi-user mode (slot-based isolation via system users + sudoers)
+    if config.get("multiuser_enabled"):
+        lines.append("MULTIUSER_ENABLED=1")
+        lines.append(f"MULTIUSER_NUM_SLOTS={config['multiuser_num_slots']}")
+        lines.append("MULTIUSER_ORCHESTRATOR_USER=mom_orchestrator")
+        if config.get("multiuser_queue_enabled"):
+            lines.append("CONCURRENT_REQUESTS=1")
+        else:
+            lines.append("CONCURRENT_REQUESTS=0")
+    else:
+        lines.append("MULTIUSER_ENABLED=0")
+
     env_file = repo_dir / ".env"
     env_file.write_text("\n".join(lines) + "\n")
     env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
@@ -694,6 +731,319 @@ def store_sudo_password(password: str):
     sudo_file.write_text(password + "\n")
     sudo_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
     ok("Sudo password stored")
+
+
+def _run_multiuser_step(config: dict):
+    """Step 5 multi-user setup. Asks how many users will share this machine.
+
+    Updates config with:
+    - multiuser_enabled (bool)
+    - multiuser_num_slots (int, 1..4)
+    - multiuser_queue_enabled (bool)
+    """
+    print(f"\n{BOLD}Step 5: Multi-User Setup{NC}")
+
+    # v1: multi-user isolation is Linux-only. macOS needs a LaunchDaemon
+    # to switch the bot's user, which is more invasive (planned for v1.5).
+    if platform.system() != "Linux":
+        warn("Multi-user mode is Linux-only in this release.")
+        warn("macOS support is planned but requires a system-level service")
+        warn("(LaunchDaemon) which is more invasive. Coming in a follow-up.")
+        config["multiuser_num_slots"] = 1
+        config["multiuser_enabled"] = False
+        config["multiuser_queue_enabled"] = False
+        return
+
+    print("  How many people will use this machine?")
+    print(f"    {GREEN}1{NC}     Just you. Nothing extra is set up.")
+    print(f"    {GREEN}2-4{NC}   Multiple people share this machine.")
+    print(f"            Each person gets a private data directory.")
+    print(f"            The OS kernel enforces the privacy boundary;")
+    print(f"            no one can read anyone else's files.")
+    print()
+
+    while True:
+        raw = ask("Number of users (1-4)", default="1")
+        try:
+            num_users = int(raw)
+        except ValueError:
+            print(f"  {RED}Must be a number.{NC}")
+            continue
+        if 1 <= num_users <= 4:
+            break
+        print(f"  {RED}Must be between 1 and 4.{NC}")
+
+    config["multiuser_num_slots"] = num_users
+    config["multiuser_enabled"] = num_users > 1
+
+    if num_users == 1:
+        config["multiuser_queue_enabled"] = False
+        ok("Single-user mode. No isolation needed.")
+        return
+
+    print()
+    print(f"  {GREEN}Multi-user mode enabled ({num_users} slots).{NC}")
+    print()
+    admin_name = config.get("user_name", "you")
+    print(f"  {BOLD}You ({admin_name}) become the admin (slot 1).{NC}")
+    print(f"  Admin role:")
+    print(f"    • Add/remove other users via Telegram (/adduser, /removeuser, /users)")
+    print(f"    • View system health (/health)")
+    print(f"    • Restart the bot if needed")
+    print(f"  {YELLOW}You CANNOT read other users' data.{NC} Privacy is enforced by the kernel,")
+    print(f"  not by the bot's code. If something breaks and you need to read")
+    print(f"  another user's files, log in to the machine and use sudo directly.")
+    print()
+    if num_users >= 2:
+        print(f"  Slots 2-{num_users} are reserved but unbound. After install, add users via:")
+        print(f"    {BOLD}/adduser <telegram_id> <name>{NC}")
+        print()
+
+    # Queue recommendation based on RAM
+    ram_gb = _quick_ram_gb()
+    if ram_gb > 0:
+        per_user = ram_gb / num_users
+        print(f"  RAM check: {ram_gb:.1f} GB total / {num_users} users = "
+              f"{per_user:.1f} GB per user")
+        if per_user < 4:
+            print(f"  {YELLOW}Tight memory budget. Strongly recommend the request queue:{NC}")
+            queue_default = "y"
+        elif per_user < 8:
+            print(f"  {YELLOW}Moderate memory budget. Queue is a good safety net.{NC}")
+            queue_default = "y"
+        else:
+            print(f"  {GREEN}Comfortable memory budget. Queue is optional.{NC}")
+            queue_default = "n"
+    else:
+        print(f"  {YELLOW}Could not detect RAM. Recommending queue by default.{NC}")
+        queue_default = "y"
+
+    print(f"  The queue runs one user's request at a time. Others get a")
+    print(f"  'next in line' message and wait. Prevents OOM on small machines.")
+    print()
+    answer = ask("Enable request queue?", default=queue_default).strip().lower()
+    config["multiuser_queue_enabled"] = answer in ("y", "yes")
+    if config["multiuser_queue_enabled"]:
+        ok("Request queue will be enabled (concurrent_requests=1)")
+    else:
+        ok("Request queue disabled. Concurrent requests allowed.")
+
+
+def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
+    """Provision the OS-level multi-user state.
+
+    Creates orchestrator + slot system users, sets up directory ownership
+    and permissions, installs the sudoers fragment, and writes the initial
+    data/orchestrator/users.json with the admin slot binding.
+
+    Returns (success, message). Caller should error out on failure.
+    Idempotent. Safe to re-run after a partial install.
+    """
+    from install.multiuser import (
+        ORCHESTRATOR_USER, SUDOERS_FRAGMENT_PATH,
+        create_system_user, find_cli_binary, grant_sudo,
+        set_owner, set_perms, slot_user, system_user_exists,
+    )
+
+    sudo_pass = config.get("sudo_pass")
+    num_slots = config["multiuser_num_slots"]
+
+    data_root = repo_dir / "data"
+    orchestrator_home = data_root / "orchestrator"
+    users_root = data_root / "users"
+    shared_dir = data_root / "shared"
+
+    # 1. Create orchestrator user
+    info(f"Creating orchestrator system user: {ORCHESTRATOR_USER}")
+    if not create_system_user(ORCHESTRATOR_USER, password=sudo_pass,
+                               home_dir=orchestrator_home):
+        return False, f"failed to create {ORCHESTRATOR_USER}"
+
+    # 2. Create slot users
+    slot_users: list[str] = []
+    for slot in range(1, num_slots + 1):
+        name = slot_user(slot)
+        info(f"Creating slot user: {name}")
+        slot_home = users_root / f"user{slot}"
+        if not create_system_user(name, password=sudo_pass, home_dir=slot_home):
+            return False, f"failed to create {name}"
+        slot_users.append(name)
+
+    # 3. Create directories with correct ownership and perms
+    info("Setting up data directories with isolation...")
+    orchestrator_home.mkdir(parents=True, exist_ok=True)
+    if not set_owner(orchestrator_home, ORCHESTRATOR_USER, ORCHESTRATOR_USER,
+                     password=sudo_pass, recursive=True):
+        return False, f"failed to chown {orchestrator_home}"
+    if not set_perms(orchestrator_home, 0o700, password=sudo_pass):
+        return False, f"failed to chmod {orchestrator_home}"
+
+    # users_root is parent of every slot dir AND the location where the
+    # orchestrator creates _archived/ on /removeuser. Owner = orchestrator
+    # so it can write here. Mode 0755 lets slot users traverse via "other"
+    # to reach their own slot dir; privacy is enforced at slot level (02770).
+    users_root.mkdir(parents=True, exist_ok=True)
+    if not set_owner(users_root, ORCHESTRATOR_USER, ORCHESTRATOR_USER,
+                     password=sudo_pass):
+        return False, f"failed to chown {users_root}"
+    if not set_perms(users_root, 0o755, password=sudo_pass):
+        return False, f"failed to chmod {users_root}"
+
+    for slot in range(1, num_slots + 1):
+        slot_dir = users_root / f"user{slot}"
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        # Owner: mom_userN (own slot data, written by their CLI subprocess)
+        # Group: mom_orchestrator (bot writes session state, pending messages here)
+        # Mode 2770: setgid bit (2) ensures subdirectories created by mom_userN
+        # inherit the orchestrator group, so the bot can read/clean up session
+        # state without sudo. Plus rwx for owner+group, nothing for other.
+        # The kernel blocks mom_userY (Y!=N) from accessing this directory.
+        if not set_owner(slot_dir, slot_user(slot), ORCHESTRATOR_USER,
+                         password=sudo_pass, recursive=True):
+            return False, f"failed to chown {slot_dir}"
+        if not set_perms(slot_dir, 0o2770, password=sudo_pass):
+            return False, f"failed to chmod {slot_dir}"
+
+    # Shared dir: read-only for slots (via "other"), writable by orchestrator only
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    if not set_owner(shared_dir, ORCHESTRATOR_USER, ORCHESTRATOR_USER,
+                     password=sudo_pass):
+        return False, f"failed to chown {shared_dir}"
+    if not set_perms(shared_dir, 0o775, password=sudo_pass):
+        return False, f"failed to chmod {shared_dir}"
+
+    # Cross-user bot-state dirs that the orchestrator writes to at runtime.
+    # The wizard's earlier steps may have created these as the install user
+    # (config.py's import-time mkdirs, write_user_profile, etc.). Re-chown
+    # them so the orchestrator owns the contents. Otherwise APScheduler,
+    # the memory system, and systemd's bot.log redirection all fail with
+    # EACCES once the service starts as mom_orchestrator.
+    for sub in ("memory", "scheduler", "identities", "logs"):
+        d = data_root / sub
+        d.mkdir(parents=True, exist_ok=True)
+        if not set_owner(d, ORCHESTRATOR_USER, ORCHESTRATOR_USER,
+                         password=sudo_pass, recursive=True):
+            return False, f"failed to chown {d}"
+        if not set_perms(d, 0o700, password=sudo_pass):
+            return False, f"failed to chmod {d}"
+
+    # data/users.json (legacy single-user profile file) and the data/ root
+    # itself need to be readable by the orchestrator. The orchestrator does
+    # not write data/, so leave install-user as owner; just guarantee perms.
+    legacy_profile = data_root / "users.json"
+    if legacy_profile.exists():
+        # World-readable so the orchestrator can read it; install user owns.
+        set_perms(legacy_profile, 0o644, password=sudo_pass)
+
+    # 4. Resolve CLI binaries that the orchestrator is allowed to spawn
+    binaries: list[Path] = []
+    for cli in ("claude", "codex"):
+        path = find_cli_binary(cli)
+        if path:
+            info(f"  Resolved {cli} -> {path}")
+            binaries.append(path)
+    if not binaries:
+        return False, (
+            "no CLI binaries (claude, codex) found in PATH. Install the CLI for "
+            "your provider before running multi-user setup."
+        )
+
+    # 5. Build, validate, and install sudoers fragment
+    info(f"Installing sudoers fragment at {SUDOERS_FRAGMENT_PATH}")
+    success, msg = grant_sudo(
+        ORCHESTRATOR_USER, slot_users, binaries, password=sudo_pass,
+    )
+    if not success:
+        return False, f"sudoers install failed: {msg}"
+    ok(msg)
+
+    # 6. Make .env readable by the orchestrator (group=orchestrator, mode 0640)
+    env_file = repo_dir / ".env"
+    if env_file.exists():
+        install_user = getpass.getuser()
+        if not set_owner(env_file, install_user, ORCHESTRATOR_USER, password=sudo_pass):
+            warn("Could not chown .env to orchestrator group. Bot may fail to read .env.")
+        else:
+            set_perms(env_file, 0o640, password=sudo_pass)
+
+    # 7. Write the orchestrator's users.json with the admin slot binding.
+    # Idempotency: if users.json already exists with a valid version, leave
+    # it alone. Re-running the wizard must not clobber slots that the admin
+    # has bound via /adduser since the original install.
+    target = orchestrator_home / "users.json"
+    existing_admin: dict | None = None
+    try:
+        cat = subprocess.run(
+            ["sudo", "-S", "--", "cat", str(target)],
+            input=(sudo_pass or "") + "\n",
+            capture_output=True, text=True, timeout=10,
+        )
+        if cat.returncode == 0:
+            try:
+                parsed = json.loads(cat.stdout)
+                if int(parsed.get("version", 0)) >= 1 and parsed.get("slots"):
+                    existing_admin = parsed
+            except (ValueError, TypeError, json.JSONDecodeError):
+                existing_admin = None
+    except (subprocess.TimeoutExpired, OSError):
+        existing_admin = None
+
+    if existing_admin:
+        info(f"Existing users.json found at {target}. Preserving slot bindings.")
+        return True, (
+            f"multi-user system provisioned: {ORCHESTRATOR_USER} + "
+            f"{num_slots} slot(s); existing slot bindings preserved"
+        )
+
+    info("Writing orchestrator slot table...")
+    users_json = {
+        "version": 1,
+        "num_slots": num_slots,
+        "max_slots": 4,
+        "orchestrator_user": ORCHESTRATOR_USER,
+        "queue_enabled": bool(config.get("multiuser_queue_enabled", False)),
+        "concurrent_requests": 1 if config.get("multiuser_queue_enabled") else 0,
+        "slots": {
+            str(s): None for s in range(1, num_slots + 1)
+        },
+    }
+    users_json["slots"]["1"] = {
+        "telegram_id": str(config["telegram_user_id"]),
+        "name": config.get("user_name") or "admin",
+        "is_admin": True,
+        "added": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    # Write via temp file + sudo cp so the final file is owned by the orchestrator
+    import tempfile
+    fd, tmp_path = tempfile.mkstemp(prefix="mom_users_", suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(users_json, f, indent=2, sort_keys=True)
+            f.write("\n")
+
+        cp_cmd = ["sudo", "-S", "--", "cp", tmp_path, str(target)]
+        result = subprocess.run(
+            cp_cmd, input=(sudo_pass or "") + "\n",
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return False, f"failed to write users.json: {result.stderr.strip()[:300]}"
+
+        if not set_owner(target, ORCHESTRATOR_USER, ORCHESTRATOR_USER, password=sudo_pass):
+            return False, f"failed to chown users.json"
+        if not set_perms(target, 0o600, password=sudo_pass):
+            return False, f"failed to chmod users.json"
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    return True, (
+        f"multi-user system provisioned: {ORCHESTRATOR_USER} + "
+        f"{num_slots} slot(s); admin bound to slot 1"
+    )
 
 
 def main():
@@ -1068,12 +1418,32 @@ def main():
             env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
         print()
 
+    # --- Multi-user provisioning ---
+    # Runs after CLI installs so the sudoers fragment can pin absolute paths.
+    if config.get("multiuser_enabled") and not checkpoint_done("multiuser"):
+        print(f"\n{BOLD}Multi-User Provisioning{NC}")
+        info("Setting up slot-based isolation. This creates system users,")
+        info("data directories with kernel-enforced permissions, and a")
+        info("sudoers fragment so the bot can spawn CLI subprocesses as each slot.")
+        print()
+        success, msg = _provision_multiuser(repo_dir, config)
+        if not success:
+            error(f"Multi-user provisioning failed: {msg}")
+            error("Aborting install. Re-run after fixing the cause above.")
+            error("The checkpoint is NOT advanced, so re-running will retry this step.")
+            sys.exit(1)
+        ok(msg)
+        checkpoint_set("multiuser")
+    elif config.get("multiuser_enabled"):
+        ok("Multi-user provisioning (cached)")
+
     # --- Service setup ---
     if not checkpoint_done("service"):
-        result = subprocess.run(
-            [sys.executable, str(repo_dir / "install" / "service.py"),
-             "--repo-dir", str(repo_dir)],
-        )
+        service_cmd = [sys.executable, str(repo_dir / "install" / "service.py"),
+                       "--repo-dir", str(repo_dir)]
+        if config.get("multiuser_enabled"):
+            service_cmd += ["--orchestrator-user", "mom_orchestrator"]
+        result = subprocess.run(service_cmd)
         if result.returncode != 0:
             warn("Service setup had issues (see output above).")
             warn("You can start the bot manually: cd " + str(repo_dir) + " && .venv/bin/python bot.py")
@@ -1304,8 +1674,11 @@ def _run_wizard_steps(detected_os: str) -> dict:
     detected_tz = detect_timezone()
     config["timezone"] = ask("Timezone", default=detected_tz)
 
-    # Step 5: Install mode
-    print(f"\n{BOLD}Step 5: Install Mode{NC}")
+    # Step 5: Multi-user setup
+    _run_multiuser_step(config)
+
+    # Step 6: Install mode
+    print(f"\n{BOLD}Step 6: Install Mode{NC}")
     print(f"  All modes register the bot as a system service that:")
     print(f"    - Starts automatically on boot")
     print(f"    - Restarts automatically on crash")
@@ -1324,8 +1697,8 @@ def _run_wizard_steps(detected_os: str) -> dict:
         default="workstation",
     )
 
-    # Step 6: Sudo password
-    print(f"\n{BOLD}Step 6: System Access{NC}")
+    # Step 7: Sudo password
+    print(f"\n{BOLD}Step 7: System Access{NC}")
     print("  The bot needs your password stored locally so it can install software on its own.")
     print("  Stored at ~/.sudo_pass (readable only by you, never sent anywhere).")
 
@@ -1387,8 +1760,20 @@ def _load_config_from_env(repo_dir: Path) -> dict:
                     config["timezone"] = value
                 elif key == "INSTALL_MODE":
                     config["takeover"] = value
+                elif key == "MULTIUSER_ENABLED":
+                    config["multiuser_enabled"] = value == "1"
+                elif key == "MULTIUSER_NUM_SLOTS":
+                    try:
+                        config["multiuser_num_slots"] = int(value)
+                    except ValueError:
+                        config["multiuser_num_slots"] = 1
+                elif key == "CONCURRENT_REQUESTS":
+                    config["multiuser_queue_enabled"] = value not in ("", "0")
     config.setdefault("takeover", "workstation")
     config.setdefault("bot_name", "MyOldMachine")
+    config.setdefault("multiuser_enabled", False)
+    config.setdefault("multiuser_num_slots", 1)
+    config.setdefault("multiuser_queue_enabled", False)
     return config
 
 

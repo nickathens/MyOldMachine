@@ -391,14 +391,40 @@ def _atomic_env_write(env_file: Path, new_content: str):
 # --- User data helpers ---
 
 def get_user_dir(user_id: int) -> Path:
-    d = USERS_DIR / str(user_id)
-    d.mkdir(parents=True, exist_ok=True)
+    """Resolve the data dir for a Telegram user.
+
+    Multi-user mode: returns data/users/userN/ where N is the slot bound to
+    this Telegram ID. The dir is owned by mom_userN with the orchestrator
+    in the group, so both the bot and the slot's CLI can read/write it.
+    Slot dirs are provisioned at install time. We do NOT auto-create them
+    here, because mkdir() from the orchestrator would create an
+    orchestrator-owned dir and break the privacy model.
+
+    Single-user mode (or unbound IDs): keeps the legacy data/users/<id>/
+    layout to preserve backwards compatibility with existing installs. We
+    DO auto-create that dir since it has no privileged ownership.
+    """
+    multiuser = False
+    try:
+        from core.users import resolve_user_dir, is_multiuser_enabled, lookup_slot
+        d = resolve_user_dir(user_id)
+        # Only treat this as a slot dir if the user is actually bound to one.
+        # Unbound users in multi-user mode fall through to legacy TID path.
+        multiuser = is_multiuser_enabled() and lookup_slot(user_id) is not None
+    except ImportError:
+        d = USERS_DIR / str(user_id)
+    if not multiuser:
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_attachments_dir(user_id: int) -> Path:
     d = get_user_dir(user_id) / "attachments"
-    d.mkdir(parents=True, exist_ok=True)
+    # parents=False: in multi-user mode, the slot dir is provisioned at
+    # install with privileged ownership we can't replicate. If the slot
+    # dir is missing, fail loudly here rather than silently creating an
+    # orchestrator-owned dir that breaks the privacy model.
+    d.mkdir(exist_ok=True)
     return d
 
 
@@ -1179,8 +1205,20 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
                 f"(system: {system_size} chars, budget: {PROMPT_CHAR_BUDGET})"
             )
 
-    # Semaphore serializes LLM calls on low-resource machines (no-op on capable ones)
-    async with _get_llm_semaphore():
+    # Semaphore serializes LLM calls on low-resource machines (no-op on capable ones).
+    # If another user is mid-request, tell this user they are queued. Using locked()
+    # avoids racing the acquire: at worst the message is sent and the lock has just
+    # been released, which is fine (the user just sees an extra "next in line" notice).
+    sem = _get_llm_semaphore()
+    if (_semaphore_active and isinstance(sem, asyncio.Semaphore)
+            and sem.locked() and chat is not None):
+        try:
+            await chat.send_message(
+                "Another request is being processed. You're next in line."
+            )
+        except Exception:
+            pass
+    async with sem:
         # For Claude CLI provider, pass extra kwargs for progress tracking
         if isinstance(_llm_provider, _CLI_PROVIDERS):
             response: LLMResponse = await _llm_provider.complete(
@@ -1704,7 +1742,238 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Admin only.")
         return
     report = await asyncio.to_thread(build_health_report, BOT_DIR)
+
+    # Multi-user supplement
+    try:
+        from core.users import (
+            is_multiuser_enabled, num_slots, list_slots,
+            queue_enabled, concurrent_requests,
+        )
+        if is_multiuser_enabled():
+            slots = list_slots()
+            bound = sum(1 for v in slots.values() if v)
+            total = num_slots()
+            qstate = "on" if queue_enabled() else "off"
+            cr = concurrent_requests()
+            cr_text = f"{cr}" if cr > 0 else "unlimited"
+            report += (
+                f"\n\nMulti-user: {bound}/{total} slots bound\n"
+                f"Queue: {qstate} (concurrent={cr_text})"
+            )
+    except ImportError:
+        pass
+
     await update.message.reply_text(report)
+
+
+async def adduser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bind a free slot to a Telegram ID (admin only, multi-user mode only)."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        return  # silently ignore; don't leak command existence
+    try:
+        from core.users import is_multiuser_enabled, add_user
+    except ImportError:
+        await update.message.reply_text("Multi-user support unavailable.")
+        return
+    if not is_multiuser_enabled():
+        await update.message.reply_text(
+            "Multi-user mode is not enabled on this install. "
+            "Reinstall with multi-user to use this command."
+        )
+        return
+    args = (context.args or [])
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Usage: /adduser <telegram_id> <name>\n"
+            "Example: /adduser 123456789 Alice"
+        )
+        return
+    try:
+        tid = int(args[0])
+    except ValueError:
+        await update.message.reply_text("First argument must be a numeric Telegram ID.")
+        return
+    name = " ".join(args[1:]).strip()
+    if not name:
+        await update.message.reply_text("Name is required.")
+        return
+    ok, msg, slot = await asyncio.to_thread(add_user, tid, name)
+    await update.message.reply_text(msg)
+
+
+async def removeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Unbind a Telegram ID and archive their slot dir (admin only)."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        return
+    try:
+        from core.users import (
+            is_multiuser_enabled, lookup_slot, remove_user, slot_data_dir,
+        )
+    except ImportError:
+        await update.message.reply_text("Multi-user support unavailable.")
+        return
+    if not is_multiuser_enabled():
+        await update.message.reply_text("Multi-user mode is not enabled.")
+        return
+    args = (context.args or [])
+    if len(args) < 1:
+        await update.message.reply_text("Usage: /removeuser <telegram_id>")
+        return
+    try:
+        tid = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Argument must be a numeric Telegram ID.")
+        return
+
+    # Validate the slot exists and is removable BEFORE touching the filesystem.
+    found = await asyncio.to_thread(lookup_slot, tid)
+    if not found:
+        await update.message.reply_text(
+            f"Telegram ID {tid} is not bound to any slot."
+        )
+        return
+    slot, info = found
+    if info.get("is_admin"):
+        await update.message.reply_text(
+            "Cannot remove the admin. Reinstall to change admin."
+        )
+        return
+
+    # Archive the slot's data directory FIRST. If this fails, we must NOT
+    # unbind the slot. Otherwise /adduser could re-bind a new user to a
+    # slot whose dir still contains the previous user's data, leaking it
+    # across the privacy boundary. The slot dir is owned by mom_userN, but
+    # its parent (data/users/) is orchestrator-owned, so the rename
+    # succeeds without elevation. Encode the Telegram ID in the archive
+    # name so /purgeuser can find it later.
+    archive_msg = ""
+    src = slot_data_dir(slot)
+    if src.exists():
+        try:
+            archive_root = USERS_DIR / "_archived"
+            archive_root.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            dst = archive_root / f"{stamp}_user{slot}_tid{tid}"
+            await asyncio.to_thread(src.rename, dst)
+            archive_msg = f"\nArchived slot data to: {dst.relative_to(BOT_DIR)}"
+        except OSError as e:
+            await update.message.reply_text(
+                f"Failed to archive slot {slot} data: {e}\n"
+                f"Slot remains bound to preserve privacy. "
+                f"Resolve the filesystem issue and re-run /removeuser."
+            )
+            return
+
+    ok, msg, _ = await asyncio.to_thread(remove_user, tid)
+    if not ok:
+        await update.message.reply_text(
+            f"{msg}\n(Note: slot data was already archived to "
+            f"{archive_msg.strip() or 'the archive dir'}. Manual restore may be needed.)"
+        )
+        return
+
+    await update.message.reply_text(msg + archive_msg)
+
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List bound slots (admin only)."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        return
+    try:
+        from core.users import is_multiuser_enabled, num_slots, list_slots
+    except ImportError:
+        await update.message.reply_text("Multi-user support unavailable.")
+        return
+    if not is_multiuser_enabled():
+        await update.message.reply_text("Multi-user mode is not enabled (single-user install).")
+        return
+    slots = list_slots()
+    total = num_slots()
+    lines = [f"Slots ({sum(1 for v in slots.values() if v)}/{total} bound):", ""]
+    for i in range(1, total + 1):
+        info = slots.get(str(i))
+        if not info:
+            lines.append(f"[{i}] (free)")
+            continue
+        admin_tag = " (admin)" if info.get("is_admin") else ""
+        added = info.get("added", "?")
+        lines.append(
+            f"[{i}] {info.get('name', '?')}{admin_tag}\n"
+            f"    Telegram ID: {info.get('telegram_id', '?')}\n"
+            f"    Added: {added}"
+        )
+    await update.message.reply_text("\n".join(lines))
+
+
+async def purgeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Permanently delete archived slot data (admin only, requires confirmation)."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        return
+    try:
+        from core.users import is_multiuser_enabled
+    except ImportError:
+        await update.message.reply_text("Multi-user support unavailable.")
+        return
+    if not is_multiuser_enabled():
+        await update.message.reply_text("Multi-user mode is not enabled.")
+        return
+    args = (context.args or [])
+    confirm_phrase = "PURGE I UNDERSTAND"
+    raw = " ".join(args).strip()
+    if not raw:
+        await update.message.reply_text(
+            "Usage: /purgeuser <telegram_id> PURGE I UNDERSTAND\n\n"
+            "This permanently deletes archived slot data for the given Telegram ID. "
+            "The user must already have been removed via /removeuser."
+        )
+        return
+
+    parts = raw.split(maxsplit=1)
+    try:
+        tid = int(parts[0])
+    except ValueError:
+        await update.message.reply_text("First argument must be a numeric Telegram ID.")
+        return
+
+    rest = parts[1] if len(parts) > 1 else ""
+    if rest.strip() != confirm_phrase:
+        await update.message.reply_text(
+            f"Confirmation phrase missing. To proceed, send:\n"
+            f"/purgeuser {tid} {confirm_phrase}"
+        )
+        return
+
+    archive_root = USERS_DIR / "_archived"
+    if not archive_root.exists():
+        await update.message.reply_text("No archive directory found. Nothing to purge.")
+        return
+
+    matches = sorted(archive_root.glob(f"*_user*_tid{tid}"))
+    if not matches:
+        await update.message.reply_text(
+            f"No archived data found for Telegram ID {tid}. "
+            f"(Archive name pattern: <timestamp>_userN_tid{tid})"
+        )
+        return
+
+    deleted: list[str] = []
+    errors: list[str] = []
+    for d in matches:
+        try:
+            await asyncio.to_thread(shutil.rmtree, d)
+            deleted.append(d.name)
+        except OSError as e:
+            errors.append(f"{d.name}: {e}")
+    msg_parts = [f"Purged {len(deleted)} archived directories for {tid}."]
+    if deleted:
+        msg_parts.append("Deleted:\n" + "\n".join(f"  {n}" for n in deleted))
+    if errors:
+        msg_parts.append("Errors:\n" + "\n".join(f"  {e}" for e in errors))
+    await update.message.reply_text("\n\n".join(msg_parts))
 
 
 async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3203,10 +3472,28 @@ def main():
     caps = load_caps(DATA_DIR)
     ram_gb = caps.get("ram_gb", 0)
     cpu_cores = caps.get("cpu_cores", 0)
-    if ram_gb > 0 and (ram_gb < 8 or cpu_cores <= 2):
+    hardware_constrained = ram_gb > 0 and (ram_gb < 8 or cpu_cores <= 2)
+
+    # Multi-user request queue: when the orchestrator config sets
+    # concurrent_requests >= 1, serialize LLM calls across all slots so two
+    # users can't simultaneously stress a low-RAM box.
+    multiuser_queue = False
+    try:
+        from core.users import is_multiuser_enabled, concurrent_requests
+        if is_multiuser_enabled() and concurrent_requests() >= 1:
+            multiuser_queue = True
+    except ImportError:
+        pass
+
+    if hardware_constrained or multiuser_queue:
         _semaphore_active = True
+        reason_parts = []
+        if hardware_constrained:
+            reason_parts.append(f"hardware ({ram_gb}GB RAM, {cpu_cores} cores)")
+        if multiuser_queue:
+            reason_parts.append("multi-user queue enabled")
         logger.info(
-            f"LLM semaphore ENABLED (RAM: {ram_gb}GB, CPU cores: {cpu_cores}) — "
+            f"LLM semaphore ENABLED ({', '.join(reason_parts)}); "
             f"concurrent LLM calls will be serialized"
         )
     else:
@@ -3275,6 +3562,10 @@ def main():
     app.add_handler(CommandHandler("schedule", schedule_command))
     app.add_handler(CommandHandler("jobs", jobs_command))
     app.add_handler(CommandHandler("health", health_command))
+    app.add_handler(CommandHandler("adduser", adduser_command))
+    app.add_handler(CommandHandler("removeuser", removeuser_command))
+    app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("purgeuser", purgeuser_command))
     app.add_handler(CommandHandler("cleanup", cleanup_command))
     app.add_handler(CommandHandler("maintenance", maintenance_command))
     app.add_handler(CommandHandler("system", system_command))

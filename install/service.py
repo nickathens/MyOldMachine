@@ -68,10 +68,14 @@ def sudo_run(cmd, password=None, timeout=30):
         return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
 
 
-def setup_linux_service(repo_dir: Path) -> bool:
-    """Create and enable systemd service. Returns True on success."""
+def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) -> bool:
+    """Create and enable systemd service. Returns True on success.
+
+    When orchestrator_user is set, the service runs as that user (multi-user
+    mode). Otherwise it runs as the current user (single-user mode).
+    """
     password = get_sudo_password()
-    username = getpass.getuser()
+    username = orchestrator_user if orchestrator_user else getpass.getuser()
     venv_python = repo_dir / ".venv" / "bin" / "python"
 
     if not venv_python.exists():
@@ -89,6 +93,19 @@ def setup_linux_service(repo_dir: Path) -> bool:
     content = content.replace("{{WORKING_DIR}}", str(repo_dir))
     content = content.replace("{{PYTHON}}", str(venv_python))
     content = content.replace("{{LOG_DIR}}", str(repo_dir / "data" / "logs"))
+
+    # In multi-user mode the orchestrator user has its home at data/orchestrator
+    # but no real shell. Set HOME explicitly so libraries that depend on it
+    # (telethon session files, openai cache, etc.) write to the right place.
+    if orchestrator_user:
+        home_path = repo_dir / "data" / "orchestrator"
+        # Inject HOME into Environment= line. The template has the literal
+        # `Environment=PYTHONUNBUFFERED=1`; append HOME alongside it so we
+        # don't need to rewrite the template structure.
+        content = content.replace(
+            "Environment=PYTHONUNBUFFERED=1",
+            f"Environment=PYTHONUNBUFFERED=1\nEnvironment=HOME={home_path}",
+        )
 
     # Ensure log directory exists
     (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)
@@ -129,8 +146,15 @@ def setup_linux_service(repo_dir: Path) -> bool:
     return True
 
 
-def setup_macos_service(repo_dir: Path, os_info=None) -> bool:
-    """Create and load launchd plist — version-aware. Returns True on success."""
+def setup_macos_service(repo_dir: Path, os_info=None,
+                        orchestrator_user: str | None = None) -> bool:
+    """Create and load launchd plist (version-aware). Returns True on success.
+
+    Multi-user mode is Linux-only in v1. The wizard refuses to enable it on
+    macOS, so orchestrator_user should always be None here.
+    """
+    if orchestrator_user:
+        warn(f"macOS multi-user not yet supported. Running as install user.")
     venv_python = repo_dir / ".venv" / "bin" / "python"
 
     if not venv_python.exists():
@@ -221,6 +245,9 @@ def main():
     parser.add_argument("--repo-dir", type=str, required=True)
     parser.add_argument("--os", type=str, choices=["linux", "macos"],
                         help="Override OS detection (optional)")
+    parser.add_argument("--orchestrator-user", type=str, default=None,
+                        help="System user to run the bot as (multi-user mode). "
+                             "If not given, runs as the current user.")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir)
@@ -229,13 +256,18 @@ def main():
     os_type = args.os if args.os else os_info.os_type
 
     print(f"\n{BOLD}=== Service Setup ==={NC}\n")
-    info(f"Setting up service for {os_info.display_name}")
+    if args.orchestrator_user:
+        info(f"Setting up service for {os_info.display_name} (multi-user, "
+             f"running as {args.orchestrator_user})")
+    else:
+        info(f"Setting up service for {os_info.display_name}")
 
     success = False
     if os_type == "linux":
-        success = setup_linux_service(repo_dir)
+        success = setup_linux_service(repo_dir, orchestrator_user=args.orchestrator_user)
     elif os_type == "macos":
-        success = setup_macos_service(repo_dir, os_info)
+        success = setup_macos_service(repo_dir, os_info,
+                                      orchestrator_user=args.orchestrator_user)
     else:
         error(f"Unsupported OS: {os_type}")
 

@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 import os
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,56 @@ from core.tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_slot_for_user(user_id: Optional[int]) -> Optional[int]:
+    """Look up the slot bound to a Telegram user ID.
+
+    Returns the slot number (1..N) when multi-user mode is active and the
+    user is bound to a slot. Returns None for legacy single-user installs
+    or unbound IDs; caller should fall back to the legacy data dir.
+    """
+    if user_id is None:
+        return None
+    try:
+        from core.users import is_multiuser_enabled, lookup_slot
+    except ImportError:
+        return None
+    if not is_multiuser_enabled():
+        return None
+    found = lookup_slot(user_id)
+    if not found:
+        return None
+    slot, _ = found
+    return slot
+
+
+def _wrap_cli_for_slot(cmd: list[str], slot: Optional[int]) -> tuple[list[str], Optional[Path]]:
+    """Wrap a CLI invocation to run as the slot's system user via sudo.
+
+    When slot is None, returns (cmd, None); caller keeps its original cwd.
+    When slot is set, returns (sudo_prefixed_cmd, slot_data_dir) so the
+    subprocess runs as mom_userN with cwd inside that user's private dir.
+    The sudoers fragment installed at /etc/sudoers.d/myoldmachine grants
+    NOPASSWD for exactly this combination of orchestrator -> slot -> binary.
+
+    Does NOT auto-create the slot directory. Slot dirs are provisioned by
+    the install wizard with the correct ownership (mom_userN:mom_orchestrator)
+    that the orchestrator cannot replicate at runtime. If the dir is missing
+    (e.g., after /removeuser archived it and a new user was bound to the
+    same slot), the subprocess fails fast and the admin must re-provision.
+    """
+    if slot is None:
+        return cmd, None
+    from core.users import slot_user_name, slot_data_dir
+    sudo_prefix = ["sudo", "-n", "-u", slot_user_name(slot), "--"]
+    cwd = slot_data_dir(slot)
+    if not cwd.exists():
+        logger.error(
+            f"Slot {slot} data dir missing: {cwd}. "
+            f"Re-run install/wizard.py to provision it."
+        )
+    return sudo_prefix + cmd, cwd
 
 
 @dataclass
@@ -192,6 +243,10 @@ class ClaudeCLIProvider(LLMProvider):
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
+        # Resolve to an absolute path for sudoers literal command matching
+        # in multi-user mode. Falls back to "claude" for single-user where
+        # PATH lookup at runtime is fine.
+        self._cli_binary = shutil.which("claude") or "claude"
         self._active_processes: set = set()
         # Maps user_id -> active subprocess so /stop can target a specific user's task.
         self._user_processes: dict = {}
@@ -250,7 +305,7 @@ class ClaudeCLIProvider(LLMProvider):
         prompt += "\nContinue the conversation naturally, responding to the latest message."
 
         cmd = [
-            "claude",
+            self._cli_binary,
             "-p",
             "--model", self.model,
             "--dangerously-skip-permissions",
@@ -259,6 +314,12 @@ class ClaudeCLIProvider(LLMProvider):
             "--verbose",
             "-",  # Read from stdin
         ]
+
+        # Multi-user mode: dispatch as the slot's system user via sudo. The
+        # sudoers fragment scopes this to the orchestrator running exactly
+        # this binary as exactly the per-slot users (no other commands).
+        slot = _resolve_slot_for_user(user_id)
+        cmd, slot_cwd = _wrap_cli_for_slot(cmd, slot)
 
         typing_task = None
         process = None
@@ -319,14 +380,18 @@ class ClaudeCLIProvider(LLMProvider):
                                     "TELEGRAM_TOKEN", "BOT_TOKEN",
                                     "DATABASE_URL", "DATABASE_PASSWORD",
                                     "REDIS_URL", "REDIS_PASSWORD"}}
-            cli_env["HOME"] = str(Path.home())
+            # In multi-user mode, sudo resets HOME to the slot user's passwd
+            # entry (data/users/userN). Don't override it from env here.
+            if slot is None:
+                cli_env["HOME"] = str(Path.home())
 
+            cwd = str(slot_cwd) if slot_cwd is not None else str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(self._bot_dir),
+                cwd=cwd,
                 env=cli_env,
                 limit=50 * 1024 * 1024,  # 50MB buffer for large JSON lines
             )
@@ -725,6 +790,8 @@ class CodexCLIProvider(LLMProvider):
     def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
+        # Absolute path for sudoers literal command matching in multi-user mode
+        self._cli_binary = shutil.which("codex") or "codex"
         self._active_processes: set = set()
         self._user_processes: dict = {}
         self._stop_requested: set = set()
@@ -764,7 +831,7 @@ class CodexCLIProvider(LLMProvider):
         prompt += "\nContinue the conversation naturally, responding to the latest message."
 
         cmd = [
-            "codex",
+            self._cli_binary,
             "exec",
             "--json",
             "--ephemeral",
@@ -773,6 +840,10 @@ class CodexCLIProvider(LLMProvider):
             "-m", self.model,
             "-",  # Read prompt from stdin
         ]
+
+        # Multi-user mode: wrap the cmd in sudo to run as the slot's system user.
+        slot = _resolve_slot_for_user(user_id)
+        cmd, slot_cwd = _wrap_cli_for_slot(cmd, slot)
 
         typing_task = None
         process = None
@@ -835,18 +906,21 @@ class CodexCLIProvider(LLMProvider):
                                     "TELEGRAM_TOKEN", "BOT_TOKEN",
                                     "DATABASE_URL", "DATABASE_PASSWORD",
                                     "REDIS_URL", "REDIS_PASSWORD"}}
-            cli_env["HOME"] = str(Path.home())
+            # In multi-user mode, sudo resets HOME from passwd. Skip the override.
+            if slot is None:
+                cli_env["HOME"] = str(Path.home())
             # If a per-provider api_key was supplied at construction, expose it
             # to the CLI as OPENAI_API_KEY so headless setups work without login.
             if self.api_key:
                 cli_env["OPENAI_API_KEY"] = self.api_key
 
+            cwd = str(slot_cwd) if slot_cwd is not None else str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(self._bot_dir),
+                cwd=cwd,
                 env=cli_env,
                 limit=50 * 1024 * 1024,
             )
