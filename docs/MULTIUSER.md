@@ -3,6 +3,8 @@
 Share one machine with up to 4 people while keeping each person's data, conversations, memories, and skill state fully private. The kernel enforces the boundaries.
 
 > Supports **Linux** and **macOS**. Existing single-user installs continue to work unchanged.
+>
+> **WARNING:** macOS multi-user support is untested on real hardware. The code paths exist but have not been verified. Use at your own risk until this notice is removed.
 
 ## How it works
 
@@ -171,6 +173,8 @@ Until a slot user has authenticated, the bot's first call for that slot will fai
 - **Removing multi-user (macOS):** Unload the daemon with `sudo launchctl unload /Library/LaunchDaemons/com.myoldmachine.bot.plist`, delete the plist, remove `/etc/sudoers.d/myoldmachine`, run `sudo sysadminctl -deleteUser mom_orchestrator` (and each `mom_userN`), and remove `data/orchestrator/`.
 
 ## macOS-specific notes
+
+> **WARNING:** This section is untested on real hardware. The LaunchDaemon, sysadminctl, and sudoers paths have been written from documentation but not verified on a live Mac. Test thoroughly before relying on it.
 
 On macOS, the multi-user service runs as a **LaunchDaemon** (`/Library/LaunchDaemons/com.myoldmachine.bot.plist`) instead of a per-user LaunchAgent. Key differences from single-user mode:
 
