@@ -27,7 +27,7 @@ jobs:
               if 'skills/' in str(f) or '.venv/' in str(f):
                   continue
               try:
-                  with open(f, encoding="utf-8") as fh:
+                  with open(f, encoding='utf-8') as fh:
                       compile(fh.read(), str(f), 'exec')
               except SyntaxError as e:
                   errors.append(f'{f}: {e}')
