@@ -1,0 +1,14 @@
+{
+  "apt": ["ffmpeg", "yt-dlp"],
+  "brew": ["ffmpeg", "yt-dlp"],
+  "pip": ["openai-whisper"],
+  "check": {
+    "ffmpeg": "ffmpeg -version",
+    "ffprobe": "ffprobe -version",
+    "yt-dlp": "yt-dlp --version"
+  },
+  "weight": "heavy",
+  "min_ram_gb": 4,
+  "min_disk_gb": 3,
+  "install_note": "Installs PyTorch + Whisper base model on first run (~1 GB download). Optional API keys: GROQ_API_KEY or OPENAI_API_KEY in ~/.config/watch/.env to skip the local CPU transcription."
+}

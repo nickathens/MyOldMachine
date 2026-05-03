@@ -1,0 +1,10 @@
+{
+  "pre": {
+    "min_ram_mb": 2048,
+    "min_disk_mb": 1024
+  },
+  "stop": {
+    "kill_processes": ["whisper", "yt-dlp", "ffmpeg"],
+    "clean_patterns": ["/tmp/watch-*"]
+  }
+}
