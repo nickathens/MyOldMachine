@@ -1776,6 +1776,17 @@ def _load_config_from_env(repo_dir: Path) -> dict:
     config.setdefault("multiuser_enabled", False)
     config.setdefault("multiuser_num_slots", 1)
     config.setdefault("multiuser_queue_enabled", False)
+
+    # The sudo password lives outside .env (in ~/.sudo_pass, mode 0600)
+    # because .env is later chowned to the orchestrator group. Resume cases
+    # need the password back in `config` so multi-user provisioning can run
+    # `sudo -S` against machines that don't have passwordless sudo.
+    sudo_file = Path.home() / ".sudo_pass"
+    if sudo_file.exists():
+        try:
+            config["sudo_pass"] = sudo_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
     return config
 
 
