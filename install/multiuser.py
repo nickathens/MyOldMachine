@@ -79,7 +79,7 @@ def _sudo_run(cmd: list[str], password: Optional[str] = None, *,
     return _run(full, timeout=timeout)
 
 
-# ─── User existence ───────────────────────────────────────────────────
+# ─── User / group existence ───────────────────────────────────────────
 
 
 def system_user_exists(name: str) -> bool:
@@ -90,6 +90,143 @@ def system_user_exists(name: str) -> bool:
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         return False
+
+
+def system_group_exists(name: str) -> bool:
+    """True if the named OS group exists on this machine."""
+    _validate_username(name)  # group names share user-name char rules here
+    try:
+        if _is_macos():
+            # `dscl . -read /Groups/<name>` exits 0 only if the record exists
+            result = _run(["dscl", ".", "-read", f"/Groups/{name}"], timeout=10)
+            return result.returncode == 0
+        # Linux + others: getent works on /etc/group + nss
+        result = _run(["getent", "group", name], timeout=10)
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+# ─── macOS group helpers ──────────────────────────────────────────────
+
+
+# macOS reserves UID/GID 0..200 for the system, and `sysadminctl -roleAccount`
+# allocates user UIDs in 200..400. Pick role-group GIDs from 401..499 to stay
+# clear of those bands and below the regular-user start at 500/501.
+_MACOS_ROLE_GID_LO = 401
+_MACOS_ROLE_GID_HI = 499
+
+
+def _list_macos_used_gids() -> set[int]:
+    """Return the set of GIDs currently allocated to /Groups via dscl."""
+    try:
+        result = _run(
+            ["dscl", ".", "-list", "/Groups", "PrimaryGroupID"], timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return set()
+    if result.returncode != 0:
+        return set()
+    used: set[int] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                used.add(int(parts[1]))
+            except ValueError:
+                continue
+    return used
+
+
+def _pick_free_macos_gid() -> Optional[int]:
+    """Pick the lowest free GID in the role-account band, or None if full."""
+    used = _list_macos_used_gids()
+    for gid in range(_MACOS_ROLE_GID_LO, _MACOS_ROLE_GID_HI + 1):
+        if gid not in used:
+            return gid
+    return None
+
+
+def _macos_user_is_member(user: str, group: str) -> bool:
+    """True if `user` is already a member of `group` on macOS."""
+    try:
+        result = _run(
+            ["dseditgroup", "-o", "checkmember", "-m", user, group], timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0
+
+
+def _macos_add_user_to_group(user: str, group: str,
+                             password: Optional[str] = None) -> bool:
+    """Idempotently add `user` to `group` on macOS."""
+    if _macos_user_is_member(user, group):
+        return True
+    result = _sudo_run(
+        ["dseditgroup", "-o", "edit", "-a", user, "-t", "user", group],
+        password, timeout=20,
+    )
+    if result.returncode != 0:
+        logger.error(
+            f"dseditgroup add {user} to {group} failed: "
+            f"rc={result.returncode} stderr={result.stderr.strip()[:200]}"
+        )
+        return False
+    return True
+
+
+def _ensure_macos_group(name: str, password: Optional[str] = None) -> bool:
+    """Create a macOS group named `name` with a free role-band GID. Idempotent."""
+    if not _is_macos():
+        return True
+    _validate_username(name)
+    if system_group_exists(name):
+        return True
+    gid = _pick_free_macos_gid()
+    if gid is None:
+        logger.error(
+            f"No free GID in {_MACOS_ROLE_GID_LO}-{_MACOS_ROLE_GID_HI} "
+            f"to create group {name}"
+        )
+        return False
+    # The macOS group record requires several attributes; create them in
+    # sequence. dscl rejects the whole operation if any single step fails,
+    # so each is checked independently.
+    steps = [
+        ["dscl", ".", "-create", f"/Groups/{name}"],
+        ["dscl", ".", "-create", f"/Groups/{name}", "PrimaryGroupID", str(gid)],
+        ["dscl", ".", "-create", f"/Groups/{name}", "RealName", name],
+        ["dscl", ".", "-create", f"/Groups/{name}", "Password", "*"],
+    ]
+    for cmd in steps:
+        result = _sudo_run(cmd, password, timeout=20)
+        if result.returncode != 0:
+            logger.error(
+                f"dscl group {name} step {' '.join(cmd[3:])!r} failed: "
+                f"rc={result.returncode} stderr={result.stderr.strip()[:200]}"
+            )
+            return False
+    return system_group_exists(name)
+
+
+def _delete_macos_group(name: str, password: Optional[str] = None) -> bool:
+    """Delete a macOS group. Idempotent."""
+    if not _is_macos():
+        return True
+    _validate_username(name)
+    if not system_group_exists(name):
+        return True
+    result = _sudo_run(
+        ["dscl", ".", "-delete", f"/Groups/{name}"], password, timeout=20,
+    )
+    if result.returncode != 0:
+        logger.error(
+            f"dscl delete /Groups/{name} failed: "
+            f"rc={result.returncode} stderr={result.stderr.strip()[:200]}"
+        )
+        return False
+    return True
 
 
 # ─── User creation ────────────────────────────────────────────────────
@@ -103,6 +240,10 @@ def create_system_user(
 ) -> bool:
     """Create a system user with no login shell. Idempotent.
 
+    On macOS, also creates a matching group with the same name and adds the
+    user to it — sysadminctl alone does not, so without this step a later
+    `chown <name>:<name>` would fail with "illegal group name".
+
     Returns True if the user exists at end (whether we created it or it
     already existed). Returns False if creation failed.
     """
@@ -110,6 +251,13 @@ def create_system_user(
 
     if system_user_exists(name):
         logger.info(f"System user {name} already exists")
+        # Still ensure the matching macOS group exists; older installs that
+        # ran before the group fix landed are missing the group record.
+        if _is_macos():
+            if not _ensure_macos_group(name, password):
+                return False
+            if not _macos_add_user_to_group(name, name, password):
+                return False
         return True
 
     if _is_linux():
@@ -130,6 +278,8 @@ def create_system_user(
                 f"stderr={result.stderr.strip()[:300]}"
             )
             return False
+        # useradd -r creates a matching group implicitly on every distro
+        # we support, so no extra group step is needed here.
         return system_user_exists(name)
 
     if _is_macos():
@@ -142,7 +292,15 @@ def create_system_user(
                 f"rc={result.returncode} stderr={result.stderr.strip()[:300]}"
             )
             return False
-        return system_user_exists(name)
+        if not system_user_exists(name):
+            return False
+        # sysadminctl does NOT create a matching group — do it ourselves so
+        # `chown user:user` and setgid-group operations work later.
+        if not _ensure_macos_group(name, password):
+            return False
+        if not _macos_add_user_to_group(name, name, password):
+            return False
+        return True
 
     logger.error(f"Unsupported OS for system user creation: {platform.system()}")
     return False
@@ -173,6 +331,10 @@ def delete_system_user(name: str, *, password: Optional[str] = None) -> bool:
                 f"rc={result.returncode} stderr={result.stderr.strip()[:300]}"
             )
             return False
+        # Best-effort: remove the matching role group we created in
+        # create_system_user. A failure here is logged but not fatal: the
+        # user record is gone, the group is harmless if it remains.
+        _delete_macos_group(name, password)
         return True
 
     return False

@@ -460,13 +460,22 @@ def smart_install(
 
     # Step 4a: macOS direct download fallback
     # When brew cask fails (e.g. app requires Big Sur+ but we're on Catalina),
-    # try downloading an older compatible version directly.
+    # try downloading an older compatible version directly via macos_resolver.
     if is_macos and not result.installed:
         if _install_macos_direct(spec, password):
             result.installed = True
             result.method = "direct"
             result.version = _get_installed_version(spec)
             return result
+        # Direct path did not succeed. If the resolver explicitly has no Mac
+        # distribution for this package, surface that as a clear note.
+        try:
+            from install.macos_resolver import macos_skip_note
+            note = macos_skip_note(spec.name)
+            if note:
+                result.notes = note
+        except Exception:
+            pass
 
     # Step 4b: Flatpak fallback (Linux only, GUI apps)
     if is_linux and spec.flatpak_id:
@@ -489,10 +498,13 @@ def smart_install(
     if is_linux and spec.flatpak_id:
         result.skipped_reason += " or Flatpak"
     result.skipped_reason += "."
-    result.notes = (
-        f"Ask the bot to help install {spec.display_name} after setup — "
-        f"it can troubleshoot the specific error on your machine."
-    )
+    # Only set the generic "ask the bot" note when we don't already have a
+    # more specific one (e.g. the macOS-no-binary skip note from step 4a).
+    if not result.notes:
+        result.notes = (
+            f"Ask the bot to help install {spec.display_name} after setup — "
+            f"it can troubleshoot the specific error on your machine."
+        )
 
     return result
 
@@ -561,85 +573,54 @@ def _find_brew() -> Optional[str]:
 # ────────────────────────────────────────────────────────────────────
 # macOS direct download fallbacks
 # ────────────────────────────────────────────────────────────────────
-
-# Direct DMG/zip download URLs for macOS when Homebrew cask fails.
-# Keyed by package name. Each entry has:
-#   url: direct download URL (Intel x86_64)
-#   type: "dmg" or "zip"
-#   app_name: name of the .app inside the DMG (for dmg type)
-#   note: version/compat info
-#
-# These are the last versions compatible with macOS 10.15 Catalina.
-# Updated March 2026.
-_MACOS_DIRECT_DOWNLOADS = {
-    "blender": {
-        "url": "https://download.blender.org/release/Blender3.6/blender-3.6.23-macos-x64.dmg",
-        "type": "dmg",
-        "app_name": "Blender.app",
-        "note": "Blender 3.6.23 LTS — last version supporting macOS 10.15",
-    },
-    "inkscape": {
-        "url": "https://media.inkscape.org/dl/resources/file/Inkscape-1.4.3_x86_64.dmg",
-        "type": "dmg",
-        "app_name": "Inkscape.app",
-        "note": "Inkscape 1.4.3 — supports macOS 10.13+",
-    },
-    "libreoffice": {
-        "url": "https://download.documentfoundation.org/libreoffice/stable/25.8.5/mac/x86_64/LibreOffice_25.8.5_MacOS_x86-64.dmg",
-        "type": "dmg",
-        "app_name": "LibreOffice.app",
-        "note": "LibreOffice 25.8.5 — last branch supporting macOS 10.15",
-    },
-    "rclone": {
-        "url": "https://downloads.rclone.org/rclone-current-osx-amd64.zip",
-        "type": "zip",
-        "binary": "rclone",
-        "note": "rclone — official static binary, all macOS versions",
-    },
-    "imagemagick": {
-        # ImageMagick has no standalone macOS binary. Retry brew after permissions fix.
-        "type": "brew_retry",
-        "formula": "imagemagick",
-        "note": "ImageMagick — retry via Homebrew (permissions may have been fixed)",
-    },
-}
+# When Homebrew cask fails (typical on old macOS where brew dropped support),
+# resolve a compatible direct DMG/ZIP at install time via macos_resolver.
+# The resolver queries upstream listings dynamically, so this code does not
+# bit-rot when LibreOffice/Blender/Inkscape rotate patch versions.
 
 
 def _install_macos_direct(spec: PackageSpec, password: Optional[str] = None) -> bool:
     """Try to install a macOS package via direct download when Homebrew fails.
 
-    Handles DMG mounting/copying, ZIP extraction, and brew retries.
-    Returns True if the package was successfully installed.
+    Asks macos_resolver for a URL compatible with the host macOS, then mounts
+    the DMG or extracts the ZIP. Returns True iff the package is installed.
+    Returns False when the resolver returns None (no compatible binary, e.g.
+    ImageMagick on macOS) — the caller should consult macos_skip_note() for
+    a user-facing explanation.
     """
     import tempfile
+    from install.macos_resolver import (
+        get_host_arch, get_host_macos_version, resolve,
+    )
 
-    dl_info = _MACOS_DIRECT_DOWNLOADS.get(spec.name)
-    if not dl_info:
+    host_macos = get_host_macos_version()
+    if host_macos == (0, 0):
+        # Not Darwin or detection failed; nothing to do.
         return False
 
-    dl_type = dl_info.get("type", "")
-
-    if dl_type == "brew_retry":
-        # Retry brew install — permissions may have been fixed since the first attempt
-        brew = _find_brew()
-        if not brew:
-            return False
-        formula = dl_info.get("formula", spec.brew_formula or spec.name)
-        logger.info(f"Retrying brew install of {spec.display_name} (permissions may be fixed now)...")
-        r = _run(f"{brew} install {formula} 2>&1", timeout=600)
-        return r.returncode == 0 and _is_binary_available(spec)
-
-    url = dl_info.get("url", "")
-    if not url:
+    arch = get_host_arch()
+    resolved = resolve(spec.name, host_macos, arch)
+    if resolved is None:
         return False
+
+    logger.info(f"macOS direct install: {resolved.compat_note}")
+
+    # Build the small dict that _install_from_dmg / _install_from_zip expect.
+    dl_info: dict = {
+        "type": resolved.type,
+        "app_name": resolved.app_name,
+        "binary": resolved.binary,
+    }
 
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"myoldmachine_{spec.name}_"))
-
     try:
-        if dl_type == "dmg":
-            return _install_from_dmg(spec, url, dl_info, tmp_dir, password)
-        elif dl_type == "zip":
-            return _install_from_zip(spec, url, dl_info, tmp_dir, password)
+        if resolved.type == "dmg":
+            return _install_from_dmg(spec, resolved.url, dl_info, tmp_dir, password)
+        elif resolved.type == "zip":
+            return _install_from_zip(spec, resolved.url, dl_info, tmp_dir, password)
+        else:
+            logger.warning(f"Unknown resolved type for {spec.name}: {resolved.type!r}")
+            return False
     except Exception as e:
         logger.warning(f"Direct install of {spec.display_name} failed: {e}")
         return False
@@ -649,8 +630,6 @@ def _install_macos_direct(spec: PackageSpec, password: Optional[str] = None) -> 
             _shutil.rmtree(str(tmp_dir), ignore_errors=True)
         except Exception:
             pass
-
-    return False
 
 
 def _install_from_dmg(

@@ -21,6 +21,8 @@ jobs:
         run: ruff check bot.py core/ utils/ install/ tests/
       - name: Check Python syntax (all .py files)
         run: python -m py_compile bot.py && find core/ install/ utils/ -name '*.py' -exec python -m py_compile {} +
+      - name: Run unit tests (offline, mocks all network)
+        run: python -m unittest tests.test_macos_resolver tests.test_multiuser_macos -v
       - name: Check for obvious import errors
         run: |
           pip install -q python-telegram-bot python-dotenv httpx apscheduler sqlalchemy
