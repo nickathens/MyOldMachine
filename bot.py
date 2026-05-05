@@ -1144,6 +1144,21 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
     Args:
         images: Optional list of file paths to images for multimodal vision.
     """
+    # Fast-fail guard: if the most recent health-check (run at startup or
+    # after /provider, /model, /apikey) reported the provider as broken,
+    # skip the LLM call and return an actionable error instead of crashing
+    # in subprocess / HTTP code on every message.
+    if _llm_provider is not None and _llm_provider.last_health is not None:
+        healthy, reason = _llm_provider.last_health
+        if not healthy:
+            return (
+                f"This bot's LLM provider ({_llm_provider.provider_name}) "
+                f"is not healthy:\n\n{reason}\n\n"
+                f"Use /provider to switch to a working one (claude-api, "
+                f"openrouter, gemini, ollama, etc.) or /apikey to fix the "
+                f"current key."
+            )
+
     system_prompt = build_system_prompt(user_id)
     messages = build_messages(user_id, message)
 
@@ -2079,6 +2094,21 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Restart failed: {msg}")
 
 
+async def _refresh_provider_health(provider) -> tuple[bool, str]:
+    """Run health_check on a provider, store the result on it, and return it.
+
+    Mirrors the startup probe in main(). Used by /provider, /model, /apikey
+    so the user gets immediate feedback if the new provider can't actually
+    serve a request.
+    """
+    try:
+        healthy, reason = await provider.health_check()
+    except Exception as exc:
+        healthy, reason = False, f"health_check raised {exc.__class__.__name__}: {exc}"
+    provider.last_health = (healthy, reason)
+    return healthy, reason
+
+
 async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Switch LLM provider and/or model without restarting."""
     global _llm_provider
@@ -2214,9 +2244,19 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "You lose all skills, file management, scheduling, and "
                 "command execution. The bot becomes text-only."
             )
+        healthy, reason = await _refresh_provider_health(_llm_provider)
+        if healthy:
+            health_line = f"Health-check: OK ({reason})"
+        else:
+            health_line = (
+                f"Health-check FAILED: {reason}\n"
+                f"This provider will reject messages until resolved."
+            )
+            logger.error(f"Health-check failed after /provider switch: {reason}")
         await update.message.reply_text(
             f"Switched to {new_provider} / {new_model}\n"
             f"Tool-use: {tool_use}{warning}\n\n"
+            f"{health_line}\n\n"
             f"No restart needed. Send a message to test."
         )
     except Exception as e:
@@ -2274,9 +2314,19 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _llm_provider.on_progress_save = save_task_progress
             _llm_provider.on_progress_clear = clear_task_progress
         logger.info(f"Model switched to {new_model} by user {user_id}")
+        healthy, reason = await _refresh_provider_health(_llm_provider)
+        if healthy:
+            health_line = f"Health-check: OK ({reason})"
+        else:
+            health_line = (
+                f"Health-check FAILED: {reason}\n"
+                f"Messages will be rejected until resolved."
+            )
+            logger.error(f"Health-check failed after /model switch: {reason}")
         await update.message.reply_text(
             f"Model changed to: {new_model}\n"
             f"Provider: {current_provider}\n\n"
+            f"{health_line}\n\n"
             f"No restart needed."
         )
     except Exception as e:
@@ -2335,6 +2385,15 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _llm_provider.on_progress_save = save_task_progress
             _llm_provider.on_progress_clear = clear_task_progress
         logger.info(f"API key updated for {current_provider} by user {user_id}")
+        healthy, reason = await _refresh_provider_health(_llm_provider)
+        if healthy:
+            health_line = f"\nHealth-check: OK ({reason})"
+        else:
+            health_line = (
+                f"\nHealth-check FAILED: {reason}\n"
+                f"Double-check the key — messages will be rejected until resolved."
+            )
+            logger.error(f"Health-check failed after /apikey update: {reason}")
 
         # Delete the user's message to avoid the key sitting in chat history
         chat = update.message.chat
@@ -2349,12 +2408,14 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await chat.send_message(
                 f"API key updated for {current_provider}.\n"
                 f"(Your message with the key was deleted for security.)"
+                f"{health_line}"
             )
         else:
             await chat.send_message(
                 f"API key updated for {current_provider}.\n"
                 f"(Could not delete your message — delete it manually to avoid "
                 f"the key sitting in chat history.)"
+                f"{health_line}"
             )
     except Exception as e:
         logger.error(f"Failed to update API key: {e}")
@@ -3476,6 +3537,25 @@ def main():
     _llm_provider = create_provider(provider_name, model, api_key, **kwargs)
     logger.info(f"LLM provider: {_llm_provider.provider_name} / {model} "
                 f"(tool-use: {_llm_provider.supports_tool_use})")
+
+    # Synchronous startup health check — surfaces dyld / GLIBC / bad-API-key
+    # failures up front so the bot logs them at boot instead of returning a
+    # stack trace on the first user message. Result is stashed on the provider
+    # for call_llm() to consult; we never auto-swap providers here (per design,
+    # the user resolves with /provider).
+    try:
+        healthy, reason = asyncio.run(_llm_provider.health_check())
+    except Exception as exc:
+        healthy, reason = False, f"health_check raised {exc.__class__.__name__}: {exc}"
+    _llm_provider.last_health = (healthy, reason)
+    if healthy:
+        logger.info(f"LLM provider health-check: OK ({reason})")
+    else:
+        logger.error(
+            f"LLM provider health-check FAILED: {reason}. "
+            f"The bot will start, but /provider will need to be used to "
+            f"switch to a working provider before messages can be answered."
+        )
 
     # Wire up progress callbacks for both CLI providers (Claude, Codex)
     if isinstance(_llm_provider, _CLI_PROVIDERS):

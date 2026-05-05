@@ -467,6 +467,40 @@ def _find_brew() -> str:
     return ""
 
 
+def glibc_version():
+    """Return (major, minor) glibc version on Linux, or None if unavailable.
+
+    Returns None on:
+    - non-Linux systems
+    - musl-based systems (Alpine and similar)
+    - environments where ldd is missing or returns unparseable output
+
+    Native binaries built against glibc (such as the @anthropic-ai/claude-code
+    npm package's optional dependencies and the @openai/codex postinstall
+    artifact) refuse to load when the runtime glibc is older than what they
+    were linked against, with errors like
+    "version `GLIBC_2.31' not found".
+    """
+    import re
+    if platform.system() != "Linux":
+        return None
+    try:
+        result = subprocess.run(
+            ["ldd", "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    text = (result.stdout or "") + (result.stderr or "")
+    if "musl" in text.lower():
+        return None
+    first_line = text.splitlines()[0] if text else ""
+    match = re.search(r"\b(\d+)\.(\d+)(?:\.\d+)?\b", first_line)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
 def print_detection_summary(info: OSInfo):
     """Print a formatted summary of OS detection results."""
     BLUE = "\033[0;34m"

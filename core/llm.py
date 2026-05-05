@@ -110,9 +110,15 @@ class LLMResponse:
 class LLMProvider(ABC):
     """Base class for LLM providers."""
 
+    # Result of the most recent health_check, set by the bot at startup and
+    # after a /provider, /model, or /apikey switch. None means "not yet
+    # checked". Tuple form: (healthy: bool, reason: str).
+    last_health: Optional[tuple] = None
+
     def __init__(self, model: str, api_key: str = ""):
         self.model = model
         self.api_key = api_key
+        self.last_health = None
 
     @abstractmethod
     async def complete(
@@ -155,6 +161,88 @@ class LLMProvider(ABC):
         Default no-op for providers that don't manage subprocesses.
         """
         return
+
+    async def health_check(self) -> tuple[bool, str]:
+        """Probe whether this provider can serve a request right now.
+
+        Returns ``(healthy, reason)``. ``reason`` is a short human-readable
+        explanation; on success it is the version string or "ok", on
+        failure it is the actionable error.
+
+        Subclasses override:
+        - CLI providers run ``<binary> --version`` and look for dyld /
+          GLIBC failure markers in stderr.
+        - API providers GET the provider's public ``/models`` listing
+          endpoint with a short timeout and treat 401/403 as auth failure.
+        - Local Ollama probes ``/api/tags``.
+
+        The default implementation always reports healthy so unknown
+        providers are not blocked.
+        """
+        return True, "no health-check implemented"
+
+
+# --- Helpers shared by health_check implementations -----------------------
+
+# Fragments commonly seen in CLI binary load failures on old macOS / Linux.
+# Used by ClaudeCLIProvider.health_check and CodexCLIProvider.health_check.
+_CLI_LOAD_FAILURE_MARKERS = (
+    "symbol not found",
+    "dyld:",
+    "dyld[",
+    "glibc_",
+    "version `glibc",
+    "not a dynamic executable",
+    "incompatible architecture",
+    "cannot execute binary file",
+)
+
+
+def _looks_like_binary_load_failure(text: str) -> bool:
+    """Return True if `text` matches a known dyld / glibc loader error."""
+    lowered = text.lower()
+    return any(marker in lowered for marker in _CLI_LOAD_FAILURE_MARKERS)
+
+
+async def _http_get_health(
+    url: str,
+    headers: Optional[dict],
+    provider_label: str,
+    timeout: float = 5.0,
+) -> tuple[bool, str]:
+    """Shared GET health probe used by API providers.
+
+    - 200/204 -> (True, summary)
+    - 401/403 -> (False, "<provider>: invalid API key")
+    - 404 -> (True, "<provider>: /models endpoint not standard, "
+             "could not verify; first request will reveal real errors")
+    - other 4xx/5xx -> (False, "<provider>: HTTP <code> <reason>")
+    - timeout / connect error -> (False, "<provider>: <reason>")
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, headers=headers or {})
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        return False, f"{provider_label}: cannot reach API ({exc.__class__.__name__})"
+    except httpx.ReadTimeout:
+        return False, f"{provider_label}: API read timed out after {timeout:.0f}s"
+    except httpx.HTTPError as exc:
+        return False, f"{provider_label}: HTTP error ({exc.__class__.__name__})"
+    except Exception as exc:  # last-resort guard
+        return False, f"{provider_label}: probe raised {exc.__class__.__name__}: {exc}"
+
+    if resp.status_code in (200, 204):
+        return True, f"{provider_label}: ok"
+    if resp.status_code in (401, 403):
+        return False, f"{provider_label}: invalid API key (HTTP {resp.status_code})"
+    if resp.status_code == 404:
+        return True, (
+            f"{provider_label}: /models endpoint returned 404 "
+            f"(non-standard for this provider, cannot pre-verify)"
+        )
+    body = (resp.text or "").strip().splitlines()[0] if resp.text else ""
+    snippet = body[:200]
+    return False, f"{provider_label}: HTTP {resp.status_code} {snippet}".rstrip()
 
 
 # --- Multimodal image helpers ---
@@ -299,6 +387,52 @@ class ClaudeCLIProvider(LLMProvider):
     @property
     def supports_vision(self) -> bool:
         return True
+
+    async def health_check(self) -> tuple[bool, str]:
+        """Run `claude --version` and detect dyld / GLIBC load failures.
+
+        Catches the macOS 10.15 'Symbol not found: _ubrk_clone' / Linux
+        'GLIBC_X.Y not found' family before any user message can trigger it.
+        """
+        binary = self._cli_binary
+        if not binary or (not Path(binary).exists() and not shutil.which(binary)):
+            return False, (
+                "Claude CLI binary not found in PATH. "
+                "Install with: npm i -g @anthropic-ai/claude-code, "
+                "or switch provider via /provider."
+            )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary, "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            return False, f"Claude CLI cannot be executed: {exc}"
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            return False, "Claude CLI --version timed out (10s); binary may be hanging."
+        text = ((stdout or b"") + (stderr or b"")).decode("utf-8", errors="replace").strip()
+        if proc.returncode == 0:
+            first_line = text.splitlines()[0] if text else "ok"
+            return True, first_line
+        if _looks_like_binary_load_failure(text):
+            return False, (
+                f"Claude CLI binary fails to load on this OS: "
+                f"{text[:300]}. "
+                f"This usually means macOS < 13 or glibc < 2.31. "
+                f"Switch provider via /provider (claude-api, openrouter, "
+                f"ollama, gemini, etc.)."
+            )
+        return False, (
+            f"Claude CLI --version exited {proc.returncode}: "
+            f"{text[:300] if text else '(no output)'}"
+        )
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7,
                        chat=None, user_id: int = None, original_message: str = "") -> LLMResponse:
@@ -843,6 +977,52 @@ class CodexCLIProvider(LLMProvider):
         # GPT-5.x and GPT-4o families used by Codex CLI all support vision input
         return True
 
+    async def health_check(self) -> tuple[bool, str]:
+        """Run `codex --version` and detect dyld / GLIBC load failures.
+
+        Same shape as ClaudeCLIProvider.health_check — catches the binary
+        being incompatible with the host OS before any user-facing failure.
+        """
+        binary = self._cli_binary
+        if not binary or (not Path(binary).exists() and not shutil.which(binary)):
+            return False, (
+                "Codex CLI binary not found in PATH. "
+                "Install with: npm i -g @openai/codex, "
+                "or switch provider via /provider."
+            )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary, "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            return False, f"Codex CLI cannot be executed: {exc}"
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            return False, "Codex CLI --version timed out (10s); binary may be hanging."
+        text = ((stdout or b"") + (stderr or b"")).decode("utf-8", errors="replace").strip()
+        if proc.returncode == 0:
+            first_line = text.splitlines()[0] if text else "ok"
+            return True, first_line
+        if _looks_like_binary_load_failure(text):
+            return False, (
+                f"Codex CLI binary fails to load on this OS: "
+                f"{text[:300]}. "
+                f"This usually means macOS < 13 or glibc < 2.31. "
+                f"Switch provider via /provider (openai, openrouter, "
+                f"ollama, gemini, etc.)."
+            )
+        return False, (
+            f"Codex CLI --version exited {proc.returncode}: "
+            f"{text[:300] if text else '(no output)'}"
+        )
+
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7,
                        chat=None, user_id: int = None, original_message: str = "") -> LLMResponse:
         prompt = system_prompt + "\n\n"
@@ -1334,6 +1514,7 @@ class ClaudeAPIProvider(LLMProvider):
     """Anthropic Claude API — text-only, no tool execution layer."""
 
     API_URL = "https://api.anthropic.com/v1/messages"
+    MODELS_URL = "https://api.anthropic.com/v1/models"
 
     @property
     def provider_name(self) -> str:
@@ -1346,6 +1527,15 @@ class ClaudeAPIProvider(LLMProvider):
     @property
     def supports_vision(self) -> bool:
         return True
+
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "claude-api: ANTHROPIC_API_KEY (LLM_API_KEY) is empty"
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        return await _http_get_health(self.MODELS_URL, headers, "claude-api")
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
@@ -1593,6 +1783,12 @@ class OpenAIProvider(LLMProvider):
         # GPT-4o, GPT-4.1, GPT-5.x all support vision
         return any(prefix in self.model for prefix in ("gpt-4", "gpt-5")) or "vision" in self.model
 
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "openai: OPENAI_API_KEY (LLM_API_KEY) is empty"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        return await _http_get_health(f"{self.base_url}/models", headers, "openai")
+
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -1653,6 +1849,16 @@ class OpenRouterProvider(LLMProvider):
         no_vision_keywords = ("nemotron", "hermes", "mixtral")
         return not any(kw in m for kw in no_vision_keywords)
 
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "openrouter: OPENROUTER_API_KEY (LLM_API_KEY) is empty"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "HTTP-Referer": "https://github.com/nickathens/MyOldMachine",
+            "X-Title": "MyOldMachine",
+        }
+        return await _http_get_health(f"{self.BASE_URL}/models", headers, "openrouter")
+
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -1694,6 +1900,13 @@ class GeminiProvider(LLMProvider):
     @property
     def supports_vision(self) -> bool:
         return True
+
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "gemini: GEMINI_API_KEY (LLM_API_KEY) is empty"
+        # Gemini takes the key in a query string, not a header.
+        url = f"{self.API_URL}?key={self.api_key}"
+        return await _http_get_health(url, None, "gemini")
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         url = f"{self.API_URL}/{self.model}:generateContent"
@@ -1899,6 +2112,12 @@ class DeepSeekProvider(LLMProvider):
     def supports_vision(self) -> bool:
         return False  # DeepSeek V4 API does not support vision
 
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "deepseek: DEEPSEEK_API_KEY (LLM_API_KEY) is empty"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        return await _http_get_health(f"{self.BASE_URL}/models", headers, "deepseek")
+
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -1964,6 +2183,12 @@ class GrokProvider(LLMProvider):
             return True
         return False
 
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "grok: XAI_API_KEY (LLM_API_KEY) is empty"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        return await _http_get_health(f"{self.BASE_URL}/models", headers, "grok")
+
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -2019,6 +2244,12 @@ class KimiProvider(LLMProvider):
         # K2.5 is multimodal (vision), K2 variants are text-only
         return "k2.5" in self.model.lower()
 
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "kimi: MOONSHOT_API_KEY (LLM_API_KEY) is empty"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        return await _http_get_health(f"{self.BASE_URL}/models", headers, "kimi")
+
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -2071,6 +2302,15 @@ class MiniMaxProvider(LLMProvider):
         # M2.5 is multimodal (vision), M2.7 and others are text-only
         return "m2.5" in self.model.lower()
 
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "minimax: MINIMAX_API_KEY (LLM_API_KEY) is empty"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        # MiniMax /models endpoint shape is undocumented for some accounts;
+        # _http_get_health treats 404 as a permissive "could not pre-verify"
+        # so this is safe to call here.
+        return await _http_get_health(f"{self.BASE_URL}/models", headers, "minimax")
+
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -2110,6 +2350,35 @@ class OllamaProvider(LLMProvider):
         if self.base_url.endswith("ollama.com"):
             return "ollama-cloud"
         return "ollama"
+
+    async def health_check(self) -> tuple[bool, str]:
+        is_cloud = self.base_url.endswith("ollama.com")
+        label = self.provider_name
+        if is_cloud and not self.api_key:
+            return False, f"{label}: OLLAMA_API_KEY (LLM_API_KEY) is empty (cloud requires a key)"
+        headers: dict = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        # Ollama exposes /api/tags as the canonical "is the server up?"
+        # endpoint — already used as a probe inside complete().
+        url = f"{self.base_url}/api/tags"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, headers=headers)
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            hint = "check internet connection" if is_cloud else "is `ollama serve` running?"
+            return False, f"{label}: cannot reach {self.base_url} ({hint})"
+        except httpx.ReadTimeout:
+            return False, f"{label}: {self.base_url}/api/tags read timed out after 5s"
+        except httpx.HTTPError as exc:
+            return False, f"{label}: HTTP error ({exc.__class__.__name__})"
+        except Exception as exc:
+            return False, f"{label}: probe raised {exc.__class__.__name__}: {exc}"
+        if resp.status_code == 200:
+            return True, f"{label}: ok"
+        if resp.status_code == 401:
+            return False, f"{label}: invalid API key (HTTP 401)"
+        return False, f"{label}: HTTP {resp.status_code} from {url}"
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
         # Ollama supports OpenAI-compatible /v1/chat/completions endpoint

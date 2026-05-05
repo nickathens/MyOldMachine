@@ -1223,7 +1223,18 @@ def main():
             ok(f"Switched to {new_provider} ({config['llm_model']})")
             checkpoint_set("claude_cli")  # Mark as done — no CLI needed anymore
 
-        if _shutil.which("claude"):
+        # Refuse install on hosts where the binary is known to crash on load
+        # (macOS < 13, glibc < 2.31, musl) before npm even runs. Without this
+        # the install succeeds but every claude invocation aborts with dyld
+        # "Symbol not found" or "GLIBC_X.Y not found".
+        from install.compat_check import cli_compat
+        from install.os_detect import detect as _detect_os
+        _claude_compat_ok, _claude_compat_reason = cli_compat("claude", _detect_os())
+
+        if not _claude_compat_ok:
+            warn(_claude_compat_reason)
+            _switch_provider_fallback()
+        elif _shutil.which("claude"):
             ok("Claude Code CLI already installed")
             print(f"  {YELLOW}Run 'claude login' to authenticate with your Anthropic plan.{NC}")
             checkpoint_set("claude_cli")
@@ -1297,7 +1308,16 @@ def main():
             ok(f"Switched to {new_provider} ({config['llm_model']})")
             checkpoint_set("codex_cli")
 
-        if _shutil.which("codex"):
+        # Refuse install on hosts where the binary is known to crash on load
+        # (macOS < 13, glibc < 2.31, musl) before npm even runs.
+        from install.compat_check import cli_compat
+        from install.os_detect import detect as _detect_os
+        _codex_compat_ok, _codex_compat_reason = cli_compat("codex", _detect_os())
+
+        if not _codex_compat_ok:
+            warn(_codex_compat_reason)
+            _switch_codex_fallback()
+        elif _shutil.which("codex"):
             ok("OpenAI Codex CLI already installed")
             print(f"  {YELLOW}Run 'codex login' to authenticate with your ChatGPT plan.{NC}")
             checkpoint_set("codex_cli")
