@@ -206,5 +206,46 @@ class DeleteSystemUserMacosTests(unittest.TestCase):
         g_mock.assert_called_once_with("mom_user1", "pw")
 
 
+class MkdirAsRootTests(unittest.TestCase):
+    """Regression tests for the install-time helper that creates slot dirs.
+
+    The wizard chowns data/users/ to mom_orchestrator with mode 0755 before
+    creating data/users/userN/ inside it. Once that chown lands, the install
+    user (a non-orchestrator account, hence "other") loses write permission
+    on data/users/, so a plain Path.mkdir for the slot dir raises
+    PermissionError. mkdir_as_root bypasses that by going through sudo.
+    """
+
+    def test_calls_sudo_mkdir_p_with_password(self):
+        with patch.object(mu, "_sudo_run", return_value=_proc(0)) as m:
+            self.assertTrue(
+                mu.mkdir_as_root(Path("/data/users/user1"), password="hunter2")
+            )
+        cmd = m.call_args.args[0]
+        self.assertEqual(cmd, ["mkdir", "-p", "/data/users/user1"])
+        # Password must propagate so sudo doesn't fall back to -n and EACCES.
+        self.assertEqual(m.call_args.args[1], "hunter2")
+
+    def test_no_password_uses_passwordless_sudo(self):
+        # When the install user is in NOPASSWD sudoers (CI, some setups),
+        # the helper still works without a password.
+        with patch.object(mu, "_sudo_run", return_value=_proc(0)) as m:
+            self.assertTrue(mu.mkdir_as_root(Path("/data/users/user1")))
+        # Second positional arg is the password parameter — should be None.
+        self.assertIsNone(m.call_args.args[1])
+
+    def test_returns_false_on_failure(self):
+        with patch.object(mu, "_sudo_run",
+                          return_value=_proc(1, stderr="EACCES boom")):
+            self.assertFalse(mu.mkdir_as_root(Path("/etc/sudoers.d/whatever")))
+
+    def test_idempotent_on_existing_directory(self):
+        # `mkdir -p` exits 0 when the directory already exists; the helper
+        # must not treat that as failure on a wizard resume.
+        with patch.object(mu, "_sudo_run", return_value=_proc(0)) as m:
+            self.assertTrue(mu.mkdir_as_root(Path("/already/here")))
+        self.assertEqual(m.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

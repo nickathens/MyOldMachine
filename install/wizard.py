@@ -838,7 +838,7 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
     from install.multiuser import (
         ORCHESTRATOR_USER, SUDOERS_FRAGMENT_PATH,
         create_system_user, find_cli_binary, grant_sudo,
-        set_owner, set_perms, slot_user,
+        mkdir_as_root, set_owner, set_perms, slot_user,
     )
 
     sudo_pass = config.get("sudo_pass")
@@ -887,7 +887,12 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
 
     for slot in range(1, num_slots + 1):
         slot_dir = users_root / f"user{slot}"
-        slot_dir.mkdir(parents=True, exist_ok=True)
+        # users_root was just chowned to mom_orchestrator with mode 0755, so
+        # the install user (who is "other" relative to that owner) no longer
+        # has write permission here. A plain Path.mkdir would raise EACCES.
+        # Create via sudo and let the chown/chmod below fix ownership + mode.
+        if not mkdir_as_root(slot_dir, password=sudo_pass):
+            return False, f"failed to create {slot_dir}"
         # Owner: mom_userN (own slot data, written by their CLI subprocess)
         # Group: mom_orchestrator (bot writes session state, pending messages here)
         # Mode 2770: setgid bit (2) ensures subdirectories created by mom_userN

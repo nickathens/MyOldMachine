@@ -387,6 +387,27 @@ def set_perms(path: Path, mode: int, *, password: Optional[str] = None,
     return True
 
 
+def mkdir_as_root(path: Path, *, password: Optional[str] = None) -> bool:
+    """Create a directory and any missing parents via sudo. Idempotent.
+
+    Use this when the parent directory is owned by another system user (e.g.
+    after we've chowned it to mom_orchestrator) and the install-user process
+    can no longer write into it. The caller is responsible for setting the
+    final ownership and mode via set_owner / set_perms — `mkdir -p` runs as
+    root, so the directory is briefly root-owned with the umask-derived
+    mode until those calls land.
+    """
+    cmd = ["mkdir", "-p", str(path)]
+    result = _sudo_run(cmd, password)
+    if result.returncode != 0:
+        logger.error(
+            f"mkdir -p {path} failed: rc={result.returncode} "
+            f"stderr={result.stderr.strip()[:200]}"
+        )
+        return False
+    return True
+
+
 # ─── Sudoers ──────────────────────────────────────────────────────────
 
 
