@@ -133,6 +133,25 @@ class MemoryManager:
         )
         self.set_model(user_id, content)
 
+    # --- Intro flow state ---
+    #
+    # Two markers track the per-user intro lifecycle:
+    #   .intro_shown: orientation has been delivered (set on first message)
+    #   .intro_done : intro reflection has run (set on second message)
+    # Filesystem markers persist across restarts and never need cleanup.
+
+    def intro_shown(self, user_id: int) -> bool:
+        return (self._user_dir(user_id) / ".intro_shown").exists()
+
+    def mark_intro_shown(self, user_id: int):
+        (self._user_dir(user_id) / ".intro_shown").touch()
+
+    def intro_done(self, user_id: int) -> bool:
+        return (self._user_dir(user_id) / ".intro_done").exists()
+
+    def mark_intro_done(self, user_id: int):
+        (self._user_dir(user_id) / ".intro_done").touch()
+
     # --- Observations ---
 
     def _observations_file(self, user_id: int) -> Path:

@@ -658,6 +658,89 @@ def _build_simple_prompt(current_model: str, observations_text: str,
     )
 
 
+# ─── Intro Reflection ─────────────────────────────────────────────
+
+def _build_intro_prompt(user_name: str, intro_message: str, user_reply: str) -> str:
+    """Build the seed-model prompt for the intro reflection.
+
+    Fired once per user, after they reply to the bot's introduction. Distills
+    whatever they shared (name, focus areas, comm style hints) into a small
+    starter model. The full model fills in via nightly reflection later.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    return (
+        "You are seeding a working model for a brand-new user.\n\n"
+        "## Bot's introduction (sent to the user)\n"
+        f"{intro_message[:2000]}\n\n"
+        "## User's first reply\n"
+        f"{user_reply[:2000]}\n\n"
+        "## Task\n"
+        "Extract whatever the user shared and write a concise seed model.\n"
+        "If the user said 'skip', declined, or shared nothing useful, write a\n"
+        "minimal placeholder. Do not invent details.\n\n"
+        "Write a model.md with this exact structure:\n\n"
+        f"# {{Name}} — Working Model\n\n"
+        f"Last updated: {today}\n\n"
+        "## Identity\n"
+        f"- Name: {{name they gave, or fall back to: {user_name}}}\n"
+        "- (concrete facts they shared, one per line)\n\n"
+        "## Preferences\n"
+        "(communication style if hinted; language preference if visible. "
+        "Otherwise: \"To be discovered\")\n\n"
+        "## Current State\n"
+        "(focus areas they mentioned; immediate task if any. "
+        "Otherwise: \"Just starting\")\n\n"
+        "## Relationship\n"
+        "- Trust level: New user\n"
+        "- Expectations: To be established as we work together\n\n"
+        "Rules:\n"
+        "- 15 lines max. Do not pad. Do not use bold formatting.\n"
+        "- No project-specific details, no file paths, no technical specs.\n"
+        "- No invented facts. If they said nothing about a section, keep its placeholder.\n"
+        "- Plain text only.\n\n"
+        "## Output Format — use EXACTLY these markers:\n\n"
+        "---MODEL_START---\n"
+        "[seed model content]\n"
+        "---MODEL_END---\n"
+    )
+
+
+def run_intro_reflection(mm: MemoryManager, user_id: int, user_name: str,
+                          intro_message: str, user_reply: str) -> dict:
+    """Distill the user's first reply into a seed person model.
+
+    Called once per user, right after they reply to the introduction. Writes
+    whatever the LLM extracts (name, focus, comm style) to model.md so the
+    bot has useful context from turn three onward instead of waiting for the
+    nightly reflection to populate the model.
+
+    Returns a status dict. On any failure (no LLM available, parse error)
+    the caller should still mark intro_done so we don't retry on every turn.
+    """
+    log(f"Intro reflection for user {user_id}: seeding model from first reply")
+
+    prompt = _build_intro_prompt(user_name, intro_message, user_reply)
+
+    output = _call_claude_cli(prompt)
+    if not output:
+        output = _call_api(prompt)
+    if not output:
+        log(f"  No LLM available for intro reflection on user {user_id}")
+        return {"user_id": user_id, "status": "no_llm"}
+
+    model_content, _summary = mm.parse_reflection_output(output)
+    if not model_content:
+        log(f"  Could not parse intro model for user {user_id}")
+        return {"user_id": user_id, "status": "parse_error",
+                "output_preview": output[:200]}
+
+    mm.set_model(user_id, model_content)
+    mm.log_reflection(user_id, 0,
+                      "Intro reflection: seeded model from user's first reply.")
+    log(f"  Intro reflection complete for user {user_id} ({len(model_content)} chars)")
+    return {"user_id": user_id, "status": "updated", "size": len(model_content)}
+
+
 # ─── Reflection Pipeline ──────────────────────────────────────────
 
 def run_reflection(mm: MemoryManager, user_id: int, dry_run: bool = False,

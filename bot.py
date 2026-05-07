@@ -584,12 +584,15 @@ async def recover_pending_messages(bot):
 
 # --- System prompt builder ---
 
-def build_orientation_prompt(user_id: int) -> str:
-    """Build the auto-firing first-contact orientation prompt.
+def build_orientation_prompt(user_id: int, first_user_message: str = None) -> str:
+    """Build the first-contact orientation prompt.
 
-    This is the initial message sent through the LLM on first boot,
-    so the bot introduces itself, audits the environment, checks skills,
-    and asks the user about themselves — all in plain, non-technical language.
+    Fires once per user, on their first message ever. If first_user_message is
+    provided, the prompt asks the bot to introduce itself, address what the user
+    just said, and end with the get-to-know-you questions — all in one reply.
+    If first_user_message is None, returns the legacy "intro only" form, used
+    by the intro reflection pass to give the LLM canonical seed questions for
+    context.
     """
     bot_name = get_bot_name()
     caps_summary = get_caps_summary(DATA_DIR)
@@ -610,34 +613,64 @@ def build_orientation_prompt(user_id: int) -> str:
             for name, missing in sorted(not_ready.items()):
                 skills_report += f"\n  - {name}: missing {', '.join(missing)}"
 
+    if first_user_message:
+        # Live intro turn — combine intro with answering the user's actual message
+        header = (
+            f"This is the VERY FIRST message this user has ever sent to you. "
+            f"They have not met you yet.\n\n"
+            f"Your name is {bot_name}. You are their personal AI assistant that lives "
+            f"on this computer and can do things for them: manage files, edit media, "
+            f"set reminders, and much more.\n\n"
+            f"## What the user just said (their first message)\n"
+            f"{first_user_message[:1500]}\n"
+        )
+        task_intro = "## YOUR TASK\nReply to them. Your reply must do THREE things, blended naturally:"
+        task_answer = (
+            "3. ADDRESS what they just said (their message above). Take care of "
+            "their request, or if you need more context, ask the minimum to proceed.\n\n"
+        )
+        task_questions = (
+            "4. END with two gentle questions to learn about them (not a form):\n"
+            "   - What they would like to be called\n"
+            "   - What they are most interested in using you for\n\n"
+        )
+    else:
+        header = (
+            f"This is your FIRST conversation with this user. You just got installed on their machine.\n\n"
+            f"Your name is {bot_name}. You are their personal AI assistant that lives on this computer "
+            f"and can do things for them: manage files, edit media, set reminders, and much more.\n"
+        )
+        task_intro = "YOUR TASK for this first message:"
+        task_answer = ""
+        task_questions = (
+            "3. ASK the user about themselves. You want to learn:\n"
+            "   - What they would like to call themselves (or confirm their Telegram name)\n"
+            "   - What they are most interested in using you for\n"
+            "   - Any specific tasks they have in mind right now\n\n"
+        )
+
     return (
-        f"This is your FIRST conversation with this user. You just got installed on their machine.\n\n"
-        f"Your name is {bot_name}. You are their personal AI assistant that lives on this computer "
-        f"and can do things for them — manage files, edit media, set reminders, and much more.\n\n"
+        f"{header}\n"
         f"Here is what you know about this machine:\n{caps_summary}\n"
         f"{skills_report}\n\n"
-        f"YOUR TASK for this first message:\n\n"
-        f"1. INTRODUCE yourself warmly but concisely. Explain in simple, non-technical language "
-        f"what you are and what you can do. Do NOT list every skill — give a high-level overview "
-        f"of your capabilities grouped by category (e.g. 'I can work with photos and videos', "
-        f"'I can help with music and audio', 'I can manage your files and schedule').\n\n"
-        f"2. REPORT the machine status in plain language. Not raw specs — translate them. "
-        f"For example, instead of '15.5 GB RAM', say 'Your computer has plenty of memory'. "
-        f"Instead of listing missing binaries, say which categories of skills are ready and "
-        f"which ones would need a quick setup (and offer to do it for them).\n\n"
-        f"3. MENTION that you automatically keep the machine healthy: nightly system updates "
-        f"and cleanup are already running. If they have an external drive or a folder where "
-        f"they'd like automatic backups saved, they can set it up with /maintenance.\n\n"
-        f"4. ASK the user about themselves. You want to learn:\n"
-        f"   - What they'd like to call themselves (or confirm their Telegram name)\n"
-        f"   - What they're most interested in using you for\n"
-        f"   - Any specific tasks they have in mind right now\n\n"
-        f"Keep your message friendly, clear, and under 300 words. "
-        f"Do NOT use technical jargon, file paths, command names, or code. "
-        f"Do NOT overwhelm them with information. Make them feel like they just got "
-        f"a capable, approachable assistant — not a terminal window.\n\n"
-        f"Remember: this user may have ZERO experience with computers beyond basic use. "
-        f"Meet them where they are."
+        f"{task_intro}\n\n"
+        "1. INTRODUCE yourself warmly but concisely. Explain in simple, non-technical "
+        "language what you are and what you can do. Do NOT list every skill: give a "
+        "high-level overview grouped by category (for example 'I can work with photos "
+        "and videos', 'I can help with music and audio', 'I can manage your files and "
+        "schedule').\n\n"
+        "2. REPORT the machine status in plain language. Not raw specs: translate them. "
+        "For example, instead of '15.5 GB RAM', say 'Your computer has plenty of memory'. "
+        "Instead of listing missing binaries, say which categories of skills are ready and "
+        "which ones would need a quick setup (and offer to do it for them).\n\n"
+        f"{task_answer}"
+        f"{task_questions}"
+        "Keep your message friendly, clear, and under 300 words. "
+        "Do NOT use technical jargon, file paths, command names, or code. "
+        "Do NOT overwhelm them with information. Make them feel like they just got "
+        "a capable, approachable assistant, not a terminal window.\n\n"
+        "Remember: this user may have ZERO experience with computers beyond basic use. "
+        "Meet them where they are."
     )
 
 
@@ -2784,6 +2817,18 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _memory_manager.init_model(user_id, name=user_name)
             logger.info(f"Initialized person model for user {user_id} ({user_name})")
 
+        # Intro flow state. First message ever -> show intro. Second message ->
+        # run intro reflection to seed the model. Third message onward ->
+        # normal flow. Migration in post_init() sets both markers for users who
+        # already have a populated model from prior deployments.
+        intro_first_turn = False
+        intro_should_reflect = False
+        if _memory_manager:
+            if not _memory_manager.intro_shown(user_id):
+                intro_first_turn = True
+            elif not _memory_manager.intro_done(user_id):
+                intro_should_reflect = True
+
         # Crash-loop protection
         incomplete = get_incomplete_task(user_id)
         if incomplete:
@@ -2848,7 +2893,16 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-            response = await call_llm(user_id, user_message, chat=update.message.chat,
+            # On the user's first message, swap in the orientation prompt as the
+            # LLM input. The user's clean message still gets saved to history.
+            if intro_first_turn:
+                llm_message = build_orientation_prompt(
+                    user_id, first_user_message=user_message
+                )
+            else:
+                llm_message = user_message
+
+            response = await call_llm(user_id, llm_message, chat=update.message.chat,
                                       images=image_paths or None)
 
             # Save to current session (topic or main) with compaction
@@ -2862,6 +2916,36 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"Failed to send reply to {user_id}: {e}")
 
             logger.info(f"Responded to {user_id}: {len(response)} chars")
+
+            # Intro flow bookkeeping after a successful response
+            if _memory_manager:
+                if intro_first_turn:
+                    _memory_manager.mark_intro_shown(user_id)
+                    logger.info(f"Intro shown to user {user_id}")
+                elif intro_should_reflect:
+                    # Mark done first so a reflection failure does not loop on
+                    # every subsequent turn. Then run the reflection in a
+                    # thread so it does not block the event loop.
+                    _memory_manager.mark_intro_done(user_id)
+                    try:
+                        from utils.reflect import run_intro_reflection
+                        profile = get_user_profile(user_id)
+                        user_name = profile.get(
+                            "name", update.effective_user.first_name or "User"
+                        )
+                        intro_msg = build_orientation_prompt(user_id)
+                        loop = asyncio.get_running_loop()
+                        loop.run_in_executor(
+                            None,
+                            run_intro_reflection,
+                            _memory_manager, user_id, user_name,
+                            intro_msg, user_message,
+                        )
+                        logger.info(f"Intro reflection scheduled for user {user_id}")
+                    except Exception as e:
+                        logger.error(
+                            f"Intro reflection scheduling failed for {user_id}: {e}"
+                        )
         except Exception as e:
             logger.exception(f"Error processing message for user {user_id}")
             try:
@@ -3753,60 +3837,24 @@ def main():
             except Exception as e:
                 logger.warning(f"System probe failed: {e}")
 
-        # First boot — orientation through the LLM
-        first_boot_marker = DATA_DIR / ".first_boot_sent"
-        if not first_boot_marker.exists():
-            allowed = get_allowed_users()
-            if allowed:
-                # Fire the orientation prompt through the LLM for each user
-                for uid in allowed:
-                    try:
-                        # Initialize person model before orientation
-                        if _memory_manager and not _memory_manager.get_model(uid):
-                            profile = get_user_profile(uid)
-                            user_name = profile.get("name", "User")
-                            _memory_manager.init_model(uid, name=user_name)
-
-                        orientation_msg = build_orientation_prompt(uid)
-                        logger.info(f"Running first-boot orientation for user {uid}")
-
-                        # Send typing indicator while LLM generates response
-                        try:
-                            await application.bot.send_chat_action(chat_id=uid, action="typing")
-                        except Exception:
-                            pass
-
-                        response = await call_llm(uid, orientation_msg)
-
-                        # Save to conversation history with a clean user entry
-                        # (don't pollute history with the full orientation prompt)
-                        session = get_session(uid)
-                        _save_and_send(uid, "[First boot — assistant introduced itself]",
-                                       response, session=session)
-
-                        for chunk in split_message(response):
-                            try:
-                                await application.bot.send_message(chat_id=uid, text=chunk)
-                            except Exception as e:
-                                logger.error(f"Failed to send orientation to {uid}: {e}")
-                    except Exception as e:
-                        # Fallback: send a simple static message if LLM fails
-                        logger.error(f"Orientation failed for {uid}, sending fallback: {e}")
-                        try:
-                            bot_name = get_bot_name()
-                            await application.bot.send_message(
-                                chat_id=uid,
-                                text=(
-                                    f"{bot_name} is online and ready.\n\n"
-                                    f"Send me a message to get started — I'm here to help with "
-                                    f"anything on this computer.\n\n"
-                                    f"Send /help to see what I can do."
-                                ),
-                            )
-                        except Exception:
-                            pass
-                first_boot_marker.touch()
-                logger.info("First boot orientation complete")
+        # Intro flow migration. Pre-existing users with a populated model from
+        # earlier deployments must not see the intro again on their next message.
+        # We treat the existence of model.md as the signal that the user has
+        # already been onboarded. Idempotent: safe to run on every startup.
+        if _memory_manager:
+            for uid in _memory_manager.get_all_users():
+                if _memory_manager.get_model(uid):
+                    if not _memory_manager.intro_shown(uid):
+                        _memory_manager.mark_intro_shown(uid)
+                    if not _memory_manager.intro_done(uid):
+                        _memory_manager.mark_intro_done(uid)
+            # Retire the legacy global first-boot marker if it exists
+            legacy_marker = DATA_DIR / ".first_boot_sent"
+            if legacy_marker.exists():
+                try:
+                    legacy_marker.unlink()
+                except OSError:
+                    pass
 
     # Shutdown: stop scheduler, polling monitor, MCP, kill background processes
     async def post_shutdown(application):

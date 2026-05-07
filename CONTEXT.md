@@ -347,33 +347,52 @@ Ported battle-tested improvements from the private Telegram bot (`claude-telegra
 - Message log integration: every user/assistant exchange logged in `_save_and_send()`
 - Improved queued-message notification text
 
-## First-Contact Orientation & Non-Technical UX (Mar 18)
+## Per-User Intro Flow & Non-Technical UX (Mar 18, revised May 7)
 
-**Problem:** The bot assumed users were technical. The first boot message was a raw dump of specs, provider info, and version numbers. The system prompt used technical language (file paths, CLI commands, tool names) when talking to users. Users cloning MyOldMachine are often non-technical — they want a helpful assistant, not a terminal.
+**Problem:** The bot assumed users were technical. The first boot message was a raw dump of specs, provider info, and version numbers. The system prompt used technical language (file paths, CLI commands, tool names) when talking to users. Users cloning MyOldMachine are often non-technical: they want a helpful assistant, not a terminal.
 
-**Changes:**
+**Earlier fix (Mar 18):** A `post_init` hook fired an orientation message to every allowed user the moment the bot started. Worked, but had problems: silent on the user's side until they noticed; couldn't prompt the user with a question because the user wasn't actively in chat; and required global state (`.first_boot_sent`) to avoid repeats.
 
-1. **Auto-firing orientation prompt** (`build_orientation_prompt()` in `bot.py`):
-   - On first boot, instead of a static text message, the LLM generates a personalized introduction
-   - Reads system capabilities (OS, RAM, disk, skill readiness) and translates them to plain language
-   - Introduces itself, explains what it can do in categories (not raw skill names)
-   - Asks the user about themselves (name, interests, immediate needs) to populate the person model
-   - Falls back to a simple static message if the LLM call fails
-   - Saved to conversation history as `[First boot — assistant introduced itself]` (not the raw prompt)
+**Current design (May 7):** The intro fires per user, on their first real message, in two turns.
 
-2. **Communication Style directive** in system prompt:
+1. **Per-user filesystem markers** (`core/memory.py`):
+   - `.intro_shown`: orientation has been delivered (set after the bot's first reply)
+   - `.intro_done`: intro reflection has run (set before the second turn fires)
+   - Markers persist alongside `model.md` in `data/memory/people/<uid>/`
+   - No global state, no race between users, no cleanup needed
+
+2. **Intro turn** (`build_orientation_prompt(user_id, first_user_message=...)` in `bot.py`):
+   - Triggered when `not mm.intro_shown(user_id)` on the user's first message
+   - LLM is asked to: greet, briefly explain what the bot is, answer the user's actual message, and ask one short get-to-know-you question, all in one reply
+   - System capabilities still summarized (OS, RAM, skills) so the introduction is personalized
+   - After the response sends, `mark_intro_shown` flips on
+
+3. **Intro reflection** (`run_intro_reflection` in `utils/reflect.py`):
+   - Triggered on the user's second message (`intro_shown=True, intro_done=False`)
+   - Distills whatever they shared (name, focus area, communication style hints) into a 15-line seed `model.md` with Identity / Preferences / Current State / Relationship sections
+   - Provider chain: Claude CLI first, then API; if both fail, status is `no_llm` and the model is left empty for the nightly reflection to fill
+   - Runs in a thread via `loop.run_in_executor` so it never blocks the user's actual response
+   - `mark_intro_done` is set BEFORE the reflection runs so a failure cannot loop
+
+4. **Migration for existing users** (`bot.post_init`):
+   - On every startup, any user with a populated `model.md` gets both markers touched
+   - Idempotent, runs every boot, safe for repeat deployments
+   - Legacy `.first_boot_sent` global marker is removed if present
+
+5. **Communication Style directive** in system prompt (unchanged from Mar 18):
    - "Assume the user has NO experience with code, terminals, or technical concepts"
    - Concrete examples: "I'll convert the video" not "I'll run ffmpeg to transcode"
    - Adapts upward if the user demonstrates technical knowledge
    - Only shows jargon when the user specifically asks for technical details
 
-3. **User-facing text rewritten**:
+6. **User-facing text rewritten** (unchanged from Mar 18):
    - `/start`: Friendly greeting with skill count, no raw specs
    - `/help`: Reorganized by use case (memory, reminders, organization), not by internal module
    - Recovery message: Plain language ("I was working on something when I got interrupted")
-   - Fallback first boot message: Simple and welcoming
 
-**Files modified:** `bot.py` only — 4 sections changed (new function, system prompt, start_command, help_command, post_init).
+**No `/intro` command:** Once `intro_done` is set, there are no redos. If the seed reflection produced a thin model, the nightly reflection cycle catches up by reading observations from real conversations.
+
+**Files modified:** `bot.py`, `core/memory.py`, `utils/reflect.py`, plus `tests/test_intro_flow.py`.
 
 ## Testing
 
