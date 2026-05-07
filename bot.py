@@ -2935,12 +2935,22 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                         intro_msg = build_orientation_prompt(user_id)
                         loop = asyncio.get_running_loop()
-                        loop.run_in_executor(
+                        fut = loop.run_in_executor(
                             None,
                             run_intro_reflection,
                             _memory_manager, user_id, user_name,
                             intro_msg, user_message,
                         )
+
+                        def _intro_reflection_done(f, uid=user_id):
+                            try:
+                                f.result()
+                            except Exception:
+                                logger.exception(
+                                    f"Intro reflection failed for user {uid}"
+                                )
+
+                        fut.add_done_callback(_intro_reflection_done)
                         logger.info(f"Intro reflection scheduled for user {user_id}")
                     except Exception as e:
                         logger.error(
@@ -3839,9 +3849,9 @@ def main():
 
         # Intro flow migration. Pre-existing users with a populated model from
         # earlier deployments must not see the intro again on their next message.
-        # We treat the existence of model.md as the signal that the user has
-        # already been onboarded. Idempotent: safe to run on every startup.
-        if _memory_manager:
+        # Gated by a sentinel so we walk the user list at most once per deploy.
+        intro_migration_marker = DATA_DIR / ".intro_migration_done"
+        if _memory_manager and not intro_migration_marker.exists():
             for uid in _memory_manager.get_all_users():
                 if _memory_manager.get_model(uid):
                     if not _memory_manager.intro_shown(uid):
@@ -3855,6 +3865,10 @@ def main():
                     legacy_marker.unlink()
                 except OSError:
                     pass
+            try:
+                intro_migration_marker.touch()
+            except OSError as e:
+                logger.warning(f"Could not write intro migration marker: {e}")
 
     # Shutdown: stop scheduler, polling monitor, MCP, kill background processes
     async def post_shutdown(application):

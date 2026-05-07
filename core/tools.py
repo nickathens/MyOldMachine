@@ -623,10 +623,20 @@ def _check_bot_self_modification(command: str) -> str | None:
 
 
 def _is_write_blocked(path: str) -> str | None:
-    """Return a reason string if writing to this path is blocked, else None."""
+    """Return a reason string if writing to this path is blocked, else None.
+
+    Match semantics: exact path match, or descendant-path match anchored at a
+    directory separator. A naive ``startswith`` would accept ``/etc/passwd-foo``
+    against blocked entry ``/etc/passwd``; this version requires the next char
+    after the prefix to be ``/`` so that only true children are blocked.
+    """
     resolved = str(Path(path).expanduser().resolve())
     for blocked in BLOCKED_WRITE_PATHS:
-        if resolved == blocked or resolved.startswith(blocked):
+        # Normalize trailing slash so file and directory entries compare equally.
+        anchor = blocked.rstrip("/")
+        if not anchor:
+            continue
+        if resolved == anchor or resolved.startswith(anchor + "/"):
             return f"Blocked: cannot write to protected path: {blocked}"
     return None
 

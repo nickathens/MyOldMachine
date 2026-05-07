@@ -895,10 +895,11 @@ def _send_alert(message: str):
     if not admin_id:
         return
     try:
-        venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
-        python = venv_python if Path(venv_python).exists() else sys.executable
+        # Use the running interpreter so send_to_telegram.py sees the same
+        # site-packages as the bot. BOT_DIR/.venv was a legacy single-user
+        # convention that no longer holds in multi-user deployments.
         subprocess.run(
-            [python, str(send_script), "--user", admin_id, "--message", message],
+            [sys.executable, str(send_script), "--user", admin_id, "--message", message],
             capture_output=True, timeout=30,
         )
     except Exception:

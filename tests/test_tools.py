@@ -183,6 +183,20 @@ class IsWriteBlockedTests(unittest.TestCase):
         self.assertIsNone(tools._is_write_blocked("/tmp/foo.txt"))
         self.assertIsNone(tools._is_write_blocked(str(Path.home() / "doc.md")))
 
+    def test_lookalike_paths_allowed(self):
+        # /etc/passwd-foo must NOT match the /etc/passwd protection.
+        self.assertIsNone(tools._is_write_blocked("/etc/passwd-foo"))
+        self.assertIsNone(tools._is_write_blocked("/etc/hosts-backup"))
+        self.assertIsNone(tools._is_write_blocked("/etc/sudoers-old"))
+        self.assertIsNone(tools._is_write_blocked("/bootloader.cfg"))
+        self.assertIsNone(tools._is_write_blocked("/etc/crontab.bak"))
+
+    def test_descendant_paths_blocked(self):
+        # True children of blocked dirs must still be blocked.
+        self.assertIsNotNone(tools._is_write_blocked("/etc/sudoers.d/myrule"))
+        self.assertIsNotNone(tools._is_write_blocked("/boot/config-1.0"))
+        self.assertIsNotNone(tools._is_write_blocked("/var/spool/cron/root"))
+
 
 class CheckRiskyCommandTests(unittest.TestCase):
     """Risky-but-allowed commands surface warnings for the LLM."""
