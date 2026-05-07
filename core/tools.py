@@ -26,6 +26,7 @@ Architecture (OpenClaw-inspired):
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -39,6 +40,30 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# --- Per-request user context ---
+# Set by the dispatch layer (bot.py) before each LLM call so that tools
+# routing through execute_tool() can look up the caller's data directory.
+# Contextvar is asyncio-safe: each LLM dispatch runs in its own asyncio
+# task, and contextvar values do not leak between tasks.
+
+_current_user_dir: contextvars.ContextVar[Optional[Path]] = contextvars.ContextVar(
+    "current_user_dir", default=None
+)
+
+
+def set_current_user_dir(user_dir: Optional[Path]):
+    """Set the current user's data directory. Returns a token for reset()."""
+    return _current_user_dir.set(user_dir)
+
+
+def reset_current_user_dir(token):
+    """Reset the contextvar using a token from set_current_user_dir()."""
+    _current_user_dir.reset(token)
+
+
+def get_current_user_dir() -> Optional[Path]:
+    return _current_user_dir.get()
 
 # --- Bot Self-Protection ---
 # The bot's own directory and venv must be protected from LLM-initiated commands.
@@ -176,6 +201,86 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["process_id"],
+        },
+    },
+    {
+        "name": "set_skill_override",
+        "description": (
+            "Set this user's visibility override for a skill. "
+            "state='off' hides the skill from this user's context. "
+            "state='name-only' shows the name without the description (saves context). "
+            "state='on' clears any override (default visibility). "
+            "Affects only the current user — other users are unchanged."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "Skill name (e.g. 'vpn')"},
+                "state": {"type": "string", "description": "One of: on, off, name-only"},
+            },
+            "required": ["skill", "state"],
+        },
+    },
+    {
+        "name": "set_skill_note",
+        "description": (
+            "Pin a short note (max 500 chars) that will be appended to the skill's "
+            "summary every time the user's context is built. Use for persistent "
+            "preferences like 'always avoid cartoon style' or 'default to Greek'. "
+            "Affects only the current user."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "Skill name"},
+                "note": {"type": "string", "description": "Short reminder text (max 500 chars)"},
+            },
+            "required": ["skill", "note"],
+        },
+    },
+    {
+        "name": "clear_skill_note",
+        "description": (
+            "Remove the pinned note for a skill. Affects only the current user."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "Skill name"},
+            },
+            "required": ["skill"],
+        },
+    },
+    {
+        "name": "fork_skill",
+        "description": (
+            "Make a private copy of a skill in the user's overlay directory. "
+            "After forking, the user can edit their copy of SKILL.md and scripts/ "
+            "freely without affecting the shared skill or other users. "
+            "If the shared skill is later updated, the fork stays at the version "
+            "captured at fork time. Affects only the current user."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "Skill name to fork"},
+            },
+            "required": ["skill"],
+        },
+    },
+    {
+        "name": "unfork_skill",
+        "description": (
+            "Delete the user's private copy of a skill, reverting to the shared "
+            "version. The user's edits in the fork are removed. "
+            "Affects only the current user."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "Skill name to unfork"},
+            },
+            "required": ["skill"],
         },
     },
 ]
@@ -1231,6 +1336,20 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
                 arguments.get("process_id", ""),
                 arguments.get("action", "status"),
             )
+        elif name == "set_skill_override":
+            return _tool_set_skill_override(
+                arguments.get("skill", ""), arguments.get("state", ""),
+            )
+        elif name == "set_skill_note":
+            return _tool_set_skill_note(
+                arguments.get("skill", ""), arguments.get("note", ""),
+            )
+        elif name == "clear_skill_note":
+            return _tool_clear_skill_note(arguments.get("skill", ""))
+        elif name == "fork_skill":
+            return _tool_fork_skill(arguments.get("skill", ""))
+        elif name == "unfork_skill":
+            return _tool_unfork_skill(arguments.get("skill", ""))
         else:
             # Check if it's an MCP tool
             from core.mcp_client import get_mcp_manager
@@ -1241,6 +1360,75 @@ async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
     except Exception as e:
         logger.exception(f"Tool execution error: {name}")
         return f"Error executing {name}: {str(e)}"
+
+
+# --- Skill preference tool handlers ---
+# These read the active user from the contextvar set by the dispatch layer.
+# All operate strictly on the current user's overlay directory; cross-user
+# writes are blocked by the contextvar check + skill_overlay path validation.
+
+def _require_user_dir() -> tuple[Optional[Path], Optional[str]]:
+    user_dir = get_current_user_dir()
+    if user_dir is None:
+        return None, (
+            "Error: no active user context. Skill preference tools can only "
+            "be called inside an LLM dispatch."
+        )
+    return user_dir, None
+
+
+def _shared_skills_dir() -> Path:
+    return _BOT_DIR / "skills"
+
+
+def _tool_set_skill_override(skill: str, state: str) -> str:
+    user_dir, err = _require_user_dir()
+    if err:
+        return err
+    from core.skill_overlay import set_override
+    ok, msg = set_override(_shared_skills_dir(), user_dir, skill, state)
+    return msg if ok else f"Error: {msg}"
+
+
+def _tool_set_skill_note(skill: str, note: str) -> str:
+    user_dir, err = _require_user_dir()
+    if err:
+        return err
+    from core.skill_overlay import set_note
+    ok, msg = set_note(_shared_skills_dir(), user_dir, skill, note)
+    return msg if ok else f"Error: {msg}"
+
+
+def _tool_clear_skill_note(skill: str) -> str:
+    user_dir, err = _require_user_dir()
+    if err:
+        return err
+    from core.skill_overlay import clear_note
+    ok, msg = clear_note(user_dir, skill)
+    return msg if ok else f"Error: {msg}"
+
+
+def _tool_fork_skill(skill: str) -> str:
+    user_dir, err = _require_user_dir()
+    if err:
+        return err
+    from core.skill_overlay import fork_skill
+    ok, msg = fork_skill(_shared_skills_dir(), user_dir, skill)
+    if not ok:
+        return f"Error: {msg}"
+    return (
+        f"{msg}. The forked copy lives at "
+        f"{user_dir / 'skills' / skill}. Edit it however you want."
+    )
+
+
+def _tool_unfork_skill(skill: str) -> str:
+    user_dir, err = _require_user_dir()
+    if err:
+        return err
+    from core.skill_overlay import unfork_skill
+    ok, msg = unfork_skill(user_dir, skill)
+    return msg if ok else f"Error: {msg}"
 
 
 async def _run_command(command: str, background: bool = False,

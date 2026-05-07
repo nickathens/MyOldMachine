@@ -1044,13 +1044,58 @@ def build_system_prompt(user_id: int) -> str:
     if has_tool_use and _skill_manager:
         # Load system caps for resource-aware skill annotations
         caps = load_caps(DATA_DIR)
-        skills_ctx = _skill_manager.build_context(
+        # Per-user overlay: applies any forked skills, visibility overrides,
+        # and pinned notes the user has set. Falls through to shared skills
+        # for everything else.
+        from core.skill_overlay import build_user_context
+        skills_ctx = build_user_context(
+            _skill_manager,
+            get_user_dir(user_id),
             exclude=blocked_skills,
             ram_gb=caps.get("ram_gb", 0),
             disk_free_gb=caps.get("disk_free_gb", 0),
         )
         if skills_ctx:
             parts.append(skills_ctx)
+
+        # Per-user skill customization tools / hints
+        user_dir = get_user_dir(user_id)
+        if is_cli_provider:
+            # CLI providers don't have function-calling tools; they edit files
+            # via Bash. Tell them where the per-user overlay and settings live.
+            parts.append(
+                "### Per-user skill customization (your private overlay):\n"
+                f"  Overlay dir:  {user_dir / 'skills'}\n"
+                f"  Settings file: {user_dir / 'skill_settings.json'}\n"
+                "Three things you can do for this user without affecting others:\n"
+                "  1. Hide / abbreviate a skill: edit skill_settings.json, set "
+                "{'skillOverrides': {'<skill>': 'off' | 'name-only' | 'on'}}.\n"
+                "  2. Pin a short note (max 500 chars): edit skill_settings.json, set "
+                "{'notes': {'<skill>': '...'}}. The note is appended whenever the "
+                "skill appears in your context.\n"
+                "  3. Fork a skill: copy the entire shared skill dir into the overlay, "
+                "then edit your copy freely. The shared one is untouched. Use "
+                "the helper script: python utils/skill_prefs_cli.py --user-dir "
+                f"{user_dir} fork <skill> | unfork <skill>.\n"
+                "Only act on these when the user explicitly asks for them. Do not "
+                "fork a skill speculatively."
+            )
+        else:
+            # API providers can call set_skill_override / set_skill_note /
+            # clear_skill_note / fork_skill / unfork_skill directly.
+            parts.append(
+                "### Per-user skill customization tools:\n"
+                "When the user asks to hide a skill, pin a preference, or fork a "
+                "skill for personal edits, use these tools (they affect only this "
+                "user, never others):\n"
+                "  - set_skill_override(skill, state)  states: on | off | name-only\n"
+                "  - set_skill_note(skill, note)      pinned text appended in context\n"
+                "  - clear_skill_note(skill)          removes a pinned note\n"
+                "  - fork_skill(skill)                copy shared skill into private overlay\n"
+                "  - unfork_skill(skill)              delete fork, revert to shared\n"
+                "Don't use these speculatively — only when explicitly asked or when "
+                "the user states a clear preference about how a skill should behave."
+            )
 
     # User aliases
     aliases = _load_aliases(user_id)
@@ -1265,45 +1310,54 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
             )
         except Exception:
             pass
-    async with sem:
-        # For Claude CLI provider, pass extra kwargs for progress tracking
-        if isinstance(_llm_provider, _CLI_PROVIDERS):
-            response: LLMResponse = await _llm_provider.complete(
-                system_prompt=system_prompt,
-                messages=messages,
-                chat=chat,
-                user_id=user_id,
-                original_message=message,
-            )
-        else:
-            # API providers — simple typing indicator
-            typing_task = None
-
-            async def send_typing():
-                while True:
-                    try:
-                        if chat:
-                            await chat.send_action("typing")
-                        await asyncio.sleep(4)
-                    except asyncio.CancelledError:
-                        break
-                    except Exception:
-                        await asyncio.sleep(4)
-
-            try:
-                if chat:
-                    typing_task = asyncio.create_task(send_typing())
-                response = await _llm_provider.complete(
+    # Set the per-user contextvar so skill-preference tools called from
+    # within execute_tool() know which user's overlay to write to. Reset
+    # in a finally so the contextvar doesn't leak across LLM calls if an
+    # exception escapes the semaphore block.
+    from core.tools import set_current_user_dir, reset_current_user_dir
+    _user_ctx_token = set_current_user_dir(get_user_dir(user_id))
+    try:
+        async with sem:
+            # For Claude CLI provider, pass extra kwargs for progress tracking
+            if isinstance(_llm_provider, _CLI_PROVIDERS):
+                response: LLMResponse = await _llm_provider.complete(
                     system_prompt=system_prompt,
                     messages=messages,
+                    chat=chat,
+                    user_id=user_id,
+                    original_message=message,
                 )
-            finally:
-                if typing_task:
-                    typing_task.cancel()
-                    try:
-                        await typing_task
-                    except asyncio.CancelledError:
-                        pass
+            else:
+                # API providers — simple typing indicator
+                typing_task = None
+
+                async def send_typing():
+                    while True:
+                        try:
+                            if chat:
+                                await chat.send_action("typing")
+                            await asyncio.sleep(4)
+                        except asyncio.CancelledError:
+                            break
+                        except Exception:
+                            await asyncio.sleep(4)
+
+                try:
+                    if chat:
+                        typing_task = asyncio.create_task(send_typing())
+                    response = await _llm_provider.complete(
+                        system_prompt=system_prompt,
+                        messages=messages,
+                    )
+                finally:
+                    if typing_task:
+                        typing_task.cancel()
+                        try:
+                            await typing_task
+                        except asyncio.CancelledError:
+                            pass
+    finally:
+        reset_current_user_dir(_user_ctx_token)
 
     if response.error and not response.text:
         logger.error(f"LLM error for user {user_id}: {response.error}")
