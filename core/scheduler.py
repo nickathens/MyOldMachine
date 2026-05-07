@@ -481,6 +481,10 @@ async def _execute_command(job_id: str):
     # so the default is 30 minutes. Caller can override via add_job(timeout_seconds=...).
     cmd_timeout = meta.get("timeout_seconds") or DEFAULT_COMMAND_TIMEOUT
 
+    # Default to failure so the cleanup branch below is correct even if
+    # subprocess setup raises before we can assign a real value.
+    success = False
+
     try:
         logger.info(f"Running command job {job_id} ({meta['name']}) with timeout={cmd_timeout}s: {command[:80]}...")
 

@@ -18,7 +18,6 @@ import asyncio
 import base64
 import json
 import logging
-import os
 import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -202,6 +201,58 @@ def _looks_like_binary_load_failure(text: str) -> bool:
     """Return True if `text` matches a known dyld / glibc loader error."""
     lowered = text.lower()
     return any(marker in lowered for marker in _CLI_LOAD_FAILURE_MARKERS)
+
+
+# --- Helpers shared by CLI subprocess providers ---------------------------
+
+async def _send_typing_periodically(chat):
+    """Send Telegram 'typing' indicator every 3s while the CLI subprocess runs.
+
+    Cancellation via task.cancel() exits cleanly; transient errors (network
+    blips, chat closed) sleep and retry rather than crashing the parent loop.
+    Used by ClaudeCLIProvider and CodexCLIProvider.
+    """
+    while True:
+        try:
+            if chat:
+                await chat.send_action("typing")
+            await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            await asyncio.sleep(3)
+
+
+async def _read_line_with_timeout(stream, timeout: float):
+    """Read one line from an asyncio stream, with a per-line timeout.
+
+    Returns:
+      - bytes (newline-terminated) on success
+      - None on timeout (caller decides whether to keep waiting)
+      - b'\\n' after draining an oversized line so the outer parser can
+        skip the malformed record without hanging the whole turn
+
+    Used by both CLI providers.
+    """
+    try:
+        return await asyncio.wait_for(stream.readline(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return None
+    except (asyncio.LimitOverrunError, ValueError) as e:
+        logger.warning(f"Oversized output line ({e}), draining buffer")
+        # Use a fixed drain chunk size with a hard timeout instead of
+        # reaching into the private stream._buffer attribute. The 1 MiB
+        # chunk is large enough to flush typical overflow runs without
+        # blocking indefinitely if the producer has paused.
+        try:
+            chunk = await asyncio.wait_for(
+                stream.read(1024 * 1024),
+                timeout=5,
+            )
+            logger.warning(f"Drained {len(chunk)} bytes from oversized line")
+        except Exception as drain_err:
+            logger.warning(f"Buffer drain failed: {drain_err}")
+        return b'\n'
 
 
 async def _http_get_health(
@@ -485,55 +536,23 @@ class ClaudeCLIProvider(LLMProvider):
         current_status = "thinking"
         tool_in_progress = None
 
-        async def send_typing_periodically():
-            while True:
-                try:
-                    if chat:
-                        await chat.send_action("typing")
-                    await asyncio.sleep(3)
-                except asyncio.CancelledError:
-                    break
-                except Exception:
-                    await asyncio.sleep(3)
-
-        async def read_line_with_timeout(stream, timeout: float):
-            try:
-                return await asyncio.wait_for(stream.readline(), timeout=timeout)
-            except asyncio.TimeoutError:
-                return None
-            except (asyncio.LimitOverrunError, ValueError) as e:
-                logger.warning(f"Oversized output line ({e}), draining buffer")
-                try:
-                    chunk = await asyncio.wait_for(
-                        stream.read(len(stream._buffer) if stream._buffer else 1024),
-                        timeout=5
-                    )
-                    logger.warning(f"Drained {len(chunk)} bytes from oversized line")
-                except Exception as drain_err:
-                    logger.warning(f"Buffer drain failed: {drain_err}")
-                return b'\n'
-
         try:
             if chat:
-                typing_task = asyncio.create_task(send_typing_periodically())
+                typing_task = asyncio.create_task(_send_typing_periodically(chat))
 
-            # Claude CLI needs a mostly-complete environment but we still strip
-            # dangerous env vars (other provider API keys, bot tokens, DB passwords, etc.)
-            cli_env = {k: v for k, v in os.environ.items()
-                       if k not in {"OPENAI_API_KEY", "OPENROUTER_API_KEY",
-                                    "GOOGLE_API_KEY", "GEMINI_API_KEY",
-                                    "DEEPSEEK_API_KEY",
-                                    "XAI_API_KEY", "GROK_API_KEY",
-                                    "MOONSHOT_API_KEY", "MINIMAX_API_KEY",
-                                    "CODEX_API_KEY",
-                                    "LLM_API_KEY", "TELEGRAM_BOT_TOKEN",
-                                    "TELEGRAM_TOKEN", "BOT_TOKEN",
-                                    "DATABASE_URL", "DATABASE_PASSWORD",
-                                    "REDIS_URL", "REDIS_PASSWORD"}}
-            # In multi-user mode, sudo resets HOME to the slot user's passwd
-            # entry (data/users/userN). Don't override it from env here.
-            if slot is None:
-                cli_env["HOME"] = str(Path.home())
+            # Claude CLI: allow-list env (SAFE_ENV_VARS) plus the provider's
+            # own auth vars. Mirrors core.tools._build_command_env() so a
+            # future env addition can't accidentally leak a secret to the CLI.
+            from core.tools import build_cli_env
+            cli_env = build_cli_env(
+                provider_keys=frozenset({
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "ANTHROPIC_BASE_URL",
+                    "CLAUDE_CONFIG_DIR",
+                }),
+                keep_home=(slot is None),
+            )
 
             cwd = str(slot_cwd) if slot_cwd is not None else str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
@@ -711,7 +730,7 @@ class ClaudeCLIProvider(LLMProvider):
                 idle_remaining = self.IDLE_TIMEOUT - time_since_activity
                 absolute_remaining = self.ABSOLUTE_TIMEOUT - elapsed
                 read_timeout = max(1.0, min(30.0, idle_remaining, absolute_remaining))
-                line = await read_line_with_timeout(process.stdout, timeout=read_timeout)
+                line = await _read_line_with_timeout(process.stdout, timeout=read_timeout)
 
                 if line:
                     last_activity = asyncio.get_running_loop().time()
@@ -1061,58 +1080,25 @@ class CodexCLIProvider(LLMProvider):
         tool_in_progress = None
         turn_failed_message = None
 
-        async def send_typing_periodically():
-            while True:
-                try:
-                    if chat:
-                        await chat.send_action("typing")
-                    await asyncio.sleep(3)
-                except asyncio.CancelledError:
-                    break
-                except Exception:
-                    await asyncio.sleep(3)
-
-        async def read_line_with_timeout(stream, timeout: float):
-            try:
-                return await asyncio.wait_for(stream.readline(), timeout=timeout)
-            except asyncio.TimeoutError:
-                return None
-            except (asyncio.LimitOverrunError, ValueError) as e:
-                logger.warning(f"Oversized output line ({e}), draining buffer")
-                try:
-                    chunk = await asyncio.wait_for(
-                        stream.read(len(stream._buffer) if stream._buffer else 1024),
-                        timeout=5,
-                    )
-                    logger.warning(f"Drained {len(chunk)} bytes from oversized line")
-                except Exception as drain_err:
-                    logger.warning(f"Buffer drain failed: {drain_err}")
-                return b'\n'
-
         try:
             if chat:
-                typing_task = asyncio.create_task(send_typing_periodically())
+                typing_task = asyncio.create_task(_send_typing_periodically(chat))
 
-            # Codex CLI needs OPENAI_API_KEY (or the OAuth token from
-            # `codex login` stored under ~/.codex/auth.json). Strip every other
-            # provider's keys + bot/db secrets to prevent contamination.
-            cli_env = {k: v for k, v in os.environ.items()
-                       if k not in {"ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
-                                    "GOOGLE_API_KEY", "GEMINI_API_KEY",
-                                    "DEEPSEEK_API_KEY",
-                                    "XAI_API_KEY", "GROK_API_KEY",
-                                    "MOONSHOT_API_KEY", "MINIMAX_API_KEY",
-                                    "LLM_API_KEY", "TELEGRAM_BOT_TOKEN",
-                                    "TELEGRAM_TOKEN", "BOT_TOKEN",
-                                    "DATABASE_URL", "DATABASE_PASSWORD",
-                                    "REDIS_URL", "REDIS_PASSWORD"}}
-            # In multi-user mode, sudo resets HOME from passwd. Skip the override.
-            if slot is None:
-                cli_env["HOME"] = str(Path.home())
-            # If a per-provider api_key was supplied at construction, expose it
-            # to the CLI as OPENAI_API_KEY so headless setups work without login.
-            if self.api_key:
-                cli_env["OPENAI_API_KEY"] = self.api_key
+            # Codex CLI: allow-list env (SAFE_ENV_VARS) plus the provider's
+            # own auth vars. Codex authenticates via `codex login` (token at
+            # ~/.codex/auth.json) or OPENAI_API_KEY. Per-instance api_key
+            # override gets injected into the env after the allow-list build.
+            from core.tools import build_cli_env
+            extra = {"OPENAI_API_KEY": self.api_key} if self.api_key else None
+            cli_env = build_cli_env(
+                provider_keys=frozenset({
+                    "OPENAI_API_KEY",
+                    "OPENAI_BASE_URL",
+                    "CODEX_HOME",
+                }),
+                extra=extra,
+                keep_home=(slot is None),
+            )
 
             cwd = str(slot_cwd) if slot_cwd is not None else str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
@@ -1270,7 +1256,7 @@ class CodexCLIProvider(LLMProvider):
                 idle_remaining = self.IDLE_TIMEOUT - time_since_activity
                 absolute_remaining = self.ABSOLUTE_TIMEOUT - elapsed
                 read_timeout = max(1.0, min(30.0, idle_remaining, absolute_remaining))
-                line = await read_line_with_timeout(process.stdout, timeout=read_timeout)
+                line = await _read_line_with_timeout(process.stdout, timeout=read_timeout)
 
                 if line:
                     last_activity = asyncio.get_running_loop().time()

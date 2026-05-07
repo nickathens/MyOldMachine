@@ -78,11 +78,11 @@ def detect_package_manager() -> str:
 
 
 def _get_sudo_password() -> str:
-    """Read sudo password from storage."""
-    sudo_file = Path.home() / ".sudo_pass"
-    if sudo_file.exists():
-        return sudo_file.read_text(encoding="utf-8").strip()
-    return ""
+    """Read sudo password from storage. Delegates to install.sudo."""
+    if str(BOT_DIR) not in sys.path:
+        sys.path.insert(0, str(BOT_DIR))
+    from install.sudo import get_sudo_password
+    return get_sudo_password() or ""
 
 
 def _run_cmd(cmd: str, use_sudo: bool = True, timeout: int = 300) -> tuple[int, str]:

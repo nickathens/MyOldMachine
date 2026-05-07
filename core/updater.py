@@ -15,10 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_sudo_password():
-    sudo_file = Path.home() / ".sudo_pass"
-    if sudo_file.exists():
-        return sudo_file.read_text(encoding="utf-8").strip()
-    return None
+    """Read sudo password. Delegates to install.sudo."""
+    from install.sudo import get_sudo_password as _shared_get_sudo_password
+    return _shared_get_sudo_password()
 
 
 def _run(cmd: str, cwd: str = None, timeout: int = 120) -> subprocess.CompletedProcess:

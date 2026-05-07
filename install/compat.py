@@ -200,18 +200,9 @@ def _run(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
 
 
 def _sudo_run(cmd: str, password: Optional[str] = None, timeout: int = 300):
-    """Run with sudo."""
-    full_cmd = f"sudo -S {cmd}" if password else f"sudo {cmd}"
-    stdin_data = (password + "\n") if password else None
-    try:
-        return subprocess.run(
-            full_cmd, shell=True, input=stdin_data,
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "Timed out"})()
-    except Exception as e:
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
+    """Run with sudo. Delegates to install.sudo.sudo_run."""
+    from install.sudo import sudo_run as _shared_sudo_run
+    return _shared_sudo_run(cmd, password=password, timeout=timeout)
 
 
 def _get_ram_gb() -> float:

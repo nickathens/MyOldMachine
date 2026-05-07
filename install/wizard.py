@@ -46,6 +46,26 @@ def checkpoint_set(name: str):
         f.write(name + "\n")
 
 
+def _atomic_env_write(env_file: Path, new_content: str):
+    """Write .env atomically via temp file + fsync + rename, preserving 0600.
+
+    A direct write_text() is non-atomic: a crash mid-write leaves a truncated
+    file with no provider config, breaking the next bot start. Mirrors the
+    helper in bot.py so the wizard never lays down a partial .env.
+    """
+    tmp = env_file.with_suffix(".env.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_content)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        tmp.rename(env_file)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 # --- Terminal UI helpers ---
 
 BOLD = "\033[1m"
@@ -677,8 +697,7 @@ def write_env(repo_dir: Path, config: dict):
         lines.append("MULTIUSER_ENABLED=0")
 
     env_file = repo_dir / ".env"
-    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
+    _atomic_env_write(env_file, "\n".join(lines) + "\n")
     ok(f"Configuration saved to {env_file}")
 
 
@@ -1435,8 +1454,7 @@ def main():
                     new_lines.append(f"LLM_MODEL={model}")
                 else:
                     new_lines.append(line)
-            env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-            env_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # Preserve 600
+            _atomic_env_write(env_file, "\n".join(new_lines) + "\n")
         print()
 
     # --- Multi-user provisioning ---

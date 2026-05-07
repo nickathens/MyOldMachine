@@ -28,6 +28,10 @@ from pathlib import Path
 # Ensure install package is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from install.os_detect import OSInfo, detect as detect_os
+from install.sudo import (
+    get_sudo_password as _shared_get_sudo_password,
+    sudo_run as _shared_sudo_run,
+)
 
 BOLD = "\033[1m"
 GREEN = "\033[0;32m"
@@ -73,36 +77,25 @@ def save_action_log(repo_dir):
 
 
 def get_sudo_password():
-    """Read sudo password from storage."""
-    sudo_file = Path.home() / ".sudo_pass"
-    if sudo_file.exists():
-        return sudo_file.read_text(encoding="utf-8").strip()
-    return None
+    """Read sudo password from storage. Delegates to install.sudo."""
+    return _shared_get_sudo_password()
 
 
 def sudo_run(cmd, password=None, check=False, timeout=600):
-    """Run a command with sudo, passing password safely via stdin (not shell echo)."""
+    """Run a command with sudo (provisioner wrapper).
+
+    Adds dry-run handling and action logging on top of install.sudo.sudo_run.
+    """
     if _dry_run:
         info(f"[DRY RUN] sudo: {cmd}")
         log_action("dry_run_sudo", cmd)
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return subprocess.CompletedProcess(args="", returncode=0, stdout="", stderr="")
 
-    full_cmd = f"sudo -S {cmd}" if password else f"sudo {cmd}"
-    stdin_data = (password + "\n") if password else None
-    try:
-        result = subprocess.run(
-            full_cmd, shell=True,
-            input=stdin_data,
-            capture_output=True, text=True, timeout=timeout
-        )
-    except subprocess.TimeoutExpired:
+    result = _shared_sudo_run(cmd, password=password, timeout=timeout)
+    if result.returncode != 0 and result.stderr.startswith("Timed out"):
         warn(f"Command timed out after {timeout}s: {cmd}")
         log_action(f"sudo_timeout: {cmd}", f"timeout={timeout}")
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": f"Timed out after {timeout}s"})()
-    except Exception as e:
-        warn(f"Command error: {cmd}: {e}")
-        log_action(f"sudo_error: {cmd}", str(e))
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
+        return result
     log_action(f"sudo: {cmd}", f"rc={result.returncode}")
     if check and result.returncode != 0:
         warn(f"Command failed (rc={result.returncode}): {cmd}")

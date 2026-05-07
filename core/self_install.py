@@ -25,11 +25,9 @@ _VENV_PYTHON = sys.executable
 
 
 def get_sudo_password() -> Optional[str]:
-    """Read stored sudo password."""
-    sudo_file = Path.home() / ".sudo_pass"
-    if sudo_file.exists():
-        return sudo_file.read_text(encoding="utf-8").strip()
-    return None
+    """Read stored sudo password. Delegates to install.sudo."""
+    from install.sudo import get_sudo_password as _shared_get_sudo_password
+    return _shared_get_sudo_password()
 
 
 def _is_linux() -> bool:
@@ -133,20 +131,14 @@ def _run(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
 
 
 def _sudo_run(cmd: str, password: Optional[str] = None, timeout: int = 300) -> subprocess.CompletedProcess:
-    """Run a command with sudo, passing password safely via stdin."""
-    full_cmd = f"sudo -S {cmd}" if password else f"sudo {cmd}"
-    stdin_data = (password + "\n") if password else None
-    try:
-        return subprocess.run(
-            full_cmd, shell=True, input=stdin_data,
-            capture_output=True, text=True, timeout=timeout
-        )
-    except subprocess.TimeoutExpired:
+    """Run a command with sudo. Delegates to install.sudo, adds logging."""
+    from install.sudo import sudo_run as _shared_sudo_run
+    result = _shared_sudo_run(cmd, password=password, timeout=timeout)
+    if result.returncode != 0 and result.stderr.startswith("Timed out"):
         logger.warning(f"sudo command timed out after {timeout}s: {cmd}")
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": f"Timed out after {timeout}s"})()
-    except Exception as e:
-        logger.warning(f"sudo command error: {cmd}: {e}")
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
+    elif result.returncode != 0 and result.stderr and not result.stdout:
+        logger.warning(f"sudo command error: {cmd}: {result.stderr}")
+    return result
 
 
 
