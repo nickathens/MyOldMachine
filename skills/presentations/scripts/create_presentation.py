@@ -244,6 +244,33 @@ def _inject_data_attr(html: str, attr: str, value) -> str:
 #  SECTION RENDERERS
 # ═══════════════════════════════════════════════
 
+def _render_wordmark(spec: dict, container_class: str, suffix_class: str = "") -> str:
+    """Render a wordmark with optional accent letters and suffix.
+
+    spec: {"text": str, "accent_letters": list[int], "suffix": str?, "url": str?}
+    Returns HTML string; letter spans get sequential class wm-letter, accent letters get extra class accent.
+    """
+    text = spec.get("text", "")
+    if not text:
+        return ""
+    accent_set = set(spec.get("accent_letters", []) or [])
+    suffix = spec.get("suffix", "")
+    url = spec.get("url", "")
+
+    letters = []
+    for i, ch in enumerate(text):
+        cls = "wm-letter accent" if i in accent_set else "wm-letter"
+        letters.append(f'<span class="{cls}">{html_lib.escape(ch)}</span>')
+    inner = "".join(letters)
+    if suffix:
+        sfx_cls = suffix_class or "wm-suffix"
+        inner += f'<span class="{sfx_cls}">{html_lib.escape(suffix)}</span>'
+
+    if url:
+        return f'<a class="{container_class}" href="{html_lib.escape(url)}" target="_blank" rel="noopener">{inner}</a>'
+    return f'<div class="{container_class}">{inner}</div>'
+
+
 def render_cover(data: dict) -> str:
     """Render the cover section from top-level 'cover' object."""
     cover = data.get("cover", {})
@@ -252,6 +279,7 @@ def render_cover(data: dict) -> str:
 
     brand = html_lib.escape(cover.get("brand", ""))
     brand_url = cover.get("brand_url", "")
+    wordmark = cover.get("wordmark") or {}
     logo = cover.get("logo", "")
     logo_filter = cover.get("logo_filter", "")
     title = html_lib.escape(cover.get("title", ""))
@@ -268,7 +296,12 @@ def render_cover(data: dict) -> str:
 
     parts = [f'<section class="cover" data-duration="{duration:.1f}"{bg_style}>']
 
-    if brand:
+    if wordmark and wordmark.get("text"):
+        wm_spec = dict(wordmark)
+        if brand_url and not wm_spec.get("url"):
+            wm_spec["url"] = brand_url
+        parts.append("    " + _render_wordmark(wm_spec, "cover-wordmark", "cover-wordmark-suffix"))
+    elif brand:
         if brand_url:
             parts.append(f'    <div class="cover-brand"><a href="{html_lib.escape(brand_url)}" target="_blank" style="color: inherit; text-decoration: none;">{brand}</a></div>')
         else:
@@ -609,15 +642,31 @@ def render_video(s: dict) -> str:
     url = s.get("url", "")
     caption = s.get("caption", "")
 
-    embed_url = embed_yt_vimeo(url) if url else ""
-
     parts = ['<section class="video-section">', '    <div class="container">']
     if label:
         parts.append(f'        <div class="video-label">{label}</div>')
-    if embed_url:
-        parts.append('        <div class="video-container">')
-        parts.append(f'            <iframe src="{html_lib.escape(embed_url)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>')
+
+    if url:
+        is_direct_video = re.search(r'\.(mp4|webm|mov|m4v)(\?|$)', url, re.IGNORECASE) is not None
+        aspect = s.get("aspect_ratio")
+        container_style = ""
+        if aspect:
+            try:
+                w, h = aspect.split(":") if ":" in str(aspect) else aspect.split("/")
+                pct = (float(h) / float(w)) * 100
+                container_style = f' style="padding-bottom: {pct:.4f}%"'
+            except (ValueError, ZeroDivisionError):
+                container_style = ""
+        parts.append(f'        <div class="video-container"{container_style}>')
+        if is_direct_video:
+            poster = s.get("poster", "")
+            poster_attr = f' poster="{html_lib.escape(poster)}"' if poster else ""
+            parts.append(f'            <video src="{html_lib.escape(url)}"{poster_attr} autoplay muted loop playsinline preload="metadata"></video>')
+        else:
+            embed_url = embed_yt_vimeo(url)
+            parts.append(f'            <iframe src="{html_lib.escape(embed_url)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>')
         parts.append('        </div>')
+
     if caption:
         parts.append(f'        <p class="video-caption">{md_inline(caption)}</p>')
     parts.append('    </div>')
@@ -839,8 +888,38 @@ def build_scheme_css(scheme: dict) -> str:
     return ":root {\n" + "\n".join(lines) + "\n}"
 
 
-def build_font_link(fonts: dict) -> str:
-    """Build Google Fonts link URL. Accepts any Google Font name."""
+SCRIPT_COMPANION_FONTS = {
+    # Map: subset → list of (font_name, role) — role is "sans" / "serif" so the right CSS var picks it up
+    "greek": [
+        ("Manrope", "sans"),   # closest visual match to Space Grotesk; geometric, tight
+        ("Inter", "sans"),     # closest visual match to Outfit; geometric humanist
+    ],
+    "cyrillic": [
+        ("Manrope", "sans"),
+        ("Inter", "sans"),
+    ],
+}
+
+
+def _companion_fonts_for(subsets: list) -> list:
+    """Return ordered list of (font_name, role) companions to load for the given subsets."""
+    seen = set()
+    out = []
+    for subset in subsets or []:
+        for font, role in SCRIPT_COMPANION_FONTS.get(subset, []):
+            if font not in seen:
+                seen.add(font)
+                out.append((font, role))
+    return out
+
+
+def build_font_link(fonts: dict, subsets: list | None = None) -> str:
+    """Build Google Fonts CSS2 link URL. Accepts any Google Font name.
+
+    When `subsets` includes a non-Latin script (e.g. 'greek'), Greek-capable
+    companion fonts are added to the URL so per-character fallback works for
+    fonts like Space Grotesk / Outfit that lack Greek glyphs in Google Fonts.
+    """
     families = set()
     for key in ("heading", "body", "serif"):
         name = fonts.get(key, "")
@@ -859,6 +938,10 @@ def build_font_link(fonts: dict) -> str:
             FONT_CATALOG["Playfair Display"],
         }
 
+    for companion, _role in _companion_fonts_for(subsets or []):
+        if companion in FONT_CATALOG:
+            families.add(FONT_CATALOG[companion])
+
     return (
         "https://fonts.googleapis.com/css2?"
         + "&".join("family=" + f for f in sorted(families))
@@ -866,17 +949,23 @@ def build_font_link(fonts: dict) -> str:
     )
 
 
-def build_font_css(fonts: dict) -> str:
-    """Build CSS font-family overrides."""
+def build_font_css(fonts: dict, subsets: list | None = None) -> str:
+    """Build CSS font-family overrides. Greek/Cyrillic subsets get companion-font fallbacks."""
     if not fonts:
         return ""
+    companions = _companion_fonts_for(subsets or [])
+    sans_companions = ", ".join(f"'{n}'" for n, role in companions if role == "sans")
+    serif_companions = ", ".join(f"'{n}'" for n, role in companions if role in ("sans", "serif"))
+    sans_chain = f", {sans_companions}" if sans_companions else ""
+    serif_chain = f", {serif_companions}" if serif_companions else ""
+
     lines = []
     if fonts.get("heading"):
-        lines.append(f"    --font-heading: '{fonts['heading']}', sans-serif;")
+        lines.append(f"    --font-heading: '{fonts['heading']}'{sans_chain}, sans-serif;")
     if fonts.get("body"):
-        lines.append(f"    --font-body: '{fonts['body']}', sans-serif;")
+        lines.append(f"    --font-body: '{fonts['body']}'{sans_chain}, sans-serif;")
     if fonts.get("serif"):
-        lines.append(f"    --font-serif: '{fonts['serif']}', serif;")
+        lines.append(f"    --font-serif: '{fonts['serif']}'{serif_chain}, serif;")
     if not lines:
         return ""
     return ":root {\n" + "\n".join(lines) + "\n}"
@@ -1013,6 +1102,7 @@ if (cover) {
     var tl = gsap.timeline({ delay: 0.3 });
     var els = {
         brand: cover.querySelector('.cover-brand'),
+        wordmark: cover.querySelector('.cover-wordmark'),
         logo: cover.querySelector('.cover-logo'),
         divider: cover.querySelector('.cover-divider'),
         subtitle: cover.querySelector('.cover-subtitle'),
@@ -1021,6 +1111,7 @@ if (cover) {
         scroll: cover.querySelector('.cover-scroll')
     };
     if (els.brand) tl.to(els.brand, { opacity: 1, y: 0, duration: 0.8, ease: 'power3.out' });
+    if (els.wordmark) tl.to(els.wordmark, { opacity: 1, y: 0, duration: 1.2, ease: 'power3.out' }, '-=0.4');
     if (els.logo) tl.to(els.logo, { opacity: 1, scale: 1, duration: 1.2, ease: 'power3.out' }, '-=0.4');
     if (els.divider) tl.to(els.divider, { opacity: 1, scaleX: 1, duration: 0.6, ease: 'power3.out' }, '-=0.6');
     if (els.subtitle) tl.to(els.subtitle, { opacity: 1, y: 0, duration: 0.8, ease: 'power3.out' }, '-=0.3');
@@ -1196,7 +1287,7 @@ document.querySelectorAll('.video-container').forEach(function(el) {
     });
 });
 document.querySelectorAll('.video-caption').forEach(function(el) {
-    gsap.to(el, { scrollTrigger: { trigger: el, start: 'top 90%' }, opacity: 1, duration: 0.6, delay: 0.3 });
+    gsap.to(el, { scrollTrigger: { trigger: el, start: 'top 90%' }, opacity: 1, y: 0, filter: 'blur(0px)', duration: 0.6, delay: 0.3, ease: '__EASE__' });
 });
 
 var closingEl = document.querySelector('.closing');
@@ -1289,6 +1380,21 @@ _ANIM_PRESETS = {
     var horiz = '.note-text p, .concept-desc p, .gap-card, .ref-card, .stat, .spec-item, .col, .beat-text, .beat-title, .why-item, .comp-table tbody tr';
     gsap.set(horiz, {clipPath: 'inset(0 100% 0 0)', y: 0, x: 0});
     gsap.set('.section-title, .big-quote-text, .gap-reveal-text, .concept-hero h2', {clipPath: 'inset(100% 0 0 0)', y: 0, scale: 1});
+})();
+""",
+    },
+    "smooth": {
+        "__ENT__": "opacity: 1, y: 0, filter: 'blur(0px)'",
+        "__DATA__": "opacity: 1, x: 0, filter: 'blur(0px)'",
+        "__POP__": "opacity: 1, scale: 1, filter: 'blur(0px)'",
+        "__DUR__": "1.4",
+        "__POP_DUR__": "1.8",
+        "__EASE__": "sine.out",
+        "init": """
+(function() {
+    var soft = '.note-text p, .concept-desc p, .gap-card, .ref-card, .stat, .spec-item, .col, .beat-text, .beat-title, .beat-label, .beat-dialogue, .beat-action, .why-item, .comp-table tbody tr, .video-container, .video-caption, .closing-name, .closing-links, .closing-brand';
+    gsap.set(soft, {y: 14, x: 0, filter: 'blur(4px)'});
+    gsap.set('.section-title, .big-quote-text, .gap-reveal-text, .concept-hero h2', {scale: 0.985, y: 0, filter: 'blur(6px)', transformOrigin: 'center center'});
 })();
 """,
     },
@@ -1614,10 +1720,15 @@ def build_html(data: dict, theme_css: str) -> str:
     nav_type = data.get("nav", "none")
 
     fonts = data.get("fonts", {})
-    font_url = build_font_link(fonts)
+    subsets = list(data.get("font_subsets") or [])
+    if lang == "el" and "greek" not in subsets:
+        subsets.append("greek")
+    if lang in ("ru", "uk", "bg", "sr") and "cyrillic" not in subsets:
+        subsets.append("cyrillic")
+    font_url = build_font_link(fonts, subsets=subsets if subsets else None)
     mode_css = build_mode_css(mode)
     scheme_css = build_scheme_css(data.get("scheme", {}))
-    font_css = build_font_css(fonts)
+    font_css = build_font_css(fonts, subsets=subsets if subsets else None)
     nav_css = build_nav_css(nav_type, mode)
     overrides = "\n".join(filter(None, [mode_css, scheme_css, font_css, nav_css]))
 
@@ -1625,8 +1736,16 @@ def build_html(data: dict, theme_css: str) -> str:
     sections_html = "\n\n".join(render_section(s) for s in data.get("sections", []))
     particles_html = '<div class="particles" id="particles"></div>' if particles else ""
     nav_html = build_nav_html(data, nav_type)
+
+    brand_mark_spec = data.get("brand_mark") or {}
+    if brand_mark_spec.get("text"):
+        bm_html = _render_wordmark(brand_mark_spec, "brand-mark", "bm-suffix")
+        nav_html = bm_html + ("\n" + nav_html if nav_html else "")
     animation_js = build_animation_js(animation)
     nav_js = build_nav_js(nav_type)
+
+    extra_head = data.get("extra_head", "") or ""
+    extra_body = data.get("extra_body", "") or ""
 
     return f"""<!DOCTYPE html>
 <html lang="{lang}">
@@ -1642,6 +1761,7 @@ def build_html(data: dict, theme_css: str) -> str:
 {theme_css}
 {overrides}
     </style>
+{extra_head}
 </head>
 <body>
 
@@ -1657,7 +1777,7 @@ def build_html(data: dict, theme_css: str) -> str:
 {nav_js}
 {AUTOPLAY_JS}
 </script>
-
+{extra_body}
 </body>
 </html>"""
 
@@ -1736,6 +1856,12 @@ def main():
         default=None,
         help="Apply an aesthetic reference by name (e.g. a24, aesop). See references/ dir.",
     )
+    parser.add_argument(
+        "--design-md",
+        dest="design_md",
+        default=None,
+        help="Apply a DESIGN.md design system by name (e.g. linear, stripe) or path. See design_library/.",
+    )
     args = parser.parse_args()
 
     json_path = Path(args.json)
@@ -1749,10 +1875,28 @@ def main():
         print(f"Error: Invalid JSON in {json_path}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Precedence (highest wins): treatment JSON > --aesthetic > --brand-url (cover only)
-    # --brand-url only seeds cover.logo and cover.brand_url. Firecrawl is reliable
-    # for logos but unreliable for colors/fonts, so scheme and fonts come
-    # exclusively from the aesthetic reference or explicit treatment values.
+    # JSON-embedded design_md acts like the CLI flag if no flag was given.
+    design_md_target = args.design_md or data.pop("design_md", None)
+
+    # Precedence (highest wins): treatment JSON > --design-md > --aesthetic > --brand-url (cover only)
+    # All three only fill keys the treatment hasn't already defined. design_md is
+    # checked before aesthetic so a brand's structured design tokens take priority
+    # over the looser cinematic mood references when both are supplied.
+    if design_md_target:
+        try:
+            from design_md import load_design, DesignMdError
+            from references import apply_reference
+            design = load_design(design_md_target)
+            data = apply_reference(data, design)
+            label = design.get("name") or design_md_target
+            print(f"Applied design system: {label}")
+        except DesignMdError as e:
+            print(f"Error loading design_md {design_md_target!r}: {e}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error applying design_md {design_md_target!r}: {e}", file=sys.stderr)
+            sys.exit(1)
+
     if args.aesthetic:
         try:
             from references import load_reference, apply_reference
