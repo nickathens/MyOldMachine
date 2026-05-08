@@ -8,6 +8,7 @@ Uses deps.json manifests from each skill directory.
 import json
 import logging
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,64 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Package names from deps.json end up shell-interpolated into apt-get/brew/etc.
+# install commands that run as root. Skill manifests are checked in to source
+# control and authored by humans, but a typo or malicious skill could embed
+# a shell metacharacter and turn `apt-get install <pkg>` into arbitrary code
+# execution. Enforce conservative allowlists at load time so the entire
+# manifest is rejected (skill treated as having no deps) on any invalid value.
+_PKG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$")
+# pip allows a few extras: `>=`, `==`, `<`, `<=`, `>`, `~=`, `!=`, ` ` and brackets.
+_PIP_PKG_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}"
+    r"(\[[A-Za-z0-9,\-_]+\])?"
+    r"(\s*(==|>=|<=|!=|~=|>|<)\s*[A-Za-z0-9._\-+]+)?$"
+)
+# npm: scoped packages like @scope/name plus optional @version. No spaces.
+_NPM_PKG_RE = re.compile(
+    r"^(@[A-Za-z0-9._-]+/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}(@[A-Za-z0-9._\-+~^*<>=!|x ]+)?$"
+)
+_PKG_KEYS = ("apt", "dnf", "yum", "pacman", "zypper", "apk", "brew")
+
+
+def _validate_deps(deps: dict, skill_name: str) -> bool:
+    """Reject a deps manifest containing names that could escape the shell.
+
+    Logs the first offender and returns False on failure; check_skill_deps
+    treats False as 'no deps known', so a malformed manifest cannot trigger
+    a privileged install. False positives just mean a skill author needs to
+    rename a package or extend the allowlist.
+    """
+    if not isinstance(deps, dict):
+        logger.error(f"deps.json for {skill_name} is not a JSON object")
+        return False
+    checks = deps.get("check", {}) or {}
+    if not isinstance(checks, dict):
+        logger.error(f"deps.json[{skill_name}].check must be an object")
+        return False
+    for name in checks.keys():
+        if not isinstance(name, str) or not _PKG_NAME_RE.fullmatch(name):
+            logger.error(f"deps.json[{skill_name}].check has invalid name: {name!r}")
+            return False
+    for key in _PKG_KEYS:
+        pkgs = deps.get(key, []) or []
+        if not isinstance(pkgs, list):
+            logger.error(f"deps.json[{skill_name}][{key}] must be a list")
+            return False
+        for pkg in pkgs:
+            if not isinstance(pkg, str) or not _PKG_NAME_RE.fullmatch(pkg):
+                logger.error(f"deps.json[{skill_name}][{key}] has invalid pkg: {pkg!r}")
+                return False
+    for pkg in deps.get("pip", []) or []:
+        if not isinstance(pkg, str) or not _PIP_PKG_RE.fullmatch(pkg):
+            logger.error(f"deps.json[{skill_name}].pip has invalid spec: {pkg!r}")
+            return False
+    for pkg in deps.get("npm", []) or []:
+        if not isinstance(pkg, str) or not _NPM_PKG_RE.fullmatch(pkg):
+            logger.error(f"deps.json[{skill_name}].npm has invalid spec: {pkg!r}")
+            return False
+    return True
 
 # Cache of verified dependencies so we don't check every invocation
 _verified_cache: set[str] = set()
@@ -162,15 +221,25 @@ def check_npm_package(package: str) -> bool:
 
 
 def load_deps(skill_path: Path) -> Optional[dict]:
-    """Load deps.json for a skill."""
+    """Load and validate deps.json for a skill.
+
+    Returns None if the file is missing, malformed, or contains any package
+    name that fails the allowlist regex. Refusing to install on validation
+    failure is safer than silently skipping the bad entry: a single typo
+    that smuggles a shell metacharacter would otherwise reach apt-get/brew
+    running as root.
+    """
     deps_file = skill_path / "deps.json"
     if not deps_file.exists():
         return None
     try:
-        return json.loads(deps_file.read_text(encoding="utf-8"))
+        deps = json.loads(deps_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, IOError, UnicodeDecodeError) as e:
         logger.error(f"Failed to load deps.json for {skill_path.name}: {e}")
         return None
+    if not _validate_deps(deps, skill_path.name):
+        return None
+    return deps
 
 
 def check_skill_deps(skill_path: Path) -> list[str]:

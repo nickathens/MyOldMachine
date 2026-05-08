@@ -8,6 +8,7 @@ OpenAI, Gemini, Kimi, MiniMax, Ollama, and OpenRouter.
 """
 
 import asyncio
+import functools
 import glob as _glob_mod
 import json
 import logging
@@ -15,7 +16,6 @@ import os
 import platform
 import re
 import shutil
-import stat
 import subprocess
 import tempfile
 import time
@@ -53,6 +53,7 @@ from core.updater import full_update, get_current_version, get_current_branch
 from core.system_probe import probe_system, get_caps_summary, load_caps
 from core.message_log import log_exchange
 from utils.safe_json import save_json as _atomic_save_json
+from utils.env_io import atomic_env_write as _atomic_env_write
 
 from telegram import Update
 from telegram.ext import (
@@ -109,6 +110,31 @@ def _get_user_lock(user_id: int) -> asyncio.Lock:
     if user_id not in _user_locks:
         _user_locks[user_id] = asyncio.Lock()
     return _user_locks[user_id]
+
+
+def requires_auth(func):
+    """Gate a command handler on the allowed-users list.
+
+    Telegram's CommandHandler dispatches before handle_message's gate runs, so
+    every command handler must check authorization itself or a stranger who
+    knows the bot handle can call /schedule, /remind, etc. Apply to every
+    command except /start and /help (those are intentionally open so a fresh
+    user can find out the bot exists and how to ask for access).
+    """
+    @functools.wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user is None:
+            return
+        user_id = update.effective_user.id
+        allowed = get_allowed_users()
+        if not allowed or user_id not in allowed:
+            try:
+                await update.message.reply_text("Unauthorized.")
+            except Exception:
+                pass
+            return
+        return await func(update, context)
+    return wrapper
 
 
 # --- Conditional LLM semaphore (hardware-aware) ---
@@ -363,28 +389,24 @@ def _save_aliases(user_id: int, aliases: dict[str, str]):
         tmp.unlink(missing_ok=True)
 
 
-# Built-in command names that cannot be used as aliases
+# Built-in command names that cannot be used as aliases.
+# Must include every name passed to CommandHandler() in main(). If a builtin
+# name isn't listed here, the alias system will silently accept an alias of
+# that name and never fire (the real CommandHandler shadows it). Keep this
+# in sync with the registrations at the bottom of main().
 _RESERVED_COMMANDS = {
-    "start", "help", "clear", "status", "remember", "memories", "forget",
-    "remind", "reminders", "cancel", "recover", "clear_recovery", "topic",
-    "topics", "schedule", "jobs", "health", "cleanup", "system", "update",
-    "restart", "provider", "model", "apikey", "alias",
+    "start", "help", "clear", "status",
+    "remember", "memories", "forget",
+    "remind", "reminders", "cancel",
+    "stop", "recover", "clear_recovery",
+    "topic", "topics",
+    "schedule", "jobs",
+    "health", "cleanup", "system", "update", "restart",
+    "provider", "model", "apikey",
+    "alias",
+    "adduser", "removeuser", "users", "purgeuser",
+    "maintenance", "skillstats",
 }
-
-
-def _atomic_env_write(env_file: Path, new_content: str):
-    """Write .env file atomically via temp file + rename, preserving 0600 permissions."""
-    tmp = env_file.with_suffix(".env.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(new_content)
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        tmp.rename(env_file)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 # --- User data helpers ---
@@ -1483,6 +1505,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+CLEAR_ARCHIVE_RETENTION = 20
+
+
+def _prune_clear_archives(user_dir: Path, keep: int = CLEAR_ARCHIVE_RETENTION) -> int:
+    """Drop oldest conversation_*.json archives beyond `keep`. Returns deletes."""
+    archives = sorted(
+        user_dir.glob("conversation_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    pruned = 0
+    for old in archives[keep:]:
+        try:
+            old.unlink()
+            pruned += 1
+        except OSError as e:
+            logger.warning(f"Failed to prune archive {old.name}: {e}")
+    return pruned
+
+
+@requires_auth
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
@@ -1492,6 +1535,9 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if archive.exists():
             archive = session.user_dir / f"conversation_{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}.json"
         session.conversation_file.rename(archive)
+        pruned = _prune_clear_archives(session.user_dir)
+        if pruned:
+            logger.info(f"Pruned {pruned} stale conversation archives for user {user_id}")
     # Also clear the compaction summary — stale summary from a cleared conversation
     # would contaminate the new conversation's context
     if session.summary_file.exists():
@@ -1500,6 +1546,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Context cleared by user {user_id}")
 
 
+@requires_auth
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
@@ -1523,6 +1570,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@requires_auth
 async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = command_body(update.message.text)
@@ -1534,6 +1582,7 @@ async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Saved: {text}")
 
 
+@requires_auth
 async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     memories = get_session(user_id).load_memories()
@@ -1547,6 +1596,7 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(chunk)
 
 
+@requires_auth
 async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = command_body(update.message.text)
@@ -1564,6 +1614,7 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Invalid memory number.")
 
 
+@requires_auth
 async def recover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show interrupted task progress."""
     user_id = update.effective_user.id
@@ -1594,6 +1645,7 @@ async def recover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(chunk)
 
 
+@requires_auth
 async def clear_recovery_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     progress_file = get_progress_file(user_id)
@@ -1604,6 +1656,7 @@ async def clear_recovery_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("No recovery data to clear.")
 
 
+@requires_auth
 async def topic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Switch to a topic-specific session or back to main."""
     user_id = update.effective_user.id
@@ -1623,6 +1676,7 @@ async def topic_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(result)
 
 
+@requires_auth
 async def list_topics_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
@@ -1641,6 +1695,7 @@ async def list_topics_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(text)
 
 
+@requires_auth
 async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = command_body(update.message.text)
@@ -1693,6 +1748,7 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@requires_auth
 async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     scheduler = get_scheduler()
@@ -1718,6 +1774,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(chunk)
 
 
+@requires_auth
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = command_body(update.message.text)
@@ -1746,6 +1803,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Reminder '{text}' cancelled.")
 
 
+@requires_auth
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Kill the active CLI task for this user.
 
@@ -1754,9 +1812,6 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     was accumulated, with a '[Stopped by /stop command]' suffix.
     """
     user_id = update.effective_user.id
-    allowed = get_allowed_users()
-    if not allowed or user_id not in allowed:
-        return
     if not isinstance(_llm_provider, _CLI_PROVIDERS):
         await update.message.reply_text(
             "/stop is only supported for CLI providers (Claude CLI, Codex CLI)."
@@ -1769,9 +1824,17 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No active task to stop.")
 
 
+@requires_auth
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Schedule a Claude agent task (with full tool-use)."""
     user_id = update.effective_user.id
+    # Tool-use scheduling lets the LLM run shell commands, write files, send
+    # messages, etc. Even an authenticated non-admin should not be able to
+    # spawn a future Claude session that runs as the bot user with full
+    # filesystem access. Restrict this command to admins.
+    if not is_admin(user_id):
+        await update.message.reply_text("Admin only.")
+        return
     text = command_body(update.message.text)
     if not text:
         await update.message.reply_text(
@@ -1820,6 +1883,7 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@requires_auth
 async def jobs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all scheduled jobs."""
     user_id = update.effective_user.id
@@ -1850,6 +1914,7 @@ async def jobs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(chunk)
 
 
+@requires_auth
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -1880,6 +1945,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(report)
 
 
+@requires_auth
 async def adduser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bind a free slot to a Telegram ID (admin only, multi-user mode only)."""
     user_id = update.effective_user.id
@@ -1916,6 +1982,7 @@ async def adduser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+@requires_auth
 async def removeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Unbind a Telegram ID and archive their slot dir (admin only)."""
     user_id = update.effective_user.id
@@ -1996,6 +2063,7 @@ async def removeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(msg + archive_msg)
 
 
+@requires_auth
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List bound slots (admin only)."""
     user_id = update.effective_user.id
@@ -2027,6 +2095,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+@requires_auth
 async def purgeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Permanently delete archived slot data (admin only, requires confirmation)."""
     user_id = update.effective_user.id
@@ -2095,6 +2164,7 @@ async def purgeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n\n".join(msg_parts))
 
 
+@requires_auth
 async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -2114,6 +2184,7 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Update failed: {e}")
 
 
+@requires_auth
 async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -2144,6 +2215,7 @@ async def system_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+@requires_auth
 async def cleanup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -2154,6 +2226,7 @@ async def cleanup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(report)
 
 
+@requires_auth
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -2196,6 +2269,7 @@ async def _refresh_provider_health(provider) -> tuple[bool, str]:
     return healthy, reason
 
 
+@requires_auth
 async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Switch LLM provider and/or model without restarting."""
     global _llm_provider
@@ -2347,10 +2421,15 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"No restart needed. Send a message to test."
         )
     except Exception as e:
-        logger.error(f"Failed to switch provider: {e}")
-        await update.message.reply_text(f"Failed to create provider: {e}")
+        # Log full error for the operator, send a generic line to the user so
+        # raw stack traces / SDK internals don't bleed into the chat.
+        logger.exception(f"Failed to switch provider: {e}")
+        await update.message.reply_text(
+            "Failed to create provider. Check the bot log for details."
+        )
 
 
+@requires_auth
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Change the model for the current provider without switching providers."""
     global _llm_provider
@@ -2421,6 +2500,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Failed: {e}")
 
 
+@requires_auth
 async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set or update the API key for the current provider."""
     global _llm_provider
@@ -2546,6 +2626,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+@requires_auth
 async def alias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Manage custom command shortcuts."""
     user_id = update.effective_user.id
@@ -2733,10 +2814,10 @@ async def _try_alias(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # Auth check — empty ALLOWED_USERS rejects everyone (must configure during setup)
+    # Auth check — empty allowed list rejects everyone (must configure during setup)
     allowed = get_allowed_users()
     if not allowed or user_id not in allowed:
-        await update.message.reply_text("Unauthorized. Your ID is not in ALLOWED_USERS.")
+        await update.message.reply_text("Unauthorized.")
         return
 
     # Duplicate protection
@@ -3210,6 +3291,7 @@ def _setup_maintenance_jobs(scheduler):
         logger.info("Scheduled nightly system probe job at 4:30 AM")
 
 
+@requires_auth
 async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Configure and view maintenance settings (backup, updates, cleanup)."""
     user_id = update.effective_user.id
@@ -3419,6 +3501,7 @@ def _fmt_skill_duration(ms) -> str:
     return f"{ms / 60000:.1f}m"
 
 
+@requires_auth
 async def skillstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show skill usage statistics. Admin only."""
     user_id = update.effective_user.id

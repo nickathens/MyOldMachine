@@ -599,10 +599,12 @@ def probe_system(data_dir: Path) -> dict:
         "skills_need_install": len(skill_status) - ready_count,
     }
 
-    # Save to disk
+    # Save to disk via atomic write so a crash mid-probe never leaves a
+    # truncated system_caps.json (which the bot loads on startup).
     caps_file = data_dir / "system_caps.json"
     data_dir.mkdir(parents=True, exist_ok=True)
-    caps_file.write_text(json.dumps(caps, indent=2) + "\n", encoding="utf-8")
+    from utils.safe_json import save_json as _atomic_save_json
+    _atomic_save_json(caps_file, caps, indent=2)
     logger.info(f"System probe complete: {ready_count}/{len(skill_status)} skills ready")
 
     return caps

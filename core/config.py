@@ -64,12 +64,18 @@ def get_telegram_api_base() -> Optional[str]:
 def get_allowed_users() -> list[int]:
     """Return the list of allowed Telegram IDs.
 
-    In multi-user mode, this is the union of:
-    - Telegram IDs bound to slots (data/orchestrator/users.json)
-    - The ALLOWED_USERS env var (kept so the admin's ID is always allowed
-      even if the slot table is empty or missing).
+    In multi-user mode, **users.json is the single source of truth**:
+    every authorized ID must be bound to a slot. ALLOWED_USERS in .env
+    is ignored to keep /adduser and /removeuser authoritative -- a
+    stranger added to .env by hand stays unauthorized, and a user
+    removed via /removeuser cannot re-enter via a stale .env entry.
 
-    In single-user mode, returns just ALLOWED_USERS.
+    The .env list is only consulted as a bootstrap fallback when the
+    slot table is empty (e.g., users.json was just created by the
+    installer and the admin has not been bound yet) so the admin can
+    finish configuring multi-user mode without locking themselves out.
+
+    In single-user mode, returns just ALLOWED_USERS from .env.
     """
     base = _env_list("ALLOWED_USERS")
     try:
@@ -86,13 +92,18 @@ def get_allowed_users() -> list[int]:
             bound.append(int(info["telegram_id"]))
         except (ValueError, TypeError, KeyError):
             continue
-    seen: set[int] = set()
-    merged: list[int] = []
-    for uid in base + bound:
-        if uid not in seen:
-            seen.add(uid)
-            merged.append(uid)
-    return merged
+    if bound:
+        # Slot table is the authority. .env contributes nothing.
+        seen: set[int] = set()
+        result: list[int] = []
+        for uid in bound:
+            if uid not in seen:
+                seen.add(uid)
+                result.append(uid)
+        return result
+    # Empty slot table -- fall back to .env so the admin isn't locked out
+    # before they have a chance to bind their slot.
+    return base
 
 
 def get_bot_name() -> str:

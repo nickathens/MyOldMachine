@@ -15,6 +15,7 @@ Supports --dry-run to preview all actions before executing.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -181,6 +182,75 @@ def run_streaming(cmd, label=""):
     return result
 
 
+def _sha256_of_file(path: Path) -> str:
+    """Compute the SHA-256 of a file in 1 MiB chunks."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _fetch_expected_sha256(sums_url: str, filename: str) -> str | None:
+    """Pull a SHASUMS256.txt-style file and return the hash for `filename`.
+
+    Returns None on any failure (network, parse error, or no matching row).
+    Format matches the de-facto standard used by Node.js, Python, etc.::
+
+        <hex digest>  <filename>
+
+    Both the binary and the SHASUMS file are fetched over HTTPS from the
+    same vendor: an attacker who can MITM one channel can MITM the other
+    too, so this is not strict TOFU defense -- but it does catch a
+    silently-replaced binary on a CDN edge or origin compromise that
+    leaves the SHASUMS file untouched.
+    """
+    if _dry_run:
+        return None
+    try:
+        proc = subprocess.run(
+            ["curl", "-fsSL", "--max-time", "30", sums_url],
+            capture_output=True, text=True, timeout=40,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        warn(f"Could not fetch checksums from {sums_url}: {e}")
+        return None
+    if proc.returncode != 0:
+        warn(f"Could not fetch checksums from {sums_url}: rc={proc.returncode}")
+        return None
+    for line in proc.stdout.splitlines():
+        # Each line: "<64 hex chars>  <filename>" (two spaces or a tab).
+        parts = line.split()
+        if len(parts) >= 2 and parts[-1].lstrip("./") == filename:
+            digest = parts[0].strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                return digest
+    return None
+
+
+def _verify_sha256(file_path: Path, expected: str | None,
+                   *, source: str = "") -> bool:
+    """Compare a file's SHA-256 to `expected`. Refuse to proceed on mismatch.
+
+    Returns True only when the file matches. Returns False (and logs) when
+    `expected` is None: missing checksum metadata is treated as a hard fail
+    rather than letting an unverified binary through to a privileged install.
+    """
+    if expected is None:
+        warn(f"Refusing to install {file_path.name}: no SHA-256 available "
+             f"to verify against{(' from ' + source) if source else ''}")
+        return False
+    actual = _sha256_of_file(file_path)
+    if actual.lower() != expected.lower():
+        error(f"SHA-256 mismatch for {file_path.name}: "
+              f"expected {expected}, got {actual}")
+        log_action("checksum_mismatch", str(file_path))
+        return False
+    info(f"SHA-256 verified for {file_path.name}")
+    log_action("checksum_ok", str(file_path))
+    return True
+
+
 def sudo_write_file(path, content, password=None):
     """Safely write a file as root by writing to a temp file first, then sudo cp."""
     if _dry_run:
@@ -192,8 +262,13 @@ def sudo_write_file(path, content, password=None):
         f.write(content)
         tmp_path = f.name
     import shlex
-    sudo_run(f"cp {shlex.quote(tmp_path)} {shlex.quote(str(path))}", password)
-    os.unlink(tmp_path)
+    try:
+        sudo_run(f"cp {shlex.quote(tmp_path)} {shlex.quote(str(path))}", password)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
     log_action(f"write_file: {path}", f"{len(content)} bytes")
 
 
@@ -1023,6 +1098,18 @@ def _install_node_direct(os_info: OSInfo) -> bool:
         warn(f"Failed to download Node.js: {dl_result.stderr[:200]}")
         return False
 
+    # Verify checksum from the same vendor's SHASUMS256.txt before
+    # extracting anything as root. Refuse to install on mismatch.
+    sums_url = f"https://nodejs.org/dist/v{node_version}/SHASUMS256.txt"
+    expected = _fetch_expected_sha256(sums_url, tarball)
+    if not _verify_sha256(tmp_tar, expected, source=sums_url):
+        try:
+            import shutil
+            shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        except Exception:
+            pass
+        return False
+
     # Extract to /usr/local so node/npm are in a standard PATH location
     install_prefix = "/usr/local"
     info(f"Installing Node.js to {install_prefix}...")
@@ -1074,6 +1161,20 @@ def _install_ffmpeg_direct(os_info: OSInfo) -> bool:
 
     # evermeet.cx only provides x86_64 builds (Intel). For ARM, the binary runs via Rosetta.
     # On truly old Macs (all Intel), this works directly.
+    #
+    # The /getrelease/zip URL serves a moving "latest" target, so a static
+    # SHA-256 cannot be pinned in source. Gate this fallback behind an
+    # explicit env var (MOM_FFMPEG_ZIP_SHA256) so a Homebrew failure does
+    # not silently land an unverified binary on the user's PATH as root.
+    expected_ffmpeg_sha = os.environ.get("MOM_FFMPEG_ZIP_SHA256", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_ffmpeg_sha or ""):
+        warn(
+            "evermeet ffmpeg fallback is disabled: set MOM_FFMPEG_ZIP_SHA256 "
+            "to the published SHA-256 of the zip to allow this fallback. "
+            "Skipping unverified download."
+        )
+        return False
+
     info("Downloading ffmpeg static build from evermeet.cx...")
     tmp_dir = Path(tempfile.mkdtemp(prefix="myoldmachine_ffmpeg_"))
     zip_path = tmp_dir / "ffmpeg.zip"
@@ -1086,6 +1187,15 @@ def _install_ffmpeg_direct(os_info: OSInfo) -> bool:
     if dl_result.returncode != 0:
         warn(f"Failed to download ffmpeg: {dl_result.stderr[:200]}")
         # Cleanup
+        try:
+            import shutil
+            shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        except Exception:
+            pass
+        return False
+
+    if not _verify_sha256(zip_path, expected_ffmpeg_sha,
+                          source="MOM_FFMPEG_ZIP_SHA256 env var"):
         try:
             import shutil
             shutil.rmtree(str(tmp_dir), ignore_errors=True)
@@ -1110,23 +1220,35 @@ def _install_ffmpeg_direct(os_info: OSInfo) -> bool:
         sudo_run(f"cp {shlex.quote(str(ffmpeg_bin))} /usr/local/bin/ffmpeg", password)
         sudo_run("chmod +x /usr/local/bin/ffmpeg", password)
 
-        # Also download ffprobe (needed by many audio/video skills)
-        probe_zip = tmp_dir / "ffprobe.zip"
-        dl2 = run(
-            f"curl -fsSL -o '{probe_zip}' 'https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip'",
-            timeout=120
-        )
-        if dl2.returncode == 0:
-            run(f"unzip -o '{probe_zip}' -d '{tmp_dir}'", timeout=30)
-            probe_bin = tmp_dir / "ffprobe"
-            if not probe_bin.exists():
-                for f in tmp_dir.rglob("ffprobe"):
-                    if f.is_file():
-                        probe_bin = f
-                        break
-            if probe_bin.exists():
-                sudo_run(f"cp {shlex.quote(str(probe_bin))} /usr/local/bin/ffprobe", password)
-                sudo_run("chmod +x /usr/local/bin/ffprobe", password)
+        # Also download ffprobe (needed by many audio/video skills).
+        # Gated by its own SHA-256 env var; missing one means we ship the
+        # ffmpeg binary alone rather than landing an unverified ffprobe.
+        expected_probe_sha = os.environ.get("MOM_FFPROBE_ZIP_SHA256", "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_probe_sha or ""):
+            warn(
+                "evermeet ffprobe fallback is disabled: set "
+                "MOM_FFPROBE_ZIP_SHA256 to allow it. Skipping ffprobe."
+            )
+        else:
+            probe_zip = tmp_dir / "ffprobe.zip"
+            dl2 = run(
+                f"curl -fsSL -o '{probe_zip}' 'https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip'",
+                timeout=120
+            )
+            if dl2.returncode == 0 and _verify_sha256(
+                probe_zip, expected_probe_sha,
+                source="MOM_FFPROBE_ZIP_SHA256 env var",
+            ):
+                run(f"unzip -o '{probe_zip}' -d '{tmp_dir}'", timeout=30)
+                probe_bin = tmp_dir / "ffprobe"
+                if not probe_bin.exists():
+                    for f in tmp_dir.rglob("ffprobe"):
+                        if f.is_file():
+                            probe_bin = f
+                            break
+                if probe_bin.exists():
+                    sudo_run(f"cp {shlex.quote(str(probe_bin))} /usr/local/bin/ffprobe", password)
+                    sudo_run("chmod +x /usr/local/bin/ffprobe", password)
 
     # Cleanup
     try:
@@ -1172,7 +1294,19 @@ def _install_sox_direct(os_info: OSInfo) -> bool:
                 log_action("install_sox_brew_retry", version_line)
                 return True
 
-    # Last resort: compile from source
+    # Last resort: compile from source. Gated behind an explicit env var
+    # so a brew failure doesn't silently fall through to running unverified
+    # SourceForge tarballs as root: the user has to opt in by setting a
+    # known-good SHA-256 themselves.
+    expected_sha = os.environ.get("MOM_SOX_TARBALL_SHA256", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha or ""):
+        warn(
+            "sox source compile is disabled: set MOM_SOX_TARBALL_SHA256 to "
+            "the SHA-256 of sox-14.4.2.tar.gz to allow this fallback. "
+            "Skipping unverified download."
+        )
+        return False
+
     info("Trying to compile sox from source...")
     tmp_dir = Path(tempfile.mkdtemp(prefix="myoldmachine_sox_"))
     sox_version = "14.4.2"
@@ -1181,6 +1315,15 @@ def _install_sox_direct(os_info: OSInfo) -> bool:
     dl_result = run(f"curl -fsSL -o '{tmp_dir}/sox.tar.gz' '{url}'", timeout=120)
     if dl_result.returncode != 0:
         warn(f"Failed to download sox source: {dl_result.stderr[:200]}")
+        try:
+            import shutil
+            shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        except Exception:
+            pass
+        return False
+
+    if not _verify_sha256(tmp_dir / "sox.tar.gz", expected_sha,
+                          source="MOM_SOX_TARBALL_SHA256 env var"):
         try:
             import shutil
             shutil.rmtree(str(tmp_dir), ignore_errors=True)

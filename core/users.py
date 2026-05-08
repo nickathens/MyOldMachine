@@ -41,7 +41,11 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> bool:
-    """Atomic write of the slot table. Returns True on success."""
+    """Atomic write of the slot table. Returns True on success.
+
+    fsync the file *and* the parent dir before rename so a power-cut between
+    the rename and the directory metadata flush can't leave a torn users.json.
+    """
     if not ORCHESTRATOR_DIR.exists():
         return False
     tmp = USERS_JSON.with_suffix(".json.tmp")
@@ -49,8 +53,21 @@ def _save(data: dict) -> bool:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
             f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
         os.chmod(tmp, 0o600)
         tmp.rename(USERS_JSON)
+        try:
+            dir_fd = os.open(str(ORCHESTRATOR_DIR), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            # fsync on a directory isn't supported everywhere (notably some
+            # Windows mounts); the rename + file-level fsync above is still
+            # safe on POSIX, so skip silently.
+            pass
         return True
     except OSError:
         try:

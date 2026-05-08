@@ -39,6 +39,7 @@ ORCHESTRATOR_USER = "mom_orchestrator"
 SLOT_USER_PREFIX = "mom_user"
 SUDOERS_FRAGMENT_PATH = "/etc/sudoers.d/myoldmachine"
 USER_NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,30}$")
+SUDOERS_FRAGMENT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────
@@ -57,6 +58,27 @@ def _validate_username(name: str) -> None:
         raise ValueError(
             f"Invalid system user name: {name!r}. "
             f"Must match {USER_NAME_RE.pattern}."
+        )
+
+
+def _validate_sudoers_fragment_path(path: str) -> None:
+    """Reject any path outside /etc/sudoers.d/ with a safe filename.
+
+    Both grant_sudo and revoke_sudo run as root. A caller-supplied path
+    like /etc/passwd or /etc/sudoers would let a buggy or compromised
+    caller clobber/delete arbitrary system files. Pin the parent dir
+    and the filename character set instead of trusting the input.
+    """
+    p = Path(path)
+    if not p.is_absolute() or str(p) != os.path.normpath(str(p)):
+        raise ValueError(f"sudoers fragment path must be a normalized absolute path: {path!r}")
+    if str(p.parent) != "/etc/sudoers.d":
+        raise ValueError(
+            f"sudoers fragment must live in /etc/sudoers.d/, got parent {p.parent!r}"
+        )
+    if not SUDOERS_FRAGMENT_NAME_RE.fullmatch(p.name):
+        raise ValueError(
+            f"sudoers fragment name must match {SUDOERS_FRAGMENT_NAME_RE.pattern}, got {p.name!r}"
         )
 
 
@@ -513,6 +535,10 @@ def grant_sudo(
 
     Returns (success, message). Never installs an unvalidated fragment.
     """
+    try:
+        _validate_sudoers_fragment_path(fragment_path)
+    except ValueError as e:
+        return False, str(e)
     content = build_sudoers_fragment(orchestrator, target_users, binaries)
     ok, msg = validate_sudoers_fragment(content)
     if not ok:
@@ -556,6 +582,11 @@ def grant_sudo(
 def revoke_sudo(*, password: Optional[str] = None,
                 fragment_path: str = SUDOERS_FRAGMENT_PATH) -> bool:
     """Remove the sudoers fragment. Idempotent."""
+    try:
+        _validate_sudoers_fragment_path(fragment_path)
+    except ValueError as e:
+        logger.error(f"Refusing to revoke sudoers at unsafe path: {e}")
+        return False
     if not Path(fragment_path).exists():
         return True
     result = _sudo_run(["rm", "-f", fragment_path], password)

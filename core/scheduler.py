@@ -42,8 +42,30 @@ HISTORY_DB_PATH = SCHEDULER_DIR / "history.db"
 
 
 def ensure_scheduler_dir():
-    """Ensure scheduler directory exists."""
+    """Ensure scheduler directory exists with private (0700) permissions."""
     SCHEDULER_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(SCHEDULER_DIR, 0o700)
+    except OSError as e:
+        logger.warning(f"Could not chmod scheduler dir 0700: {e}")
+
+
+def _secure_db_file(db_path: Path) -> None:
+    """Tighten permissions on a SQLite DB file plus its WAL/SHM siblings.
+
+    Job metadata includes user IDs, message bodies, and shell commands that
+    will be executed by APScheduler. World-readable would be a real leak,
+    and SQLite's WAL/SHM are created with the umask, so chmod must follow
+    every connect. Failures are logged but non-fatal -- a permission warn
+    beats refusing to start the scheduler outright.
+    """
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        p = db_path.with_name(db_path.name + suffix) if suffix else db_path
+        if p.exists():
+            try:
+                os.chmod(p, 0o600)
+            except OSError as e:
+                logger.warning(f"Could not chmod {p} to 0600: {e}")
 
 
 def _connect_db(db_path: Path) -> sqlite3.Connection:
@@ -51,6 +73,7 @@ def _connect_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    _secure_db_file(db_path)
     return conn
 
 
@@ -725,7 +748,7 @@ class Scheduler:
             raise ValueError(
                 f"end_date ({end_date.isoformat()}) must be after run_at ({run_at.isoformat()})"
             )
-        job_id = str(uuid.uuid4())[:8]
+        job_id = uuid.uuid4().hex
 
         _save_meta(
             job_id=job_id, user_id=user_id, message=message,
@@ -1021,6 +1044,11 @@ class Scheduler:
         """Start the APScheduler and sync loop."""
         if not self._aps.running:
             self._aps.start()
+            # APScheduler's SQLAlchemy connection creates the DB and its
+            # WAL/SHM siblings on first use; re-tighten perms after start
+            # so we don't leave job metadata world-readable.
+            _secure_db_file(DB_PATH)
+            _secure_db_file(HISTORY_DB_PATH)
             self.sync_from_meta()
             job_count = len(self._aps.get_jobs())
             logger.info(f"APScheduler started with {job_count} jobs")
