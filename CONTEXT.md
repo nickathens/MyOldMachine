@@ -258,6 +258,28 @@ Ported from the private claude-telegram-bot. Fountain markup screenwriting toolk
 
 Skill count: 59 → 61 (also retroactively counted `mempalace` which was added without README update).
 
+## MemPalace per-user permanent memory (May 8)
+
+`mempalace` is now a **per-user** permanent memory: each user's ChromaDB palace, conversation exports, and sync state live entirely under `<user_dir>/mempalace/`, kernel-isolated by the slot's filesystem permissions. The shared `data/mempalace/venv/` holds only the Python interpreter and the `mempalace` library — no user data.
+
+Scripts now accept `--user-dir <path>`:
+
+- `mempalace_setup.py --shared-only` installs the venv once
+- `mempalace_setup.py --user-dir <user_dir>` provisions one user's palace and mines existing history
+- `mempalace_sync.py --user-dir <user_dir>` runs daily per user (one job per slot)
+- `mempalace_search.py "query" --user-dir <user_dir>` searches that user's palace only
+
+`bot.py:1046` rebuilt to inject the per-user search command using `get_user_dir(user_id)`.
+
+Each user's palace uses a stable wing name `user_<dir-basename>` for mempalace API consistency, but no cross-user collection mixing is ever possible — the palace path itself is per-user.
+
+## Skill ports (May 8)
+
+- `coding` — behavioral build/diagnose protocols (no scripts, light weight)
+- `vpn` — ProtonVPN control with proper Linux + macOS branching (DBus per-uid, `osascript` for the Mac GUI, `nmcli` for Linux status, CLI status fallback for Mac)
+
+Skill count: 61 → 63.
+
 ## Known Issues
 
 - Google free tier quota can change without notice, breaking Gemini models

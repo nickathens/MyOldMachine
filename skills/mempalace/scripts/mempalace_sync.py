@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-MemPalace daily sync: export new messages and mine into the palace.
+MemPalace per-user sync: export new messages from one user's message_log.db and
+mine them into that user's permanent palace.
 
-Discovers users automatically from data/users/. Each user gets their own wing
-(user_<telegram_id>) for data isolation.
+Each user owns their palace under <user_dir>/mempalace/. This script operates
+on exactly one user at a time, which makes scheduling per slot straightforward
+and keeps multi-user isolation enforced at the filesystem layer.
 
-Must run with the mempalace venv Python:
-    <BOT_DIR>/data/mempalace/venv/bin/python <this_script>
+Run with the shared mempalace venv Python:
+    <BOT_DIR>/data/mempalace/venv/bin/python <this> --user-dir <user_dir>
 
 Flags:
-    --force-today   Re-mine today's session (normally only complete days are mined)
-    --dry-run       Show what would be mined without filing
-    --user USER_ID  Sync specific user only (default: all users with message logs)
+    --user-dir PATH   Required. The user's data directory.
+    --force-today     Re-mine today's session (otherwise only complete days are mined).
+    --dry-run         Show what would happen without writing.
 """
 
 import argparse
@@ -23,60 +25,51 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-BOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-USERS_DIR = BOT_DIR / "data" / "users"
-MEMPALACE_DIR = BOT_DIR / "data" / "mempalace"
-PALACE_PATH = str(MEMPALACE_DIR / "palace")
-SYNC_STATE_FILE = MEMPALACE_DIR / "sync_state.json"
+
+def _palace_path(user_dir: Path) -> Path:
+    return user_dir / "mempalace" / "palace"
 
 
-def get_all_user_ids():
-    """Discover user IDs from data/users/ that have message logs."""
-    if not USERS_DIR.exists():
-        return []
-    user_ids = []
-    for d in USERS_DIR.iterdir():
-        if d.is_dir() and d.name.isdigit():
-            if (d / "message_log.db").exists():
-                user_ids.append(d.name)
-    return sorted(user_ids)
+def _convos_dir(user_dir: Path) -> Path:
+    return user_dir / "mempalace" / "convos"
 
 
-def user_wing(user_id):
-    """Derive wing name from user ID."""
-    return f"user_{user_id}"
+def _sync_state_file(user_dir: Path) -> Path:
+    return user_dir / "mempalace" / "sync_state.json"
 
 
-def load_sync_state():
-    if SYNC_STATE_FILE.exists():
+def _wing_for(user_dir: Path) -> str:
+    return f"user_{user_dir.name}"
+
+
+def _message_log(user_dir: Path) -> Path:
+    return user_dir / "message_log.db"
+
+
+def load_sync_state(user_dir: Path) -> dict:
+    path = _sync_state_file(user_dir)
+    if path.exists():
         try:
-            return json.loads(SYNC_STATE_FILE.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
     return {}
 
 
-def save_sync_state(state):
-    MEMPALACE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = str(SYNC_STATE_FILE) + ".tmp"
+def save_sync_state(user_dir: Path, state: dict) -> None:
+    mempalace_dir = user_dir / "mempalace"
+    mempalace_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = _sync_state_file(user_dir)
+    tmp = str(path) + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
-    os.replace(tmp, str(SYNC_STATE_FILE))
+    os.replace(tmp, str(path))
 
 
-def export_messages(user_id, cutoff_date=None):
-    """Export messages from message_log.db grouped by date.
-
-    Args:
-        user_id: Telegram user ID string.
-        cutoff_date: Only export messages on or before this date (YYYY-MM-DD).
-                     If None, exports up to yesterday (complete days only).
-
-    Returns:
-        dict mapping date strings to list of {role, content} dicts.
-    """
-    db_path = USERS_DIR / user_id / "message_log.db"
+def export_messages(user_dir: Path, cutoff_date: str | None = None) -> dict[str, list[dict]]:
+    """Export messages grouped by ISO date (YYYY-MM-DD)."""
+    db_path = _message_log(user_dir)
     if not db_path.exists():
         return {}
 
@@ -92,29 +85,25 @@ def export_messages(user_id, cutoff_date=None):
             rows = conn.execute(
                 "SELECT timestamp, role, content FROM messages "
                 "WHERE timestamp <= ? ORDER BY timestamp",
-                (cutoff_date + "T23:59:59",)
+                (cutoff_date + "T23:59:59",),
             ).fetchall()
         finally:
             conn.close()
     except sqlite3.Error as e:
-        print(f"  ERROR: Could not read message_log.db for user {user_id}: {e}", flush=True)
+        print(f"  ERROR: Could not read {db_path}: {e}", flush=True)
         return {}
 
-    by_date = defaultdict(list)
+    by_date: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         date = row["timestamp"][:10]
         by_date[date].append({"role": row["role"], "content": row["content"]})
-
     return dict(by_date)
 
 
-def write_session_files(by_date, output_dir):
-    """Write per-day JSON session files. Skips files whose content hasn't changed.
-
-    Returns list of file paths that were actually written (new or changed).
-    """
+def write_session_files(by_date: dict[str, list[dict]], output_dir: Path) -> list[str]:
+    """Write per-day JSON exports. Skips days whose content is unchanged."""
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    written = []
+    written: list[str] = []
     for date, messages in sorted(by_date.items()):
         path = output_dir / f"session_{date}.json"
         new_content = json.dumps(messages, indent=2, ensure_ascii=False)
@@ -131,22 +120,23 @@ def write_session_files(by_date, output_dir):
     return written
 
 
-def mine_sessions(convos_dir, wing, dry_run=False, force_today=False):
-    """Mine conversation sessions into the palace.
-
-    Returns stats dict with drawer count.
-    """
+def mine_sessions(user_dir: Path, dry_run: bool = False, force_today: bool = False) -> dict:
+    """Mine the user's exported sessions into their palace."""
     try:
-        from mempalace.convo_miner import mine_convos
-        from mempalace.palace import get_collection
+        from mempalace.convo_miner import mine_convos  # type: ignore[import-not-found]
+        from mempalace.palace import get_collection  # type: ignore[import-not-found]
     except ImportError:
-        print("ERROR: mempalace not importable. Is the mempalace venv active?", flush=True)
+        print("ERROR: mempalace not importable. Activate the mempalace venv.", flush=True)
         sys.exit(1)
 
+    palace = _palace_path(user_dir)
+    convos = _convos_dir(user_dir)
+    wing = _wing_for(user_dir)
+
     if force_today:
-        today_file = str(convos_dir / f"session_{datetime.now().strftime('%Y-%m-%d')}.json")
+        today_file = str(convos / f"session_{datetime.now().strftime('%Y-%m-%d')}.json")
         try:
-            collection = get_collection(PALACE_PATH, create=False)
+            collection = get_collection(str(palace), create=False)
             collection.delete(where={"source_file": today_file})
             print(f"  Purged today's drawers for re-mining: {today_file}", flush=True)
         except Exception as e:
@@ -154,8 +144,8 @@ def mine_sessions(convos_dir, wing, dry_run=False, force_today=False):
 
     try:
         mine_convos(
-            convo_dir=str(convos_dir),
-            palace_path=PALACE_PATH,
+            convo_dir=str(convos),
+            palace_path=str(palace),
             wing=wing,
             agent="daily_sync",
             dry_run=dry_run,
@@ -165,71 +155,56 @@ def mine_sessions(convos_dir, wing, dry_run=False, force_today=False):
         return {"total_drawers": -1, "error": str(e)}
 
     try:
-        collection = get_collection(PALACE_PATH, create=False)
+        collection = get_collection(str(palace), create=False)
         total = collection.count()
     except Exception:
         total = -1
-
     return {"total_drawers": total}
 
 
-def main():
-    parser = argparse.ArgumentParser(description="MemPalace daily sync")
-    parser.add_argument("--force-today", action="store_true",
-                        help="Re-mine today's session (for mid-day updates)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would be mined without filing")
-    parser.add_argument("--user", default=None,
-                        help="Sync specific user ID (default: all users with message logs)")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Per-user MemPalace sync")
+    parser.add_argument("--user-dir", required=True, help="The user's data directory")
+    parser.add_argument("--force-today", action="store_true", help="Re-mine today's session")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be mined")
     args = parser.parse_args()
 
+    user_dir = Path(args.user_dir).expanduser().resolve()
+    if not user_dir.exists():
+        print(f"ERROR: --user-dir does not exist: {user_dir}", flush=True)
+        sys.exit(2)
+
+    if not _message_log(user_dir).exists():
+        print(f"No message_log.db in {user_dir}. Nothing to sync.", flush=True)
+        return
+
     start = datetime.now()
-    print(f"[{start.isoformat()}] MemPalace sync starting", flush=True)
+    wing = _wing_for(user_dir)
+    print(f"[{start.isoformat()}] MemPalace sync for {user_dir} (wing: {wing})", flush=True)
 
-    if args.user:
-        if not args.user.isdigit():
-            print(f"ERROR: User ID must be numeric, got: {args.user}", flush=True)
-            sys.exit(1)
-        user_ids = [args.user]
+    cutoff = datetime.now().strftime("%Y-%m-%d") if args.force_today else None
+
+    print("  Exporting messages...", flush=True)
+    by_date = export_messages(user_dir, cutoff_date=cutoff)
+    if by_date:
+        write_session_files(by_date, _convos_dir(user_dir))
+        msg_count = sum(len(v) for v in by_date.values())
+        print(f"  {len(by_date)} day(s), {msg_count} messages", flush=True)
     else:
-        user_ids = get_all_user_ids()
-        if not user_ids:
-            print("No users with message logs found.", flush=True)
-            sys.exit(0)
+        print("  No messages to export", flush=True)
 
-    print(f"  Users to sync: {', '.join(user_ids)}", flush=True)
+    print(f"  Mining into palace at {_palace_path(user_dir)}...", flush=True)
+    stats = mine_sessions(user_dir, dry_run=args.dry_run, force_today=args.force_today)
 
-    cutoff = None
-    if args.force_today:
-        cutoff = datetime.now().strftime("%Y-%m-%d")
-
-    last_stats = {}
-    for uid in user_ids:
-        wing = user_wing(uid)
-        convos_dir = MEMPALACE_DIR / "convos" / uid
-        print(f"\n  User {uid} (wing: {wing}):", flush=True)
-
-        print("    Exporting messages...", flush=True)
-        by_date = export_messages(uid, cutoff_date=cutoff)
-        if by_date:
-            write_session_files(by_date, convos_dir)
-            msg_count = sum(len(v) for v in by_date.values())
-            print(f"    {len(by_date)} day(s), {msg_count} messages", flush=True)
-        else:
-            print("    No messages to export", flush=True)
-
-        print(f"    Mining into palace (wing: {wing})...", flush=True)
-        last_stats = mine_sessions(convos_dir, wing, dry_run=args.dry_run, force_today=args.force_today)
-
-    state = load_sync_state()
-    state["last_sync"] = start.isoformat()
-    state["last_total_drawers"] = last_stats.get("total_drawers", -1)
     if not args.dry_run:
-        save_sync_state(state)
+        state = load_sync_state(user_dir)
+        state["last_sync"] = start.isoformat()
+        state["last_total_drawers"] = stats.get("total_drawers", -1)
+        save_sync_state(user_dir, state)
 
     elapsed = (datetime.now() - start).total_seconds()
     print(f"\n[{datetime.now().isoformat()}] Sync complete in {elapsed:.1f}s", flush=True)
-    print(f"  Total drawers in palace: {last_stats.get('total_drawers', 'unknown')}", flush=True)
+    print(f"  Total drawers in palace: {stats.get('total_drawers', 'unknown')}", flush=True)
 
 
 if __name__ == "__main__":

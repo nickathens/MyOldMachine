@@ -1043,22 +1043,23 @@ def build_system_prompt(user_id: int) -> str:
             ))
             parts.append("")
 
-    # MemPalace conversation memory search (if installed)
+    # MemPalace per-user permanent conversation memory (if provisioned)
     if has_tool_use:
         mempalace_python = BOT_DIR / "data" / "mempalace" / "venv" / "bin" / "python"
-        mempalace_palace = BOT_DIR / "data" / "mempalace" / "palace"
-        if mempalace_python.exists() and mempalace_palace.exists():
+        user_palace = get_user_dir(user_id) / "mempalace" / "palace"
+        if mempalace_python.exists() and user_palace.exists():
             mp_py = str(mempalace_python)
             mp_search = str(SKILLS_DIR / "mempalace" / "scripts" / "mempalace_search.py")
-            mp_wing = f"user_{user_id}"
+            mp_user_dir = str(get_user_dir(user_id))
             parts.append("### Conversation Memory Search (MemPalace):")
             parts.append(
-                "Semantic search over full conversation history. "
+                "Semantic search over your full conversation history with this user. "
+                "The palace is private to this user -- never accesses anyone else's data. "
                 "Use ONLY when the user says 'remember', 'recall', 'what did we discuss about', "
                 "or when you cannot find something the user references in structured memory."
             )
-            parts.append(f"  {mp_py} {mp_search} \"query\" --wing {mp_wing}")
-            parts.append(f"  {mp_py} {mp_search} \"query\" --wing {mp_wing} --results 10")
+            parts.append(f"  {mp_py} {mp_search} \"query\" --user-dir {mp_user_dir}")
+            parts.append(f"  {mp_py} {mp_search} \"query\" --user-dir {mp_user_dir} --results 10")
             parts.append("Do NOT use for general queries or when the answer is in current context.")
             parts.append("")
 

@@ -1,73 +1,106 @@
-# MemPalace -- Conversation Memory Search
+# MemPalace -- Per-user Permanent Conversation Memory
 
-Semantic search over conversation history. Finds past discussions by meaning, not just keywords.
+Each user owns a private semantic-search palace over their full conversation
+history. Vector store lives inside the user's data directory, so multi-user
+filesystem isolation keeps it private at the kernel level.
 
 ## When to Use
 
 - When the user says "remember", "recall", "what did we discuss about"
-- When you can't find something the user references in structured memory
+- When you cannot find something the user references in structured memory
 - When the user asks about a past conversation topic
 
 Do NOT use for general queries or when the answer is in current context.
 
+## Storage Layout
+
+```
+<BOT_DIR>/data/mempalace/
+  venv/                       # SHARED Python venv (orchestrator-installed)
+
+<user_dir>/mempalace/         # PER-USER palace (slot-private)
+  palace/                     # ChromaDB vector store
+  convos/                     # Per-day session JSON exports
+  sync_state.json             # Last sync timestamp + drawer count
+```
+
+The shared venv is just the Python interpreter and the `mempalace` library --
+it holds no user data. All user data is under each user's own dir.
+
 ## Setup
 
-If not yet installed, run the setup script with the bot's Python:
+First run installs the shared venv (one-time, ~500 MB) AND provisions one
+user's palace:
 
 ```
-<BOT_VENV_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_setup.py
+<BOT_VENV_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_setup.py \
+    --user-dir <USER_DIR>
 ```
 
-This creates an isolated Python environment, installs MemPalace, and mines existing
-conversation history. Takes 2-10 minutes depending on history size and hardware.
-
-**Requirements:** 4 GB RAM minimum, 2 GB free disk. The setup downloads ~500 MB
-(ChromaDB + embedding model).
-
-After setup, set up a daily sync job to keep the palace current:
+Add new users later (the venv install will be skipped if already present):
 
 ```
-<BOT_VENV_PYTHON> <SCHEDULER_CLI> add --user <ADMIN_USER_ID> --at "03:30" --type command --command "<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_sync.py" --repeat daily --name "MemPalace daily sync" --no-notify
+<BOT_VENV_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_setup.py \
+    --user-dir <ANOTHER_USER_DIR>
 ```
+
+Install just the venv ahead of time without touching any user:
+
+```
+<BOT_VENV_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_setup.py \
+    --shared-only
+```
+
+**Requirements:** 4 GB RAM, 2 GB free disk for the shared venv. Per-user
+palaces grow with conversation history (typically a few MB per user per year).
 
 ## Searching
 
-Run with the **mempalace venv Python** (not the bot's Python):
+Run with the shared mempalace venv Python:
 
 ```
-<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_search.py "search query" --wing user_<USER_ID>
+<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_search.py \
+    "search query" --user-dir <USER_DIR>
 ```
 
 Options:
 - `--results N` -- Number of results (default: 5)
-- `--wing WING` -- Required. User's wing (user_<telegram_id>)
-- `--room ROOM` -- Filter by room (technical, architecture, planning, decisions, problems, general)
+- `--room ROOM` -- Optional category filter (technical, decisions, problems, ...)
 - `--json` -- Raw JSON output
 
-The mempalace venv Python is at: `<BOT_DIR>/data/mempalace/venv/bin/python`
+The venv Python is at `<BOT_DIR>/data/mempalace/venv/bin/python`.
 
-## Manual Sync
+## Daily Sync
 
-To manually sync new messages into the palace:
+Schedule a daily job per user so each palace stays current:
 
 ```
-<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_sync.py
+<BOT_VENV_PYTHON> <SCHEDULER_CLI> add --user <USER_TID> --at "03:30" \
+    --type command \
+    --command "<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_sync.py --user-dir <USER_DIR>" \
+    --repeat daily --name "MemPalace daily sync" --no-notify
+```
+
+In multi-user mode the orchestrator runs the job as the slot user, so writes
+land in the user's own dir without privilege escalation.
+
+Manual sync:
+
+```
+<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_sync.py \
+    --user-dir <USER_DIR>
 ```
 
 Options:
-- `--force-today` -- Re-mine today's messages (normally only complete days are mined)
-- `--dry-run` -- Preview what would be mined without filing
-- `--user USER_ID` -- Sync specific user only (default: all users)
-
-## Data Location
-
-- Palace (vector store): `<BOT_DIR>/data/mempalace/palace/`
-- Session exports: `<BOT_DIR>/data/mempalace/convos/<user_id>/`
-- Isolated venv: `<BOT_DIR>/data/mempalace/venv/`
+- `--force-today` -- Re-mine today's session (otherwise only complete days are mined)
+- `--dry-run` -- Preview without writing
 
 ## Important
 
-- Each user has their own wing (`user_<telegram_id>`). Never search another user's wing.
-- MemPalace searches text content only. No attachments or files are stored.
-- The embedding model runs locally. No API calls required for search.
-- Strong for concrete topic recall (bugs, features, technical discussions). Weak for abstract/emotional queries.
+- One palace per user. The script never touches another user's directory.
+- MemPalace stores text only. No attachments or files.
+- The embedding model runs locally. No API calls.
+- Strong for concrete topic recall (bugs, features, decisions). Weaker for
+  abstract or emotional queries.
+- A forked palace cannot pick up upstream conversations -- it IS the user's
+  own conversation memory. There is nothing upstream to merge.

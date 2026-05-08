@@ -1,37 +1,57 @@
 #!/usr/bin/env python3
 """
-MemPalace search CLI: query the conversation memory palace.
+MemPalace search: query a single user's permanent conversation memory.
 
-Must run with the mempalace venv Python:
-    <BOT_DIR>/data/mempalace/venv/bin/python <this_script> "query" --wing user_<id>
+Each user owns their own ChromaDB palace at <user_dir>/mempalace/palace/. This
+script searches exactly one palace -- no cross-user mixing.
+
+Run with the shared mempalace venv Python:
+    <BOT_DIR>/data/mempalace/venv/bin/python <this> "query" --user-dir <user_dir>
+
+Arguments:
+    query                The search string.
+    --user-dir PATH      Required. The user's data directory (the parent of
+                         their mempalace/ subtree).
+    --results N          Number of hits to return. Default: 5.
+    --room ROOM          Optional category filter (e.g. technical, decisions).
+    --json               Emit raw JSON instead of formatted text.
 """
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-BOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-PALACE_PATH = str(BOT_DIR / "data" / "mempalace" / "palace")
+
+def _palace_path(user_dir: Path) -> Path:
+    return user_dir / "mempalace" / "palace"
 
 
-def search_palace(query, n_results=5, wing=None, room=None):
-    if not wing or not wing.strip():
-        return {"error": "Wing is required. Pass --wing <wing_name> to scope the search."}
+def _wing_for(user_dir: Path) -> str:
+    """Stable wing name within a per-user palace.
+
+    Each user only ever has ONE wing in their own palace, so the value
+    matters only for mempalace API satisfaction. Reusing `user_<basename>`
+    keeps mining and search consistent without leaking the absolute path.
+    """
+    return f"user_{user_dir.name}"
+
+
+def search_palace(query: str, user_dir: Path, n_results: int = 5, room: str | None = None) -> dict:
+    palace = _palace_path(user_dir)
+    if not palace.exists():
+        return {"error": f"Palace not found at {palace}. Run mempalace_setup.py first."}
 
     try:
-        from mempalace.searcher import search_memories
+        from mempalace.searcher import search_memories  # type: ignore[import-not-found]
     except ImportError:
-        return {"error": "mempalace not importable. Is the mempalace venv active?"}
-
-    palace = Path(PALACE_PATH)
-    if not palace.exists():
-        return {"error": f"Palace not found at {PALACE_PATH}. Run the setup script first."}
+        return {"error": "mempalace not importable. Activate the mempalace venv."}
 
     try:
         return search_memories(
             query=query,
-            palace_path=PALACE_PATH,
-            wing=wing.strip(),
+            palace_path=str(palace),
+            wing=_wing_for(user_dir),
             room=room,
             n_results=n_results,
         )
@@ -39,7 +59,7 @@ def search_palace(query, n_results=5, wing=None, room=None):
         return {"error": f"Search failed: {e}"}
 
 
-def format_results(data):
+def format_results(data: dict) -> str:
     if "error" in data:
         return f"Error: {data['error']}"
 
@@ -47,41 +67,40 @@ def format_results(data):
     if not results:
         return f'No results found for: "{data.get("query", "")}"'
 
-    lines = []
-    lines.append(f'Search: "{data["query"]}" ({len(results)} results)')
-    lines.append("")
-
+    lines = [f'Search: "{data["query"]}" ({len(results)} results)', ""]
     for i, hit in enumerate(results, 1):
         sim = hit.get("similarity", 0)
         wing = hit.get("wing", "?")
         room = hit.get("room", "?")
         source = hit.get("source_file", "?")
-
         lines.append(f"[{i}] {wing}/{room} (source: {source}, similarity: {sim})")
-
         text = hit.get("text", "").strip()
         if len(text) > 600:
             text = text[:600] + "..."
         for line in text.split("\n"):
             lines.append(f"    {line}")
         lines.append("")
-
     return "\n".join(lines)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Search MemPalace conversation memory")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Search a user's MemPalace")
     parser.add_argument("query", help="What to search for")
+    parser.add_argument("--user-dir", required=True, help="Path to the user's data directory")
     parser.add_argument("--results", type=int, default=5, help="Number of results (default: 5)")
-    parser.add_argument("--wing", required=True, help="Wing filter (e.g., user_12345)")
-    parser.add_argument("--room", default=None, help="Room filter (technical, architecture, planning, decisions, problems, general)")
+    parser.add_argument("--room", default=None, help="Optional category filter (technical, decisions, etc.)")
     parser.add_argument("--json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
 
+    user_dir = Path(args.user_dir).expanduser().resolve()
+    if not user_dir.exists():
+        print(f"Error: --user-dir does not exist: {user_dir}", file=sys.stderr)
+        sys.exit(2)
+
     data = search_palace(
         query=args.query,
+        user_dir=user_dir,
         n_results=args.results,
-        wing=args.wing,
         room=args.room,
     )
 

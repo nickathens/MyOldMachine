@@ -1,0 +1,4 @@
+{
+  "weight": "light",
+  "install_note": "Behavioral protocol only. No scripts, no packages. Loaded into context before non-trivial coding work."
+}

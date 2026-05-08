@@ -356,7 +356,9 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | cloud-sync | Sync files to cloud storage (Google Drive, Dropbox, S3) via rclone |
 | web-build | Static site generation and web development |
 | screenplay | Write, version, and export Fountain screenplays to PDF/HTML/FDX |
-| mempalace | Semantic search over conversation history |
+| mempalace | Per-user permanent memory: semantic search over your conversation history |
+| coding | Build/Diagnose methodology protocols with mandatory report block |
+| vpn | ProtonVPN control (Linux + macOS) |
 
 ### Adding your own skills
 

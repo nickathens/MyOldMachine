@@ -1,0 +1,7 @@
+{
+  "check": {
+    "protonvpn": "command -v protonvpn || command -v protonvpn-cli"
+  },
+  "weight": "light",
+  "install_note": "Requires ProtonVPN CLI installed and signed in. Linux: https://protonvpn.com/support/linux-vpn-tool/  macOS: brew install --cask protonvpn"
+}
