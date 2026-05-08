@@ -1,0 +1,4 @@
+{
+  "weight": "light",
+  "install_note": "Behavioral / reference skill. No scripts, no packages. Loaded into context when authoring or debugging Model Context Protocol servers."
+}

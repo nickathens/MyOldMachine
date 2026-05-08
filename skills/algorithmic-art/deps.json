@@ -1,5 +1,5 @@
 {
-  "pip": ["playwright", "pyyaml"],
+  "pip": ["playwright"],
   "post_install": [
     "playwright install chromium",
     "playwright install-deps chromium"
@@ -10,5 +10,5 @@
   "weight": "medium",
   "min_ram_gb": 1,
   "min_disk_gb": 1,
-  "install_note": "Installs Playwright + Chromium browser (~400 MB). PyYAML is for browser_assert manifests."
+  "install_note": "Installs Playwright + Chromium browser (~400 MB). Shares the install with browser/scraper skills if already present."
 }

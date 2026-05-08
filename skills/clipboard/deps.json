@@ -1,0 +1,11 @@
+{
+  "apt": ["xclip"],
+  "pip": ["pyperclip"],
+  "check": {
+    "pyperclip": "python3 -c 'import pyperclip; print(\"ok\")'"
+  },
+  "weight": "light",
+  "min_ram_gb": 0,
+  "min_disk_gb": 0,
+  "install_note": "Installs xclip (Linux) and pyperclip. macOS uses built-in pbcopy/pbpaste, no extra apt/brew packages needed."
+}

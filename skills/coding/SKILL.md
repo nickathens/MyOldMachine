@@ -138,6 +138,57 @@ Rules:
 
 ---
 
+## Changelog Drafting
+
+When a build ships to a client repo, an external user, or any context where someone other than you needs to know what changed, draft a changelog as part of Phase 6 (Deliver). Not on every commit -- on every release-shaped delivery.
+
+### Source
+
+`git log <last-tag>..HEAD --no-merges --format='%h %s'` (or a date range, or a branch range). Read the full set, not the latest commit.
+
+### Categorise
+
+Sort entries into the smallest set of buckets that fits the work:
+
+- **Added** -- new features visible to the user
+- **Changed** -- altered behaviour of existing features
+- **Fixed** -- bug fixes
+- **Removed** -- features deprecated or deleted
+- **Security** -- patches with a security dimension
+- **Internal** -- refactors, dep bumps, build changes (often dropped from user-facing notes)
+
+### Translate
+
+Each entry must be readable by someone who doesn't know the codebase.
+
+- Drop ticket IDs, commit hashes, file paths, function names from the user-facing line.
+- Replace dev language with user language: "wired up async lock at intro_command" -> "fixed a race that could greet new users twice".
+- Combine multi-commit work into one line when the commits are part of the same feature.
+- One sentence per entry. Verb-first, present tense. No periods if the project's existing changelog doesn't use them.
+
+### Output shapes
+
+- **CHANGELOG.md** -- if the repo already has one, append a new section above the previous one. Match its existing format exactly (date format, heading level, bullet style).
+- **Release notes (Markdown)** -- for `gh release create` or a Slack/email blast. Same content, slightly more prose-y intro sentence.
+- **Email to a client** -- prose summary first, then the bullet list. Tone matches prior correspondence with that client.
+
+### What to never include
+
+- Internal-only refactors that didn't change behaviour.
+- Failed approaches you abandoned mid-sprint.
+- Anything an attacker could pivot from (security entries name the fix, not the exploit detail).
+- Commit hashes, branch names, PR numbers in user-facing copy.
+
+### Skip when
+
+- One-commit fixes inside the same project the user is actively driving.
+- Internal-only experiments that won't ship.
+- WIP branches with no consumer yet.
+
+The changelog draft goes alongside the Methodology Report at delivery time, not in a separate message.
+
+---
+
 ## Anti-Patterns (things this protocol exists to prevent)
 
 - Asserting system state without reading it first (verification rule violation)

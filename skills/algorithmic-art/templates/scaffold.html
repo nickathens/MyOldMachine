@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>__TITLE__</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.9.4/lib/p5.min.js"></script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      // Deterministic by seed: change SEED to explore the space.
+      const SEED = __SEED__;
+
+      function setup() {
+        createCanvas(__WIDTH__, __HEIGHT__);
+        randomSeed(SEED);
+        noiseSeed(SEED);
+        __SETUP_BODY__
+      }
+
+      function draw() {
+        __DRAW_BODY__
+      }
+    </script>
+  </body>
+</html>
