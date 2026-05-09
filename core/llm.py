@@ -38,6 +38,47 @@ from core.tools import (
 logger = logging.getLogger(__name__)
 
 
+_CLI_FALLBACK_DIRS = (
+    "~/.local/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "~/.npm-global/bin",
+    "~/.bun/bin",
+)
+
+
+def _find_cli_binary(name: str) -> str:
+    """Locate a CLI binary, falling back through known install locations.
+
+    Why: when the bot runs under launchd or systemd, the inherited PATH may
+    miss user-local install dirs (notably ~/.local/bin used by Anthropic's
+    `claude install` native installer). shutil.which() returns None and the
+    health check then claims the binary is uninstalled even though it exists.
+
+    Order: PATH → ~/.local/bin → /opt/homebrew/bin → /usr/local/bin →
+    ~/.npm-global/bin → ~/.bun/bin → ~/.nvm/versions/node/*/bin. Returns
+    absolute path on hit, or the literal name as a last-resort fallback so
+    later code paths can still surface a clear error.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    for raw in _CLI_FALLBACK_DIRS:
+        candidate = Path(raw).expanduser() / name
+        if candidate.exists() and not candidate.is_dir():
+            return str(candidate)
+    nvm_root = Path.home() / ".nvm" / "versions" / "node"
+    if nvm_root.is_dir():
+        try:
+            for version_dir in sorted(nvm_root.iterdir(), reverse=True):
+                candidate = version_dir / "bin" / name
+                if candidate.exists() and not candidate.is_dir():
+                    return str(candidate)
+        except OSError:
+            pass
+    return name
+
+
 def _resolve_slot_for_user(user_id: Optional[int]) -> Optional[int]:
     """Look up the slot bound to a Telegram user ID.
 
@@ -398,10 +439,11 @@ class ClaudeCLIProvider(LLMProvider):
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
-        # Resolve to an absolute path for sudoers literal command matching
-        # in multi-user mode. Falls back to "claude" for single-user where
-        # PATH lookup at runtime is fine.
-        self._cli_binary = shutil.which("claude") or "claude"
+        # Resolve to an absolute path so sudoers can match it literally in
+        # multi-user mode AND so the bot finds the binary when launchd/systemd
+        # inherits a PATH that excludes ~/.local/bin (Anthropic's native
+        # installer puts claude there).
+        self._cli_binary = _find_cli_binary("claude")
         self._active_processes: set = set()
         # Maps user_id -> active subprocess so /stop can target a specific user's task.
         self._user_processes: dict = {}
@@ -447,11 +489,18 @@ class ClaudeCLIProvider(LLMProvider):
         """
         binary = self._cli_binary
         if not binary or (not Path(binary).exists() and not shutil.which(binary)):
-            return False, (
-                "Claude CLI binary not found in PATH. "
-                "Install with: npm i -g @anthropic-ai/claude-code, "
-                "or switch provider via /provider."
-            )
+            # Re-probe in case the binary was installed after provider init
+            # (e.g. user ran `claude install` while the bot was running).
+            rediscovered = _find_cli_binary("claude")
+            if rediscovered != "claude" and Path(rediscovered).exists():
+                self._cli_binary = rediscovered
+                binary = rediscovered
+            else:
+                return False, (
+                    "Claude CLI binary not found. Install with one of: "
+                    "`claude install` (Anthropic native installer, recommended), "
+                    "`npm i -g @anthropic-ai/claude-code`, or switch provider via /provider."
+                )
         try:
             proc = await asyncio.create_subprocess_exec(
                 binary, "--version",
@@ -963,8 +1012,10 @@ class CodexCLIProvider(LLMProvider):
     def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
-        # Absolute path for sudoers literal command matching in multi-user mode
-        self._cli_binary = shutil.which("codex") or "codex"
+        # Absolute path for sudoers literal command matching AND so launchd /
+        # systemd processes find the binary when ~/.local/bin or brew dirs
+        # aren't on the inherited PATH.
+        self._cli_binary = _find_cli_binary("codex")
         self._active_processes: set = set()
         self._user_processes: dict = {}
         self._stop_requested: set = set()
@@ -1004,11 +1055,15 @@ class CodexCLIProvider(LLMProvider):
         """
         binary = self._cli_binary
         if not binary or (not Path(binary).exists() and not shutil.which(binary)):
-            return False, (
-                "Codex CLI binary not found in PATH. "
-                "Install with: npm i -g @openai/codex, "
-                "or switch provider via /provider."
-            )
+            rediscovered = _find_cli_binary("codex")
+            if rediscovered != "codex" and Path(rediscovered).exists():
+                self._cli_binary = rediscovered
+                binary = rediscovered
+            else:
+                return False, (
+                    "Codex CLI binary not found. Install with: "
+                    "`npm i -g @openai/codex`, or switch provider via /provider."
+                )
         try:
             proc = await asyncio.create_subprocess_exec(
                 binary, "--version",

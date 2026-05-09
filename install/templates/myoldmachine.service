@@ -14,6 +14,7 @@ StandardOutput=append:{{LOG_DIR}}/bot.log
 StandardError=append:{{LOG_DIR}}/bot.log
 EnvironmentFile={{WORKING_DIR}}/.env
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH={{WORKING_DIR}}/.venv/bin:{{CLI_BIN_PATHS}}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 [Install]
 WantedBy=multi-user.target

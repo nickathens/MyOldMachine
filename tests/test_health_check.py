@@ -332,10 +332,12 @@ class ClaudeCLIHealthCheckTests(unittest.TestCase):
 
     def test_missing_binary(self):
         provider = llm.ClaudeCLIProvider("claude-sonnet-4-6", api_key="")
-        # Force the not-found early-return path: empty cli_binary triggers
-        # "Claude CLI binary not found in PATH" without spawning a subprocess.
+        # Force the not-found early-return path: empty cli_binary AND
+        # patched fallback dirs so rediscovery can't find a real claude
+        # binary on the host running these tests.
         provider._cli_binary = ""
-        ok, reason = _run(provider.health_check())
+        with patch.object(llm, "_find_cli_binary", return_value="claude"):
+            ok, reason = _run(provider.health_check())
         self.assertFalse(ok)
         self.assertIn("not found", reason.lower())
 

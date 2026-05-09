@@ -47,6 +47,44 @@ def error(msg):
     print(f"{RED}[ERROR]{NC} {msg}")
 
 
+def _discover_cli_bin_paths(home: Path) -> str:
+    """Find the parent dirs of `claude` / `codex` if installed, return as
+    "dir1:dir2:" suffix to splice into a PATH string.
+
+    Returns an empty string when nothing extra is needed (binaries are already
+    on the standard paths the plist hardcodes). When set, always ends with a
+    trailing colon so it can be inserted between segments without producing
+    "::" gaps.
+    """
+    candidate_dirs = [
+        home / ".local" / "bin",
+        home / ".npm-global" / "bin",
+        home / ".bun" / "bin",
+    ]
+    nvm_root = home / ".nvm" / "versions" / "node"
+    if nvm_root.is_dir():
+        try:
+            for version_dir in sorted(nvm_root.iterdir(), reverse=True):
+                candidate_dirs.append(version_dir / "bin")
+        except OSError:
+            pass
+
+    extras: list[str] = []
+    seen: set[str] = set()
+    for d in candidate_dirs:
+        ds = str(d)
+        if ds in seen:
+            continue
+        if not d.is_dir():
+            continue
+        if (d / "claude").exists() or (d / "codex").exists():
+            extras.append(ds)
+            seen.add(ds)
+    if not extras:
+        return ""
+    return ":".join(extras) + ":"
+
+
 def get_sudo_password():
     """Read sudo password. Delegates to install.sudo."""
     return _shared_get_sudo_password()
@@ -86,6 +124,14 @@ def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) ->
     content = content.replace("{{WORKING_DIR}}", str(repo_dir))
     content = content.replace("{{PYTHON}}", str(venv_python))
     content = content.replace("{{LOG_DIR}}", str(repo_dir / "data" / "logs"))
+    # Resolve CLI bin paths against the install user's home — the orchestrator
+    # account in multi-user mode has no installed CLIs, but its sudoers entry
+    # still pins absolute paths so PATH augmentation here is just for the
+    # bot's own discovery via shutil.which / _find_cli_binary.
+    install_user_home = Path("/home") / getpass.getuser()
+    if not install_user_home.is_dir():
+        install_user_home = Path.home()
+    content = content.replace("{{CLI_BIN_PATHS}}", _discover_cli_bin_paths(install_user_home))
 
     # In multi-user mode the orchestrator user has its home at data/orchestrator
     # but no real shell. Set HOME explicitly so libraries that depend on it
@@ -161,6 +207,7 @@ def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
     content = content.replace("{{ENV_FILE}}", str(repo_dir / ".env"))
     content = content.replace("{{VENV_BIN}}", str(repo_dir / ".venv" / "bin"))
     content = content.replace("{{HOME}}", str(Path.home()))
+    content = content.replace("{{CLI_BIN_PATHS}}", _discover_cli_bin_paths(Path.home()))
 
     (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -213,6 +260,11 @@ def _setup_macos_launch_daemon(repo_dir: Path, orchestrator_user: str,
     content = content.replace("{{ENV_FILE}}", str(repo_dir / ".env"))
     content = content.replace("{{VENV_BIN}}", str(repo_dir / ".venv" / "bin"))
     content = content.replace("{{HOME}}", str(orchestrator_home))
+    # In multi-user mode the orchestrator user has its own (mostly empty)
+    # home, so we resolve CLI dirs against the install user's home — that is
+    # where wizard-driven installs (npm, brew, native) actually placed claude
+    # / codex. Sudoers still pins the literal path the bot will spawn.
+    content = content.replace("{{CLI_BIN_PATHS}}", _discover_cli_bin_paths(Path.home()))
 
     (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)
 
