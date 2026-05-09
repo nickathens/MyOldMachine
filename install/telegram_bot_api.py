@@ -273,6 +273,53 @@ def render_launchd_plist(template: str, *, user: str, env_file: Path,
             .replace("{{PORT}}", str(port)))
 
 
+def _ensure_state_dir_owned(state_dir: Path, user: str,
+                            multiuser_enabled: bool,
+                            password: Optional[str]) -> bool:
+    """Create state_dir and ensure the runtime user owns it with mode 0700.
+
+    The daemon runs as ``user`` and writes ``api.log`` plus (on macOS) the
+    launchd-redirected ``launchd-stdout.log`` / ``launchd-stderr.log`` here.
+    If the directory was created by the install user but the daemon runs as
+    a different user (the multi-user case where the daemon runs as
+    ``mom_orchestrator``), launchd fails with EX_CONFIG (78) before the
+    binary even starts, and systemd fails the first write to api.log.
+
+    Single-user mode: install user already owns the dir from mkdir, so we
+    only tighten the mode to 0o700. No sudo needed.
+
+    Multi-user mode: ``user`` is the orchestrator account. Use sudo via
+    ``install.multiuser.set_owner`` / ``set_perms`` to chown + chmod.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    if multiuser_enabled:
+        try:
+            from install.multiuser import set_owner, set_perms
+        except ImportError as exc:
+            error(
+                "install.multiuser unavailable; cannot chown state_dir "
+                f"to {user}: {exc}"
+            )
+            return False
+        if not set_owner(state_dir, user, password=password, recursive=True):
+            error(
+                f"Failed to chown {state_dir} to {user}. The daemon will "
+                "fail to start with EX_CONFIG (78) until this is fixed."
+            )
+            return False
+        if not set_perms(state_dir, 0o700, password=password):
+            error(f"Failed to chmod 0700 {state_dir}")
+            return False
+        return True
+
+    try:
+        os.chmod(state_dir, 0o700)
+    except OSError as exc:
+        warn(f"chmod 0700 {state_dir} failed: {exc}")
+    return True
+
+
 def _register_systemd_service(repo_dir: Path, *,
                               binary_path: Path, state_dir: Path,
                               env_file: Path,
@@ -284,7 +331,6 @@ def _register_systemd_service(repo_dir: Path, *,
         error(f"Service template not found: {template_path}")
         return False
 
-    state_dir.mkdir(parents=True, exist_ok=True)
     content = render_systemd_unit(
         template_path.read_text(encoding="utf-8"),
         user=user, env_file=env_file,
@@ -334,7 +380,6 @@ def _register_launchd_service(repo_dir: Path, *,
         error(f"Plist template not found: {template_path}")
         return False
 
-    state_dir.mkdir(parents=True, exist_ok=True)
     content = render_launchd_plist(
         template_path.read_text(encoding="utf-8"),
         user=user, env_file=env_file,
@@ -439,6 +484,12 @@ def setup_telegram_bot_api(repo_dir: Path, config: dict, os_info: OSInfo,
             user = getpass.getuser()
         except Exception:
             user = "root"
+
+    multiuser_enabled = bool(config.get("multiuser_enabled"))
+    if not _ensure_state_dir_owned(
+        paths["state_dir"], user, multiuser_enabled, password,
+    ):
+        return False
 
     if os_info.os_type == "linux":
         ok2 = _register_systemd_service(
