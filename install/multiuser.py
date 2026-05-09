@@ -476,13 +476,13 @@ def propagate_claude_credentials(
     The Claude CLI looks for ~/.claude/.credentials.json relative to HOME.
     In multi-user mode HOME resolves from passwd to the slot user's home,
     which by default is empty. Without this step, each slot would need its
-    own `sudo -u <slot> claude login` (terminal access + browser flow per
-    slot). Copying the install user's credentials makes the bot work out of
-    the box.
+    own `sudo -u <slot> claude auth login` (terminal access + browser flow
+    per slot). Copying the install user's credentials makes the bot work
+    out of the box.
 
     Args:
-        install_user: Username of the user who ran `claude login`. Their
-            ~/.claude/.credentials.json is the source.
+        install_user: Username of the user who ran `claude auth login`.
+            Their ~/.claude/.credentials.json is the source.
         slot_users_to_homes: Mapping of slot username -> home dir Path. The
             home dir is the slot user's NFSHomeDirectory / passwd home, NOT
             the slot's data dir if those differ.
@@ -547,21 +547,51 @@ def propagate_claude_credentials(
 
 
 def find_cli_binary(name: str) -> Optional[Path]:
-    """Find a CLI binary on PATH. Returns the absolute symlink path, not resolved.
+    """Find a CLI binary, falling back through known install locations.
 
-    sudo's command-matching is literal: it compares the command path argv[0]
-    against the sudoers entry as written. npm-installed CLIs (claude, codex)
-    are typically symlinks under /usr/local/bin/ pointing to .js files in
-    node_modules. We must NOT resolve the symlink, because the bot will
-    invoke the binary via its PATH location and that's what sudo will see.
+    Returns the absolute symlink path, NOT the resolved target. sudo's
+    command-matching is literal: it compares the command path argv[0]
+    against the sudoers entry as written. npm-installed CLIs (claude,
+    codex) are typically symlinks under /usr/local/bin/ pointing to .js
+    files in node_modules. We must NOT resolve the symlink, because the
+    bot will invoke the binary via its PATH location and that's what
+    sudo will see.
+
+    Search order: PATH → ~/.local/bin (Anthropic native installer) →
+    /opt/homebrew/bin → /usr/local/bin → ~/.npm-global/bin →
+    ~/.bun/bin → ~/.nvm/versions/node/*/bin. Mirrors core/llm
+    ._find_cli_binary so multi-user provisioning can locate the binary
+    even when the install user's PATH does not include the install
+    location (common on macOS where ~/.local/bin is not on PATH for
+    non-login shells).
     """
     found = shutil.which(name)
-    if not found:
-        return None
-    path = Path(found).absolute()
-    if not path.exists():
-        return None
-    return path
+    if found:
+        path = Path(found).absolute()
+        if path.exists():
+            return path
+    home = Path.home()
+    candidates = [
+        home / ".local" / "bin" / name,
+        Path("/opt/homebrew/bin") / name,
+        Path("/usr/local/bin") / name,
+        home / ".npm-global" / "bin" / name,
+        home / ".bun" / "bin" / name,
+    ]
+    nvm_root = home / ".nvm" / "versions" / "node"
+    if nvm_root.is_dir():
+        try:
+            for version_dir in sorted(nvm_root.iterdir(), reverse=True):
+                candidates.append(version_dir / "bin" / name)
+        except OSError:
+            pass
+    for candidate in candidates:
+        try:
+            if candidate.exists() and not candidate.is_dir():
+                return candidate.absolute()
+        except OSError:
+            continue
+    return None
 
 
 def build_sudoers_fragment(

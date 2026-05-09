@@ -99,6 +99,92 @@ def sudo_run(cmd, password=None, timeout=30):
     return result
 
 
+def _remove_stale_telegram_bot_api_plist_macos(current_user: str,
+                                               password: str | None) -> None:
+    """Best-effort: remove a telegram-bot-api LaunchDaemon plist that
+    references a different UserName than the bot we are about to register.
+
+    A working single-user Bot API install has UserName=<install_user>; a
+    leftover multi-user install has UserName=mom_orchestrator. Only
+    tear down the leftover — never disturb a healthy install.
+    """
+    plist = "/Library/LaunchDaemons/com.telegram-bot-api.plist"
+    if not Path(plist).exists():
+        return
+    try:
+        existing = Path(plist).read_text(encoding="utf-8")
+    except OSError:
+        return
+    # Plist UserName is wrapped in <string>...</string>. Crude but reliable
+    # match: find the line after <key>UserName</key>.
+    declared = ""
+    lines = existing.splitlines()
+    for i, line in enumerate(lines):
+        if "<key>UserName</key>" in line and i + 1 < len(lines):
+            tag = lines[i + 1].strip()
+            if tag.startswith("<string>") and tag.endswith("</string>"):
+                declared = tag[len("<string>"):-len("</string>")]
+                break
+    if not declared:
+        # Cannot tell — leave it alone rather than guess wrong.
+        return
+    if declared == current_user:
+        return  # healthy single-user install
+    info(
+        "Removing stale com.telegram-bot-api LaunchDaemon: "
+        f"declares UserName={declared}, current bot user is {current_user}"
+    )
+    sudo_run("launchctl bootout system/com.telegram-bot-api",
+             password, timeout=10)
+    sudo_run(f"launchctl unload {plist}", password, timeout=10)
+    rm = sudo_run(f"rm -f {plist}", password, timeout=10)
+    if rm.returncode != 0:
+        warn(f"Could not remove {plist}: {rm.stderr[:200]}")
+
+
+def _remove_stale_telegram_bot_api_unit_linux(current_user: str,
+                                              password: str | None) -> None:
+    """Best-effort: remove a telegram-bot-api systemd unit that references a
+    different user than the bot we are about to register.
+
+    When a multi-user install is converted back to single-user (or replaced
+    by a fresh single-user install over the top), the telegram-bot-api unit
+    still runs as ``mom_orchestrator`` (or another slot user) and reads the
+    new single-user .env which lacks TELEGRAM_API_BASE / API_ID / API_HASH.
+    Result: crash-loop. Tear it down here. The user can opt back into the
+    Bot API later via ./install.sh's optional-features prompt.
+    """
+    unit_path = "/etc/systemd/system/telegram-bot-api.service"
+    if not Path(unit_path).exists():
+        return
+    try:
+        existing = Path(unit_path).read_text(encoding="utf-8")
+    except OSError:
+        return
+    user_lines = [
+        line for line in existing.splitlines()
+        if line.strip().startswith("User=")
+    ]
+    # If we cannot tell, do not touch — a working unit beats a guess.
+    if not user_lines:
+        return
+    declared = user_lines[0].split("=", 1)[1].strip()
+    if declared == current_user:
+        return  # unit already targets the right user
+    info(
+        "Removing stale telegram-bot-api.service: "
+        f"declares User={declared}, current bot user is {current_user}"
+    )
+    sudo_run("systemctl stop telegram-bot-api", password, timeout=30)
+    sudo_run("systemctl disable telegram-bot-api", password, timeout=30)
+    rm = sudo_run(f"rm -f {unit_path}", password, timeout=30)
+    if rm.returncode != 0:
+        warn(f"Could not remove {unit_path}: {rm.stderr[:200]}")
+        return
+    sudo_run("systemctl daemon-reload", password, timeout=30)
+    ok(f"Removed stale {unit_path}")
+
+
 def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) -> bool:
     """Create and enable systemd service. Returns True on success.
 
@@ -113,6 +199,11 @@ def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) ->
         error(f"Virtual environment not found at {venv_python}")
         warn("Run the installer again to create it")
         return False
+
+    # Tear down a telegram-bot-api unit that points at a different user than
+    # the bot we are about to register. Keeps single-user re-installs after
+    # multi-user from inheriting a crash-looping daemon.
+    _remove_stale_telegram_bot_api_unit_linux(username, password)
 
     template_path = repo_dir / "install" / "templates" / "myoldmachine.service"
     if not template_path.exists():
@@ -186,7 +277,15 @@ def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) ->
 
 
 def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
-    """Install a per-user LaunchAgent (single-user mode). Returns True on success."""
+    """Install a per-user LaunchAgent (single-user mode). Returns True on success.
+
+    If a system-wide LaunchDaemon (multi-user) is present at
+    /Library/LaunchDaemons/com.myoldmachine.bot.plist, it is unloaded and
+    removed first. Both share Label "com.myoldmachine.bot"; without this
+    teardown launchd would have two services racing to bind the same bot.
+    The accompanying telegram-bot-api LaunchDaemon (registered to run as
+    a slot user that may no longer exist) is also unloaded.
+    """
     venv_python = repo_dir / ".venv" / "bin" / "python"
 
     if not venv_python.exists():
@@ -198,6 +297,27 @@ def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
     if not template_path.exists():
         error(f"Plist template not found: {template_path}")
         return False
+
+    # Tear down any pre-existing multi-user LaunchDaemon for the bot. It
+    # targets the same Label "com.myoldmachine.bot" as our LaunchAgent,
+    # so leaving it behind would race with our agent. Best-effort:
+    # failures here are warned, not fatal.
+    #
+    # The telegram-bot-api LaunchDaemon is only torn down when its
+    # UserName= references a different user than the bot we're about to
+    # register — otherwise it's a healthy single-user Bot API install
+    # that we should leave alone.
+    password = get_sudo_password()
+    bot_daemon = "/Library/LaunchDaemons/com.myoldmachine.bot.plist"
+    if Path(bot_daemon).exists():
+        info(f"Removing pre-existing LaunchDaemon: {bot_daemon}")
+        sudo_run("launchctl bootout system/com.myoldmachine.bot",
+                 password, timeout=10)
+        sudo_run(f"launchctl unload {bot_daemon}", password, timeout=10)
+        rm = sudo_run(f"rm -f {bot_daemon}", password, timeout=10)
+        if rm.returncode != 0:
+            warn(f"Could not remove {bot_daemon}: {rm.stderr[:200]}")
+    _remove_stale_telegram_bot_api_plist_macos(getpass.getuser(), password)
 
     content = template_path.read_text(encoding="utf-8")
     content = content.replace("{{PYTHON}}", str(venv_python))

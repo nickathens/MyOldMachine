@@ -853,7 +853,7 @@ def _run_multiuser_step(config: dict, *, experimental: bool = False):
         info("macOS: single-user mode (multi-user is not supported on macOS).")
         print("  macOS role accounts have no Keychain, no GUI session, and")
         print("  cannot launch a browser, so the slot-account model used on")
-        print("  Linux cannot complete `claude login` on Mac. Multiple")
+        print("  Linux cannot complete `claude auth login` on Mac. Multiple")
         print("  Telegram users on this Mac still get separate conversations,")
         print("  attachments, and scheduled jobs at the application level.")
         print("  For kernel-enforced isolation between Mac humans, run a")
@@ -872,7 +872,7 @@ def _run_multiuser_step(config: dict, *, experimental: bool = False):
         print()
         print("  Slot accounts on macOS are role accounts created via")
         print("  sysadminctl. They have no Keychain, no GUI session, and")
-        print("  the bot cannot run `claude login` for them — the OAuth flow")
+        print("  the bot cannot run `claude auth login` for them — the OAuth flow")
         print("  needs a browser the slot user has no way to launch.")
         print()
         print("  Symptoms you should expect on a vanilla install:")
@@ -1793,7 +1793,7 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
     if creds_errors:
         for err in creds_errors:
             if err.startswith("source missing"):
-                info(f"  {err} - skipping (use 'claude login' if you need Claude)")
+                info(f"  {err} - skipping (use 'claude auth login' if you need Claude)")
             else:
                 warn(f"  {err}")
 
@@ -2556,8 +2556,9 @@ def _run_wizard_steps(detected_os: str, *, experimental: bool = False) -> dict:
         _select_model_for_provider(config, config["llm_provider"])
 
     if config["llm_provider"] == "claude":
-        # Claude CLI — authenticates via 'claude login' using existing Pro/Max plan.
-        # No API key. Node.js is installed during provisioning if missing.
+        # Claude CLI — authenticates via 'claude auth login' using existing
+        # Pro/Max plan. No API key. Node.js is installed during provisioning
+        # if missing.
         config["llm_api_key"] = ""
         import shutil as _shutil
         print()
@@ -2567,7 +2568,7 @@ def _run_wizard_steps(detected_os: str, *, experimental: bool = False) -> dict:
             if not _shutil.which("npm") and not _shutil.which("node"):
                 print(f"  {YELLOW}Node.js will be installed automatically during system provisioning.{NC}")
             print(f"  {YELLOW}Claude Code CLI will be installed automatically after provisioning.{NC}")
-        print(f"  {YELLOW}After install, run: claude login{NC}")
+        print(f"  {YELLOW}The installer will run `claude auth login` for you when needed.{NC}")
         print(f"  {YELLOW}This opens your browser to authenticate — no key to copy-paste.{NC}")
     elif config["llm_provider"] == "codex":
         # Codex CLI — authenticates via 'codex login' using existing ChatGPT Plus/Pro plan.

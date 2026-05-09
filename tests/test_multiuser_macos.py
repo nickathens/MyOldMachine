@@ -520,5 +520,59 @@ class PropagateClaudeCredentialsTests(unittest.TestCase):
         self.assertIn("mom_user2", errors[0])
 
 
+class FindCliBinaryFallbackTests(unittest.TestCase):
+    """find_cli_binary must work even when shutil.which returns None.
+
+    On macOS the install user's PATH for non-login shells does not include
+    ``~/.local/bin`` — Anthropic's native installer (``claude install``)
+    drops the binary there. Multi-user provisioning needs to find it
+    anyway so the sudoers fragment can pin a real, existing path.
+    """
+
+    def test_falls_back_to_local_bin(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as td_home:
+            home = Path(td_home)
+            local_bin = home / ".local" / "bin"
+            local_bin.mkdir(parents=True)
+            target = local_bin / "claude"
+            target.write_text("#!/bin/sh\n")
+            target.chmod(0o755)
+            with patch("shutil.which", return_value=None), \
+                 patch("install.multiuser.Path.home", return_value=home):
+                got = mu.find_cli_binary("claude")
+            self.assertIsNotNone(got)
+            self.assertEqual(Path(got), target.absolute())
+
+    def test_returns_path_when_which_succeeds(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as td:
+            target = Path(td) / "claude"
+            target.write_text("")
+            target.chmod(0o755)
+            with patch("shutil.which", return_value=str(target)):
+                got = mu.find_cli_binary("claude")
+            self.assertEqual(Path(got), target.absolute())
+
+    def test_returns_none_when_nothing_found(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as td_home:
+            home = Path(td_home)
+            with patch("shutil.which", return_value=None), \
+                 patch("install.multiuser.Path.home", return_value=home):
+                self.assertIsNone(mu.find_cli_binary("claude"))
+
+    def test_skips_directory_with_same_name(self):
+        # If ~/.local/bin/claude is a directory (corrupted install), we
+        # must not return it; we'd hand sudo a directory path.
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as td_home:
+            home = Path(td_home)
+            (home / ".local" / "bin" / "claude").mkdir(parents=True)
+            with patch("shutil.which", return_value=None), \
+                 patch("install.multiuser.Path.home", return_value=home):
+                self.assertIsNone(mu.find_cli_binary("claude"))
+
+
 if __name__ == "__main__":
     unittest.main()

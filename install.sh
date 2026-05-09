@@ -178,6 +178,42 @@ if [ -f "$CHECKPOINT_FILE" ]; then
                 break
             fi
         done
+        # Tear down stale system services from a previous install. Without
+        # this, a fresh single-user install over a previous multi-user MOM
+        # leaves the LaunchDaemon (Mac) / systemd unit (Linux) crash-looping
+        # because they reference users we are about to delete or .env keys
+        # we just removed. Best-effort: failures are warned, not fatal —
+        # the wizard's service.py also unloads the bot LaunchDaemon when it
+        # installs the LaunchAgent, so a missed unit here still gets
+        # caught downstream.
+        # NOTE: $OS is not yet detected at this point in the script (the
+        # detect_os step runs after this block), so we re-check via
+        # `uname -s` inline.
+        case "$(uname -s)" in
+            Darwin)
+                for label in com.myoldmachine.bot com.telegram-bot-api; do
+                    plist="/Library/LaunchDaemons/${label}.plist"
+                    if [ -f "$plist" ]; then
+                        info "Removing stale LaunchDaemon: $plist"
+                        sudo launchctl bootout "system/${label}" 2>/dev/null || true
+                        sudo launchctl unload "$plist" 2>/dev/null || true
+                        sudo rm -f "$plist" 2>/dev/null || true
+                    fi
+                done
+                ;;
+            Linux)
+                for unit in myoldmachine telegram-bot-api; do
+                    unit_path="/etc/systemd/system/${unit}.service"
+                    if [ -f "$unit_path" ]; then
+                        info "Removing stale systemd unit: $unit_path"
+                        sudo systemctl stop "$unit" 2>/dev/null || true
+                        sudo systemctl disable "$unit" 2>/dev/null || true
+                        sudo rm -f "$unit_path" 2>/dev/null || true
+                        sudo systemctl daemon-reload 2>/dev/null || true
+                    fi
+                done
+                ;;
+        esac
     else
         info "Resuming installation (${completed} step(s) already completed)"
     fi

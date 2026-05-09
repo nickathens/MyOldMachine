@@ -187,12 +187,14 @@ Queue: on (concurrent=1)
 
 The Claude CLI and Codex CLI store credentials in the running user's home directory (`~/.claude/`, `~/.codex/`). Each slot user has its own home (`data/users/userN/`) and therefore needs its own authentication.
 
-After install, run the login flow once per slot:
+The wizard handles this for you on Linux: `claude auth login` runs as the install user once, then `propagate_claude_credentials` copies `~/.claude/.credentials.json` to each slot's home. If you ever rotate your Anthropic credentials and need to force re-propagate, re-run the installer — the multi-user step is idempotent.
+
+If you bypass the wizard or want to authenticate slots independently:
 
 ```bash
-sudo -u mom_user1 claude login    # opens browser, paste token back
-sudo -u mom_user2 claude login
-sudo -u mom_user3 claude login
+sudo -u mom_user1 claude auth login   # opens browser
+sudo -u mom_user2 claude auth login
+sudo -u mom_user3 claude auth login
 # (or codex login, depending on which CLI you configured)
 ```
 

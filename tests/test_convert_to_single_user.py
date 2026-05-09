@@ -548,5 +548,131 @@ class ResolveInstallUserTests(unittest.TestCase):
             self.assertEqual(cts._resolve_install_user(), "alice")
 
 
+class TelegramBotApiCleanupTests(unittest.TestCase):
+    """Conversion must take down the telegram-bot-api unit too.
+
+    The Bot API server was registered with UserName=mom_orchestrator (Mac)
+    or User=mom_orchestrator (Linux). Once the orchestrator user is
+    deleted, the unit crash-loops with EX_CONFIG (78) on Mac and a
+    User= unknown error on Linux. The conversion stops + removes the
+    unit; the user can opt back in via ./install.sh later.
+    """
+
+    def test_macos_unloads_and_removes_telegram_bot_api_plist(self):
+        target_paths: list[str] = []
+
+        def fake_sudo(cmd, password=None, *, timeout=60):
+            for arg in cmd:
+                if "com.telegram-bot-api" in str(arg):
+                    target_paths.append(str(arg))
+            return _completed(0)
+
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(cts, "_sudo_run", side_effect=fake_sudo):
+            self.assertTrue(cts.stop_service_macos(password="x"))
+        # bootout system/com.telegram-bot-api + unload <plist> + rm <plist>
+        self.assertTrue(any(
+            "com.telegram-bot-api" in p for p in target_paths
+        ))
+        self.assertTrue(any(
+            p.endswith("com.telegram-bot-api.plist") for p in target_paths
+        ))
+
+    def test_macos_skips_telegram_bot_api_when_plist_missing(self):
+        # First Path.exists() call (bot plist) returns True, second (tba) False.
+        side = iter([True, False])
+
+        def fake_exists(self):
+            try:
+                return next(side)
+            except StopIteration:
+                return False
+
+        with patch.object(Path, "exists", new=fake_exists), \
+             patch.object(cts, "_sudo_run", return_value=_completed(0)) as m:
+            self.assertTrue(cts.stop_service_macos(password="x"))
+        # Ensure no `com.telegram-bot-api` argument was passed to sudo
+        for call in m.call_args_list:
+            for arg in call[0][0]:
+                self.assertNotIn("com.telegram-bot-api", str(arg))
+
+    def test_linux_stops_and_removes_telegram_bot_api_unit(self):
+        seen_units: list[str] = []
+
+        def fake_sudo(cmd, password=None, *, timeout=60):
+            for arg in cmd:
+                if "telegram-bot-api" in str(arg):
+                    seen_units.append(str(arg))
+            return _completed(0)
+
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(cts, "_sudo_run", side_effect=fake_sudo):
+            self.assertTrue(cts.stop_service_linux(password="x"))
+        self.assertTrue(any(
+            arg == "telegram-bot-api" for arg in seen_units
+        ), f"expected systemctl arg 'telegram-bot-api' in {seen_units}")
+        self.assertTrue(any(
+            arg.endswith("/telegram-bot-api.service") for arg in seen_units
+        ), f"expected unit-path arg in {seen_units}")
+
+    def test_linux_skips_telegram_bot_api_when_unit_missing(self):
+        # Bot myoldmachine.service exists, telegram-bot-api.service does not.
+        side = iter([True, False])
+
+        def fake_exists(self):
+            try:
+                return next(side)
+            except StopIteration:
+                return False
+
+        with patch.object(Path, "exists", new=fake_exists), \
+             patch.object(cts, "_sudo_run", return_value=_completed(0)) as m:
+            self.assertTrue(cts.stop_service_linux(password=None))
+        # No call should reference the telegram-bot-api unit
+        for call in m.call_args_list:
+            for arg in call[0][0]:
+                self.assertNotIn("telegram-bot-api", str(arg))
+
+
+class RewriteEnvStripsBotApiKeysTests(unittest.TestCase):
+    """The conversion must drop TELEGRAM_API_BASE/ID/HASH so the bot stops
+    trying to talk to the (now-dead) local Bot API server. The user can
+    re-enable via ./install.sh's optional-features prompt afterwards."""
+
+    def test_strips_all_three_keys(self):
+        with TemporaryDirectory() as td:
+            r = _Repo(Path(td))
+            r.write_env(
+                LLM_PROVIDER="claude",
+                MULTIUSER_ENABLED="1",
+                TELEGRAM_API_BASE="http://localhost:8081",
+                TELEGRAM_API_ID="12345",
+                TELEGRAM_API_HASH="0123456789abcdef0123456789abcdef",
+            )
+            self.assertTrue(cts.rewrite_env_to_single_user(Path(td)))
+            env = cts.read_env(Path(td))
+        self.assertNotIn("TELEGRAM_API_BASE", env)
+        self.assertNotIn("TELEGRAM_API_ID", env)
+        self.assertNotIn("TELEGRAM_API_HASH", env)
+        self.assertEqual(env["LLM_PROVIDER"], "claude")
+        self.assertEqual(env["MULTIUSER_ENABLED"], "0")
+
+    def test_preserves_non_bot_api_telegram_keys(self):
+        # TELEGRAM_BOT_TOKEN must NOT be stripped — that's the user's
+        # actual bot identity, completely unrelated to the Bot API server.
+        with TemporaryDirectory() as td:
+            r = _Repo(Path(td))
+            r.write_env(
+                LLM_PROVIDER="claude",
+                MULTIUSER_ENABLED="1",
+                TELEGRAM_BOT_TOKEN="123456:abcdef",
+                TELEGRAM_API_BASE="http://localhost:8081",
+            )
+            self.assertTrue(cts.rewrite_env_to_single_user(Path(td)))
+            env = cts.read_env(Path(td))
+        self.assertEqual(env["TELEGRAM_BOT_TOKEN"], "123456:abcdef")
+        self.assertNotIn("TELEGRAM_API_BASE", env)
+
+
 if __name__ == "__main__":
     unittest.main()

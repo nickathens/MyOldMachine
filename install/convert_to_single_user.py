@@ -115,6 +115,15 @@ _MULTIUSER_KEYS_TO_DROP = (
     "MULTIUSER_ORCHESTRATOR_USER",
     "QUEUE_MODE",
     "CONCURRENT_REQUESTS",
+    # The local Telegram Bot API server was registered to run as
+    # mom_orchestrator. Its launch unit is removed by stop_service_*; here
+    # we drop the env vars so the bot does not try to talk to a now-dead
+    # http://localhost:8081 endpoint. The user can opt back in via
+    # ./install.sh's optional-features prompt — `is_configured` will see
+    # that telegram_local_api_enabled is unset.
+    "TELEGRAM_API_BASE",
+    "TELEGRAM_API_ID",
+    "TELEGRAM_API_HASH",
 )
 
 
@@ -231,9 +240,11 @@ def _sudo_run(cmd: list[str], password: Optional[str] = None, *,
 def stop_service_macos(password: Optional[str]) -> bool:
     """Stop and remove the multi-user LaunchDaemon. Idempotent.
 
-    Also removes the telegram-bot-api LaunchDaemon if it is in the
-    multi-user-tied state file layout — single-user mode keeps its own
-    layout, so reinstalling it later is fine.
+    Also stops + removes the telegram-bot-api LaunchDaemon, which was
+    registered with UserName=mom_orchestrator (or another slot user) and
+    would crash-loop with EX_CONFIG (78) once that user is deleted later
+    in this conversion. The user can opt back in to a fresh single-user
+    Bot API later via ./install.sh.
     """
     daemon_path = "/Library/LaunchDaemons/com.myoldmachine.bot.plist"
     if Path(daemon_path).exists():
@@ -246,11 +257,29 @@ def stop_service_macos(password: Optional[str]) -> bool:
             _warn(f"Could not remove {daemon_path}: {result.stderr.strip()[:200]}")
             return False
         _ok(f"Removed {daemon_path}")
+
+    tba_path = "/Library/LaunchDaemons/com.telegram-bot-api.plist"
+    if Path(tba_path).exists():
+        _info(f"Unloading LaunchDaemon: {tba_path}")
+        _sudo_run(["launchctl", "bootout", "system/com.telegram-bot-api"],
+                  password, timeout=15)
+        _sudo_run(["launchctl", "unload", tba_path], password, timeout=15)
+        result = _sudo_run(["rm", "-f", tba_path], password)
+        if result.returncode != 0:
+            _warn(f"Could not remove {tba_path}: {result.stderr.strip()[:200]}")
+            # Non-fatal: we keep going so the rest of the conversion runs.
+        else:
+            _ok(f"Removed {tba_path}")
     return True
 
 
 def stop_service_linux(password: Optional[str]) -> bool:
-    """Stop and remove the systemd unit. Idempotent."""
+    """Stop and remove the systemd unit. Idempotent.
+
+    Also stops + disables + removes the telegram-bot-api unit, which was
+    registered with User=mom_orchestrator and would fail to start once
+    that user is deleted. The user can opt back in via ./install.sh.
+    """
     unit_path = "/etc/systemd/system/myoldmachine.service"
     _info("Stopping systemd unit: myoldmachine")
     _sudo_run(["systemctl", "stop", "myoldmachine"], password, timeout=30)
@@ -262,6 +291,19 @@ def stop_service_linux(password: Optional[str]) -> bool:
             return False
         _sudo_run(["systemctl", "daemon-reload"], password, timeout=30)
         _ok(f"Removed {unit_path}")
+
+    tba_unit = "/etc/systemd/system/telegram-bot-api.service"
+    if Path(tba_unit).exists():
+        _info("Stopping systemd unit: telegram-bot-api")
+        _sudo_run(["systemctl", "stop", "telegram-bot-api"], password, timeout=30)
+        _sudo_run(["systemctl", "disable", "telegram-bot-api"], password, timeout=30)
+        result = _sudo_run(["rm", "-f", tba_unit], password)
+        if result.returncode != 0:
+            _warn(f"Could not remove {tba_unit}: {result.stderr.strip()[:200]}")
+            # Non-fatal: keep going.
+        else:
+            _sudo_run(["systemctl", "daemon-reload"], password, timeout=30)
+            _ok(f"Removed {tba_unit}")
     return True
 
 
