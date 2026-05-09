@@ -1195,6 +1195,276 @@ def _run_mcp_setup_step(config: dict):
     print("    2. Restart the bot to connect.")
 
 
+# --- Provider authentication ---
+#
+# CLI providers (claude, codex) need an OAuth login before the bot can talk to
+# them. Without this, the bot launches fine but every message returns the CLI's
+# "Not logged in" error verbatim. The auth step probes the CLI's login state
+# and, if missing, runs the interactive login flow as the install user. In
+# multi-user mode `propagate_claude_credentials` (called later from
+# _provision_multiuser) then copies the freshly-minted credential file to each
+# slot's HOME — so authenticating once on the install user covers every slot.
+#
+# Hybrid retry-skip: try once, retry once on failure, then offer skip-with-
+# warning. Skip is non-fatal: install completes, bot starts, but messages
+# fail until the user runs `claude auth login` or `codex login` themselves.
+# Decline-to-skip aborts the install (sys.exit via wizard.error()).
+
+CLI_AUTH_PROVIDERS = ("claude", "codex")
+
+
+def _find_install_cli(cmd: str) -> str | None:
+    """Locate a CLI binary (claude, codex) anywhere it might have been installed.
+
+    Mirrors the dir list in core/llm._find_cli_binary() so the wizard can
+    auth even when the install user's PATH does not yet include the binary's
+    location (common on macOS where ~/.local/bin is not in PATH for non-login
+    shells, and on systems where npm prefix is in $HOME).
+    """
+    import shutil as _shutil
+    path = _shutil.which(cmd)
+    if path:
+        return path
+    home = Path.home()
+    candidates = [
+        home / ".local" / "bin" / cmd,
+        Path("/opt/homebrew/bin") / cmd,
+        Path("/usr/local/bin") / cmd,
+        home / ".npm-global" / "bin" / cmd,
+        home / ".bun" / "bin" / cmd,
+    ]
+    nvm_root = home / ".nvm" / "versions" / "node"
+    if nvm_root.is_dir():
+        try:
+            for version_dir in sorted(nvm_root.iterdir(), reverse=True):
+                candidate = version_dir / "bin" / cmd
+                if candidate.exists() and os.access(candidate, os.X_OK):
+                    return str(candidate)
+        except OSError:
+            pass
+    for candidate in candidates:
+        try:
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _claude_probe() -> tuple[bool, str]:
+    """Probe `claude auth status --json`. Returns (logged_in, detail).
+
+    detail is either the authenticated email/org, or a short reason for
+    failure. Failure modes covered: binary missing, subprocess timeout,
+    OS error, non-zero exit, malformed JSON, json says loggedIn=false.
+    """
+    binary = _find_install_cli("claude")
+    if not binary:
+        return False, "binary not found"
+    try:
+        result = subprocess.run(
+            [binary, "auth", "status", "--json"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "auth status timed out after 20s"
+    except OSError as e:
+        return False, f"auth status failed: {e}"
+    if result.returncode != 0:
+        msg = (result.stderr or result.stdout or "non-zero exit").strip()
+        return False, msg.splitlines()[0] if msg else "non-zero exit"
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return False, "could not parse auth status output"
+    if data.get("loggedIn"):
+        email = data.get("email") or data.get("orgName") or "(account)"
+        return True, str(email)
+    return False, "not logged in"
+
+
+def _codex_probe() -> tuple[bool, str]:
+    """Probe `codex login status`. Returns (logged_in, detail).
+
+    Per OpenAI Codex CLI docs, `codex login status` exits 0 when logged in
+    and prints the active auth method; non-zero otherwise.
+    """
+    binary = _find_install_cli("codex")
+    if not binary:
+        return False, "binary not found"
+    try:
+        result = subprocess.run(
+            [binary, "login", "status"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "login status timed out after 20s"
+    except OSError as e:
+        return False, f"login status failed: {e}"
+    if result.returncode == 0:
+        detail = (result.stdout or "logged in").strip().splitlines()
+        return True, detail[0] if detail else "logged in"
+    msg = (result.stderr or result.stdout or "not logged in").strip()
+    return False, msg.splitlines()[0] if msg else "not logged in"
+
+
+def _run_cli_login(binary: str, login_args: list[str], hint: str) -> bool:
+    """Run an interactive `<cli> login` subprocess. Returns True on exit 0.
+
+    Inherits stdio so the user sees prompts and the OAuth URL. Catches
+    KeyboardInterrupt so a Ctrl+C during login bubbles up as a normal
+    failure rather than a stack trace.
+    """
+    print(f"  {YELLOW}{hint}{NC}")
+    print()
+    try:
+        result = subprocess.run([binary, *login_args])
+    except KeyboardInterrupt:
+        print()
+        warn("Sign-in cancelled (Ctrl+C).")
+        return False
+    except OSError as e:
+        warn(f"Could not run {binary}: {e}")
+        return False
+    return result.returncode == 0
+
+
+def _provider_auth_loop(
+    *,
+    title: str,
+    probe,
+    binary_finder,
+    login_args: list[str],
+    login_hint: str,
+    skip_command: str,
+) -> tuple[bool, str]:
+    """Hybrid retry-skip loop shared by claude and codex auth flows.
+
+    `probe` returns (logged_in, detail). `binary_finder` returns the CLI
+    path (used to invoke login). `login_args` is the argv tail
+    (e.g. ["auth", "login"] for claude, ["login"] for codex).
+
+    Returns (success, message). success=False means the user explicitly
+    declined to skip after the retries — caller should abort the install.
+    """
+    print(f"\n{BOLD}Provider authentication: {title}{NC}")
+
+    logged_in, detail = probe()
+    if logged_in:
+        ok(f"{title} CLI authenticated as {detail}")
+        return True, "already authenticated"
+
+    if "binary not found" in detail:
+        warn(
+            f"{title} CLI binary not found. The install step above should "
+            f"have installed it; this is unexpected."
+        )
+        warn("Skipping auth — bot will report the missing binary at startup.")
+        return True, "binary missing — skipped"
+
+    info(f"{title} CLI not authenticated ({detail}).")
+
+    print()
+    answer = ask("Sign in now?", default="y").strip().lower()
+    if answer in ("n", "no"):
+        warn(f"Skipping auth. Bot will not work until you run '{skip_command}'.")
+        return True, "user declined sign-in — skipped"
+
+    binary = binary_finder()
+    if not binary:
+        # Defensive: probe said "not authenticated" so binary existed; but
+        # in case PATH changes between probe and login, bail cleanly.
+        warn(f"{title} CLI binary disappeared between probe and login.")
+        return True, "binary gone — skipped"
+
+    # Attempt 1
+    info(f"Running `{Path(binary).name} {' '.join(login_args)}`...")
+    success = _run_cli_login(binary, login_args, login_hint)
+    if success:
+        logged_in, detail = probe()
+        if logged_in:
+            ok(f"Authenticated as {detail}")
+            return True, "authenticated on first attempt"
+
+    # Attempt 2 (retry once)
+    warn("First sign-in attempt did not complete successfully.")
+    print()
+    answer = ask("Try again?", default="y").strip().lower()
+    if answer not in ("n", "no"):
+        info(f"Running `{Path(binary).name} {' '.join(login_args)}`...")
+        success = _run_cli_login(binary, login_args, login_hint)
+        if success:
+            logged_in, detail = probe()
+            if logged_in:
+                ok(f"Authenticated as {detail}")
+                return True, "authenticated on retry"
+
+    # Both attempts failed — offer skip
+    print()
+    warn("Sign-in did not succeed.")
+    print(f"  {YELLOW}You can skip this and authenticate later by running:{NC}")
+    print(f"    {skip_command}")
+    print(f"  {YELLOW}The bot will start, but messages will fail until you do.{NC}")
+    print()
+    answer = ask("Skip auth and continue install?", default="n").strip().lower()
+    if answer in ("y", "yes"):
+        warn(f"Skipping auth. Bot will not work until you run '{skip_command}'.")
+        return True, "user skipped after retry"
+
+    return False, "user declined to authenticate or skip"
+
+
+def _run_provider_auth(config: dict) -> tuple[bool, str]:
+    """Authenticate the install user with their LLM provider's CLI.
+
+    For 'claude' and 'codex' providers, probes the CLI's login state and
+    runs the interactive login flow if needed. Hybrid retry-skip on failure.
+
+    For API-key providers (configured via LLM_API_KEY in .env) and 'ollama'
+    (handled by ollama_setup), this is a no-op returning True.
+
+    Returns (success, message). success=False means the install should abort
+    (user declined to authenticate or skip).
+    """
+    provider = (config.get("llm_provider") or "").strip().lower()
+    if not provider:
+        return True, "no provider configured — skipping auth"
+    if provider in API_KEY_PROVIDERS:
+        return True, f"{provider} uses API key (.env LLM_API_KEY)"
+    if provider == "ollama":
+        return True, "ollama auth handled by ollama_setup"
+    if provider == "claude":
+        return _provider_auth_loop(
+            title="Claude",
+            probe=_claude_probe,
+            binary_finder=lambda: _find_install_cli("claude"),
+            login_args=["auth", "login"],
+            login_hint=(
+                "A browser window will open. Sign in with the Anthropic "
+                "account that has your Pro/Max subscription. If running "
+                "over SSH, copy the URL printed below into a browser on "
+                "another machine."
+            ),
+            skip_command="claude auth login",
+        )
+    if provider == "codex":
+        return _provider_auth_loop(
+            title="Codex",
+            probe=_codex_probe,
+            binary_finder=lambda: _find_install_cli("codex"),
+            login_args=["login"],
+            login_hint=(
+                "A browser window will open. Sign in with your ChatGPT "
+                "Plus/Pro account. If running over SSH, choose 'Sign in "
+                "with Device Code' in the menu and copy the URL/code "
+                "into a browser on another machine."
+            ),
+            skip_command="codex login",
+        )
+    # Unknown provider — defensive: don't block install.
+    return True, f"no auth probe defined for provider '{provider}'"
+
+
 # --- Optional features registry ---
 #
 # Each entry describes a feature that did not exist in older installs. On
@@ -1773,7 +2043,6 @@ def main():
             _switch_provider_fallback()
         elif _shutil.which("claude"):
             ok("Claude Code CLI already installed")
-            print(f"  {YELLOW}Run 'claude login' to authenticate with your Anthropic plan.{NC}")
             checkpoint_set("claude_cli")
         else:
             npm_path = _find_npm()
@@ -1790,13 +2059,6 @@ def main():
                     result = None
                 if result and result.returncode == 0:
                     ok("Claude Code CLI installed")
-                    print()
-                    print(f"  {BOLD}IMPORTANT: You need to authenticate before the bot can work.{NC}")
-                    print(f"  {YELLOW}Run this command now:{NC}")
-                    print("    claude login")
-                    print(f"  {YELLOW}This opens your browser to sign in with your Anthropic account.{NC}")
-                    print(f"  {YELLOW}Your Pro/Max plan covers usage — no API credits needed.{NC}")
-                    print()
                     checkpoint_set("claude_cli")
                 else:
                     _switch_provider_fallback()
@@ -1856,7 +2118,6 @@ def main():
             _switch_codex_fallback()
         elif _shutil.which("codex"):
             ok("OpenAI Codex CLI already installed")
-            print(f"  {YELLOW}Run 'codex login' to authenticate with your ChatGPT plan.{NC}")
             checkpoint_set("codex_cli")
         else:
             npm_path = _find_npm_codex()
@@ -1873,14 +2134,6 @@ def main():
                     result = None
                 if result and result.returncode == 0:
                     ok("OpenAI Codex CLI installed")
-                    print()
-                    print(f"  {BOLD}IMPORTANT: You need to authenticate before the bot can work.{NC}")
-                    print(f"  {YELLOW}Run this command now:{NC}")
-                    print("    codex login")
-                    print(f"  {YELLOW}This opens your browser to sign in with your ChatGPT account.{NC}")
-                    print(f"  {YELLOW}Your Plus/Pro plan covers usage — no API credits needed.{NC}")
-                    print(f"  {YELLOW}(For headless setups, set OPENAI_API_KEY in .env instead.){NC}")
-                    print()
                     checkpoint_set("codex_cli")
                 else:
                     _switch_codex_fallback()
@@ -1975,10 +2228,33 @@ def main():
             _atomic_env_write(env_file, "\n".join(new_lines) + "\n")
         print()
 
+    # --- Provider authentication (claude / codex) ---
+    # Runs after the CLI is installed but before multi-user provisioning,
+    # so that propagate_claude_credentials() in _provision_multiuser can
+    # copy the freshly-minted credential file to each slot. Idempotent:
+    # if the install user is already authenticated, this is a fast probe
+    # and a one-line "ok". For API-key and ollama providers it is a no-op.
+    auth_success, auth_msg = _run_provider_auth(config)
+    if not auth_success:
+        warn(f"Install aborted: {auth_msg}")
+        warn("Re-run the installer when you are ready to authenticate.")
+        sys.exit(1)
+    if auth_msg not in (
+        "already authenticated",
+        "authenticated on first attempt",
+        "authenticated on retry",
+    ):
+        # Already-authenticated paths are reported by the loop itself.
+        # For everything else (skipped, no-op providers, etc.) print a
+        # one-liner so the install transcript shows what happened.
+        info(f"Provider auth: {auth_msg}")
+
     # --- Multi-user provisioning ---
-    # Runs after CLI installs so the sudoers fragment can pin absolute paths.
-    # Checkpoint name "multiuser_v2" forces a re-run on installs from before
-    # the macOS NFSHomeDirectory + Claude credential propagation fix landed.
+    # Runs after CLI installs and provider auth so that
+    # propagate_claude_credentials has source credentials to copy and
+    # the sudoers fragment can pin absolute paths. Checkpoint name
+    # "multiuser_v2" forces a re-run on installs from before the macOS
+    # NFSHomeDirectory + Claude credential propagation fix landed.
     # _provision_multiuser is fully idempotent — re-running it on a healthy
     # install is a no-op except for the new repair steps.
     if config.get("multiuser_enabled") and not checkpoint_done("multiuser_v2"):
