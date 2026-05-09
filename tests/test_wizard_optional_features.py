@@ -7,6 +7,7 @@ to short-circuit out before ever asking about it. The user had to wipe
 
 `_offer_missing_optional_features` walks an in-process registry on every
 resume. Each entry knows:
+  - whether it applies to the current host (`applies_to`, optional)
   - how to check whether the feature is already configured
   - how to ask the user if they want to set it up now (defaulting to no)
 
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -251,6 +253,404 @@ class TelegramBotApiRegistryEntryTests(unittest.TestCase):
                          "Optional feature keys must be unique")
 
 
+class AppliesToFilterTests(unittest.TestCase):
+    """`applies_to` is the per-host filter that hides features that don't
+    belong on the current platform (e.g. macOS softwareupdate on Linux).
+    """
+
+    def setUp(self):
+        self._original_registry = wizard.OPTIONAL_FEATURES
+
+    def tearDown(self):
+        wizard.OPTIONAL_FEATURES = self._original_registry
+
+    def _set_registry(self, features):
+        wizard.OPTIONAL_FEATURES = features
+
+    def test_applies_to_false_filters_feature_out(self):
+        # When applies_to returns False, the feature is invisible — its
+        # is_configured/configure callbacks must NEVER run.
+        is_configured = unittest_mock_callable()
+        configure = unittest_mock_callable()
+        self._set_registry([
+            {
+                "key": "linux_only",
+                "label": "Linux-only feature",
+                "summary": "should not appear on darwin",
+                "applies_to": lambda: False,
+                "is_configured": is_configured,
+                "configure": configure,
+            }
+        ])
+        config = {}
+        with patch.object(wizard, "ask") as ask_mock:
+            result = wizard._offer_missing_optional_features(Path("/tmp"), config)
+        self.assertFalse(result)
+        ask_mock.assert_not_called()
+        self.assertFalse(is_configured.called)
+        self.assertFalse(configure.called)
+
+    def test_applies_to_true_lets_feature_through(self):
+        self._set_registry([
+            {
+                "key": "always",
+                "label": "Always-on feature",
+                "summary": "applies everywhere",
+                "applies_to": lambda: True,
+                "is_configured": lambda c: c.get("on", False),
+                "configure": lambda c: c.update({"on": True}),
+            }
+        ])
+        config = {}
+        with patch.object(wizard, "ask", return_value="y"):
+            result = wizard._offer_missing_optional_features(Path("/tmp"), config)
+        self.assertTrue(result)
+        self.assertTrue(config.get("on"))
+
+    def test_missing_applies_to_defaults_to_always_apply(self):
+        # Backward-compat: entries that omit applies_to behave as if it
+        # returned True. This keeps the old telegram_bot_api entry and any
+        # future external feature definitions safe.
+        self._set_registry([
+            {
+                "key": "no_filter",
+                "label": "No filter feature",
+                "summary": "applies_to is absent",
+                "is_configured": lambda c: c.get("on", False),
+                "configure": lambda c: c.update({"on": True}),
+            }
+        ])
+        config = {}
+        with patch.object(wizard, "ask", return_value="y"):
+            result = wizard._offer_missing_optional_features(Path("/tmp"), config)
+        self.assertTrue(result)
+        self.assertTrue(config.get("on"))
+
+    def test_mixed_applies_to_only_runs_applicable_features(self):
+        ask_calls = []
+
+        def fake_ask(prompt, default=None):
+            ask_calls.append(prompt)
+            return "n"
+
+        self._set_registry([
+            {
+                "key": "linux_only",
+                "label": "Linux only",
+                "summary": "...",
+                "applies_to": lambda: False,
+                "is_configured": lambda c: False,
+                "configure": lambda c: None,
+            },
+            {
+                "key": "everywhere",
+                "label": "Everywhere",
+                "summary": "...",
+                "applies_to": lambda: True,
+                "is_configured": lambda c: False,
+                "configure": lambda c: None,
+            },
+        ])
+        config = {}
+        with patch.object(wizard, "ask", side_effect=fake_ask):
+            wizard._offer_missing_optional_features(Path("/tmp"), config)
+        # Only "everywhere" should have prompted; linux_only is filtered out.
+        self.assertEqual(len(ask_calls), 1)
+
+
+class BackupRegistryEntryTests(unittest.TestCase):
+    """The shipped registry must contain a backup entry that reads/writes
+    maintenance.json (not .env). State location is by design — /maintenance
+    can also toggle backup at runtime, so .env must NOT diverge from
+    maintenance.json.
+    """
+
+    def test_registry_contains_backup(self):
+        keys = {f["key"] for f in wizard.OPTIONAL_FEATURES}
+        self.assertIn("backup", keys)
+
+    def test_backup_applies_everywhere(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "backup")
+        self.assertTrue(feat.get("applies_to", lambda: True)())
+
+    def test_backup_is_configured_reads_maintenance_json(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "backup")
+        # Both backup_enabled and backup_path must be present
+        with patch.object(wizard, "_load_maintenance_for_check",
+                          return_value={"backup_enabled": False, "backup_path": ""}):
+            self.assertFalse(feat["is_configured"]({}))
+        with patch.object(wizard, "_load_maintenance_for_check",
+                          return_value={"backup_enabled": True, "backup_path": ""}):
+            self.assertFalse(feat["is_configured"]({}))
+        with patch.object(wizard, "_load_maintenance_for_check",
+                          return_value={"backup_enabled": False, "backup_path": "/x"}):
+            self.assertFalse(feat["is_configured"]({}))
+        with patch.object(wizard, "_load_maintenance_for_check",
+                          return_value={"backup_enabled": True, "backup_path": "/x"}):
+            self.assertTrue(feat["is_configured"]({}))
+
+    def test_backup_configure_writes_maintenance_json(self):
+        # Drive the configure step with a temp dir as the backup target.
+        # Ensures it calls update_config with the right keys.
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "backup")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured = {}
+
+            def fake_update(**kwargs):
+                captured.update(kwargs)
+                return kwargs
+
+            answers = iter([tmpdir, "5"])
+
+            def fake_ask(prompt, default=None, **_):
+                try:
+                    return next(answers)
+                except StopIteration:
+                    return default or ""
+
+            with patch.object(wizard, "ask", side_effect=fake_ask), \
+                 patch("utils.maintenance.update_config", side_effect=fake_update):
+                config = {}
+                feat["configure"](config)
+
+            self.assertTrue(captured.get("backup_enabled"))
+            self.assertEqual(Path(captured["backup_path"]).resolve(),
+                             Path(tmpdir).resolve())
+            self.assertEqual(captured["backup_retention"], 5)
+            self.assertTrue(config.get("backup_enabled"))
+
+    def test_backup_configure_falls_back_to_default_retention(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "backup")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured = {}
+
+            def fake_update(**kwargs):
+                captured.update(kwargs)
+                return kwargs
+
+            # Non-numeric retention should fall back to 7
+            answers = iter([tmpdir, "garbage"])
+
+            def fake_ask(prompt, default=None, **_):
+                try:
+                    return next(answers)
+                except StopIteration:
+                    return default or ""
+
+            with patch.object(wizard, "ask", side_effect=fake_ask), \
+                 patch("utils.maintenance.update_config", side_effect=fake_update):
+                config = {}
+                feat["configure"](config)
+
+            self.assertEqual(captured["backup_retention"], 7)
+
+
+class MacosSystemUpdatesRegistryEntryTests(unittest.TestCase):
+    """macOS softwareupdate must only prompt on Darwin. On Linux the entry
+    is filtered out by `applies_to` and never executes.
+    """
+
+    def test_registry_contains_macos_system_updates(self):
+        keys = {f["key"] for f in wizard.OPTIONAL_FEATURES}
+        self.assertIn("macos_system_updates", keys)
+
+    def test_applies_to_only_darwin(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES
+                    if f["key"] == "macos_system_updates")
+        with patch("platform.system", return_value="Darwin"):
+            self.assertTrue(feat["applies_to"]())
+        with patch("platform.system", return_value="Linux"):
+            self.assertFalse(feat["applies_to"]())
+        with patch("platform.system", return_value="Windows"):
+            self.assertFalse(feat["applies_to"]())
+
+    def test_macos_is_configured_reads_maintenance_json(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES
+                    if f["key"] == "macos_system_updates")
+        with patch.object(wizard, "_load_maintenance_for_check",
+                          return_value={"macos_system_updates": False}):
+            self.assertFalse(feat["is_configured"]({}))
+        with patch.object(wizard, "_load_maintenance_for_check",
+                          return_value={"macos_system_updates": True}):
+            self.assertTrue(feat["is_configured"]({}))
+        # Missing key = not configured (defaults False)
+        with patch.object(wizard, "_load_maintenance_for_check", return_value={}):
+            self.assertFalse(feat["is_configured"]({}))
+
+    def test_macos_configure_decline_does_not_write(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES
+                    if f["key"] == "macos_system_updates")
+        captured = {}
+
+        def fake_update(**kwargs):
+            captured.update(kwargs)
+            return kwargs
+
+        with patch.object(wizard, "ask", return_value="n"), \
+             patch("utils.maintenance.update_config", side_effect=fake_update):
+            config = {}
+            feat["configure"](config)
+        self.assertEqual(captured, {})
+        self.assertNotIn("macos_system_updates", config)
+
+    def test_macos_configure_accept_writes_with_optional_restart(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES
+                    if f["key"] == "macos_system_updates")
+        captured = {}
+
+        def fake_update(**kwargs):
+            captured.update(kwargs)
+            return kwargs
+
+        # First "y" enables, second "y" allows auto-restart
+        answers = iter(["y", "y"])
+
+        def fake_ask(prompt, default=None, **_):
+            try:
+                return next(answers)
+            except StopIteration:
+                return default or ""
+
+        with patch.object(wizard, "ask", side_effect=fake_ask), \
+             patch("utils.maintenance.update_config", side_effect=fake_update):
+            config = {}
+            feat["configure"](config)
+        self.assertTrue(captured.get("macos_system_updates"))
+        self.assertTrue(captured.get("macos_system_updates_restart"))
+        self.assertTrue(config.get("macos_system_updates"))
+
+    def test_macos_configure_accept_no_restart(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES
+                    if f["key"] == "macos_system_updates")
+        captured = {}
+
+        def fake_update(**kwargs):
+            captured.update(kwargs)
+            return kwargs
+
+        # First "y" enables, second "n" declines auto-restart
+        answers = iter(["y", "n"])
+
+        def fake_ask(prompt, default=None, **_):
+            try:
+                return next(answers)
+            except StopIteration:
+                return default or ""
+
+        with patch.object(wizard, "ask", side_effect=fake_ask), \
+             patch("utils.maintenance.update_config", side_effect=fake_update):
+            config = {}
+            feat["configure"](config)
+        self.assertTrue(captured.get("macos_system_updates"))
+        self.assertFalse(captured.get("macos_system_updates_restart"))
+
+
+class McpServersRegistryEntryTests(unittest.TestCase):
+    """MCP support is detected by file existence, not by an .env flag.
+    The user is expected to edit mcp_servers.json after we scaffold it.
+    """
+
+    def test_registry_contains_mcp_servers(self):
+        keys = {f["key"] for f in wizard.OPTIONAL_FEATURES}
+        self.assertIn("mcp_servers", keys)
+
+    def test_mcp_is_configured_checks_file_exists(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "mcp_servers")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_repo = Path(tmpdir)
+            with patch.object(wizard, "REPO_DIR", fake_repo):
+                # File does not exist
+                self.assertFalse(feat["is_configured"]({}))
+                # File exists (any content)
+                (fake_repo / "mcp_servers.json").write_text(
+                    '{"servers": []}', encoding="utf-8"
+                )
+                self.assertTrue(feat["is_configured"]({}))
+
+    def test_mcp_configure_decline_does_not_create_file(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "mcp_servers")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_repo = Path(tmpdir)
+            (fake_repo / "mcp_servers.json.example").write_text(
+                '{"servers": []}', encoding="utf-8"
+            )
+            with patch.object(wizard, "REPO_DIR", fake_repo), \
+                 patch.object(wizard, "ask", return_value="n"):
+                config = {}
+                feat["configure"](config)
+            self.assertFalse((fake_repo / "mcp_servers.json").exists())
+
+    def test_mcp_configure_accept_copies_template_when_pip_missing(self):
+        # When the venv pip binary doesn't exist, we still scaffold the
+        # config file so the user has something to edit. SDK install just
+        # gets skipped with a warning.
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "mcp_servers")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_repo = Path(tmpdir)
+            example_content = '{"servers": [{"name": "filesystem"}]}'
+            (fake_repo / "mcp_servers.json.example").write_text(
+                example_content, encoding="utf-8"
+            )
+            # No .venv → pip missing → SDK install skipped
+            with patch.object(wizard, "REPO_DIR", fake_repo), \
+                 patch.object(wizard, "ask", return_value="y"):
+                config = {}
+                feat["configure"](config)
+            target = fake_repo / "mcp_servers.json"
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_text(encoding="utf-8"), example_content)
+
+    def test_mcp_configure_accept_runs_pip_when_venv_present(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "mcp_servers")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_repo = Path(tmpdir)
+            (fake_repo / "mcp_servers.json.example").write_text(
+                '{"servers": []}', encoding="utf-8"
+            )
+            # Make a fake .venv/bin/pip so the install path is taken
+            venv_bin = fake_repo / ".venv" / "bin"
+            venv_bin.mkdir(parents=True)
+            pip = venv_bin / "pip"
+            pip.write_text("#!/bin/sh\nexit 0\n")
+            pip.chmod(0o755)
+
+            captured = {}
+
+            def fake_run(cmd, *args, **kwargs):
+                captured["cmd"] = cmd
+
+                class R:
+                    returncode = 0
+                    stderr = ""
+                return R()
+
+            with patch.object(wizard, "REPO_DIR", fake_repo), \
+                 patch.object(wizard, "ask", return_value="y"), \
+                 patch.object(wizard.subprocess, "run", side_effect=fake_run):
+                config = {}
+                feat["configure"](config)
+
+            self.assertEqual(captured["cmd"][0], str(pip))
+            self.assertIn("install", captured["cmd"])
+            self.assertIn("mcp[cli]", captured["cmd"])
+
+    def test_mcp_configure_does_not_overwrite_existing_file(self):
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "mcp_servers")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_repo = Path(tmpdir)
+            existing = '{"servers": [{"name": "user_custom"}]}'
+            (fake_repo / "mcp_servers.json").write_text(existing, encoding="utf-8")
+            (fake_repo / "mcp_servers.json.example").write_text(
+                '{"servers": []}', encoding="utf-8"
+            )
+            with patch.object(wizard, "REPO_DIR", fake_repo), \
+                 patch.object(wizard, "ask", return_value="y"):
+                config = {}
+                feat["configure"](config)
+            content = (fake_repo / "mcp_servers.json").read_text(encoding="utf-8")
+            self.assertEqual(content, existing)
+
+
 def unittest_mock_callable():
     """Tiny callable double that records whether it was invoked.
 
@@ -304,6 +704,14 @@ OfferMissingOptionalFeaturesTests = _wrap_with_stdout_silencer(
 )
 TelegramBotApiRegistryEntryTests = _wrap_with_stdout_silencer(
     TelegramBotApiRegistryEntryTests
+)
+AppliesToFilterTests = _wrap_with_stdout_silencer(AppliesToFilterTests)
+BackupRegistryEntryTests = _wrap_with_stdout_silencer(BackupRegistryEntryTests)
+MacosSystemUpdatesRegistryEntryTests = _wrap_with_stdout_silencer(
+    MacosSystemUpdatesRegistryEntryTests
+)
+McpServersRegistryEntryTests = _wrap_with_stdout_silencer(
+    McpServersRegistryEntryTests
 )
 
 

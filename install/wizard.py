@@ -967,21 +967,226 @@ def _run_telegram_bot_api_step(config: dict):
     ok("Bot API credentials captured. Server will be built during install.")
 
 
+# --- Helpers shared by several optional-feature entries ---
+#
+# These read state that lives outside .env (maintenance.json, mcp_servers.json)
+# and are kept private so they don't leak into the registry's public surface.
+
+def _load_maintenance_for_check() -> dict:
+    """Read the current maintenance.json. Returns defaults if missing or
+    unreadable so detection never crashes the resume path.
+    """
+    try:
+        from utils.maintenance import load_config
+        return load_config()
+    except Exception:
+        return {}
+
+
+def _is_backup_configured() -> bool:
+    cfg = _load_maintenance_for_check()
+    return bool(cfg.get("backup_enabled") and cfg.get("backup_path"))
+
+
+def _is_macos_updates_configured() -> bool:
+    cfg = _load_maintenance_for_check()
+    return bool(cfg.get("macos_system_updates"))
+
+
+def _is_mcp_configured() -> bool:
+    return (REPO_DIR / "mcp_servers.json").exists()
+
+
+def _run_backup_setup_step(config: dict):
+    """Set up nightly backup destination in maintenance.json.
+
+    Writes backup_enabled / backup_path / backup_retention to maintenance.json.
+    No .env mutation — backup config has always lived in maintenance.json so
+    that /maintenance can edit it at runtime without touching .env.
+    """
+    print(f"\n  {BOLD}Backup destination{NC}")
+    print("  Pick a directory where nightly backups will be stored.")
+    print("  Backups run at 2:00 AM. The path can be local, an external")
+    print("  drive, or a network mount as long as the bot can write there.")
+    print()
+
+    while True:
+        path_str = ask("Backup target directory")
+        backup_path = Path(os.path.expanduser(path_str)).resolve()
+        try:
+            backup_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            warn(f"Cannot create {backup_path}: {e}")
+            retry = ask("Try a different path?", default="y").strip().lower()
+            if retry not in ("y", "yes"):
+                ok("Skipping backup setup.")
+                return
+            continue
+        if not os.access(backup_path, os.W_OK):
+            warn(f"No write permission to {backup_path}.")
+            retry = ask("Try a different path?", default="y").strip().lower()
+            if retry not in ("y", "yes"):
+                ok("Skipping backup setup.")
+                return
+            continue
+        break
+
+    retention_str = ask("How many backups to keep?", default="7")
+    try:
+        retention = max(1, int(retention_str))
+    except ValueError:
+        retention = 7
+
+    try:
+        from utils.maintenance import update_config
+        update_config(
+            backup_enabled=True,
+            backup_path=str(backup_path),
+            backup_retention=retention,
+        )
+    except Exception as e:
+        warn(f"Could not save maintenance.json: {e}")
+        return
+
+    config["backup_enabled"] = True
+    ok(f"Nightly backups will go to {backup_path} (keeping {retention})")
+    print(f"  {YELLOW}Restart the bot for the nightly job to register.{NC}")
+
+
+def _run_macos_updates_step(config: dict):
+    """Enable nightly macOS softwareupdate (Darwin only).
+
+    Apple security responses already auto-install via the provisioner's
+    `CriticalUpdateInstall=true`. This adds non-critical Apple updates
+    (Safari, command-line tools, supplemental updates) on top.
+    """
+    print(f"\n  {BOLD}macOS softwareupdate{NC}")
+    print("  Apple security responses already auto-install on this machine")
+    print("  (the installer enabled CriticalUpdateInstall during provisioning).")
+    print("  This adds non-critical Apple updates — Safari, command-line tools,")
+    print("  supplemental updates — to the nightly maintenance job.")
+    print()
+
+    answer = ask("Enable macOS softwareupdate in nightly maintenance?", default="n").strip().lower()
+    if answer not in ("y", "yes"):
+        ok("Skipping. Apple security responses still auto-install.")
+        return
+
+    print()
+    print(f"  {YELLOW}Auto-restart{NC}: some updates require a reboot to finish installing.")
+    print("  When enabled, the nightly job runs `softwareupdate ... --restart`")
+    print("  and the machine may reboot at 4:00 AM if any update needs it.")
+    restart_answer = ask("Allow auto-restart?", default="n").strip().lower()
+    auto_restart = restart_answer in ("y", "yes")
+
+    try:
+        from utils.maintenance import update_config
+        update_config(
+            macos_system_updates=True,
+            macos_system_updates_restart=auto_restart,
+        )
+    except Exception as e:
+        warn(f"Could not save maintenance.json: {e}")
+        return
+
+    config["macos_system_updates"] = True
+    if auto_restart:
+        ok("macOS softwareupdate enabled (with auto-restart).")
+    else:
+        ok("macOS softwareupdate enabled (no auto-restart).")
+
+
+def _run_mcp_setup_step(config: dict):
+    """Install the MCP SDK and create mcp_servers.json from the template.
+
+    The user still has to edit mcp_servers.json with real server commands
+    and tokens; we only scaffold so they have something to edit and the
+    SDK is in place when they restart the bot.
+    """
+    print(f"\n  {BOLD}MCP server support{NC}")
+    print("  Connects the bot to external MCP servers — databases, APIs,")
+    print("  cloud services, GitHub, filesystem access, and more.")
+    print("  https://modelcontextprotocol.io")
+    print()
+    print(f"  {YELLOW}Setup is two steps:{NC}")
+    print("    1. We install the MCP Python SDK (mcp[cli], ~10 MB).")
+    print("    2. We create mcp_servers.json from a template. You then")
+    print("       edit it to add your servers (filesystem, github, etc.)")
+    print("       and restart the bot.")
+    print()
+
+    answer = ask("Install MCP SDK and create mcp_servers.json now?", default="n").strip().lower()
+    if answer not in ("y", "yes"):
+        ok("Skipping MCP setup. The bot runs without MCP support.")
+        return
+
+    venv_pip = REPO_DIR / ".venv" / "bin" / "pip"
+    if not venv_pip.exists():
+        warn(f"Could not find {venv_pip}. Skipping SDK install.")
+    else:
+        info("Installing MCP SDK (mcp[cli])...")
+        try:
+            result = subprocess.run(
+                [str(venv_pip), "install", "mcp[cli]"],
+                capture_output=True, text=True, timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            warn("pip install timed out. Run manually: .venv/bin/pip install 'mcp[cli]'")
+            return
+        if result.returncode != 0:
+            warn(f"pip install failed:\n{result.stderr}")
+            warn("Run manually: .venv/bin/pip install 'mcp[cli]'")
+            return
+        ok("MCP SDK installed.")
+
+    template = REPO_DIR / "mcp_servers.json.example"
+    target = REPO_DIR / "mcp_servers.json"
+    if target.exists():
+        ok(f"{target.name} already exists. Edit it to add servers.")
+    elif not template.exists():
+        warn(f"{template} not found. Create mcp_servers.json manually.")
+        return
+    else:
+        try:
+            target.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError as e:
+            warn(f"Could not copy template: {e}")
+            return
+        ok(f"Created {target.name} from the template.")
+
+    config["mcp_enabled"] = True
+    print(f"  {YELLOW}Next steps:{NC}")
+    print(f"    1. Edit {target}")
+    print("       (replace placeholder commands/tokens with real servers)")
+    print("    2. Restart the bot to connect.")
+
+
 # --- Optional features registry ---
 #
 # Each entry describes a feature that did not exist in older installs. On
 # resume (env_valid path) the wizard walks this list, asks the user once
-# per missing feature, and writes the result back to .env. The downstream
+# per missing feature, and writes the result back to .env (or maintenance.json,
+# or mcp_servers.json — whatever the feature persists to). The downstream
 # install steps (which are gated on config keys) then pick up the change
 # automatically — no separate "install feature X" path needed.
 #
-# To add a feature here, you need three things:
-#   - is_configured(config) -> bool: True when the feature is already set up
-#   - configure(config): mutates config to set the feature's keys (existing
-#     wizard step functions are reusable as-is)
-#   - human-readable label + summary for the prompt
+# Each entry must provide:
+#   - key: stable identifier, used by tests and for de-dup checks
+#   - label, summary: human-readable strings shown in the prompt
+#   - is_configured(config) -> bool: True when the feature is already set up.
+#       Only the function decides where state lives; some features look at
+#       the config dict (.env-backed), others read maintenance.json or check
+#       a file on disk. The dict argument is always passed so .env-backed
+#       features can stay simple.
+#   - configure(config): runs the feature's interactive setup. Existing
+#       wizard step functions (`_run_telegram_bot_api_step`, etc.) are
+#       reusable as-is.
+#   - applies_to() -> bool (optional): per-platform/per-environment filter.
+#       If absent or returns True, the feature is always offered. Use this
+#       to hide features that are not relevant on the current host (e.g.
+#       macOS softwareupdate on Linux).
 #
-# Each feature MUST default to disabled. The whole point of resume-time
+# Every feature MUST default to disabled. The whole point of resume-time
 # detection is to surface new options without surprising existing users.
 
 OPTIONAL_FEATURES = [
@@ -992,8 +1197,44 @@ OPTIONAL_FEATURES = [
             "Lifts upload caps from 50 MB to ~2 GB so the bot can send and "
             "receive large files. Adds a 30-60 min build step on first run."
         ),
+        "applies_to": lambda: True,
         "is_configured": lambda c: bool(c.get("telegram_local_api_enabled")),
         "configure": lambda c: _run_telegram_bot_api_step(c),
+    },
+    {
+        "key": "backup",
+        "label": "Nightly backups",
+        "summary": (
+            "Schedules a 2:00 AM tarball backup of bot state to a directory "
+            "you choose. Default retention: 7 backups, oldest auto-pruned."
+        ),
+        "applies_to": lambda: True,
+        "is_configured": lambda c: _is_backup_configured(),
+        "configure": lambda c: _run_backup_setup_step(c),
+    },
+    {
+        "key": "macos_system_updates",
+        "label": "macOS system updates (non-critical)",
+        "summary": (
+            "Adds Safari, command-line tools, and supplemental Apple updates "
+            "to the nightly maintenance run. Apple security responses "
+            "already auto-install on this machine."
+        ),
+        "applies_to": lambda: platform.system() == "Darwin",
+        "is_configured": lambda c: _is_macos_updates_configured(),
+        "configure": lambda c: _run_macos_updates_step(c),
+    },
+    {
+        "key": "mcp_servers",
+        "label": "MCP server support",
+        "summary": (
+            "Connects the bot to external MCP servers (databases, GitHub, "
+            "filesystem, cloud APIs). Installs the MCP SDK and scaffolds "
+            "mcp_servers.json. You then edit it to add your servers."
+        ),
+        "applies_to": lambda: True,
+        "is_configured": lambda c: _is_mcp_configured(),
+        "configure": lambda c: _run_mcp_setup_step(c),
     },
 ]
 
@@ -1001,15 +1242,20 @@ OPTIONAL_FEATURES = [
 def _offer_missing_optional_features(repo_dir: Path, config: dict) -> bool:
     """On resume, prompt the user about optional features they have not set up.
 
-    Walks `OPTIONAL_FEATURES`, asks once per feature that's not yet configured,
-    and runs the feature's prompt step if the user opts in. Default is "no" on
-    every prompt so users who don't want anything new get a single line per
-    feature ("Set up now? [n]:") and a quick way through.
+    Walks `OPTIONAL_FEATURES`, filters to entries that apply to the current
+    host (via `applies_to`), then asks once per feature that's not yet
+    configured. Default is "no" on every prompt so users who don't want
+    anything new get a single line per feature ("Set up now? [n]:") and a
+    quick way through.
 
     Returns True if at least one feature was newly enabled, in which case the
     caller should rewrite `.env` so downstream install steps see the change.
     """
-    missing = [f for f in OPTIONAL_FEATURES if not f["is_configured"](config)]
+    applicable = [
+        f for f in OPTIONAL_FEATURES
+        if f.get("applies_to", lambda: True)()
+    ]
+    missing = [f for f in applicable if not f["is_configured"](config)]
     if not missing:
         return False
 
