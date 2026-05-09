@@ -103,6 +103,26 @@ if [ -f "$CHECKPOINT_FILE" ]; then
             "$(pwd)/.env"; do
             [ -n "$env_loc" ] && [ -f "$env_loc" ] && rm -f "$env_loc" && info "Removed stale $env_loc"
         done
+        # Detect orphan-owned subdirs under data/ from a previous multi-user
+        # install. Without sudo, "rm -rf ~/MyOldMachine" can't enter mode-0700
+        # dirs owned by mom_orchestrator/mom_userN, so they survive the wipe
+        # and break the next wizard run when it tries to mkdir into them.
+        # Only check inside actual MyOldMachine repo dirs (install.sh present)
+        # to avoid wiping unrelated /tmp paths if curl|bash CWD is unusual.
+        for repo_loc in "$HOME/MyOldMachine" "$(pwd)"; do
+            [ -d "$repo_loc/data" ] && [ -f "$repo_loc/install.sh" ] || continue
+            orphan_count=$(find "$repo_loc/data" ! -user "$(id -un)" -print 2>/dev/null | head -1 | wc -l | tr -d ' ')
+            if [ "${orphan_count:-0}" -gt 0 ]; then
+                warn "Detected leftover files under $repo_loc/data not owned by you."
+                warn "These are from a previous multi-user install. Cleaning with sudo..."
+                if sudo rm -rf "$repo_loc/data"; then
+                    info "Removed stale $repo_loc/data"
+                else
+                    warn "Could not remove $repo_loc/data — install may fail. Try: sudo rm -rf $repo_loc/data"
+                fi
+                break
+            fi
+        done
     else
         info "Resuming installation (${completed} step(s) already completed)"
     fi

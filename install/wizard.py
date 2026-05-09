@@ -799,10 +799,19 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
     memories_file = users_dir / "memories.json"
     memories_file.write_text(json.dumps(memories, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    # Memory directory structure
+    # Memory directory structure.
+    # On a re-install over an existing multi-user provisioning, data/memory/
+    # is owned by mom_orchestrator with mode 0700, so the install user can't
+    # create subdirs here. That's harmless — _provision_multiuser later
+    # rebuilds these under the right ownership, and the bot's memory system
+    # creates dirs on demand at runtime. Skip with a warning instead of crashing.
     memory_dir = data_dir / "memory"
     for subdir in ["projects", "topics", "decisions"]:
-        (memory_dir / subdir).mkdir(parents=True, exist_ok=True)
+        try:
+            (memory_dir / subdir).mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Pre-existing orchestrator-owned dir. Fine — provisioner handles it.
+            pass
 
     ok(f"User profile created for {config['user_name']}")
 
