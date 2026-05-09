@@ -190,6 +190,77 @@ def _quick_ram_gb() -> float:
     return 0.0
 
 
+def _quick_cpu_info() -> tuple[int, str]:
+    """Fast CPU probe: (logical_cores, model_string).
+
+    Returns (0, "") on failure. Used alongside _quick_ram_gb() by the
+    multi-user wizard step to size the request queue recommendation.
+    Skips lspci/system_profiler so it stays well under 1s on every host.
+    """
+    cores = 0
+    try:
+        cores = os.cpu_count() or 0
+    except Exception:
+        cores = 0
+
+    model = ""
+    try:
+        if platform.system() == "Darwin":
+            result = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                model = result.stdout.strip()
+        else:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        model = line.split(":", 1)[1].strip()
+                        break
+    except Exception:
+        pass
+    return cores, model
+
+
+def _recommend_queue(ram_gb: float, cores: int, num_users: int) -> tuple[str, str]:
+    """Decide the queue default + verdict line from a hardware probe.
+
+    Returns (queue_default, verdict_line). queue_default is "y" or "n"
+    suitable for the ask() default. verdict_line is a coloured message
+    summarising the per-user budget for printing to the user.
+
+    Decision rules (per-user):
+      < 4 GB RAM OR < 1 logical core   → queue strongly recommended
+      < 8 GB RAM OR < 2 logical cores  → queue is a good safety net
+      otherwise                        → queue optional
+
+    RAM is the dominant signal. The cores check exists so a 32 GB box
+    with only 2 cores and 4 users still gets the queue (CPU-bound LLM
+    subprocesses thrash without it). When detection fails we default
+    to enabling the queue, failing safe.
+    """
+    if ram_gb <= 0:
+        # RAM is the dominant OOM signal. Without it we have no reliable
+        # picture, so fail safe and default to enabling the queue.
+        return "y", f"  {YELLOW}Could not detect RAM. Recommending queue by default.{NC}"
+
+    if num_users <= 0:
+        num_users = 1
+
+    per_ram = ram_gb / num_users
+    per_cores = cores / num_users if cores > 0 else None
+
+    tight = per_ram < 4 or (per_cores is not None and per_cores < 1)
+    moderate = per_ram < 8 or (per_cores is not None and per_cores < 2)
+
+    if tight:
+        return "y", f"  {YELLOW}Tight budget. Strongly recommend the request queue.{NC}"
+    if moderate:
+        return "y", f"  {YELLOW}Moderate budget. Queue is a good safety net.{NC}"
+    return "n", f"  {GREEN}Comfortable budget. Queue is optional.{NC}"
+
+
 def detect_machine_specs():
     """Detect basic machine specs."""
     import platform
@@ -740,7 +811,7 @@ def _run_multiuser_step(config: dict):
 
     Updates config with:
     - multiuser_enabled (bool)
-    - multiuser_num_slots (int, 1..4)
+    - multiuser_num_slots (int, 1..8)
     - multiuser_queue_enabled (bool)
     """
     print(f"\n{BOLD}Step 5: Multi-User Setup{NC}")
@@ -754,22 +825,22 @@ def _run_multiuser_step(config: dict):
 
     print("  How many people will use this machine?")
     print(f"    {GREEN}1{NC}     Just you. Nothing extra is set up.")
-    print(f"    {GREEN}2-4{NC}   Multiple people share this machine.")
+    print(f"    {GREEN}2-8{NC}   Multiple people share this machine.")
     print("            Each person gets a private data directory.")
     print("            The OS kernel enforces the privacy boundary;")
     print("            no one can read anyone else's files.")
     print()
 
     while True:
-        raw = ask("Number of users (1-4)", default="1")
+        raw = ask("Number of users (1-8)", default="1")
         try:
             num_users = int(raw)
         except ValueError:
             print(f"  {RED}Must be a number.{NC}")
             continue
-        if 1 <= num_users <= 4:
+        if 1 <= num_users <= 8:
             break
-        print(f"  {RED}Must be between 1 and 4.{NC}")
+        print(f"  {RED}Must be between 1 and 8.{NC}")
 
     config["multiuser_num_slots"] = num_users
     config["multiuser_enabled"] = num_users > 1
@@ -797,27 +868,33 @@ def _run_multiuser_step(config: dict):
         print(f"    {BOLD}/adduser <telegram_id> <name>{NC}")
         print()
 
-    # Queue recommendation based on RAM
+    # Hardware probe drives the queue recommendation. We measure here,
+    # AFTER the user has committed to a slot count, so the per-user
+    # budget below reflects the actual load this machine will carry.
+    print()
+    info("Measuring hardware to size the request queue...")
     ram_gb = _quick_ram_gb()
+    cores, cpu_model = _quick_cpu_info()
+    print(f"  CPU:  {cpu_model or 'unknown'} ({cores or '?'} logical cores)")
     if ram_gb > 0:
-        per_user = ram_gb / num_users
-        print(f"  RAM check: {ram_gb:.1f} GB total / {num_users} users = "
-              f"{per_user:.1f} GB per user")
-        if per_user < 4:
-            print(f"  {YELLOW}Tight memory budget. Strongly recommend the request queue:{NC}")
-            queue_default = "y"
-        elif per_user < 8:
-            print(f"  {YELLOW}Moderate memory budget. Queue is a good safety net.{NC}")
-            queue_default = "y"
-        else:
-            print(f"  {GREEN}Comfortable memory budget. Queue is optional.{NC}")
-            queue_default = "n"
+        print(f"  RAM:  {ram_gb:.1f} GB total")
     else:
-        print(f"  {YELLOW}Could not detect RAM. Recommending queue by default.{NC}")
-        queue_default = "y"
+        print(f"  RAM:  could not detect")
+
+    if ram_gb > 0 or cores > 0:
+        budget_parts = []
+        if ram_gb > 0:
+            budget_parts.append(f"{ram_gb / num_users:.1f} GB RAM")
+        if cores > 0:
+            budget_parts.append(f"{cores / num_users:.2f} cores")
+        print(f"  Per-user budget: {' + '.join(budget_parts)} (across {num_users} users)")
+
+    queue_default, verdict = _recommend_queue(ram_gb, cores, num_users)
+    print(verdict)
 
     print("  The queue runs one user's request at a time. Others get a")
-    print("  'next in line' message and wait. Prevents OOM on small machines.")
+    print("  'next in line' message and wait. Prevents OOM and CPU thrash")
+    print("  on small machines.")
     print()
     answer = ask("Enable request queue?", default=queue_default).strip().lower()
     config["multiuser_queue_enabled"] = answer in ("y", "yes")
@@ -1002,7 +1079,7 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
     users_json = {
         "version": 1,
         "num_slots": num_slots,
-        "max_slots": 4,
+        "max_slots": 8,
         "orchestrator_user": ORCHESTRATOR_USER,
         "queue_enabled": bool(config.get("multiuser_queue_enabled", False)),
         "concurrent_requests": 1 if config.get("multiuser_queue_enabled") else 0,

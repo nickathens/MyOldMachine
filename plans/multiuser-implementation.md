@@ -2,7 +2,7 @@
 
 **Status:** Implemented. Linux multi-user shipped in `5cd72da`. macOS multi-user added (pending test on real Mac).
 **Decision log:** `~/memory/nick/decisions/2026-05-02_myoldmachine-multiuser-architecture.md`
-**Locked decisions:** Slot-based (4 max), Linux users + filesystem perms, shared LLM provider (v1), admin-bound at install, others via `/adduser`, no migration for existing single-user installs.
+**Locked decisions:** Slot-based (8 max), Linux users + filesystem perms, shared LLM provider (v1), admin-bound at install, others via `/adduser`, no migration for existing single-user installs.
 
 ---
 
@@ -56,7 +56,7 @@ Add the multi-user prompt and provisioning to `install/wizard.py`.
 **Wizard flow addition (after provider selection, before service registration):**
 ```
 Step X: Multi-user setup
-  How many people will use this machine? (1-4) [default: 1]
+  How many people will use this machine? (1-8) [default: 1]
   > 2
 
   You picked 2 users. One must be the admin.
@@ -105,7 +105,7 @@ Modify `bot.py` and `core/llm.py` to dispatch CLI subprocesses as the right user
       "3": null,
       "4": null
     },
-    "max_users": 4
+    "max_users": 8
   }
   ```
 - `core/users.py` (new): `lookup_slot_by_telegram_id(tid) -> (slot, user_dict)`, `is_admin(tid) -> bool`, `add_user(tid, name) -> slot`, `remove_user(tid) -> archived_slot`

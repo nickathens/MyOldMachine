@@ -653,7 +653,7 @@ if __name__ == "__main__":
 
     p_build = sub.add_parser("build-sudoers", help="Print sudoers fragment for inspection")
     p_build.add_argument("--orchestrator", default=ORCHESTRATOR_USER)
-    p_build.add_argument("--slots", type=int, default=4)
+    p_build.add_argument("--slots", type=int, default=8)
     p_build.add_argument("--binaries", nargs="+", required=True,
                          help="Absolute paths to CLI binaries")
 

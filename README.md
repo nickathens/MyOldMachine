@@ -38,7 +38,7 @@ The setup wizard walks you through 7 steps:
 2. Telegram bot token (with instructions — takes 2 minutes via [@BotFather](https://t.me/BotFather))
 3. Your Telegram user ID (the wizard tells you how to find it)
 4. Which AI provider to use (free options available — you can change later)
-5. Number of users (1 = just you, 2-4 = share the machine; see [Multi-user mode](docs/MULTIUSER.md))
+5. Number of users (1 = just you, 2-8 = share the machine; see [Multi-user mode](docs/MULTIUSER.md))
 6. Bot name and timezone
 7. Install mode (workstation, minimal, or headless)
 
@@ -114,7 +114,7 @@ Strips the desktop, disables sleep, turns the machine into a dedicated bot appli
 
 ## Multi-user mode
 
-You can share one machine with up to 4 people while keeping each person's data, conversations, memories, and skill state fully private. The bot picks an isolated slot at install time, the kernel enforces the boundaries, and one person becomes the admin who can add or remove users from Telegram. Existing single-user installs are not affected; multi-user is opt-in only.
+You can share one machine with up to 8 people while keeping each person's data, conversations, memories, and skill state fully private. The bot picks an isolated slot at install time, the kernel enforces the boundaries, and one person becomes the admin who can add or remove users from Telegram. Existing single-user installs are not affected; multi-user is opt-in only.
 
 See [docs/MULTIUSER.md](docs/MULTIUSER.md) for the full walkthrough, the privacy model, and the admin commands.
 

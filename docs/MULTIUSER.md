@@ -1,6 +1,6 @@
 # Multi-user mode
 
-Share one machine with up to 4 people while keeping each person's data, conversations, memories, and skill state fully private. The kernel enforces the boundaries.
+Share one machine with up to 8 people while keeping each person's data, conversations, memories, and skill state fully private. The kernel enforces the boundaries.
 
 > Supports **Linux** and **macOS**. Existing single-user installs continue to work unchanged.
 >
@@ -8,7 +8,7 @@ Share one machine with up to 4 people while keeping each person's data, conversa
 
 ## How it works
 
-When you choose 2-4 users at install time, the wizard provisions:
+When you choose 2-8 users at install time, the wizard provisions:
 
 - One **orchestrator** system user (`mom_orchestrator`) that runs the bot process. On Linux this is created via `useradd`; on macOS via `sysadminctl -addUser ... -roleAccount`. This account reads `.env`, the slot table, and shared resources. It cannot read any user's private data.
 - One **slot** system user per allowed user (`mom_user1`, `mom_user2`, ...). Each slot owns its own data directory and is the identity the CLI subprocess runs as when that user sends a message.
@@ -75,7 +75,7 @@ cd MyOldMachine
 At step 5, you'll see:
 
 ```
-Number of users (1-4) [1]: 3
+Number of users (1-8) [1]: 3
 The first user (you) is the admin. The admin can:
   - Add and remove users from Telegram (/adduser, /removeuser)
   - See system health (/health)
@@ -214,7 +214,7 @@ We considered three alternatives and rejected each:
 
 1. **Bubblewrap or per-user containers.** Heavier dependency, harder to reason about, no real privacy gain over OS users on a trusted single-host setup.
 2. **Single bot user with logical paths.** The bot itself becomes the trust boundary. Any code-execution bug or skill misuse can read every user's data. We didn't want a single Python bug to compromise everyone.
-3. **Full Docker per user.** Image management, networking, and persistence become a separate operations problem. Overkill for a 1-4 user machine that's meant to feel like a personal appliance.
+3. **Full Docker per user.** Image management, networking, and persistence become a separate operations problem. Overkill for a 1-8 user machine that's meant to feel like a personal appliance.
 
 The slot model gives the strongest practical privacy guarantee (kernel-enforced) at the lowest operational cost. The orchestrator is the only privileged component and it can do exactly two privileged things: spawn a CLI as a slot user, and that's it.
 
