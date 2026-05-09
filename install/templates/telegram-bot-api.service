@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Bot API Server (MyOldMachine)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{USER}}
+EnvironmentFile={{ENV_FILE}}
+ExecStart={{BINARY}} --local --http-ip-address=127.0.0.1 --http-port={{PORT}} --dir={{STATE_DIR}} --log={{STATE_DIR}}/api.log
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

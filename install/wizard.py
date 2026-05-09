@@ -750,6 +750,12 @@ def write_env(repo_dir: Path, config: dict):
     else:
         lines.append("MULTIUSER_ENABLED=0")
 
+    # Local Telegram Bot API server (optional, for >50MB uploads)
+    if config.get("telegram_local_api_enabled"):
+        lines.append("TELEGRAM_API_BASE=http://localhost:8081")
+        lines.append(f"TELEGRAM_API_ID={config.get('telegram_api_id', '')}")
+        lines.append(f"TELEGRAM_API_HASH={config.get('telegram_api_hash', '')}")
+
     env_file = repo_dir / ".env"
     _atomic_env_write(env_file, "\n".join(lines) + "\n")
     ok(f"Configuration saved to {env_file}")
@@ -902,6 +908,63 @@ def _run_multiuser_step(config: dict):
         ok("Request queue will be enabled (concurrent_requests=1)")
     else:
         ok("Request queue disabled. Concurrent requests allowed.")
+
+
+def _run_telegram_bot_api_step(config: dict):
+    """Optional: collect credentials for a local Telegram Bot API server.
+
+    Sets:
+      - telegram_local_api_enabled (bool)
+      - telegram_api_id (str, numeric)
+      - telegram_api_hash (str, 32-char hex)
+    """
+    print(f"\n{BOLD}Step 5b: Local Bot API Server (optional){NC}")
+    print("  Telegram's hosted Bot API caps uploads at 50MB and downloads")
+    print("  at 20MB. Running a local Bot API server lifts both caps to")
+    print("  ~2GB, so the bot can send and receive much larger files.")
+    print()
+    print(f"  {YELLOW}Trade-offs:{NC}")
+    print("    - Needs a free Telegram developer api_id and api_hash")
+    print("      (https://my.telegram.org — about 2 minutes)")
+    print("    - Compiles from source the first time. Plan for 30-60 min")
+    print("      on modern hardware, 60-120 min on older Macs.")
+    print("    - Adds ~600 MB of disk for source + build artifacts.")
+    print("    - Re-running the installer reuses the existing build.")
+    print()
+
+    answer = ask("Enable local Bot API server?", default="n").strip().lower()
+    if answer not in ("y", "yes"):
+        ok("Skipping local Bot API server. The bot will use the hosted API.")
+        config["telegram_local_api_enabled"] = False
+        return
+
+    print()
+    print("  Get your api_id and api_hash:")
+    print("    1. Open https://my.telegram.org in a browser")
+    print("    2. Sign in with your Telegram account")
+    print("    3. Click 'API development tools'")
+    print("    4. Fill in the form (any app name works)")
+    print("    5. Copy api_id (a number) and api_hash (32-char hex string)")
+    print()
+
+    from install.telegram_bot_api import validate_credentials
+    while True:
+        api_id = ask("Telegram api_id (numeric)")
+        api_hash = ask("Telegram api_hash (32-char hex)", secret=True)
+        valid, reason = validate_credentials(api_id, api_hash)
+        if valid:
+            break
+        warn(reason)
+        retry = ask("Try again?", default="y").strip().lower()
+        if retry not in ("y", "yes"):
+            warn("Skipping local Bot API server.")
+            config["telegram_local_api_enabled"] = False
+            return
+
+    config["telegram_local_api_enabled"] = True
+    config["telegram_api_id"] = api_id.strip()
+    config["telegram_api_hash"] = api_hash.strip()
+    ok("Bot API credentials captured. Server will be built during install.")
 
 
 def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
@@ -1536,6 +1599,43 @@ def main():
     elif config.get("multiuser_enabled"):
         ok("Multi-user provisioning (cached)")
 
+    # --- Local Telegram Bot API server (optional) ---
+    # Runs after multi-user provisioning so the orchestrator user (if any)
+    # exists and the .env file already has the credentials. Idempotent:
+    # if the binary is already built, only the service file is refreshed.
+    if (config.get("telegram_local_api_enabled")
+            and not checkpoint_done("telegram_bot_api")):
+        print(f"\n{BOLD}Local Telegram Bot API Server{NC}")
+        info("Building telegram-bot-api from source. This is a long step —")
+        info("expect 30-60 min on modern hardware, longer on older machines.")
+        try:
+            from install.telegram_bot_api import setup_telegram_bot_api
+            from install.os_detect import detect as _detect_os
+            os_info = _detect_os()
+            if config.get("multiuser_enabled"):
+                config.setdefault(
+                    "multiuser_orchestrator_user", "mom_orchestrator"
+                )
+            tba_ok = setup_telegram_bot_api(
+                repo_dir, config, os_info,
+                password=config.get("sudo_pass"),
+            )
+            if tba_ok:
+                ok("Local Bot API server is up.")
+                checkpoint_set("telegram_bot_api")
+            else:
+                warn(
+                    "Local Bot API setup did not complete. The bot will "
+                    "still work, but uploads are capped at Telegram's "
+                    "default 50 MB. Re-run the installer to retry."
+                )
+        except Exception as e:
+            warn(f"Local Bot API setup raised: {e}")
+            warn("The bot will run without the local API. Re-run later to retry.")
+    elif (config.get("telegram_local_api_enabled")
+          and checkpoint_done("telegram_bot_api")):
+        ok("Local Bot API server (cached)")
+
     # --- Service setup ---
     if not checkpoint_done("service"):
         service_cmd = [sys.executable, str(repo_dir / "install" / "service.py"),
@@ -1782,6 +1882,9 @@ def _run_wizard_steps(detected_os: str) -> dict:
     # Step 5: Multi-user setup
     _run_multiuser_step(config)
 
+    # Step 5b: Optional local Telegram Bot API server (for >50MB uploads)
+    _run_telegram_bot_api_step(config)
+
     # Step 6: Install mode
     print(f"\n{BOLD}Step 6: Install Mode{NC}")
     print("  All modes register the bot as a system service that:")
@@ -1874,11 +1977,21 @@ def _load_config_from_env(repo_dir: Path) -> dict:
                         config["multiuser_num_slots"] = 1
                 elif key == "CONCURRENT_REQUESTS":
                     config["multiuser_queue_enabled"] = value not in ("", "0")
+                elif key == "TELEGRAM_API_BASE":
+                    if value.strip():
+                        config["telegram_local_api_enabled"] = True
+                elif key == "TELEGRAM_API_ID":
+                    if value.strip():
+                        config["telegram_api_id"] = value
+                elif key == "TELEGRAM_API_HASH":
+                    if value.strip():
+                        config["telegram_api_hash"] = value
     config.setdefault("takeover", "workstation")
     config.setdefault("bot_name", "MyOldMachine")
     config.setdefault("multiuser_enabled", False)
     config.setdefault("multiuser_num_slots", 1)
     config.setdefault("multiuser_queue_enabled", False)
+    config.setdefault("telegram_local_api_enabled", False)
 
     # The sudo password lives outside .env (in ~/.sudo_pass, mode 0600)
     # because .env is later chowned to the orchestrator group. Resume cases

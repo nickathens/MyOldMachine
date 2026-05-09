@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.telegram-bot-api</string>
+
+    <key>UserName</key>
+    <string>{{USER}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>set -a; source {{ENV_FILE}}; set +a; exec {{BINARY}} --local --http-ip-address=127.0.0.1 --http-port={{PORT}} --dir={{STATE_DIR}} --log={{STATE_DIR}}/api.log</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{STATE_DIR}}/launchd-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{STATE_DIR}}/launchd-stderr.log</string>
+</dict>
+</plist>
