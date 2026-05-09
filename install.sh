@@ -7,6 +7,25 @@
 #   -- or --
 #   git clone https://github.com/nickathens/MyOldMachine.git && cd MyOldMachine && ./install.sh
 
+# When invoked as `curl ... | bash`, the script body lives on stdin. Any
+# command inside the script that reads stdin (brew install, pip install,
+# auth prompts) can consume script bytes that bash has not yet parsed —
+# bash then hits EOF and exits cleanly between steps with no error message.
+# Defend by spooling the script to a real file and re-executing.
+if [ -z "${BASH_SOURCE[0]:-}" ] && [ ! -t 0 ]; then
+    _spool=$(mktemp -t myoldmachine_install.XXXXXXX 2>/dev/null) || \
+        _spool=$(mktemp /tmp/myoldmachine_install.XXXXXX 2>/dev/null)
+    if [ -z "$_spool" ]; then
+        echo "[ERROR] Could not create temp file for installer" >&2
+        exit 1
+    fi
+    cat > "$_spool"
+    bash "$_spool" "$@"
+    _rc=$?
+    rm -f "$_spool"
+    exit "$_rc"
+fi
+
 # NOTE: We use set -o pipefail but NOT set -e or set -u.
 # -e (errexit) kills the script on ANY non-zero exit, including intentional ones
 #   (e.g. brew returning 1 on a post-install warning). We handle errors manually.
@@ -177,7 +196,9 @@ if ! checkpoint_done "sudo"; then
 fi
 
 # Keep sudo alive in the background
-(while true; do sudo -n true 2>/dev/null; sleep 50; done) &
+# The `< /dev/null` is critical: without it, the subshell shares stdin with
+# the parent and could swallow script bytes when stdin is a pipe (curl|bash).
+(while true; do sudo -n true 2>/dev/null; sleep 50; done) < /dev/null &
 SUDO_KEEPALIVE_PID=$!
 cleanup_sudo() { kill $SUDO_KEEPALIVE_PID 2>/dev/null; }
 trap cleanup_sudo EXIT INT TERM
@@ -387,14 +408,15 @@ if ! checkpoint_done "python"; then
             info "Installing Python 3.12 via Homebrew..."
             info "(On older macOS, this compiles from source — may take 15-30 minutes)"
 
-            # Stream output so user sees progress during long compilations
-            brew install python@3.12 2>&1 | while IFS= read -r line; do
+            # Stream output so user sees progress during long compilations.
+            # `< /dev/null` is critical so brew never reads from script stdin.
+            brew install python@3.12 < /dev/null 2>&1 | while IFS= read -r line; do
                 echo "    $line"
             done
             # Note: PIPESTATUS doesn't work in all shells, so we verify below
 
             # Force-link python into PATH
-            brew link --overwrite python@3.12 2>/dev/null || true
+            brew link --overwrite python@3.12 < /dev/null 2>/dev/null || true
 
             # Add all possible Homebrew Python paths
             for brew_bin in /usr/local/bin /opt/homebrew/bin \
@@ -464,7 +486,7 @@ fi
 if ! checkpoint_done "venv"; then
     if [ ! -d "$REPO_DIR/.venv" ]; then
         info "Creating virtual environment..."
-        "$PYTHON" -m venv "$REPO_DIR/.venv" || die "Failed to create virtual environment.
+        "$PYTHON" -m venv "$REPO_DIR/.venv" < /dev/null || die "Failed to create virtual environment.
   Ubuntu/Debian: sudo apt install python3-venv
   Fedora/RHEL:   sudo dnf install python3-virtualenv
   Arch:          sudo pacman -S python-virtualenv
@@ -475,8 +497,8 @@ if ! checkpoint_done "venv"; then
     ok "Virtual environment active"
 
     info "Installing Python dependencies..."
-    pip install --quiet --upgrade pip 2>/dev/null || warn "pip upgrade had warnings"
-    pip install --quiet -r "$REPO_DIR/requirements.txt" || die "Failed to install Python dependencies"
+    pip install --quiet --upgrade pip < /dev/null 2>/dev/null || warn "pip upgrade had warnings"
+    pip install --quiet -r "$REPO_DIR/requirements.txt" < /dev/null || die "Failed to install Python dependencies"
     ok "Python dependencies installed"
 
     checkpoint_set "venv"
