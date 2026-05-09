@@ -8,6 +8,7 @@ Triggered via /update command in Telegram.
 import logging
 import os
 import platform
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -27,9 +28,47 @@ def _run(cmd: str, cwd: str = None, timeout: int = 120) -> subprocess.CompletedP
     )
 
 
+def _is_dubious_ownership(stderr: str) -> bool:
+    """Detect git's safe.directory rejection."""
+    return "dubious ownership" in (stderr or "").lower()
+
+
+def _add_safe_directory(path: str) -> bool:
+    """Register path with git's global safe.directory list. Idempotent."""
+    quoted = shlex.quote(path)
+    check = _run(
+        "git config --global --get-all safe.directory",
+        timeout=10,
+    )
+    if check.returncode == 0 and path in check.stdout.splitlines():
+        return True
+    add = _run(
+        f"git config --global --add safe.directory {quoted}",
+        timeout=10,
+    )
+    return add.returncode == 0
+
+
+def _run_git(cmd: str, cwd: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    """
+    Run a git command, auto-recovering from 'dubious ownership' once by adding
+    cwd to safe.directory. Avoids forcing the user into a Terminal session
+    when we can fix the trust boundary ourselves.
+    """
+    result = _run(cmd, cwd=cwd, timeout=timeout)
+    if result.returncode != 0 and _is_dubious_ownership(result.stderr):
+        logger.warning(
+            "git rejected %s as dubious — adding to safe.directory and retrying",
+            cwd,
+        )
+        if _add_safe_directory(cwd):
+            result = _run(cmd, cwd=cwd, timeout=timeout)
+    return result
+
+
 def get_current_version(bot_dir: Path) -> str:
     """Get the current git commit hash (short)."""
-    result = _run("git rev-parse --short HEAD", cwd=str(bot_dir))
+    result = _run_git("git rev-parse --short HEAD", cwd=str(bot_dir))
     if result.returncode == 0:
         return result.stdout.strip()
     return "unknown"
@@ -37,7 +76,7 @@ def get_current_version(bot_dir: Path) -> str:
 
 def get_current_branch(bot_dir: Path) -> str:
     """Get the current git branch."""
-    result = _run("git rev-parse --abbrev-ref HEAD", cwd=str(bot_dir))
+    result = _run_git("git rev-parse --abbrev-ref HEAD", cwd=str(bot_dir))
     if result.returncode == 0:
         return result.stdout.strip()
     return "unknown"
@@ -48,12 +87,12 @@ def check_for_updates(bot_dir: Path) -> tuple[bool, str]:
     Check if there are updates available.
     Returns (has_updates, description).
     """
-    result = _run("git fetch origin", cwd=str(bot_dir))
+    result = _run_git("git fetch origin", cwd=str(bot_dir))
     if result.returncode != 0:
         return False, f"Failed to check: {result.stderr[:100]}"
 
     branch = get_current_branch(bot_dir)
-    result = _run(f"git log HEAD..origin/{branch} --oneline", cwd=str(bot_dir))
+    result = _run_git(f"git log HEAD..origin/{branch} --oneline", cwd=str(bot_dir))
     if result.returncode != 0:
         return False, "Could not compare with remote"
 
@@ -71,7 +110,7 @@ def pull_updates(bot_dir: Path) -> tuple[bool, str]:
     Returns (success, message).
     """
     current = get_current_version(bot_dir)
-    result = _run("git pull --ff-only", cwd=str(bot_dir))
+    result = _run_git("git pull --ff-only", cwd=str(bot_dir))
 
     if result.returncode != 0:
         return False, (

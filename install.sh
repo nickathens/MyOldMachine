@@ -288,12 +288,24 @@ if [ -n "${BASH_SOURCE[0]:-}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || true
 fi
 
+add_git_safe_directory() {
+    # Idempotent: only add if not already present.
+    local path="$1"
+    if ! git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$path"; then
+        git config --global --add safe.directory "$path" 2>/dev/null || true
+    fi
+}
+
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bot.py" ]; then
     REPO_DIR="$SCRIPT_DIR"
     info "Running from cloned repository: $REPO_DIR"
+    add_git_safe_directory "$REPO_DIR"
 else
     REPO_DIR="$HOME/MyOldMachine"
     if [ -d "$REPO_DIR/.git" ]; then
+        # Mark safe BEFORE touching git — handles the "dubious ownership"
+        # error that older sudo-tainted installs trigger on git pull.
+        add_git_safe_directory "$REPO_DIR"
         info "Existing installation found. Pulling latest..."
         cd "$REPO_DIR" && git pull || warn "git pull failed — continuing with existing code"
     else
@@ -302,6 +314,7 @@ else
             rm -rf "$REPO_DIR"
         fi
         git clone https://github.com/nickathens/MyOldMachine.git "$REPO_DIR" || die "Failed to clone repository"
+        add_git_safe_directory "$REPO_DIR"
     fi
     cd "$REPO_DIR" || die "Failed to enter repository directory"
 fi
