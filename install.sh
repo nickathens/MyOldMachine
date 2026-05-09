@@ -32,6 +32,61 @@ fi
 # -u (nounset) kills the script when BASH_SOURCE is empty (curl|bash mode).
 set -o pipefail
 
+# ─────────────────────────────────────────────────────────
+# CLI flags
+# ─────────────────────────────────────────────────────────
+# --experimental
+#     Unlock advanced experimental flows in the wizard. Today this means
+#     "let me attempt slot-account multi-user on macOS, even though it
+#     does not work cleanly". Without this flag, macOS installs are
+#     forced to single-user mode.
+#
+# --convert-multiuser-to-single
+#     One-way conversion of an existing multi-user install on this
+#     machine to single-user mode. Stops the service, removes slot
+#     accounts + sudoers fragment, chowns data/ back to the install
+#     user, rewrites .env, and re-registers the service. Preserves
+#     .env and existing data files. Does not touch unrelated installs.
+EXPERIMENTAL=0
+CONVERT_TO_SINGLE_USER=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --experimental)
+            EXPERIMENTAL=1
+            shift
+            ;;
+        --convert-multiuser-to-single)
+            CONVERT_TO_SINGLE_USER=1
+            shift
+            ;;
+        --help|-h)
+            cat <<'EOF'
+MyOldMachine installer
+
+Usage:
+  ./install.sh                              Standard install (default)
+  ./install.sh --experimental               Unlock experimental flows
+                                            (e.g. macOS multi-user, broken)
+  ./install.sh --convert-multiuser-to-single
+                                            Convert this machine from
+                                            multi-user back to single-user.
+                                            Preserves .env and data.
+
+EOF
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "[ERROR] Unknown flag: $1" >&2
+            echo "Run './install.sh --help' for usage." >&2
+            exit 2
+            ;;
+    esac
+done
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -340,6 +395,28 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────
+# --convert-multiuser-to-single dispatch
+# ─────────────────────────────────────────────────────────
+# Runs after REPO_DIR resolution so the user can either point at an
+# already-installed repo (./install.sh --convert-...) or run via
+# curl|bash (which falls into the "$HOME/MyOldMachine" branch above and
+# pulls latest before we run the converter from the freshly-pulled tree).
+# Skips Python provisioning, the wizard, and service registration done
+# by the regular install flow — the converter handles its own service
+# re-registration.
+if [ "${CONVERT_TO_SINGLE_USER:-0}" = "1" ]; then
+    if [ ! -x "$REPO_DIR/.venv/bin/python" ]; then
+        die "Cannot run conversion: $REPO_DIR/.venv/bin/python not found.
+  This conversion requires an existing install. Run ./install.sh first
+  to set up the venv, then re-run with --convert-multiuser-to-single."
+    fi
+    info "Converting multi-user install to single-user mode..."
+    "$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/convert_to_single_user.py" \
+        --repo-dir "$REPO_DIR" < "$TTY_INPUT"
+    exit $?
+fi
+
+# ─────────────────────────────────────────────────────────
 # Step 4: Ensure Python 3.10+
 # ─────────────────────────────────────────────────────────
 
@@ -549,5 +626,10 @@ echo ""
 
 # Pass checkpoint file path so wizard and provisioner can use it
 export MYOLDMACHINE_CHECKPOINT_FILE="$CHECKPOINT_FILE"
-"$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/wizard.py" --repo-dir "$REPO_DIR" --os "$OS" < "$TTY_INPUT"
+
+WIZARD_ARGS=("--repo-dir" "$REPO_DIR" "--os" "$OS")
+if [ "${EXPERIMENTAL:-0}" = "1" ]; then
+    WIZARD_ARGS+=("--experimental")
+fi
+"$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/wizard.py" "${WIZARD_ARGS[@]}" < "$TTY_INPUT"
 exit $?

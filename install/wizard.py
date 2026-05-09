@@ -824,7 +824,7 @@ def store_sudo_password(password: str):
     ok("Sudo password stored")
 
 
-def _run_multiuser_step(config: dict):
+def _run_multiuser_step(config: dict, *, experimental: bool = False):
     """Step 5 multi-user setup. Asks how many users will share this machine.
 
     Updates config with:
@@ -832,6 +832,12 @@ def _run_multiuser_step(config: dict):
     - multiuser_num_slots (int, 1..8)
     - multiuser_queue_mode (str: "universal" | "per_user")
     - multiuser_queue_enabled (bool, derived from mode for back-compat)
+
+    On macOS the slot-account model fights the OS at every layer (role
+    accounts have no Keychain, no GUI session, no browser launch capability;
+    Claude CLI's OAuth flow needs all three). The wizard refuses to offer
+    multi-user on Darwin unless the caller passes --experimental, in which
+    case we print a heavy warning and require an explicit confirmation.
     """
     print(f"\n{BOLD}Step 5: Multi-User Setup{NC}")
 
@@ -842,6 +848,53 @@ def _run_multiuser_step(config: dict):
         config["multiuser_queue_enabled"] = False
         config["multiuser_queue_mode"] = "per_user"
         return
+
+    if platform.system() == "Darwin" and not experimental:
+        info("macOS: single-user mode (multi-user is not supported on macOS).")
+        print("  macOS role accounts have no Keychain, no GUI session, and")
+        print("  cannot launch a browser, so the slot-account model used on")
+        print("  Linux cannot complete `claude login` on Mac. Multiple")
+        print("  Telegram users on this Mac still get separate conversations,")
+        print("  attachments, and scheduled jobs at the application level.")
+        print("  For kernel-enforced isolation between Mac humans, run a")
+        print("  separate install per macOS user account.")
+        print("  Override (advanced): re-run with --experimental "
+              "to attempt slot-account multi-user anyway.")
+        config["multiuser_num_slots"] = 1
+        config["multiuser_enabled"] = False
+        config["multiuser_queue_enabled"] = False
+        config["multiuser_queue_mode"] = "per_user"
+        return
+
+    if platform.system() == "Darwin" and experimental:
+        print()
+        print(f"  {RED}{BOLD}EXPERIMENTAL: macOS multi-user is known broken.{NC}")
+        print()
+        print("  Slot accounts on macOS are role accounts created via")
+        print("  sysadminctl. They have no Keychain, no GUI session, and")
+        print("  the bot cannot run `claude login` for them — the OAuth flow")
+        print("  needs a browser the slot user has no way to launch.")
+        print()
+        print("  Symptoms you should expect on a vanilla install:")
+        print("    - 'Not logged in · Please run /login' from the bot")
+        print("    - launchd EX_CONFIG (78) crashes on slot-owned log paths")
+        print("    - keychain prompts that cannot be answered")
+        print()
+        print("  You will likely need manual recovery commands to make")
+        print("  this work. If you're not prepared to debug this, abort now")
+        print("  and re-run the installer without --experimental.")
+        print()
+        confirm = ask(
+            "Type 'i-accept-broken-mac-multiuser' to proceed",
+            default="abort",
+        ).strip().lower()
+        if confirm != "i-accept-broken-mac-multiuser":
+            ok("Aborted experimental multi-user setup. Falling back to single-user mode.")
+            config["multiuser_num_slots"] = 1
+            config["multiuser_enabled"] = False
+            config["multiuser_queue_enabled"] = False
+            config["multiuser_queue_mode"] = "per_user"
+            return
 
     print("  How many people will use this machine?")
     print(f"    {GREEN}1{NC}     Just you. Nothing extra is set up.")
@@ -1853,6 +1906,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-dir", type=str, default=str(REPO_DIR))
     parser.add_argument("--os", type=str, choices=["linux", "macos"], default="linux")
+    parser.add_argument(
+        "--experimental",
+        action="store_true",
+        help="Unlock advanced experimental flows (e.g. slot-account multi-user "
+             "on macOS, which is known broken). Default: off.",
+    )
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir)
@@ -1905,7 +1964,7 @@ def main():
             info("Saving updated configuration...")
             write_env(repo_dir, config)
     else:
-        config = _run_wizard_steps(detected_os)
+        config = _run_wizard_steps(detected_os, experimental=args.experimental)
         # Detect machine specs
         info("Detecting machine specs...")
         machine_specs = detect_machine_specs()
@@ -2372,8 +2431,13 @@ def main():
     print()
 
 
-def _run_wizard_steps(detected_os: str) -> dict:
-    """Run the interactive wizard steps and return config dict."""
+def _run_wizard_steps(detected_os: str, *, experimental: bool = False) -> dict:
+    """Run the interactive wizard steps and return config dict.
+
+    `experimental` opts into advanced flows that are known to be broken on
+    some platforms (e.g. macOS slot-account multi-user). Plumbed through
+    from the install.sh `--experimental` flag.
+    """
     config = {}
 
     # Step 1: User identity
@@ -2555,7 +2619,7 @@ def _run_wizard_steps(detected_os: str) -> dict:
     config["timezone"] = ask("Timezone", default=detected_tz)
 
     # Step 5: Multi-user setup
-    _run_multiuser_step(config)
+    _run_multiuser_step(config, experimental=experimental)
 
     # Step 5b: Optional local Telegram Bot API server (for >50MB uploads)
     _run_telegram_bot_api_step(config)
