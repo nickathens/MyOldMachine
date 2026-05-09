@@ -879,7 +879,7 @@ def _run_multiuser_step(config: dict):
     if ram_gb > 0:
         print(f"  RAM:  {ram_gb:.1f} GB total")
     else:
-        print(f"  RAM:  could not detect")
+        print("  RAM:  could not detect")
 
     if ram_gb > 0 or cores > 0:
         budget_parts = []
