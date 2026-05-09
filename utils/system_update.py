@@ -85,15 +85,27 @@ def _get_sudo_password() -> str:
     return get_sudo_password() or ""
 
 
-def _run_cmd(cmd: str, use_sudo: bool = True, timeout: int = 300) -> tuple[int, str]:
-    """Run a shell command, optionally with sudo. Returns (returncode, output)."""
+def _run_cmd(
+    cmd: str,
+    use_sudo: bool = True,
+    timeout: int = 300,
+    force_sudo_on_darwin: bool = False,
+) -> tuple[int, str]:
+    """Run a shell command, optionally with sudo. Returns (returncode, output).
+
+    On Darwin, sudo is suppressed by default (so brew never runs as root even
+    if a caller forgets to pass use_sudo=False). Set force_sudo_on_darwin=True
+    for tools that genuinely require root on macOS — currently only the
+    `softwareupdate` install path.
+    """
     if not cmd:
         return 0, ""
 
     password = _get_sudo_password() if use_sudo else ""
+    is_darwin = platform.system() == "Darwin"
+    sudo_active = use_sudo and (not is_darwin or force_sudo_on_darwin)
 
-    if use_sudo and platform.system() != "Darwin":
-        # brew should never run with sudo on macOS
+    if sudo_active:
         if password:
             full_cmd = f"sudo -S {cmd}"
             stdin_data = password + "\n"
@@ -159,6 +171,181 @@ def _count_upgradable(mgr: str) -> int:
     return 0
 
 
+def _count_softwareupdate_available() -> int:
+    """Count how many Apple updates `softwareupdate -l` reports as available.
+
+    Returns 0 if no updates, the parser fails, or this is not macOS.
+    softwareupdate -l does NOT require admin auth, so no sudo here.
+    """
+    if platform.system() != "Darwin":
+        return 0
+    rc, output = _run_cmd("softwareupdate -l 2>&1", use_sudo=False, timeout=120)
+    # rc is non-zero in some macOS versions even on success; rely on output text.
+    if "No new software available" in output or "No updates" in output:
+        return 0
+    # Lines describing updates start with "* Label:" (newer) or "   * " (older).
+    # Counting either is more reliable than a single regex across macOS versions.
+    count = 0
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("* "):
+            count += 1
+    return count
+
+
+def _run_macos_softwareupdate(
+    auto_restart: bool,
+    log_fn,
+    notify_fn,
+) -> str:
+    """Install pending Apple updates via `softwareupdate -i -a`.
+
+    Always opt-in — caller must check the maintenance config flag first.
+    Returns a one-line summary suitable for appending to the nightly digest.
+    """
+    if platform.system() != "Darwin":
+        return ""
+
+    available = _count_softwareupdate_available()
+    if available == 0:
+        log_fn("softwareupdate: no Apple updates available")
+        return ""
+
+    log_fn(f"softwareupdate: {available} Apple update(s) available")
+
+    # Install. --agree-to-license suppresses the per-update license prompt that
+    # would otherwise hang the unattended job. --restart only on explicit opt-in.
+    install_cmd = "softwareupdate -i -a --agree-to-license"
+    if auto_restart:
+        install_cmd += " --restart"
+
+    rc, output = _run_cmd(install_cmd, use_sudo=True, force_sudo_on_darwin=True, timeout=3600)
+    if rc != 0:
+        msg = f"softwareupdate: install failed (rc={rc})"
+        log_fn(f"ERROR: {msg}")
+        log_fn(output[:500] if output else "no output")
+        notify_fn(msg)
+        return msg
+
+    after = _count_softwareupdate_available()
+    installed = max(0, available - after)
+    summary = f"softwareupdate: {installed} Apple update(s) installed."
+    if after > 0:
+        summary += f" {after} still pending."
+    if auto_restart:
+        # We can't reliably tell from the output whether a reboot was actually
+        # triggered (substring matching on "restart" false-positives on lines
+        # like "no restart required"). Just note the user's opt-in.
+        summary += " (auto-restart enabled)"
+    log_fn(summary)
+    return summary
+
+
+def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
+    """Run the OS package manager update cycle (apt/dnf/pacman/zypper/apk/brew).
+
+    Returns (summary, errored). When errored=True, notify_fn has already been
+    called with the failure message — the caller should not notify again.
+    Empty summary means 'no package manager available or nothing to do'.
+    """
+    mgr = detect_package_manager()
+    if not mgr:
+        log_fn("No supported package manager found.")
+        return "", False
+
+    log_fn(f"Package manager: {mgr}")
+    use_sudo = mgr != "brew"
+
+    # Step 1: Update package lists
+    update_cmd = _UPDATE_CMDS.get(mgr)
+    if update_cmd:
+        rc, output = _run_cmd(update_cmd, use_sudo=use_sudo, timeout=120)
+        if rc != 0:
+            msg = f"System update: package list refresh failed ({mgr})"
+            log_fn(f"ERROR: {msg}")
+            log_fn(output[:500] if output else "no output")
+            notify_fn(msg)
+            return msg, True
+
+    # Step 2: Count available updates
+    before_count = _count_upgradable(mgr)
+    if before_count == 0:
+        log_fn("No updates available.")
+        return "", False
+
+    log_fn(f"{before_count} package(s) available for upgrade")
+
+    # Step 3: Run safe upgrade
+    upgrade_cmd = _UPGRADE_CMDS.get(mgr)
+    if not upgrade_cmd:
+        msg = f"No upgrade command configured for {mgr}"
+        log_fn(msg)
+        return msg, False
+
+    rc, output = _run_cmd(upgrade_cmd, use_sudo=use_sudo, timeout=600)
+    if rc != 0:
+        msg = f"System update: upgrade failed ({mgr})"
+        log_fn(f"ERROR: {msg}")
+        log_fn(output[:500] if output else "no output")
+        notify_fn(msg)
+        return msg, True
+
+    # Step 4: Count remaining (held-back) updates
+    after_count = _count_upgradable(mgr)
+    actually_upgraded = before_count - after_count
+
+    if actually_upgraded <= 0:
+        log_fn(f"All {before_count} updates held back. Nothing changed.")
+        return f"All {before_count} updates held back (phased rollout). Nothing changed.", False
+
+    # Step 5: Clean up
+    clean_cmd = _CLEAN_CMDS.get(mgr)
+    if clean_cmd:
+        _run_cmd(clean_cmd, use_sudo=use_sudo, timeout=120)
+
+    # Step 6: Check if reboot required (Linux only)
+    reboot_msg = ""
+    if platform.system() == "Linux" and Path("/var/run/reboot-required").exists():
+        reboot_msg = " Reboot required."
+        log_fn("Reboot required")
+
+    # Build summary
+    parts = [f"Nightly update: {actually_upgraded} package(s) upgraded."]
+    if after_count > 0:
+        parts.append(f"{after_count} held back.")
+    if reboot_msg:
+        parts.append(reboot_msg.strip())
+    summary = " ".join(parts)
+    log_fn(summary)
+    return summary, False
+
+
+def _maybe_run_macos_softwareupdate(log_fn, notify_fn) -> str:
+    """Lazily load maintenance config and run softwareupdate if opted in.
+
+    Always returns "" on non-Darwin or when the flag is off. Errors loading
+    the config are logged but never propagated — softwareupdate is purely
+    additive to the package-manager flow.
+    """
+    if platform.system() != "Darwin":
+        return ""
+    try:
+        if str(BOT_DIR) not in sys.path:
+            sys.path.insert(0, str(BOT_DIR))
+        from utils.maintenance import load_config as _load_maintenance
+        cfg = _load_maintenance()
+    except Exception as e:
+        log_fn(f"softwareupdate skipped: maintenance config load failed: {e}")
+        return ""
+    if not cfg.get("macos_system_updates"):
+        return ""
+    return _run_macos_softwareupdate(
+        auto_restart=bool(cfg.get("macos_system_updates_restart", False)),
+        log_fn=log_fn,
+        notify_fn=notify_fn,
+    )
+
+
 def run_system_update(notify_fn=None) -> str:
     """
     Run a full system update cycle.
@@ -196,83 +383,34 @@ def run_system_update(notify_fn=None) -> str:
 
     log("=== System update started ===")
 
-    # Detect package manager
-    mgr = detect_package_manager()
-    if not mgr:
-        msg = "No supported package manager found. Skipping system update."
-        log(msg)
-        return msg
+    pkg_summary, pkg_errored = _run_pkg_manager_update(log_fn=log, notify_fn=notify)
 
-    log(f"Package manager: {mgr}")
-    use_sudo = mgr != "brew"
+    # Apple updates run independently of the package manager flow, but only
+    # after a clean (non-error) outcome — a failing brew shouldn't trigger
+    # softwareupdate that night.
+    sw_summary = ""
+    if not pkg_errored:
+        sw_summary = _maybe_run_macos_softwareupdate(log_fn=log, notify_fn=notify)
 
-    # Step 1: Update package lists
-    update_cmd = _UPDATE_CMDS.get(mgr)
-    if update_cmd:
-        rc, output = _run_cmd(update_cmd, use_sudo=use_sudo, timeout=120)
-        if rc != 0:
-            msg = f"System update: package list refresh failed ({mgr})"
-            log(f"ERROR: {msg}")
-            log(output[:500] if output else "no output")
-            notify(msg)
-            return msg
+    log("=== System update complete ===")
 
-    # Step 2: Count available updates
-    before_count = _count_upgradable(mgr)
-    if before_count == 0:
-        log("No updates available.")
-        log("=== System update complete ===")
+    if pkg_errored:
+        # notify() already fired inside the helper.
+        return pkg_summary
+
+    parts = [s for s in (pkg_summary, sw_summary) if s.strip()]
+    if not parts:
         return "No updates available."
 
-    log(f"{before_count} package(s) available for upgrade")
+    full = " ".join(parts)
 
-    # Step 3: Run safe upgrade
-    upgrade_cmd = _UPGRADE_CMDS.get(mgr)
-    if not upgrade_cmd:
-        msg = f"No upgrade command configured for {mgr}"
-        log(msg)
-        return msg
+    # Match the prior contract: notify only when something material happened.
+    # Phrases like "No updates available." or "All N updates held back" are
+    # status-only; "upgraded" or "installed" indicate the user should know.
+    if "upgraded" in pkg_summary or "installed" in sw_summary:
+        notify(full)
 
-    rc, output = _run_cmd(upgrade_cmd, use_sudo=use_sudo, timeout=600)
-    if rc != 0:
-        msg = f"System update: upgrade failed ({mgr})"
-        log(f"ERROR: {msg}")
-        log(output[:500] if output else "no output")
-        notify(msg)
-        return msg
-
-    # Step 4: Count remaining (held-back) updates
-    after_count = _count_upgradable(mgr)
-    actually_upgraded = before_count - after_count
-
-    if actually_upgraded <= 0:
-        log(f"All {before_count} updates held back. Nothing changed.")
-        log("=== System update complete ===")
-        return f"All {before_count} updates held back (phased rollout). Nothing changed."
-
-    # Step 5: Clean up
-    clean_cmd = _CLEAN_CMDS.get(mgr)
-    if clean_cmd:
-        _run_cmd(clean_cmd, use_sudo=use_sudo, timeout=120)
-
-    # Step 6: Check if reboot required (Linux only)
-    reboot_msg = ""
-    if platform.system() == "Linux" and Path("/var/run/reboot-required").exists():
-        reboot_msg = " Reboot required."
-        log("Reboot required")
-
-    # Build summary
-    parts = [f"Nightly update: {actually_upgraded} package(s) upgraded."]
-    if after_count > 0:
-        parts.append(f"{after_count} held back.")
-    if reboot_msg:
-        parts.append(reboot_msg.strip())
-    summary = " ".join(parts)
-
-    log(summary)
-    notify(summary)
-    log("=== System update complete ===")
-    return summary
+    return full
 
 
 def main():

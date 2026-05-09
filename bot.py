@@ -3320,16 +3320,22 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             report += "\n\nNo maintenance jobs scheduled."
 
-        report += (
-            "\n\nCommands:\n"
-            "  /maintenance backup /path/to/drive\n"
-            "  /maintenance updates on|off\n"
-            "  /maintenance cleanup on|off\n"
-            "  /maintenance backup off\n"
-            "  /maintenance run backup\n"
-            "  /maintenance run update\n"
-            "  /maintenance run cleanup"
-        )
+        cmd_lines = [
+            "\n\nCommands:",
+            "  /maintenance backup /path/to/drive",
+            "  /maintenance updates on|off",
+            "  /maintenance cleanup on|off",
+        ]
+        if platform.system() == "Darwin":
+            cmd_lines.append("  /maintenance macos-updates on|off")
+            cmd_lines.append("  /maintenance macos-restart on|off")
+        cmd_lines += [
+            "  /maintenance backup off",
+            "  /maintenance run backup",
+            "  /maintenance run update",
+            "  /maintenance run cleanup",
+        ]
+        report += "\n".join(cmd_lines)
         await update.message.reply_text(report)
         return
 
@@ -3450,6 +3456,45 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("Cleanup disabled.")
         else:
             await update.message.reply_text("Usage: /maintenance cleanup on|off")
+        return
+
+    # --- /maintenance macos-updates on|off (Apple softwareupdate sub-toggle) ---
+    if subcmd == "macos-updates":
+        if platform.system() != "Darwin":
+            await update.message.reply_text("macOS-only setting. This machine is not macOS.")
+            return
+        if arg.lower() in ("on", "true", "yes", "1"):
+            update_config(macos_system_updates=True)
+            await update.message.reply_text(
+                "macOS softwareupdate enabled. Apple updates pulled nightly via "
+                "`softwareupdate -i -a`. Toggle auto-restart with /maintenance macos-restart on|off."
+            )
+        elif arg.lower() in ("off", "false", "no", "0"):
+            update_config(macos_system_updates=False)
+            await update.message.reply_text(
+                "macOS softwareupdate disabled. Apple security responses still auto-install."
+            )
+        else:
+            await update.message.reply_text("Usage: /maintenance macos-updates on|off")
+        return
+
+    # --- /maintenance macos-restart on|off (auto-reboot toggle for softwareupdate) ---
+    if subcmd == "macos-restart":
+        if platform.system() != "Darwin":
+            await update.message.reply_text("macOS-only setting. This machine is not macOS.")
+            return
+        if arg.lower() in ("on", "true", "yes", "1"):
+            update_config(macos_system_updates_restart=True)
+            await update.message.reply_text(
+                "Auto-restart enabled. Updates that require a reboot will trigger one at 4:00 AM."
+            )
+        elif arg.lower() in ("off", "false", "no", "0"):
+            update_config(macos_system_updates_restart=False)
+            await update.message.reply_text(
+                "Auto-restart disabled. You'll need to reboot manually after updates that require it."
+            )
+        else:
+            await update.message.reply_text("Usage: /maintenance macos-restart on|off")
         return
 
     # --- /maintenance run <task> ---

@@ -10,6 +10,7 @@ Manages the maintenance.json config file that controls:
 
 import json
 import logging
+import platform
 from pathlib import Path
 
 from utils.safe_json import save_json
@@ -26,6 +27,14 @@ DEFAULT_CONFIG = {
     "backup_enabled": False,
     "backup_path": "",
     "backup_retention": 7,
+    # macOS-only: also pull non-critical Apple updates via `softwareupdate`.
+    # Off by default — on Darwin the provisioner already enables auto-install
+    # of security responses (CriticalUpdateInstall=true), so this flag only
+    # adds Safari/CLI-tools/supplemental/version updates on top.
+    "macos_system_updates": False,
+    # Auto-restart if any update requires it. Off by default so the nightly
+    # job never surprise-reboots a workstation. Ignored unless macos_system_updates is on.
+    "macos_system_updates_restart": False,
 }
 
 
@@ -67,6 +76,14 @@ def get_status_report() -> str:
         lines.append("System updates: ON (nightly)")
     else:
         lines.append("System updates: OFF")
+
+    # macOS-only: softwareupdate sub-toggle
+    if platform.system() == "Darwin":
+        if config.get("macos_system_updates"):
+            restart_note = " + auto-restart" if config.get("macos_system_updates_restart") else ""
+            lines.append(f"  macOS softwareupdate: ON{restart_note}")
+        else:
+            lines.append("  macOS softwareupdate: OFF (Apple security responses still auto-install)")
 
     # Cleanup
     if config.get("cleanup"):
