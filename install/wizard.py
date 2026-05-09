@@ -743,10 +743,13 @@ def write_env(repo_dir: Path, config: dict):
         lines.append("MULTIUSER_ENABLED=1")
         lines.append(f"MULTIUSER_NUM_SLOTS={config['multiuser_num_slots']}")
         lines.append("MULTIUSER_ORCHESTRATOR_USER=mom_orchestrator")
-        if config.get("multiuser_queue_enabled"):
-            lines.append("CONCURRENT_REQUESTS=1")
-        else:
-            lines.append("CONCURRENT_REQUESTS=0")
+        # QUEUE_MODE is the authoritative key. CONCURRENT_REQUESTS is
+        # written too so anything reading the legacy field keeps working.
+        mode = config.get("multiuser_queue_mode") or (
+            "universal" if config.get("multiuser_queue_enabled") else "per_user"
+        )
+        lines.append(f"QUEUE_MODE={mode}")
+        lines.append("CONCURRENT_REQUESTS=1" if mode == "universal" else "CONCURRENT_REQUESTS=0")
     else:
         lines.append("MULTIUSER_ENABLED=0")
 
@@ -818,7 +821,8 @@ def _run_multiuser_step(config: dict):
     Updates config with:
     - multiuser_enabled (bool)
     - multiuser_num_slots (int, 1..8)
-    - multiuser_queue_enabled (bool)
+    - multiuser_queue_mode (str: "universal" | "per_user")
+    - multiuser_queue_enabled (bool, derived from mode for back-compat)
     """
     print(f"\n{BOLD}Step 5: Multi-User Setup{NC}")
 
@@ -827,6 +831,7 @@ def _run_multiuser_step(config: dict):
         config["multiuser_num_slots"] = 1
         config["multiuser_enabled"] = False
         config["multiuser_queue_enabled"] = False
+        config["multiuser_queue_mode"] = "per_user"
         return
 
     print("  How many people will use this machine?")
@@ -898,16 +903,36 @@ def _run_multiuser_step(config: dict):
     queue_default, verdict = _recommend_queue(ram_gb, cores, num_users)
     print(verdict)
 
-    print("  The queue runs one user's request at a time. Others get a")
-    print("  'next in line' message and wait. Prevents OOM and CPU thrash")
-    print("  on small machines.")
     print()
-    answer = ask("Enable request queue?", default=queue_default).strip().lower()
-    config["multiuser_queue_enabled"] = answer in ("y", "yes")
-    if config["multiuser_queue_enabled"]:
-        ok("Request queue will be enabled (concurrent_requests=1)")
-    else:
-        ok("Request queue disabled. Concurrent requests allowed.")
+    print(f"  {BOLD}Queue mode (always on; choose the scope){NC}")
+    print("  Each user always has their own queue: one in-flight request")
+    print("  at a time per user, regardless of mode. The choice is what")
+    print("  happens when two users send a message at the same instant.")
+    print()
+    print(f"    {GREEN}universal{NC}  All users share one queue. The bot processes")
+    print("                one LLM request at a time across all users.")
+    print("                Others get 'next in line' and wait. Prevents")
+    print("                OOM and CPU thrash on small or shared machines.")
+    print()
+    print(f"    {GREEN}per-user{NC}   Each user has their own queue. Two users")
+    print("                can run requests in parallel, but each user's")
+    print("                own messages still serialize. Best when hardware")
+    print("                can comfortably run multiple LLM calls at once.")
+    print()
+    mode_default = "universal" if queue_default == "y" else "per-user"
+    while True:
+        answer = ask("Queue mode [universal/per-user]", default=mode_default).strip().lower()
+        if answer in ("u", "universal"):
+            config["multiuser_queue_mode"] = "universal"
+            config["multiuser_queue_enabled"] = True
+            ok("Queue mode: universal (one queue across all users)")
+            break
+        if answer in ("p", "per-user", "peruser", "per_user"):
+            config["multiuser_queue_mode"] = "per_user"
+            config["multiuser_queue_enabled"] = False
+            ok("Queue mode: per-user (each user has their own queue)")
+            break
+        print(f"  {RED}Type 'universal' or 'per-user'.{NC}")
 
 
 def _run_telegram_bot_api_step(config: dict):
@@ -1448,13 +1473,20 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
         )
 
     info("Writing orchestrator slot table...")
+    queue_mode = config.get("multiuser_queue_mode") or (
+        "universal" if config.get("multiuser_queue_enabled") else "per_user"
+    )
     users_json = {
         "version": 1,
         "num_slots": num_slots,
         "max_slots": 8,
         "orchestrator_user": ORCHESTRATOR_USER,
-        "queue_enabled": bool(config.get("multiuser_queue_enabled", False)),
-        "concurrent_requests": 1 if config.get("multiuser_queue_enabled") else 0,
+        # queue_mode is the authoritative key; queue_enabled and
+        # concurrent_requests are derived for back-compat with older
+        # readers (core/users.queue_enabled, concurrent_requests).
+        "queue_mode": queue_mode,
+        "queue_enabled": queue_mode == "universal",
+        "concurrent_requests": 1 if queue_mode == "universal" else 0,
         "slots": {
             str(s): None for s in range(1, num_slots + 1)
         },
@@ -2289,8 +2321,21 @@ def _load_config_from_env(repo_dir: Path) -> dict:
                         config["multiuser_num_slots"] = int(value)
                     except ValueError:
                         config["multiuser_num_slots"] = 1
+                elif key == "QUEUE_MODE":
+                    v = value.strip().lower()
+                    if v in ("universal", "per_user", "per-user"):
+                        config["multiuser_queue_mode"] = (
+                            "universal" if v == "universal" else "per_user"
+                        )
+                        config["multiuser_queue_enabled"] = v == "universal"
                 elif key == "CONCURRENT_REQUESTS":
-                    config["multiuser_queue_enabled"] = value not in ("", "0")
+                    # Legacy fallback. QUEUE_MODE wins if both are set.
+                    enabled = value not in ("", "0")
+                    config.setdefault(
+                        "multiuser_queue_mode",
+                        "universal" if enabled else "per_user",
+                    )
+                    config.setdefault("multiuser_queue_enabled", enabled)
                 elif key == "TELEGRAM_API_BASE":
                     if value.strip():
                         config["telegram_local_api_enabled"] = True
@@ -2305,6 +2350,10 @@ def _load_config_from_env(repo_dir: Path) -> dict:
     config.setdefault("multiuser_enabled", False)
     config.setdefault("multiuser_num_slots", 1)
     config.setdefault("multiuser_queue_enabled", False)
+    config.setdefault(
+        "multiuser_queue_mode",
+        "universal" if config.get("multiuser_queue_enabled") else "per_user",
+    )
     config.setdefault("telegram_local_api_enabled", False)
 
     # The sudo password lives outside .env (in ~/.sudo_pass, mode 0600)

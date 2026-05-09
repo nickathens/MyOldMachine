@@ -3919,41 +3919,55 @@ def main():
     if isinstance(_llm_provider, ClaudeCLIProvider):
         _configure_claude_hooks()
 
-    # Hardware-aware concurrency control: enable semaphore on low-resource machines
-    # Note: actual asyncio.Semaphore is created lazily on first use inside the event
-    # loop (_get_llm_semaphore), because creating it here would bind to the wrong
-    # loop on Python 3.8-3.9. We just set the flag here.
+    # Queue model:
+    #   - Per-user lock (always on): each user can only have one in-flight
+    #     LLM call at a time. This is the per-user queue, applied to every
+    #     install regardless of mode.
+    #   - Global semaphore (universal mode): when active, LLM calls are
+    #     serialized across all users so one request runs at a time across
+    #     the bot. Set when the multi-user wizard chose 'universal' OR
+    #     when hardware is constrained enough that parallel LLM work would
+    #     OOM the box (auto-promoted regardless of wizard choice).
+    # Note: actual asyncio.Semaphore is created lazily on first use inside
+    # the event loop (_get_llm_semaphore) because creating it here would
+    # bind to the wrong loop on Python 3.8-3.9. We just set the flag.
     caps = load_caps(DATA_DIR)
     ram_gb = caps.get("ram_gb", 0)
     cpu_cores = caps.get("cpu_cores", 0)
     hardware_constrained = ram_gb > 0 and (ram_gb < 8 or cpu_cores <= 2)
 
-    # Multi-user request queue: when the orchestrator config sets
-    # concurrent_requests >= 1, serialize LLM calls across all slots so two
-    # users can't simultaneously stress a low-RAM box.
-    multiuser_queue = False
+    universal_mode = False
+    multiuser_active = False
     try:
-        from core.users import is_multiuser_enabled, concurrent_requests
-        if is_multiuser_enabled() and concurrent_requests() >= 1:
-            multiuser_queue = True
+        from core.users import is_multiuser_enabled, queue_mode
+        multiuser_active = is_multiuser_enabled()
+        if multiuser_active and queue_mode() == "universal":
+            universal_mode = True
     except ImportError:
         pass
 
-    if hardware_constrained or multiuser_queue:
+    if hardware_constrained or universal_mode:
         _semaphore_active = True
         reason_parts = []
+        if universal_mode:
+            reason_parts.append("wizard chose universal queue")
         if hardware_constrained:
             reason_parts.append(f"hardware ({ram_gb}GB RAM, {cpu_cores} cores)")
-        if multiuser_queue:
-            reason_parts.append("multi-user queue enabled")
         logger.info(
-            f"LLM semaphore ENABLED ({', '.join(reason_parts)}); "
-            f"concurrent LLM calls will be serialized"
+            f"Queue mode: UNIVERSAL (one LLM call at a time across all users; "
+            f"{', '.join(reason_parts)})"
+        )
+    elif multiuser_active:
+        logger.info(
+            f"Queue mode: PER-USER (each user has their own queue; "
+            f"RAM: {ram_gb}GB, CPU cores: {cpu_cores})"
         )
     else:
+        # Single-user install: per-user lock is the only queue, which IS
+        # the universal queue here because there's only one user.
         logger.info(
-            f"LLM semaphore disabled (RAM: {ram_gb}GB, CPU cores: {cpu_cores}) — "
-            f"full concurrency allowed"
+            f"Queue mode: PER-USER (single-user install; "
+            f"RAM: {ram_gb}GB, CPU cores: {cpu_cores})"
         )
 
     # Startup cleanup — kill orphaned skill processes from previous sessions

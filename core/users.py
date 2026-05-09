@@ -126,18 +126,54 @@ def num_slots() -> int:
         return 0
 
 
-def queue_enabled() -> bool:
+def queue_mode() -> str:
+    """Return the active queue mode: 'universal' or 'per_user'.
+
+    Reads users.json's `queue_mode` field if present (authoritative since
+    the wizard split the queue prompt). Falls back to the legacy
+    `queue_enabled` / `concurrent_requests` fields for installs that
+    pre-date the split. Single-user mode (no users.json) returns
+    'per_user' because there's only one user, so universal is degenerate.
+    """
     data = _load()
-    return bool(data.get("queue_enabled", False))
+    raw = data.get("queue_mode")
+    if isinstance(raw, str):
+        v = raw.strip().lower()
+        if v == "universal":
+            return "universal"
+        if v in ("per_user", "per-user"):
+            return "per_user"
+    if data.get("queue_enabled"):
+        return "universal"
+    try:
+        if int(data.get("concurrent_requests", 0)) >= 1:
+            return "universal"
+    except (ValueError, TypeError):
+        pass
+    return "per_user"
+
+
+def queue_enabled() -> bool:
+    """Legacy accessor kept for callers that haven't migrated yet.
+
+    Equivalent to queue_mode() == 'universal'.
+    """
+    return queue_mode() == "universal"
 
 
 def concurrent_requests() -> int:
     """Number of concurrent LLM requests allowed. 0 = unlimited."""
     data = _load()
     try:
-        return int(data.get("concurrent_requests", 0))
+        v = int(data.get("concurrent_requests", 0))
+        if v >= 1:
+            return v
     except (ValueError, TypeError):
-        return 0
+        pass
+    # Fall back to queue_mode if concurrent_requests is missing/0 but
+    # queue_mode says universal (newer wizard installs always write both,
+    # but a hand-edited users.json could have only the new field).
+    return 1 if queue_mode() == "universal" else 0
 
 
 def find_free_slot() -> Optional[int]:

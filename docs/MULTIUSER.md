@@ -56,13 +56,30 @@ Each slot consumes RAM proportional to the LLM you run. As a rough guide:
 
 | RAM per user | Recommendation |
 |---|---|
-| < 4 GB | Strongly recommend the request queue (one LLM call at a time) |
-| 4-8 GB | Queue is a good safety net but not required |
-| ≥ 8 GB | Queue is optional; full concurrency is fine |
+| < 4 GB | Strongly recommend universal queue (one LLM call at a time across all users) |
+| 4-8 GB | Universal queue is a good safety net but not required |
+| ≥ 8 GB | Per-user queue is fine; users can run requests in parallel |
 
-The wizard asks about the queue based on your machine's RAM divided by the user count. Turning it on serializes LLM calls across all users so two people typing at the same time can't OOM the machine.
+## Queue mode
 
-You can change the queue setting later by editing `data/orchestrator/users.json` (`concurrent_requests: 0` for unlimited, `1` for serial) and restarting the bot.
+There is **always** a queue. Each user has their own per-user queue: one in-flight LLM request at a time per user, regardless of mode. The wizard asks about the queue *scope*:
+
+- **`universal`**: all users share one queue. The bot processes one LLM request at a time across the whole machine. Other users get a "next in line" message and wait. Best for tight RAM/CPU budgets.
+- **`per_user`**: each user has their own queue. Two users can have requests running in parallel, but each user's own messages still serialize. Best when the machine can comfortably run multiple concurrent LLM calls.
+
+Hardware-constrained machines auto-promote to `universal` at startup regardless of the wizard answer (RAM < 8 GB or CPU cores ≤ 2). Look for the `Queue mode:` line in `data/logs/bot.log` to confirm what's active.
+
+You can change the mode later by editing `data/orchestrator/users.json`:
+
+```json
+{
+  "queue_mode": "universal",        // or "per_user"
+  "queue_enabled": true,            // legacy mirror, kept in sync
+  "concurrent_requests": 1          // legacy mirror: 1 universal, 0 per_user
+}
+```
+
+Restart the bot for the change to take effect.
 
 ## Install walkthrough
 
@@ -83,8 +100,19 @@ The first user (you) is the admin. The admin can:
 The admin CANNOT read other users' messages, memories, or files.
 
 This machine has 12 GB RAM (4.0 GB per user).
-Enable request queue? Two users hitting the LLM at once on a small box
-can OOM. The queue serializes calls. [Y/n]: y
+
+Queue mode (always on; choose the scope)
+Each user always has their own queue: one in-flight request at a time per
+user, regardless of mode. The choice is what happens when two users send
+a message at the same instant.
+
+  universal  All users share one queue. The bot processes one LLM
+             request at a time across all users.
+  per-user   Each user has their own queue. Two users can run
+             requests in parallel, but each user's own messages
+             still serialize.
+
+Queue mode [universal/per-user] [universal]: universal
 ```
 
 The wizard then creates the system users, sets up the directories, installs the sudoers fragment (validated with `visudo -cf` before installation), and writes the orchestrator's slot table.
@@ -260,6 +288,10 @@ After installing multi-user mode, run these checks on the target host. Anything 
 - [ ] `id mom_user1` succeeds (slot account exists).
 - [ ] After reboot (no user login), the bot starts automatically and responds on Telegram.
 
-**Queue (only if `concurrent_requests=1`)**
+**Universal queue (`queue_mode=universal` or hardware-constrained)**
 
-- [ ] Two users sending long-running CLI commands at the same time: the second one waits, both complete without OOM. Watch `data/logs/bot.log` for the `LLM semaphore ENABLED` line on startup.
+- [ ] Two users sending long-running CLI commands at the same time: the second one waits, both complete without OOM. Watch `data/logs/bot.log` for `Queue mode: UNIVERSAL` on startup.
+
+**Per-user queue (`queue_mode=per_user` on roomy hardware)**
+
+- [ ] Two users sending requests at the same time: both run concurrently. Each user's own follow-up messages still wait for their previous turn. Watch `data/logs/bot.log` for `Queue mode: PER-USER`.
