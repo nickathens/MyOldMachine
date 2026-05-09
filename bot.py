@@ -15,6 +15,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -107,9 +108,10 @@ _conversation_cache: dict[int, list] = {}
 
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
-    if user_id not in _user_locks:
-        _user_locks[user_id] = asyncio.Lock()
-    return _user_locks[user_id]
+    # setdefault is atomic under the GIL, so two coroutines racing to create a
+    # lock for the same brand-new user end up with the same Lock object. A
+    # naive `if k not in d: d[k] = Lock()` could mint two and let both run.
+    return _user_locks.setdefault(user_id, asyncio.Lock())
 
 
 def requires_auth(func):
@@ -330,9 +332,32 @@ def _ocr_pdf(file_path: str, num_pages: int, max_pages: int, max_chars: int) -> 
         return ""
 
 
-# Duplicate message protection
-_processed_ids: set[int] = set()
+# Duplicate message protection.
+# Key by (user_id, message_id) — Telegram message IDs are unique per chat,
+# not per bot, so two users can collide on the same numeric id and a global
+# id-only set would silently drop the second user's message. Insertion-order
+# preserved so the cap eviction drops the oldest entry first.
+_processed_ids: dict[tuple[int, int], None] = {}
 _MAX_PROCESSED = 200
+
+
+def _check_and_mark_processed(user_id: int, message_id: int) -> bool:
+    """Return True if this (user, message) pair was already seen.
+
+    Marks unseen pairs as seen and evicts the oldest entry once the dict
+    grows past `_MAX_PROCESSED`. Centralizes the dedup so the call sites
+    in handle_message and unknown_command can't drift apart.
+    """
+    key = (user_id, message_id)
+    if key in _processed_ids:
+        return True
+    _processed_ids[key] = None
+    if len(_processed_ids) > _MAX_PROCESSED:
+        # Drop the single oldest entry. Insertion-ordered dict gives O(1)
+        # access to the oldest key without sorting.
+        oldest = next(iter(_processed_ids))
+        _processed_ids.pop(oldest, None)
+    return False
 
 # Media group buffering
 _media_group_buffers: dict[str, dict] = {}
@@ -1545,6 +1570,10 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # would contaminate the new conversation's context
     if session.summary_file.exists():
         session.summary_file.unlink()
+    # Invalidate the in-memory conversation cache. Without this, a /clear
+    # racing with an in-flight call_llm would lose the clear: _save_and_send
+    # would still pop the pre-clear cached history and write it back.
+    _conversation_cache.pop(user_id, None)
     await update.message.reply_text("Conversation cleared.")
     logger.info(f"Context cleared by user {user_id}")
 
@@ -2257,6 +2286,23 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Restart failed: {msg}")
 
 
+def _validate_env_value(value: str, label: str) -> tuple[bool, str]:
+    """Reject values that would inject extra .env lines or mangle parsing.
+
+    A value containing CR/LF would be written verbatim by atomic_env_write,
+    creating a second .env line on the next bot boot — turning a typo into
+    arbitrary env-var injection (which an admin could already do, but should
+    not happen by accident through /provider, /model, or /apikey).
+    """
+    if value is None or value == "":
+        return False, f"{label} is empty."
+    if "\n" in value or "\r" in value:
+        return False, f"{label} contains a newline; refusing to write to .env."
+    if "\x00" in value:
+        return False, f"{label} contains a null byte; refusing to write to .env."
+    return True, ""
+
+
 async def _refresh_provider_health(provider) -> tuple[bool, str]:
     """Run health_check on a provider, store the result on it, and return it.
 
@@ -2348,6 +2394,12 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not new_model:
         new_model = default_models.get(new_provider, "")
+
+    # Reject newline / null injection in the model name before it touches .env.
+    ok_model, model_err = _validate_env_value(new_model, "Model name")
+    if not ok_model:
+        await update.message.reply_text(model_err)
+        return
 
     # Check if API key is needed but missing
     needs_key = new_provider in ("openai", "deepseek", "grok", "kimi", "minimax", "gemini", "openrouter", "claude-api")
@@ -2454,6 +2506,11 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_model = text.strip()
     current_provider = get_llm_provider()
 
+    ok_model, model_err = _validate_env_value(new_model, "Model name")
+    if not ok_model:
+        await update.message.reply_text(model_err)
+        return
+
     # Update .env
     env_file = Path(__file__).parent / ".env"
     if env_file.exists():
@@ -2524,6 +2581,11 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     new_key = text.strip()
+
+    ok_key, key_err = _validate_env_value(new_key, "API key")
+    if not ok_key:
+        await update.message.reply_text(key_err)
+        return
 
     # Update .env
     env_file = Path(__file__).parent / ".env"
@@ -2685,6 +2747,11 @@ async def alias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(aliases) >= 50:
             await update.message.reply_text("Maximum 50 shortcuts. Remove some first.")
             return
+        if len(expansion) > 1000:
+            await update.message.reply_text(
+                "Shortcut text too long (max 1000 characters)."
+            )
+            return
 
         aliases[name] = expansion
         _save_aliases(user_id, aliases)
@@ -2825,13 +2892,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Duplicate protection
     msg_id = update.message.message_id
-    if msg_id in _processed_ids:
+    if _check_and_mark_processed(user_id, msg_id):
         return
-    _processed_ids.add(msg_id)
-    if len(_processed_ids) > _MAX_PROCESSED:
-        # Remove oldest half — message IDs are monotonically increasing
-        cutoff = min(_processed_ids) + (_MAX_PROCESSED // 2)
-        _processed_ids.difference_update({mid for mid in _processed_ids if mid < cutoff})
 
     # Media group handling
     media_group_id = update.message.media_group_id
@@ -3274,13 +3336,22 @@ def _setup_maintenance_jobs(scheduler):
         if run_at <= datetime.now():
             run_at += timedelta(days=1)
 
-        bot_dir_s = str(BOT_DIR)
-        data_dir_s = str(DATA_DIR)
-        probe_cmd = (
-            f"cd '{bot_dir_s}' && {venv_python} -c "
-            f"\"from pathlib import Path; from core.system_probe import probe_system; "
-            f"probe_system(Path('{data_dir_s}'))\""
+        # Pass the bot dir + data dir via argv so the inline -c body doesn't
+        # need to interpolate paths. shlex.quote each argument so a path with
+        # a quote, space, or shell metachar can't break out.
+        probe_body = (
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from pathlib import Path; "
+            "from core.system_probe import probe_system; "
+            "probe_system(Path(sys.argv[2]))"
         )
+        probe_cmd = " ".join([
+            shlex.quote(venv_python),
+            "-c",
+            shlex.quote(probe_body),
+            shlex.quote(str(BOT_DIR)),
+            shlex.quote(str(DATA_DIR)),
+        ])
         scheduler.add_job(
             user_id=admin_id,
             message="Nightly system probe",
@@ -3305,7 +3376,10 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     from utils.maintenance import load_config, update_config, get_status_report
     from core.scheduler import _get_all_meta
 
-    text = (update.message.text or "").replace("/maintenance", "", 1).strip()
+    # command_body strips the leading /maintenance plus any @BotName suffix.
+    # The earlier text.replace("/maintenance", "", 1) left @BotName attached
+    # and broke every subcommand when the bot was invoked in a group chat.
+    text = command_body(update.message.text)
 
     # No arguments: show status
     if not text:
@@ -3968,12 +4042,8 @@ def main():
             return
         # Duplicate protection — same as handle_message
         msg_id = update.message.message_id
-        if msg_id in _processed_ids:
+        if _check_and_mark_processed(user_id, msg_id):
             return
-        _processed_ids.add(msg_id)
-        if len(_processed_ids) > _MAX_PROCESSED:
-            cutoff = min(_processed_ids) + (_MAX_PROCESSED // 2)
-            _processed_ids.difference_update({mid for mid in _processed_ids if mid < cutoff})
         if await _try_alias(update, context):
             await _process_single(update, context)
         # If not an alias, silently ignore (don't spam "unknown command")
