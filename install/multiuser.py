@@ -280,6 +280,22 @@ def create_system_user(
                 return False
             if not _macos_add_user_to_group(name, name, password):
                 return False
+            # Migration path for installs that pre-date the NFSHomeDirectory
+            # fix: idempotently re-set the home dir so re-running the wizard
+            # repairs broken slots that have HOME=/var/empty.
+            if home_dir is not None:
+                dscl_cmd = [
+                    "dscl", ".", "-create",
+                    f"/Users/{name}", "NFSHomeDirectory", str(home_dir),
+                ]
+                dscl_result = _sudo_run(dscl_cmd, password)
+                if dscl_result.returncode != 0:
+                    logger.error(
+                        f"Failed to update NFSHomeDirectory for {name}: "
+                        f"rc={dscl_result.returncode} "
+                        f"stderr={dscl_result.stderr.strip()[:200]}"
+                    )
+                    return False
         return True
 
     if _is_linux():
@@ -322,6 +338,25 @@ def create_system_user(
             return False
         if not _macos_add_user_to_group(name, name, password):
             return False
+        # sysadminctl -roleAccount sets NFSHomeDirectory to /var/empty (a
+        # read-only system path). When the bot dispatches `sudo -n -u <name>
+        # claude ...`, sudo resolves HOME from passwd → /var/empty, and claude
+        # then looks for credentials at /var/empty/.claude/ (which can never
+        # exist). Point HOME at the requested home_dir so the slot user has a
+        # writable home matching the data layout the wizard provisions.
+        if home_dir is not None:
+            dscl_cmd = [
+                "dscl", ".", "-create",
+                f"/Users/{name}", "NFSHomeDirectory", str(home_dir),
+            ]
+            dscl_result = _sudo_run(dscl_cmd, password)
+            if dscl_result.returncode != 0:
+                logger.error(
+                    f"Failed to set NFSHomeDirectory for {name}: "
+                    f"rc={dscl_result.returncode} "
+                    f"stderr={dscl_result.stderr.strip()[:200]}"
+                )
+                return False
         return True
 
     logger.error(f"Unsupported OS for system user creation: {platform.system()}")
@@ -428,6 +463,84 @@ def mkdir_as_root(path: Path, *, password: Optional[str] = None) -> bool:
         )
         return False
     return True
+
+
+def propagate_claude_credentials(
+    install_user: str,
+    slot_users_to_homes: dict[str, Path],
+    *,
+    password: Optional[str] = None,
+) -> tuple[int, list[str]]:
+    """Copy install user's Claude credentials to each slot user's home.
+
+    The Claude CLI looks for ~/.claude/.credentials.json relative to HOME.
+    In multi-user mode HOME resolves from passwd to the slot user's home,
+    which by default is empty. Without this step, each slot would need its
+    own `sudo -u <slot> claude login` (terminal access + browser flow per
+    slot). Copying the install user's credentials makes the bot work out of
+    the box.
+
+    Args:
+        install_user: Username of the user who ran `claude login`. Their
+            ~/.claude/.credentials.json is the source.
+        slot_users_to_homes: Mapping of slot username -> home dir Path. The
+            home dir is the slot user's NFSHomeDirectory / passwd home, NOT
+            the slot's data dir if those differ.
+        password: Sudo password for elevated operations.
+
+    Returns:
+        (count, errors). count is the number of slots that received
+        credentials. errors is a list of human-readable per-slot failure
+        messages. Callers should treat a missing source as informational
+        (the user may plan to use a non-Claude provider) and a non-empty
+        errors list with count > 0 as partial success.
+
+    Idempotent: safe to re-run; existing creds are overwritten with the
+    install user's current copy.
+    """
+    try:
+        install_home = Path(f"~{install_user}").expanduser()
+    except RuntimeError:
+        # Python 3.12+: Path.expanduser raises if the user doesn't resolve
+        # in passwd/dscl. Treat as a missing source rather than crashing.
+        return (0, [f"source missing: install user {install_user!r} not in passwd"])
+    src_creds = install_home / ".claude" / ".credentials.json"
+    if not src_creds.exists():
+        return (0, [f"source missing: {src_creds}"])
+
+    errors: list[str] = []
+    count = 0
+    for slot_name, slot_home in slot_users_to_homes.items():
+        target_dir = slot_home / ".claude"
+        target_creds = target_dir / ".credentials.json"
+
+        if not mkdir_as_root(target_dir, password=password):
+            errors.append(f"{slot_name}: mkdir {target_dir} failed")
+            continue
+
+        cp_cmd = ["cp", str(src_creds), str(target_creds)]
+        cp_result = _sudo_run(cp_cmd, password)
+        if cp_result.returncode != 0:
+            errors.append(
+                f"{slot_name}: cp {src_creds} -> {target_creds} failed: "
+                f"{cp_result.stderr.strip()[:120]}"
+            )
+            continue
+
+        if not set_owner(target_dir, slot_name, slot_name,
+                         password=password, recursive=True):
+            errors.append(f"{slot_name}: chown {target_dir} failed")
+            continue
+        if not set_perms(target_dir, 0o700, password=password):
+            errors.append(f"{slot_name}: chmod 700 {target_dir} failed")
+            continue
+        if not set_perms(target_creds, 0o600, password=password):
+            errors.append(f"{slot_name}: chmod 600 {target_creds} failed")
+            continue
+
+        count += 1
+
+    return (count, errors)
 
 
 # ─── Sudoers ──────────────────────────────────────────────────────────

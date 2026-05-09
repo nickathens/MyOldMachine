@@ -247,5 +247,278 @@ class MkdirAsRootTests(unittest.TestCase):
         self.assertEqual(m.call_count, 1)
 
 
+class MacosCreateUserSetsHomeTests(unittest.TestCase):
+    """sysadminctl -roleAccount defaults NFSHomeDirectory to /var/empty.
+    Slot users with that home cannot host ~/.claude/, breaking the bot. The
+    create_system_user macOS path must call dscl to set NFSHomeDirectory to
+    the requested home_dir so HOME resolves to a writable location.
+    """
+
+    def test_fresh_user_sets_nfshomedirectory(self):
+        with patch.object(mu, "_is_linux", return_value=False), \
+             patch.object(mu, "_is_macos", return_value=True), \
+             patch.object(mu, "system_user_exists", side_effect=[False, True]), \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)) as sudo_mock, \
+             patch.object(mu, "_ensure_macos_group", return_value=True), \
+             patch.object(mu, "_macos_add_user_to_group", return_value=True):
+            ok = mu.create_system_user(
+                "mom_user1",
+                password="pw",
+                home_dir=Path("/repo/data/users/user1"),
+            )
+        self.assertTrue(ok)
+        # Last sudo call should be the dscl NFSHomeDirectory write.
+        last_cmd = sudo_mock.call_args_list[-1].args[0]
+        self.assertEqual(last_cmd[0], "dscl")
+        self.assertEqual(last_cmd[1], ".")
+        self.assertEqual(last_cmd[2], "-create")
+        self.assertEqual(last_cmd[3], "/Users/mom_user1")
+        self.assertEqual(last_cmd[4], "NFSHomeDirectory")
+        self.assertEqual(last_cmd[5], "/repo/data/users/user1")
+
+    def test_fresh_user_without_home_dir_skips_dscl(self):
+        # If the caller doesn't specify home_dir, leave macOS default in place.
+        with patch.object(mu, "_is_linux", return_value=False), \
+             patch.object(mu, "_is_macos", return_value=True), \
+             patch.object(mu, "system_user_exists", side_effect=[False, True]), \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)) as sudo_mock, \
+             patch.object(mu, "_ensure_macos_group", return_value=True), \
+             patch.object(mu, "_macos_add_user_to_group", return_value=True):
+            ok = mu.create_system_user("mom_user1", password="pw")
+        self.assertTrue(ok)
+        # Only sysadminctl call, no dscl
+        sysadm_calls = [
+            c for c in sudo_mock.call_args_list
+            if c.args[0][0] == "sysadminctl"
+        ]
+        dscl_calls = [
+            c for c in sudo_mock.call_args_list
+            if c.args[0][0] == "dscl"
+        ]
+        self.assertEqual(len(sysadm_calls), 1)
+        self.assertEqual(len(dscl_calls), 0)
+
+    def test_existing_user_re_sets_home_dir_for_migration(self):
+        # Re-running the wizard on a Mac where slot users were created
+        # before this fix landed should repair the home dir, not leave them
+        # pointing at /var/empty. Migration path.
+        with patch.object(mu, "_is_linux", return_value=False), \
+             patch.object(mu, "_is_macos", return_value=True), \
+             patch.object(mu, "system_user_exists", return_value=True), \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)) as sudo_mock, \
+             patch.object(mu, "_ensure_macos_group", return_value=True), \
+             patch.object(mu, "_macos_add_user_to_group", return_value=True):
+            ok = mu.create_system_user(
+                "mom_user1",
+                password="pw",
+                home_dir=Path("/repo/data/users/user1"),
+            )
+        self.assertTrue(ok)
+        dscl_calls = [
+            c for c in sudo_mock.call_args_list
+            if c.args[0][0] == "dscl"
+        ]
+        self.assertEqual(len(dscl_calls), 1)
+        cmd = dscl_calls[0].args[0]
+        self.assertEqual(
+            cmd,
+            ["dscl", ".", "-create", "/Users/mom_user1",
+             "NFSHomeDirectory", "/repo/data/users/user1"],
+        )
+
+    def test_dscl_failure_short_circuits(self):
+        with patch.object(mu, "_is_linux", return_value=False), \
+             patch.object(mu, "_is_macos", return_value=True), \
+             patch.object(mu, "system_user_exists", side_effect=[False, True]), \
+             patch.object(mu, "_ensure_macos_group", return_value=True), \
+             patch.object(mu, "_macos_add_user_to_group", return_value=True):
+            # sysadminctl OK, dscl fails
+            def fake_sudo(cmd, *_args, **_kw):
+                if cmd[0] == "dscl":
+                    return _proc(1, stderr="dscl error")
+                return _proc(0)
+            with patch.object(mu, "_sudo_run", side_effect=fake_sudo):
+                ok = mu.create_system_user(
+                    "mom_user1",
+                    password="pw",
+                    home_dir=Path("/repo/data/users/user1"),
+                )
+        self.assertFalse(ok)
+
+
+class PropagateClaudeCredentialsTests(unittest.TestCase):
+    """The bot dispatches `sudo -u mom_userN claude -p ...` and the CLI looks
+    for ~/.claude/.credentials.json relative to HOME. Without this propagation
+    step every slot returns 'Not logged in · Please run /login'.
+
+    Tests use getpass.getuser() so Path("~user").expanduser() resolves on
+    every CI host without mocking the pwd/dscl layer.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import getpass
+        cls.real_user = getpass.getuser()
+
+    def test_source_missing_returns_zero_with_diagnostic(self):
+        # Path("~nobody").expanduser() raises RuntimeError on Python 3.12+
+        # when the user doesn't resolve. The function must catch this and
+        # return a clean (0, errors) instead of crashing.
+        count, errors = mu.propagate_claude_credentials(
+            "definitelynotarealuser_xyz123",
+            {"mom_user1": Path("/anywhere")},
+            password="pw",
+        )
+        self.assertEqual(count, 0)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("source missing", errors[0])
+
+    def test_source_file_missing_returns_zero(self):
+        # Real user, but the .credentials.json file genuinely doesn't exist.
+        with patch.object(Path, "exists", return_value=False):
+            count, errors = mu.propagate_claude_credentials(
+                self.real_user,
+                {"mom_user1": Path("/anywhere")},
+                password="pw",
+            )
+        self.assertEqual(count, 0)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("source missing", errors[0])
+
+    def test_happy_path_copies_to_each_slot(self):
+        slot_homes = {
+            "mom_user1": Path("/data/users/user1"),
+            "mom_user2": Path("/data/users/user2"),
+        }
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(mu, "mkdir_as_root", return_value=True) as mk, \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)) as sudo, \
+             patch.object(mu, "set_owner", return_value=True) as so, \
+             patch.object(mu, "set_perms", return_value=True) as sp:
+            count, errors = mu.propagate_claude_credentials(
+                self.real_user, slot_homes, password="pw",
+            )
+        self.assertEqual(count, 2)
+        self.assertEqual(errors, [])
+        self.assertEqual(mk.call_count, 2)  # one mkdir per slot
+        cp_calls = [c for c in sudo.call_args_list if c.args[0][0] == "cp"]
+        self.assertEqual(len(cp_calls), 2)
+        # set_owner: one per slot (target_dir, recursive)
+        self.assertEqual(so.call_count, 2)
+        # set_perms: 2 per slot (dir 700, file 600)
+        self.assertEqual(sp.call_count, 4)
+
+    def test_partial_failure_preserves_count_and_errors(self):
+        slot_homes = {
+            "mom_user1": Path("/data/users/user1"),
+            "mom_user2": Path("/data/users/user2"),
+        }
+        mkdir_results = iter([True, False])
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(mu, "mkdir_as_root",
+                          side_effect=lambda *a, **kw: next(mkdir_results)), \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)), \
+             patch.object(mu, "set_owner", return_value=True), \
+             patch.object(mu, "set_perms", return_value=True):
+            count, errors = mu.propagate_claude_credentials(
+                self.real_user, slot_homes, password="pw",
+            )
+        self.assertEqual(count, 1)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("mom_user2", errors[0])
+        self.assertIn("mkdir", errors[0])
+
+    def test_cp_failure_records_stderr(self):
+        slot_homes = {"mom_user1": Path("/data/users/user1")}
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(mu, "mkdir_as_root", return_value=True), \
+             patch.object(mu, "_sudo_run",
+                          return_value=_proc(1, stderr="permission denied")), \
+             patch.object(mu, "set_owner", return_value=True), \
+             patch.object(mu, "set_perms", return_value=True):
+            count, errors = mu.propagate_claude_credentials(
+                self.real_user, slot_homes, password="pw",
+            )
+        self.assertEqual(count, 0)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("permission denied", errors[0])
+        self.assertIn("mom_user1", errors[0])
+
+    def test_set_owner_failure_logged(self):
+        slot_homes = {"mom_user1": Path("/data/users/user1")}
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(mu, "mkdir_as_root", return_value=True), \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)), \
+             patch.object(mu, "set_owner", return_value=False), \
+             patch.object(mu, "set_perms", return_value=True):
+            count, errors = mu.propagate_claude_credentials(
+                self.real_user, slot_homes, password="pw",
+            )
+        self.assertEqual(count, 0)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("chown", errors[0])
+
+    def test_chmod_target_dir_failure_logged(self):
+        slot_homes = {"mom_user1": Path("/data/users/user1")}
+        # set_perms succeeds for dir, fails for file -> the dir fail short
+        # circuits but we want to make sure the failure is reported.
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(mu, "mkdir_as_root", return_value=True), \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)), \
+             patch.object(mu, "set_owner", return_value=True), \
+             patch.object(mu, "set_perms", return_value=False):
+            count, errors = mu.propagate_claude_credentials(
+                self.real_user, slot_homes, password="pw",
+            )
+        self.assertEqual(count, 0)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("chmod", errors[0])
+
+    def test_idempotent_overwrites_existing_credentials(self):
+        slot_homes = {"mom_user1": Path("/data/users/user1")}
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(mu, "mkdir_as_root", return_value=True), \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)) as sudo, \
+             patch.object(mu, "set_owner", return_value=True), \
+             patch.object(mu, "set_perms", return_value=True):
+            for _ in range(2):
+                count, errors = mu.propagate_claude_credentials(
+                    self.real_user, slot_homes, password="pw",
+                )
+                self.assertEqual(count, 1)
+                self.assertEqual(errors, [])
+        cp_calls = [c for c in sudo.call_args_list if c.args[0][0] == "cp"]
+        self.assertEqual(len(cp_calls), 2)
+
+    def test_empty_slot_dict_short_circuits(self):
+        with patch.object(Path, "exists", return_value=True):
+            count, errors = mu.propagate_claude_credentials(
+                self.real_user, {}, password="pw",
+            )
+        self.assertEqual(count, 0)
+        self.assertEqual(errors, [])
+
+    def test_partial_failure_continues_to_remaining_slots(self):
+        slot_homes = {
+            "mom_user1": Path("/data/users/user1"),
+            "mom_user2": Path("/data/users/user2"),
+            "mom_user3": Path("/data/users/user3"),
+        }
+        # Only slot 2's chown fails - slots 1 and 3 still succeed.
+        owner_results = iter([True, False, True])
+        with patch.object(Path, "exists", return_value=True), \
+             patch.object(mu, "mkdir_as_root", return_value=True), \
+             patch.object(mu, "_sudo_run", return_value=_proc(0)), \
+             patch.object(mu, "set_owner",
+                          side_effect=lambda *a, **kw: next(owner_results)), \
+             patch.object(mu, "set_perms", return_value=True):
+            count, errors = mu.propagate_claude_credentials(
+                self.real_user, slot_homes, password="pw",
+            )
+        self.assertEqual(count, 2)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("mom_user2", errors[0])
+
+
 if __name__ == "__main__":
     unittest.main()

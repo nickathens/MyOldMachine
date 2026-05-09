@@ -1404,12 +1404,24 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
         if not set_perms(d, 0o700, password=sudo_pass):
             return False, f"failed to chmod {d}"
 
-    # data/users.json (legacy single-user profile file) and the data/ root
-    # itself need to be readable by the orchestrator. The orchestrator does
-    # not write data/, so leave install-user as owner; just guarantee perms.
+    # data/ root: the orchestrator writes direct children of data/ at runtime
+    # (system_caps.json, .intro_migration_done — see bot.py first-boot flow).
+    # If we leave install-user as owner with mode 0755, those writes hit
+    # EACCES under mom_orchestrator and the bot logs warnings on every start.
+    # Mode 0755 keeps the dir traversable by everyone (slot users still need
+    # to reach their own subdirs); only the orchestrator can write here.
+    if not set_owner(data_root, ORCHESTRATOR_USER, ORCHESTRATOR_USER,
+                     password=sudo_pass):
+        return False, f"failed to chown {data_root}"
+    if not set_perms(data_root, 0o755, password=sudo_pass):
+        return False, f"failed to chmod {data_root}"
+
+    # data/users.json is the legacy single-user profile file. In multi-user
+    # mode the authoritative file is data/orchestrator/users.json, so this
+    # one is irrelevant — but if it lingers from a single-user past life,
+    # make sure the orchestrator can still read it.
     legacy_profile = data_root / "users.json"
     if legacy_profile.exists():
-        # World-readable so the orchestrator can read it; install user owns.
         set_perms(legacy_profile, 0o644, password=sudo_pass)
 
     # 4. Resolve CLI binaries that the orchestrator is allowed to spawn
@@ -1424,6 +1436,34 @@ def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
             "no CLI binaries (claude, codex) found in PATH. Install the CLI for "
             "your provider before running multi-user setup."
         )
+
+    # 4b. Propagate Claude credentials from the install user to every slot.
+    # When the bot dispatches via `sudo -n -u mom_userN claude ...`, sudo
+    # resolves HOME from mom_userN's passwd entry (which we now point at
+    # data/users/userN/ on both Linux and macOS — see create_system_user).
+    # The Claude CLI then reads $HOME/.claude/.credentials.json. Without
+    # this propagation step the CLI returns "Not logged in · Please run
+    # /login" and the bot is dead in the water. Failures here are logged
+    # but non-fatal: the user may be planning to use OpenRouter / Gemini
+    # / a different provider where Claude credentials are irrelevant.
+    from install.multiuser import propagate_claude_credentials
+    install_user_for_creds = getpass.getuser()
+    slot_homes = {
+        slot_user(slot): users_root / f"user{slot}"
+        for slot in range(1, num_slots + 1)
+    }
+    info(f"Propagating Claude credentials from {install_user_for_creds} to slots...")
+    creds_count, creds_errors = propagate_claude_credentials(
+        install_user_for_creds, slot_homes, password=sudo_pass,
+    )
+    if creds_count > 0:
+        ok(f"Claude credentials copied to {creds_count}/{len(slot_homes)} slot(s)")
+    if creds_errors:
+        for err in creds_errors:
+            if err.startswith("source missing"):
+                info(f"  {err} - skipping (use 'claude login' if you need Claude)")
+            else:
+                warn(f"  {err}")
 
     # 5. Build, validate, and install sudoers fragment
     info(f"Installing sudoers fragment at {SUDOERS_FRAGMENT_PATH}")
@@ -1928,7 +1968,11 @@ def main():
 
     # --- Multi-user provisioning ---
     # Runs after CLI installs so the sudoers fragment can pin absolute paths.
-    if config.get("multiuser_enabled") and not checkpoint_done("multiuser"):
+    # Checkpoint name "multiuser_v2" forces a re-run on installs from before
+    # the macOS NFSHomeDirectory + Claude credential propagation fix landed.
+    # _provision_multiuser is fully idempotent — re-running it on a healthy
+    # install is a no-op except for the new repair steps.
+    if config.get("multiuser_enabled") and not checkpoint_done("multiuser_v2"):
         print(f"\n{BOLD}Multi-User Provisioning{NC}")
         info("Setting up slot-based isolation. This creates system users,")
         info("data directories with kernel-enforced permissions, and a")
@@ -1941,7 +1985,7 @@ def main():
             error("The checkpoint is NOT advanced, so re-running will retry this step.")
             sys.exit(1)
         ok(msg)
-        checkpoint_set("multiuser")
+        checkpoint_set("multiuser_v2")
     elif config.get("multiuser_enabled"):
         ok("Multi-user provisioning (cached)")
 
