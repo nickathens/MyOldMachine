@@ -1,10 +1,10 @@
 # Multi-user mode
 
-Share one machine with up to 8 people while keeping each person's data, conversations, memories, and skill state fully private. The kernel enforces the boundaries.
+Share one Linux machine with up to 8 people while keeping each person's data, conversations, memories, and skill state fully private. The kernel enforces the boundaries.
 
-> Supports **Linux** and **macOS**. Existing single-user installs continue to work unchanged.
+> **Supported on Linux. Known broken on macOS.**
 >
-> **WARNING:** macOS multi-user support is untested on real hardware. The code paths exist but have not been verified. Use at your own risk until this notice is removed.
+> macOS slot accounts are role accounts created with `sysadminctl -roleAccount`. They have no Keychain, no GUI session, and cannot launch a browser, so the CLI provider's OAuth login (`claude auth login` / `codex login`) cannot complete inside a slot. The wizard refuses multi-user on macOS unless you pass `--experimental` and confirm an explicit "I accept this is broken" token. Even then the install needs manual recovery to reach a working state. If you need real isolation between several humans on one Mac, run a separate MyOldMachine install per macOS user account instead. Existing single-user installs are not affected on either platform.
 
 ## How it works
 

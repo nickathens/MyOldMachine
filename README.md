@@ -32,17 +32,18 @@ cd MyOldMachine
 
 ### What the installer does
 
-The setup wizard walks you through 7 steps:
+The setup wizard walks you through these steps:
 
-1. Your name
-2. Telegram bot token (with instructions — takes 2 minutes via [@BotFather](https://t.me/BotFather))
-3. Your Telegram user ID (the wizard tells you how to find it)
-4. Which AI provider to use (free options available — you can change later)
-5. Number of users (1 = just you, 2-8 = share the machine; see [Multi-user mode](docs/MULTIUSER.md))
-6. Bot name and timezone
-7. Install mode (workstation, minimal, or headless)
+1. **Your name**
+2. **Telegram bot token + your Telegram user ID** (takes 2 minutes via [@BotFather](https://t.me/BotFather); the wizard explains how to find both)
+3. **Which AI provider to use** (free options available — you can change later)
+4. **Bot name and timezone**
+5. **Number of users** — Linux: 1 = just you, 2-8 = share the machine (see [Multi-user mode](docs/MULTIUSER.md)). macOS: single-user only.
+6. **Local Telegram Bot API server** (optional — lifts upload caps from 50 MB to ~2 GB; adds a 30-60 min build step)
+7. **Install mode** — workstation, minimal, or headless
+8. **System password** — stored locally with mode 0600 so the bot can install software without prompting later
 
-After setup, the bot messages you on Telegram. Close the laptop lid if you want — it stays running. If the machine reboots, the bot starts automatically.
+After the wizard finishes, it runs `claude auth login` (or `codex login`) for you in a browser if you picked a CLI provider, then registers the system service. The bot messages you on Telegram. Close the laptop lid if you want — it stays running. If the machine reboots, the bot starts automatically.
 
 ### Resuming a failed install
 
@@ -114,11 +115,11 @@ Strips the desktop, disables sleep, turns the machine into a dedicated bot appli
 
 ## Multi-user mode
 
-You can share one machine with up to 8 people while keeping each person's data, conversations, memories, and skill state fully private. The bot picks an isolated slot at install time, the kernel enforces the boundaries, and one person becomes the admin who can add or remove users from Telegram. Existing single-user installs are not affected; multi-user is opt-in only.
+You can share one Linux machine with up to 8 people while keeping each person's data, conversations, memories, and skill state fully private. The bot picks an isolated slot at install time, the kernel enforces the boundaries, and one person becomes the admin who can add or remove users from Telegram. Existing single-user installs are not affected; multi-user is opt-in only.
 
 See [docs/MULTIUSER.md](docs/MULTIUSER.md) for the full walkthrough, the privacy model, and the admin commands.
 
-Works on both Linux and macOS.
+**Platform support:** Linux only. macOS role accounts (the slot mechanism) have no Keychain, no GUI session, and cannot launch a browser — so the CLI's OAuth login flow cannot complete inside a slot. The wizard refuses multi-user on macOS unless you pass `--experimental` and explicitly accept that the install is known broken. If you need real isolation between several humans on one Mac, run a separate MyOldMachine install per macOS user account. Multiple Telegram users on a single-user macOS install still get separate conversations, attachments, and scheduled jobs at the application level (same as the default Linux single-user setup).
 
 ## Telegram commands
 
@@ -186,6 +187,8 @@ The bot itself is your primary troubleshooting tool. Tell it what went wrong and
 **"Ollama is not compatible"?** Ollama needs macOS 12+. Use OpenRouter (free) or another cloud provider instead.
 
 **Homebrew slow on old Mac?** Normal — Homebrew compiles from source on older systems. The installer downloads ffmpeg and Node.js directly when Homebrew can't handle it.
+
+**Stuck in a broken multi-user install?** If you ended up in multi-user mode and want to roll back to a single-user install on the same machine without wiping your `.env` and data, run `./install.sh --convert-multiuser-to-single` from inside `~/MyOldMachine`. It stops the service, removes the slot accounts and sudoers fragment, chowns `data/` back to your user, and re-registers the service in single-user mode.
 
 **Something else?** Every machine is different. Start the bot, describe the problem, and work through it together. That's how this project is designed to work.
 
