@@ -967,6 +967,69 @@ def _run_telegram_bot_api_step(config: dict):
     ok("Bot API credentials captured. Server will be built during install.")
 
 
+# --- Optional features registry ---
+#
+# Each entry describes a feature that did not exist in older installs. On
+# resume (env_valid path) the wizard walks this list, asks the user once
+# per missing feature, and writes the result back to .env. The downstream
+# install steps (which are gated on config keys) then pick up the change
+# automatically — no separate "install feature X" path needed.
+#
+# To add a feature here, you need three things:
+#   - is_configured(config) -> bool: True when the feature is already set up
+#   - configure(config): mutates config to set the feature's keys (existing
+#     wizard step functions are reusable as-is)
+#   - human-readable label + summary for the prompt
+#
+# Each feature MUST default to disabled. The whole point of resume-time
+# detection is to surface new options without surprising existing users.
+
+OPTIONAL_FEATURES = [
+    {
+        "key": "telegram_bot_api",
+        "label": "Local Telegram Bot API server",
+        "summary": (
+            "Lifts upload caps from 50 MB to ~2 GB so the bot can send and "
+            "receive large files. Adds a 30-60 min build step on first run."
+        ),
+        "is_configured": lambda c: bool(c.get("telegram_local_api_enabled")),
+        "configure": lambda c: _run_telegram_bot_api_step(c),
+    },
+]
+
+
+def _offer_missing_optional_features(repo_dir: Path, config: dict) -> bool:
+    """On resume, prompt the user about optional features they have not set up.
+
+    Walks `OPTIONAL_FEATURES`, asks once per feature that's not yet configured,
+    and runs the feature's prompt step if the user opts in. Default is "no" on
+    every prompt so users who don't want anything new get a single line per
+    feature ("Set up now? [n]:") and a quick way through.
+
+    Returns True if at least one feature was newly enabled, in which case the
+    caller should rewrite `.env` so downstream install steps see the change.
+    """
+    missing = [f for f in OPTIONAL_FEATURES if not f["is_configured"](config)]
+    if not missing:
+        return False
+
+    print(f"\n{BOLD}New optional features available since your last install{NC}")
+    print(f"  {YELLOW}All default to off — answer 'n' (or just press Enter) to skip.{NC}")
+
+    any_enabled = False
+    for feat in missing:
+        print(f"\n  {BOLD}{feat['label']}{NC}")
+        print(f"    {feat['summary']}")
+        answer = ask("Set up now?", default="n").strip().lower()
+        if answer not in ("y", "yes"):
+            continue
+        feat["configure"](config)
+        if feat["is_configured"](config):
+            any_enabled = True
+
+    return any_enabled
+
+
 def _provision_multiuser(repo_dir: Path, config: dict) -> tuple[bool, str]:
     """Provision the OS-level multi-user state.
 
@@ -1238,7 +1301,12 @@ def main():
             env_valid = True
 
     if env_valid:
-        pass  # config already loaded above
+        # Surface any optional features added since this install was first
+        # provisioned. If the user opts in to anything, rewrite .env so the
+        # gated install steps below see the new flags.
+        if _offer_missing_optional_features(repo_dir, config):
+            info("Saving updated configuration...")
+            write_env(repo_dir, config)
     else:
         config = _run_wizard_steps(detected_os)
         # Detect machine specs
