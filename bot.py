@@ -1435,8 +1435,10 @@ def _save_and_send(user_id: int, user_message: str, response: str,
             history = session.load_conversation()
         history.append({"role": "user", "content": stored_user_msg})
         history.append({"role": "assistant", "content": stored_response})
-        # Trigger compaction if conversation is getting long
-        if len(history) > session.config["compaction_threshold"]:
+        # Tiered compaction gate: idle > 15min AND msgs > threshold, OR token hard cap.
+        do_compact, compact_reason = session.should_compact(history)
+        if do_compact:
+            logger.info(f"Compaction triggered for user {user_id}: {compact_reason}")
             history, _ = session.compact_conversation(history, session.summary_file)
         session.save_conversation(history)
 

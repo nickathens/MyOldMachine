@@ -29,6 +29,23 @@ from safe_json import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
+
+def _content_chars(c) -> int:
+    """Best-effort character count of a message's content field.
+
+    History items are normally `{"content": str}`, but defensively handle None
+    (key present with None), lists (multi-modal), and any other type.
+    """
+    if c is None:
+        return 0
+    if isinstance(c, str):
+        return len(c)
+    try:
+        return len(c)
+    except TypeError:
+        return len(str(c))
+
+
 # Thread pool for non-blocking subprocess calls
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="compaction")
 
@@ -53,9 +70,13 @@ DEFAULT_CONFIG = {
     "preserve_decision_keywords": ["decided", "decision", "chose", "chosen", "agreed", "confirmed"],
     # Compaction settings
     "compaction_enabled": True,
-    "compaction_threshold": 40,
+    "compaction_threshold": 40,  # Min messages before tier-1 (idle) compaction can fire
     "compaction_keep_recent": 20,
     "compaction_batch_size": 10,
+    # Tiered gating (see should_compact)
+    "compaction_idle_minutes": 15,  # Tier 1: idle window before compacting active session
+    "compaction_hard_cap_tokens": 120_000,  # Tier 2: force compact regardless of idle
+    "compaction_skip_below_tokens": 30_000,  # Skip guard: too small to be worth a cache write
 }
 
 
@@ -109,6 +130,11 @@ class SessionManager:
         """Save conversation history with smart trimming."""
         history = self.smart_trim_conversation(history)
         save_json(self.conversation_file, history)
+        # Refresh last_activity so should_compact() can measure idle time
+        # against the previous turn rather than against daily reset.
+        meta = self.load_session_meta()
+        meta["message_count"] = len(history)
+        self.save_session_meta(meta)
 
     def load_summary(self) -> str:
         """Load conversation summary."""
@@ -282,6 +308,70 @@ class SessionManager:
 
         return '\n'.join(trimmed_lines)
 
+    def should_compact(self, history: list) -> tuple[bool, str]:
+        """
+        Two-tier compaction gate.
+
+        - Tier 1 (idle-triggered): idle > N min AND msgs > threshold.
+          The 1h prompt cache was about to die anyway when the user returns
+          (or we still have headroom to absorb the cache miss), so this is
+          a "free" compaction window.
+        - Tier 2 (hard cap): estimated tokens > N. Forces compaction
+          regardless of idle so a multi-hour active session can't run away.
+
+        Skip guards:
+        - Estimated tokens < skip_below_tokens: cache reads are pennies,
+          summary write isn't worth it.
+        - Below message threshold AND below hard cap: nothing to do.
+
+        Token estimate is char-count / 4 (good enough for these thresholds).
+        """
+        if not self.config.get("compaction_enabled", True):
+            return False, "disabled"
+
+        msgs = len(history)
+        threshold = self.config["compaction_threshold"]
+        idle_minutes = self.config.get("compaction_idle_minutes", 15)
+        hard_cap_tokens = self.config.get("compaction_hard_cap_tokens", 120_000)
+        skip_below_tokens = self.config.get("compaction_skip_below_tokens", 30_000)
+
+        total_chars = sum(_content_chars(m.get("content")) for m in history)
+        est_tokens = total_chars // 4
+
+        if est_tokens < skip_below_tokens:
+            return False, f"under skip floor (~{est_tokens} tokens)"
+
+        if est_tokens > hard_cap_tokens:
+            return True, f"hard cap (~{est_tokens} tokens > {hard_cap_tokens})"
+
+        if msgs <= threshold:
+            return False, f"under msg threshold ({msgs} <= {threshold})"
+
+        meta = self.load_session_meta()
+        last_activity_str = meta.get("last_activity")
+        if not last_activity_str:
+            return True, f"no last_activity, msgs={msgs}"
+
+        try:
+            last_activity = datetime.fromisoformat(last_activity_str)
+        except (ValueError, TypeError):
+            return True, f"unparseable last_activity, msgs={msgs}"
+
+        # Force naive comparison: our own writes are naive (datetime.now().isoformat()),
+        # but a hand-edited or externally-migrated file could carry a tz offset, which
+        # would crash the subtraction below. Convert to local-naive first so a UTC
+        # timestamp isn't silently misread as local.
+        if last_activity.tzinfo is not None:
+            last_activity = last_activity.astimezone().replace(tzinfo=None)
+
+        idle_seconds = (datetime.now() - last_activity).total_seconds()
+        idle_gate_seconds = idle_minutes * 60
+
+        if idle_seconds > idle_gate_seconds:
+            return True, f"idle {idle_seconds:.0f}s > {idle_gate_seconds}s, msgs={msgs}"
+
+        return False, f"active session (idle {idle_seconds:.0f}s)"
+
     def compact_conversation(self, history: list, summary_file: Path) -> tuple[list, str]:
         """
         Gradually compact older messages into a rolling summary.
@@ -296,10 +386,12 @@ class SessionManager:
         if not self.config.get("compaction_enabled", True):
             return history, ""
 
-        threshold = self.config["compaction_threshold"]
         batch_size = self.config["compaction_batch_size"]
 
-        if len(history) <= threshold:
+        # Safety: don't compact away the entire history. Real gating is in
+        # should_compact() upstream; this is just a guard against pathological
+        # callers (e.g. tier-2 fires on a tiny but token-heavy history).
+        if len(history) <= batch_size:
             return history, ""
 
         # Check if claude CLI or an external compaction runner is available.
@@ -333,7 +425,9 @@ class SessionManager:
         conv_text = []
         for msg in messages_to_compact:
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+            content = msg.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
             if len(content) > 1000:
                 content = content[:800] + "\n...[truncated for summarization]"
             conv_text.append(f"<{role}>{content}</{role}>")
@@ -434,6 +528,10 @@ class SessionManager:
         """Save conversation history for a specific topic."""
         topic_file = self.topics_dir / f"{self._sanitize_topic_name(topic_name)}.json"
         save_json(topic_file, history)
+        # Topic activity also counts as user activity — keep last_activity fresh
+        # so a topic-then-main switch doesn't immediately trigger idle compaction.
+        meta = self.load_session_meta()
+        self.save_session_meta(meta)
 
     def list_topics(self) -> list[str]:
         """List all available topics for this user."""
