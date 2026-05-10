@@ -393,12 +393,17 @@ class PollingHealthMonitor:
     Monitors Telegram polling liveness and recovers from silent failures.
 
     How it works:
-    - Every incoming Telegram update resets the last_update_time via record_update().
-    - Every 60 seconds the monitor checks elapsed time since last update.
-    - If 30+ minutes pass with no updates:
+    - Every incoming Telegram update resets last_update_time via record_update().
+    - Every successful outgoing Telegram API call resets last_outgoing_time
+      via record_outgoing(). This catches the case where the bot is busy
+      replying for a long time (no inbound traffic, but plenty of outbound).
+    - Every 60 seconds the monitor checks elapsed time since the most recent
+      of the two — if either inbound or outbound has happened recently, the
+      bot is alive.
+    - If 30+ minutes pass with no traffic in either direction:
       1. Check internet connectivity (async HTTP HEAD requests).
       2. If internet is down → log it, keep waiting (nothing we can do).
-      3. If internet is up but we still see no updates on the *next* check
+      3. If internet is up but we still see no traffic on the *next* check
          (two consecutive stale checks = ~32 minutes minimum) → the polling
          loop is likely stuck. Exit the process cleanly so systemd restarts it.
     - If a local Bot API is configured, attempt to restart it first before
@@ -414,6 +419,7 @@ class PollingHealthMonitor:
 
         # State
         self.last_update_time: float = time.monotonic()
+        self.last_outgoing_time: float = time.monotonic()
         self.last_recovery_time: float = 0.0
         self.internet_was_down: bool = False
         self._was_stale: bool = False
@@ -423,6 +429,10 @@ class PollingHealthMonitor:
     def record_update(self):
         """Call on every incoming Telegram update."""
         self.last_update_time = time.monotonic()
+
+    def record_outgoing(self):
+        """Call on every successful outgoing Telegram API call."""
+        self.last_outgoing_time = time.monotonic()
 
     def start(self):
         """Start the background monitor."""
@@ -464,15 +474,20 @@ class PollingHealthMonitor:
 
     async def _check(self):
         """Single health check cycle."""
-        elapsed = time.monotonic() - self.last_update_time
+        # Bot is "alive" if either inbound updates or outbound API calls
+        # have happened recently. This prevents false-positive restarts
+        # during long-running tasks where the bot is actively replying
+        # but no new inbound messages have arrived yet.
+        last_activity = max(self.last_update_time, self.last_outgoing_time)
+        elapsed = time.monotonic() - last_activity
 
         if elapsed < POLLING_STALE_THRESHOLD:
-            # Updates arriving normally
             self._was_stale = False
             return
 
         logger.warning(
-            "No Telegram updates for %.0f seconds (threshold: %d). Diagnosing...",
+            "No Telegram traffic (in or out) for %.0f seconds "
+            "(threshold: %d). Diagnosing...",
             elapsed, POLLING_STALE_THRESHOLD,
         )
 
@@ -616,6 +631,12 @@ def get_polling_monitor() -> Optional[PollingHealthMonitor]:
 
 
 def record_polling_update():
-    """Convenience: record an update on the singleton monitor."""
+    """Convenience: record an inbound update on the singleton monitor."""
     if _polling_monitor:
         _polling_monitor.record_update()
+
+
+def record_polling_outgoing():
+    """Convenience: record an outbound API call on the singleton monitor."""
+    if _polling_monitor:
+        _polling_monitor.record_outgoing()

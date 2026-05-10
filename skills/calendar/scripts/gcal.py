@@ -26,7 +26,31 @@ from googleapiclient.errors import HttpError
 # Paths — resolve relative to the bot root (4 levels up from this script)
 BOT_DIR = Path(__file__).parent.parent.parent.parent
 CREDENTIALS_FILE = BOT_DIR / "google_credentials.json"
-TOKEN_FILE = BOT_DIR / "google_token.json"
+
+
+def _resolve_token_path() -> Path:
+    """Return the per-user token path.
+
+    Each Telegram user gets their own Calendar token under their data dir,
+    so one user's bot session cannot reach another user's calendar even
+    when multiple users share the same OAuth client app.
+
+    Falls back to the legacy bot-root path only when no user dir is set
+    (preserves single-user installs that haven't migrated).
+    """
+    user_dir = os.environ.get("JARVIS_USER_DIR")
+    if user_dir:
+        google_dir = Path(user_dir) / "google"
+        google_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(google_dir, 0o700)
+        except OSError:
+            pass
+        return google_dir / "calendar_token.json"
+    return BOT_DIR / "google_token.json"
+
+
+TOKEN_FILE = _resolve_token_path()
 
 # Timezone — configurable via environment variable, falls back to system local
 TIMEZONE = os.environ.get("CALENDAR_TIMEZONE", "")
@@ -84,11 +108,23 @@ def get_credentials():
                 sys.exit(1)
 
             flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-            creds = flow.run_local_server(port=8085)
+            try:
+                creds = flow.run_local_server(port=8085, timeout_seconds=300)
+            except Exception as exc:
+                print(
+                    "Error: Google sign-in did not complete within 5 minutes "
+                    f"({exc.__class__.__name__}). Re-run the command to try again.",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
 
         # Save credentials for next run
         with open(TOKEN_FILE, "w", encoding="utf-8") as token:
             token.write(creds.to_json())
+        try:
+            os.chmod(TOKEN_FILE, 0o600)
+        except OSError:
+            pass
 
     return creds
 

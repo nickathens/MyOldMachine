@@ -367,6 +367,98 @@ def kill_pids_batch(pids: list[int], grace_sec: float = 0.8):
             pass
 
 
+def _build_proc_table() -> dict[int, tuple[int, str]]:
+    """Return {pid: (ppid, args)} for all running processes."""
+    table: dict[int, tuple[int, str]] = {}
+    try:
+        if IS_MACOS:
+            cmd = ["ps", "-ax", "-o", "pid=,ppid=,args="]
+        else:
+            cmd = ["ps", "-eo", "pid=,ppid=,args="]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        for line in result.stdout.strip().splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+            except ValueError:
+                continue
+            table[pid] = (ppid, parts[2])
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return table
+
+
+def find_orphan_tool_descendants() -> list[tuple[int, str]]:
+    """
+    Find subprocess descendants of the Claude CLI that are still alive
+    when the assistant's turn ends. Excludes the hook's own ancestor chain
+    so we don't kill ourselves.
+
+    Returns list of (pid, cmd) tuples to kill.
+    """
+    proc_table = _build_proc_table()
+    if not proc_table:
+        return []
+
+    self_pid = os.getpid()
+
+    # Walk up from our PPID to find the Claude CLI ancestor.
+    # The CLI is typically `node ... claude` or `claude`. We stop when we
+    # find a process whose args mention 'claude' (case-insensitive).
+    ancestors: list[int] = []
+    cursor = os.getppid()
+    claude_pid: int | None = None
+    for _ in range(15):
+        if cursor <= 1:
+            break
+        ancestors.append(cursor)
+        entry = proc_table.get(cursor)
+        if not entry:
+            break
+        ppid, args = entry
+        # Detect claude CLI: 'claude' in command, but not 'skill_hooks' or 'bot.py'
+        low = args.lower()
+        if "claude" in low and "skill_hooks" not in low and "bot.py" not in low:
+            claude_pid = cursor
+            break
+        cursor = ppid
+
+    if claude_pid is None:
+        return []
+
+    # Exclusion set: us, the hook's ancestor chain back to claude, and claude itself.
+    safe = set(ancestors) | {self_pid, claude_pid}
+
+    # Build child map and walk descendants of claude_pid.
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _args) in proc_table.items():
+        children.setdefault(ppid, []).append(pid)
+
+    orphans: list[tuple[int, str]] = []
+    stack = list(children.get(claude_pid, []))
+    while stack:
+        pid = stack.pop()
+        if pid in safe:
+            # Don't kill, but still walk through to find non-safe descendants
+            stack.extend(children.get(pid, []))
+            continue
+        entry = proc_table.get(pid)
+        if not entry:
+            continue
+        _ppid, args = entry
+        # Skip the hook helper script (skill_hook_gate.sh, skill_hooks.py)
+        if "skill_hook" in args:
+            stack.extend(children.get(pid, []))
+            continue
+        orphans.append((pid, args))
+        stack.extend(children.get(pid, []))
+
+    return orphans
+
+
 def clean_stale_state_files():
     """Remove browser state files when daemon is dead."""
     for f in BROWSER_STATE_FILES:
@@ -755,6 +847,25 @@ def handle_stop(data: dict) -> dict | None:
     actions = []
     all_pids = get_all_pids()
     killed_pids: set[int] = set()
+
+    # 0. Kill orphan tool subprocesses left over from this turn
+    # (e.g. a `find` that hit the 2-minute auto-cutoff and got auto-backgrounded).
+    # These can hold the assistant's stdout pipe open for a long time.
+    try:
+        orphan_descendants = find_orphan_tool_descendants()
+    except Exception:
+        orphan_descendants = []
+    if orphan_descendants:
+        orphan_pids = [p for p, _ in orphan_descendants]
+        kill_pids_batch(orphan_pids, grace_sec=0.5)
+        killed_pids.update(orphan_pids)
+        sample = ", ".join(
+            (cmd.split()[0] if cmd else "?")[:30]
+            for _pid, cmd in orphan_descendants[:5]
+        )
+        actions.append(
+            f"killed {len(orphan_pids)} orphan turn-subprocesses ({sample})"
+        )
 
     # 1. Browser-specific cleanup
     daemon_pid = get_daemon_pid()

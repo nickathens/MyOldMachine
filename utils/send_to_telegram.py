@@ -18,6 +18,7 @@ import httpx
 from dotenv import load_dotenv
 
 BOT_DIR = Path(__file__).parent.parent
+sys.path.insert(0, str(BOT_DIR))
 load_dotenv(BOT_DIR / ".env")
 
 STANDARD_API = "https://api.telegram.org"
@@ -63,6 +64,9 @@ def main():
     parser.add_argument("--document", type=str)
     parser.add_argument("--caption", type=str)
     args = parser.parse_args()
+
+    from utils.session_guard import enforce as _enforce_session_user
+    _enforce_session_user(args.user)
 
     token = get_token()
 

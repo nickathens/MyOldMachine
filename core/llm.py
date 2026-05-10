@@ -101,6 +101,27 @@ def _resolve_slot_for_user(user_id: Optional[int]) -> Optional[int]:
     return slot
 
 
+def _user_identity_env(user_id: Optional[int]) -> dict:
+    """Build per-user identity env vars for skills running inside the CLI.
+
+    Skills that touch user-private state (Gmail/Calendar tokens, etc.) read
+    JARVIS_USER_DIR to scope to that user's dir. This is critical in soft
+    multi-user installs (single OS user, multiple Telegram users) where the
+    OS-level isolation provided by sudo+slots is not in play.
+    """
+    if user_id is None:
+        return {}
+    try:
+        from core.users import resolve_user_dir
+        user_dir = resolve_user_dir(user_id)
+    except Exception:
+        return {}
+    return {
+        "JARVIS_USER_ID": str(user_id),
+        "JARVIS_USER_DIR": str(user_dir),
+    }
+
+
 def _wrap_cli_for_slot(cmd: list[str], slot: Optional[int]) -> tuple[list[str], Optional[Path]]:
     """Wrap a CLI invocation to run as the slot's system user via sudo.
 
@@ -600,6 +621,7 @@ class ClaudeCLIProvider(LLMProvider):
                     "ANTHROPIC_BASE_URL",
                     "CLAUDE_CONFIG_DIR",
                 }),
+                extra=_user_identity_env(user_id),
                 keep_home=(slot is None),
             )
 
@@ -1144,14 +1166,15 @@ class CodexCLIProvider(LLMProvider):
             # ~/.codex/auth.json) or OPENAI_API_KEY. Per-instance api_key
             # override gets injected into the env after the allow-list build.
             from core.tools import build_cli_env
-            extra = {"OPENAI_API_KEY": self.api_key} if self.api_key else None
+            extra = {"OPENAI_API_KEY": self.api_key} if self.api_key else {}
+            extra = {**_user_identity_env(user_id), **extra}
             cli_env = build_cli_env(
                 provider_keys=frozenset({
                     "OPENAI_API_KEY",
                     "OPENAI_BASE_URL",
                     "CODEX_HOME",
                 }),
-                extra=extra,
+                extra=extra or None,
                 keep_home=(slot is None),
             )
 

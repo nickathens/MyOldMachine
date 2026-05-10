@@ -49,6 +49,7 @@ from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
 from core.health import (
     build_health_report, run_health_check,
     init_polling_monitor, get_polling_monitor, record_polling_update,
+    record_polling_outgoing,
 )
 from core.updater import full_update, get_current_version, get_current_branch
 from core.system_probe import probe_system, get_caps_summary, load_caps
@@ -3989,11 +3990,30 @@ def main():
     logger.info("Memory system initialized")
 
     # Build Telegram app
+    from telegram.request import HTTPXRequest
+
+    class _ActivityTrackingRequest(HTTPXRequest):
+        """HTTPXRequest that records every successful outbound call.
+
+        This feeds the polling health monitor so it knows the bot is alive
+        even during long stretches with no inbound updates (e.g. while the
+        bot is busy replying to a single big task). Without this, the
+        monitor would see 30+ minutes of "no inbound updates" and trigger
+        a false-positive restart.
+        """
+
+        async def do_request(self, *args, **kwargs):
+            result = await super().do_request(*args, **kwargs)
+            try:
+                record_polling_outgoing()
+            except Exception:
+                pass
+            return result
+
     api_base = get_telegram_api_base()
     builder = Application.builder().token(token)
     if api_base:
-        from telegram.request import HTTPXRequest
-        request = HTTPXRequest(
+        request = _ActivityTrackingRequest(
             connect_timeout=30.0,
             read_timeout=300.0,
             write_timeout=300.0,
@@ -4003,6 +4023,8 @@ def main():
                    .base_file_url(f"{api_base}/file/bot")
                    .request(request)
                    .get_updates_request(HTTPXRequest(read_timeout=30.0)))
+    else:
+        builder = builder.request(_ActivityTrackingRequest())
     builder = builder.concurrent_updates(True)
     app = builder.build()
 
