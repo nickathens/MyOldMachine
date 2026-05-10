@@ -26,7 +26,21 @@ DEFAULT_CONFIG = {
     "cleanup": True,
     "backup_enabled": False,
     "backup_path": "",
+    # Tool: "tarball" (default for back-compat) or "borg".
+    "backup_tool": "tarball",
+    # Tarball mode: keep this many archives.
     "backup_retention": 7,
+    # Borg mode: calendar-based retention.
+    "backup_keep_daily": 7,
+    "backup_keep_weekly": 4,
+    "backup_keep_monthly": 6,
+    # Borg mode: compression spec passed to borg --compression.
+    "backup_compression": "zstd,3",
+    # Borg mode: absolute path of file holding the encryption passphrase
+    # (mode 0600). Empty when tarball is the chosen tool.
+    "backup_passphrase_path": "",
+    # Borg mode: extra absolute paths to include alongside the bot's data/.
+    "backup_extra_paths": [],
     # macOS-only: also pull non-critical Apple updates via `softwareupdate`.
     # Off by default — on Darwin the provisioner already enables auto-install
     # of security responses (CriticalUpdateInstall=true), so this flag only
@@ -94,10 +108,23 @@ def get_status_report() -> str:
     # Backup
     if config.get("backup_enabled"):
         path = config.get("backup_path", "not set")
-        retention = config.get("backup_retention", 7)
+        tool = (config.get("backup_tool") or "tarball").lower()
         lines.append("Backup: ON (nightly)")
+        lines.append(f"  Tool: {tool}")
         lines.append(f"  Target: {path}")
-        lines.append(f"  Retention: {retention} backups")
+        if tool == "borg":
+            kd = config.get("backup_keep_daily", 7)
+            kw = config.get("backup_keep_weekly", 4)
+            km = config.get("backup_keep_monthly", 6)
+            comp = config.get("backup_compression", "zstd,3")
+            lines.append(f"  Retention: {kd} daily / {kw} weekly / {km} monthly")
+            lines.append(f"  Compression: {comp}")
+            extras = config.get("backup_extra_paths") or []
+            if extras:
+                lines.append(f"  Extra paths: {len(extras)}")
+        else:
+            retention = config.get("backup_retention", 7)
+            lines.append(f"  Retention: {retention} backups")
     else:
         lines.append("Backup: OFF")
         lines.append("  Use /maintenance backup /path/to/drive to enable")

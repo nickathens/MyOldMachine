@@ -392,6 +392,7 @@ class BackupRegistryEntryTests(unittest.TestCase):
     def test_backup_configure_writes_maintenance_json(self):
         # Drive the configure step with a temp dir as the backup target.
         # Ensures it calls update_config with the right keys.
+        # User picks "tarball" so this exercises the simpler tarball branch.
         feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "backup")
         with tempfile.TemporaryDirectory() as tmpdir:
             captured = {}
@@ -409,11 +410,13 @@ class BackupRegistryEntryTests(unittest.TestCase):
                     return default or ""
 
             with patch.object(wizard, "ask", side_effect=fake_ask), \
+                 patch.object(wizard, "ask_choice", return_value="tarball"), \
                  patch("utils.maintenance.update_config", side_effect=fake_update):
                 config = {}
                 feat["configure"](config)
 
             self.assertTrue(captured.get("backup_enabled"))
+            self.assertEqual(captured.get("backup_tool"), "tarball")
             self.assertEqual(Path(captured["backup_path"]).resolve(),
                              Path(tmpdir).resolve())
             self.assertEqual(captured["backup_retention"], 5)
@@ -438,11 +441,87 @@ class BackupRegistryEntryTests(unittest.TestCase):
                     return default or ""
 
             with patch.object(wizard, "ask", side_effect=fake_ask), \
+                 patch.object(wizard, "ask_choice", return_value="tarball"), \
                  patch("utils.maintenance.update_config", side_effect=fake_update):
                 config = {}
                 feat["configure"](config)
 
             self.assertEqual(captured["backup_retention"], 7)
+
+    def test_backup_configure_borg_defers_to_runtime_in_multiuser(self):
+        """Multi-user installs run the wizard as install_user, but data/ is
+        already owned by mom_orchestrator mode 0755 — wizard can't write the
+        passphrase file. Setup must defer to /maintenance backup-tool borg."""
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "backup")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured = {}
+
+            def fake_update(**kwargs):
+                captured.update(kwargs)
+                return kwargs
+
+            answers = iter([tmpdir])
+
+            def fake_ask(prompt, default=None, **_):
+                try:
+                    return next(answers)
+                except StopIteration:
+                    return default or ""
+
+            with patch.object(wizard, "ask", side_effect=fake_ask), \
+                 patch.object(wizard, "ask_choice", return_value="borg"), \
+                 patch("utils.maintenance.update_config", side_effect=fake_update):
+                config = {"multiuser_enabled": True}
+                feat["configure"](config)
+
+            # In multi-user mode, the wizard should save tarball as a safe
+            # default and tell the user to switch via /maintenance.
+            self.assertEqual(captured.get("backup_tool"), "tarball")
+            self.assertTrue(captured.get("backup_enabled"))
+            self.assertTrue(config.get("backup_enabled"))
+
+    def test_backup_configure_borg_branch_initializes_repo(self):
+        """When the user picks borg, the wizard should install borg, generate
+        a passphrase, init the repo, and save the borg-specific keys."""
+        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "backup")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            captured = {}
+
+            def fake_update(**kwargs):
+                captured.update(kwargs)
+                return kwargs
+
+            # ask: just the path; ask_choice: pick borg; secret-passphrase ask:
+            # default empty (auto-generate).
+            answers = iter([tmpdir])
+
+            def fake_ask(prompt, default=None, required=True, secret=False):
+                # secret prompt for passphrase comes after path; return empty
+                # to trigger auto-generation.
+                if secret:
+                    return ""
+                try:
+                    return next(answers)
+                except StopIteration:
+                    return default or ""
+
+            with patch.object(wizard, "ask", side_effect=fake_ask), \
+                 patch.object(wizard, "ask_choice", return_value="borg"), \
+                 patch("install.borg_setup.have_borg", return_value=True), \
+                 patch("utils.backup_borg.init_repo",
+                       return_value=(True, "init ok")), \
+                 patch("utils.backup_borg.is_repo", return_value=False), \
+                 patch("utils.maintenance.update_config", side_effect=fake_update):
+                config = {}
+                feat["configure"](config)
+
+            self.assertTrue(captured.get("backup_enabled"))
+            self.assertEqual(captured.get("backup_tool"), "borg")
+            self.assertEqual(captured.get("backup_keep_daily"), 7)
+            self.assertEqual(captured.get("backup_keep_weekly"), 4)
+            self.assertEqual(captured.get("backup_keep_monthly"), 6)
+            self.assertEqual(captured.get("backup_compression"), "zstd,3")
+            self.assertIn("backup_passphrase_path", captured)
 
 
 class MacosSystemUpdatesRegistryEntryTests(unittest.TestCase):

@@ -3397,6 +3397,8 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         cmd_lines = [
             "\n\nCommands:",
             "  /maintenance backup /path/to/drive",
+            "  /maintenance backup-tool borg|tarball",
+            "  /maintenance backup-passphrase  (borg only, admin)",
             "  /maintenance updates on|off",
             "  /maintenance cleanup on|off",
         ]
@@ -3465,6 +3467,34 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(f"No write permission to {backup_path}")
             return
 
+        # If borg is the active tool, the new path must either already be a
+        # borg repo or be initializable as one with the existing passphrase.
+        cur_cfg = load_config()
+        cur_tool = (cur_cfg.get("backup_tool") or "tarball").lower()
+        retention_line = ""
+        if cur_tool == "borg":
+            from utils import backup_borg as _bb
+            pass_path = cur_cfg.get("backup_passphrase_path", "")
+            passphrase = _bb.read_passphrase(pass_path) if pass_path else None
+            if not passphrase:
+                await update.message.reply_text(
+                    "Borg passphrase not configured. Run the install wizard's "
+                    "backup setup or /maintenance backup-tool borg to fix."
+                )
+                return
+            if not _bb.is_repo(backup_path):
+                init_ok, init_msg = _bb.init_repo(backup_path, passphrase)
+                if not init_ok:
+                    await update.message.reply_text(f"Cannot use {backup_path} as borg repo: {init_msg}")
+                    return
+            kd = cur_cfg.get("backup_keep_daily", 7)
+            kw = cur_cfg.get("backup_keep_weekly", 4)
+            km = cur_cfg.get("backup_keep_monthly", 6)
+            retention_line = f"Retention: {kd} daily / {kw} weekly / {km} monthly"
+        else:
+            kn = cur_cfg.get("backup_retention", 7)
+            retention_line = f"Retention: {kn} backups"
+
         # Save config
         update_config(backup_enabled=True, backup_path=backup_path)
 
@@ -3480,11 +3510,122 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             _setup_maintenance_jobs(scheduler)
 
         await update.message.reply_text(
-            f"Backup enabled.\n"
+            f"Backup enabled ({cur_tool}).\n"
             f"Target: {backup_path}\n"
             f"Schedule: nightly at 2:00 AM\n"
-            f"Retention: 7 backups\n\n"
+            f"{retention_line}\n\n"
             f"Run /maintenance run backup to create one now."
+        )
+        return
+
+    # --- /maintenance backup-tool borg|tarball ---
+    if subcmd == "backup-tool":
+        if not arg:
+            cfg = load_config()
+            tool = (cfg.get("backup_tool") or "tarball").lower()
+            await update.message.reply_text(
+                f"Backup tool: {tool}\n"
+                f"Switch with: /maintenance backup-tool borg\n"
+                f"Or: /maintenance backup-tool tarball"
+            )
+            return
+
+        new_tool = arg.lower().strip()
+        if new_tool not in ("borg", "tarball"):
+            await update.message.reply_text("Usage: /maintenance backup-tool borg|tarball")
+            return
+
+        cfg = load_config()
+        path = cfg.get("backup_path") or ""
+
+        if new_tool == "tarball":
+            update_config(backup_tool="tarball")
+            await update.message.reply_text(
+                "Backup tool: tarball.\n"
+                "Existing borg archives are not deleted, but new backups will "
+                "be plain tar.gz files at the same target."
+            )
+            return
+
+        # new_tool == "borg" — install if missing, init repo, generate passphrase
+        if not path:
+            await update.message.reply_text(
+                "Set a backup target first:\n"
+                "  /maintenance backup /path/to/drive"
+            )
+            return
+
+        from install import borg_setup as _bs
+        from utils import backup_borg as _bb
+
+        if not _bs.have_borg():
+            await update.message.reply_text("Installing borg... (this may take a minute)")
+            installed, msg = await asyncio.to_thread(_bs.install_borg, None)
+            if not installed:
+                await update.message.reply_text(f"Could not install borg: {msg}")
+                return
+
+        repo_dir = Path(__file__).parent
+        from utils.maintenance import load_config as _lc
+        cur_cfg = _lc()
+        multiuser = bool(cur_cfg.get("MULTIUSER_ENABLED")) or bool(
+            os.environ.get("MULTIUSER_ENABLED") in ("1", "true", "yes")
+        )
+        pass_path = _bs.passphrase_path_for(repo_dir, multiuser=multiuser)
+        passphrase = _bb.read_passphrase(pass_path)
+        if not passphrase:
+            passphrase = _bb.generate_passphrase()
+            if not _bb.write_passphrase(pass_path, passphrase):
+                await update.message.reply_text(f"Could not write passphrase to {pass_path}")
+                return
+
+        init_ok, init_msg = await asyncio.to_thread(_bb.init_repo, path, passphrase)
+        if not init_ok:
+            await update.message.reply_text(f"Borg init failed: {init_msg}")
+            return
+
+        update_config(
+            backup_tool="borg",
+            backup_passphrase_path=str(pass_path),
+            backup_keep_daily=cur_cfg.get("backup_keep_daily", 7),
+            backup_keep_weekly=cur_cfg.get("backup_keep_weekly", 4),
+            backup_keep_monthly=cur_cfg.get("backup_keep_monthly", 6),
+            backup_compression=cur_cfg.get("backup_compression", "zstd,3"),
+        )
+        await update.message.reply_text(
+            f"Backup tool: borg.\n"
+            f"Repo: {path} ({init_msg})\n"
+            f"Passphrase: {pass_path} (mode 0600)\n"
+            f"View it with /maintenance backup-passphrase\n"
+            f"Without it, backups CANNOT be restored."
+        )
+        return
+
+    # --- /maintenance backup-passphrase ---
+    if subcmd == "backup-passphrase":
+        cfg = load_config()
+        if (cfg.get("backup_tool") or "tarball").lower() != "borg":
+            await update.message.reply_text(
+                "Backup tool is not borg. Passphrase is only used by borg."
+            )
+            return
+        pass_path = cfg.get("backup_passphrase_path", "")
+        if not pass_path:
+            await update.message.reply_text("Borg passphrase path not configured.")
+            return
+        from utils import backup_borg as _bb
+        passphrase = _bb.read_passphrase(pass_path)
+        if not passphrase:
+            await update.message.reply_text(
+                f"Could not read passphrase at {pass_path}. "
+                f"Check that the file exists and is readable by the bot."
+            )
+            return
+        await update.message.reply_text(
+            f"Borg passphrase:\n"
+            f"  {passphrase}\n\n"
+            f"Stored at: {pass_path}\n"
+            f"Save this somewhere safe — without it the backup cannot be restored."
         )
         return
 

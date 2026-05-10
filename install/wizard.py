@@ -1087,15 +1087,27 @@ def _is_mcp_configured() -> bool:
 def _run_backup_setup_step(config: dict):
     """Set up nightly backup destination in maintenance.json.
 
-    Writes backup_enabled / backup_path / backup_retention to maintenance.json.
-    No .env mutation — backup config has always lived in maintenance.json so
-    that /maintenance can edit it at runtime without touching .env.
+    Asks the user to pick a backup tool (borg or tarball), validates the
+    target directory, and for borg also installs borg if missing, generates
+    a passphrase, and initializes the repo.
+
+    All settings land in maintenance.json so /maintenance can edit them at
+    runtime without touching .env.
     """
     print(f"\n  {BOLD}Backup destination{NC}")
     print("  Pick a directory where nightly backups will be stored.")
     print("  Backups run at 2:00 AM. The path can be local, an external")
     print("  drive, or a network mount as long as the bot can write there.")
     print()
+
+    tool = ask_choice(
+        "Backup tool?",
+        [
+            ("borg", "deduplicated, encrypted, calendar pruning (recommended)"),
+            ("tarball", "plain tar.gz, simpler, larger archives"),
+        ],
+        default="borg",
+    )
 
     while True:
         path_str = ask("Backup target directory")
@@ -1118,26 +1130,140 @@ def _run_backup_setup_step(config: dict):
             continue
         break
 
-    retention_str = ask("How many backups to keep?", default="7")
-    try:
-        retention = max(1, int(retention_str))
-    except ValueError:
-        retention = 7
+    repo_dir = Path(__file__).parent.parent
+    multiuser = bool(config.get("multiuser_enabled"))
 
+    if tool == "borg" and multiuser:
+        # In multi-user installs the wizard runs as the install user but
+        # data/ is already owned by mom_orchestrator mode 0755 — the wizard
+        # can't write the passphrase file. Defer borg setup to runtime,
+        # where the bot (running as mom_orchestrator) can write anywhere.
+        try:
+            from utils.maintenance import update_config
+            update_config(
+                backup_enabled=True,
+                backup_tool="tarball",  # safe default until /maintenance switches it
+                backup_path=str(backup_path),
+                backup_retention=7,
+            )
+        except Exception as e:
+            warn(f"Could not save maintenance.json: {e}")
+            return
+        config["backup_enabled"] = True
+        ok(f"Backup target set to {backup_path} (tarball for now).")
+        print(f"  {YELLOW}Multi-user mode: switch to borg from Telegram with{NC}")
+        print(f"  {YELLOW}  /maintenance backup-tool borg{NC}")
+        print(f"  {YELLOW}Restart the bot for the nightly job to register.{NC}")
+        return
+
+    if tool == "borg":
+        if not _setup_borg_for_wizard(backup_path, repo_dir, multiuser, config):
+            # Setup failed — fall back to tarball so the user still has a
+            # working backup config rather than a half-broken one.
+            warn("Falling back to tarball backups.")
+            tool = "tarball"
+
+    if tool == "tarball":
+        retention_str = ask("How many backups to keep?", default="7")
+        try:
+            retention = max(1, int(retention_str))
+        except ValueError:
+            retention = 7
+        try:
+            from utils.maintenance import update_config
+            update_config(
+                backup_enabled=True,
+                backup_tool="tarball",
+                backup_path=str(backup_path),
+                backup_retention=retention,
+            )
+        except Exception as e:
+            warn(f"Could not save maintenance.json: {e}")
+            return
+        config["backup_enabled"] = True
+        ok(f"Nightly tarball backups will go to {backup_path} (keeping {retention})")
+        print(f"  {YELLOW}Restart the bot for the nightly job to register.{NC}")
+        return
+
+    # Borg succeeded — already saved the path/passphrase fields. Just confirm.
+    config["backup_enabled"] = True
+    ok(f"Nightly borg backups will go to {backup_path}")
+    print(f"  {YELLOW}Restart the bot for the nightly job to register.{NC}")
+
+
+def _setup_borg_for_wizard(backup_path: Path, repo_dir: Path,
+                           multiuser: bool, config: dict) -> bool:
+    """Install borg if needed, init repo, save passphrase. Returns True on
+    success. Prints user-facing messages."""
     try:
+        from install import borg_setup as _bs
+        from utils import backup_borg as _bb
         from utils.maintenance import update_config
+    except ImportError as e:
+        warn(f"Borg modules not available: {e}")
+        return False
+
+    # 1. Install borg if missing.
+    if not _bs.have_borg():
+        info("Installing borgbackup...")
+        # Wizard stores the password under "sudo_pass" (Step 7). borg_setup
+        # also falls back to reading ~/.sudo_pass when None is passed.
+        sudo_password = config.get("sudo_pass")
+        installed, msg = _bs.install_borg(sudo_password=sudo_password)
+        if not installed:
+            warn(f"Could not install borg: {msg}")
+            return False
+        ok(msg)
+
+    # 2. Generate or accept a passphrase.
+    pass_path = _bs.passphrase_path_for(repo_dir, multiuser=multiuser)
+    existing = _bb.read_passphrase(pass_path)
+    if existing:
+        info(f"Reusing existing passphrase at {pass_path}")
+        passphrase = existing
+    else:
+        custom = ask(
+            "Borg passphrase (Enter to auto-generate)",
+            default="",
+            required=False,
+            secret=True,
+        )
+        passphrase = custom.strip() or _bb.generate_passphrase()
+        if not _bb.write_passphrase(pass_path, passphrase):
+            warn(f"Could not write passphrase to {pass_path}")
+            return False
+        try:
+            print(f"\n  {BOLD}Borg passphrase{NC} (save this somewhere safe):")
+            print(f"    {passphrase}")
+            print(f"  Stored at: {pass_path} (mode 0600)")
+            print(f"  {YELLOW}Without the passphrase the backup CANNOT be restored.{NC}\n")
+        except Exception:
+            pass
+
+    # 3. Init repo (idempotent).
+    init_ok, init_msg = _bb.init_repo(backup_path, passphrase)
+    if not init_ok:
+        warn(init_msg)
+        return False
+    ok(init_msg)
+
+    # 4. Save settings.
+    try:
         update_config(
             backup_enabled=True,
+            backup_tool="borg",
             backup_path=str(backup_path),
-            backup_retention=retention,
+            backup_passphrase_path=str(pass_path),
+            backup_keep_daily=7,
+            backup_keep_weekly=4,
+            backup_keep_monthly=6,
+            backup_compression="zstd,3",
         )
     except Exception as e:
         warn(f"Could not save maintenance.json: {e}")
-        return
+        return False
 
-    config["backup_enabled"] = True
-    ok(f"Nightly backups will go to {backup_path} (keeping {retention})")
-    print(f"  {YELLOW}Restart the bot for the nightly job to register.{NC}")
+    return True
 
 
 def _run_macos_updates_step(config: dict):
@@ -1562,8 +1688,9 @@ OPTIONAL_FEATURES = [
         "key": "backup",
         "label": "Nightly backups",
         "summary": (
-            "Schedules a 2:00 AM tarball backup of bot state to a directory "
-            "you choose. Default retention: 7 backups, oldest auto-pruned."
+            "Schedules a 2:00 AM backup of bot state to a directory you "
+            "choose. Pick borg (deduplicated + encrypted) or tarball "
+            "(simpler). Borg default retention: 7 daily / 4 weekly / 6 monthly."
         ),
         "applies_to": lambda: True,
         "is_configured": lambda c: _is_backup_configured(),
