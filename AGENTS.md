@@ -50,10 +50,20 @@ isolation is **app-level only**:
   `JARVIS_USER_ID` from their env to scope to the right user.
 - `utils/session_guard.enforce(requested_user_id)` is the cross-user guard.
   Helper scripts that take `--user` call it on entry; if `JARVIS_USER_ID` is
-  set and `--user` disagrees, the script refuses (admin bypass via
-  `JARVIS_ADMIN_OVERRIDE=1`).
+  set and `--user` disagrees, the script refuses. The only bypass is when the
+  bound session user has the admin role (`core.config.is_admin`). There is no
+  env-var override — adding one would defeat the guard.
 
 If you add a new helper script that takes `--user`, wire `session_guard` in.
+
+### Known limitation
+
+The per-user env vars (`JARVIS_USER_ID`, `JARVIS_USER_DIR`) are injected by
+the Claude CLI and Codex CLI subprocess paths. Tool execution under the
+direct API providers (OpenAI, Gemini, Kimi) does **not** currently propagate
+these vars, so skills invoked there fall back to the legacy bot-root paths.
+Soft isolation is only end-to-end when the bot is configured to use a CLI
+provider.
 
 ## Active work log
 
