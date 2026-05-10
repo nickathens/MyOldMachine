@@ -228,6 +228,10 @@ def main():
 
     args = parser.parse_args()
 
+    from utils.session_guard import enforce as _enforce_session_user
+    if getattr(args, "user", None) is not None:
+        _enforce_session_user(args.user)
+
     # Ensure DB tables exist
     _init_meta_db()
 
