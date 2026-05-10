@@ -15,8 +15,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install ruff
-        run: pip install -q ruff
+      - name: Install ruff, runtime deps, and pytest
+        run: pip install -q ruff pytest -r requirements.txt
       - name: Lint with ruff
         run: ruff check bot.py core/ utils/ install/ tests/
       - name: Check Python syntax (all .py files)
