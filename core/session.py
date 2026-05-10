@@ -137,8 +137,27 @@ class SessionManager:
         self.save_session_meta(meta)
 
     def load_summary(self) -> str:
-        """Load conversation summary."""
-        data = load_json(self.summary_file, {})
+        """Load conversation summary.
+
+        On JSON corruption: unlink the file. load_json silently returns the
+        default on decode errors, which would otherwise leave the corrupted
+        file on disk and log the same error every turn forever. Recover
+        deterministically by removing the unreadable file.
+        """
+        if not self.summary_file.exists():
+            return ""
+        try:
+            with open(self.summary_file, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError, OSError) as e:
+            logger.error(f"Corrupted summary file at {self.summary_file}, deleting: {e}")
+            try:
+                self.summary_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return ""
+        if not isinstance(data, dict):
+            return ""
         return data.get("summary", "")
 
     def save_summary(self, summary: str):

@@ -17,7 +17,7 @@ import os
 import sys
 
 
-def enforce(requested_user_id: int) -> None:
+def enforce(requested_user_id) -> None:
     bound = os.environ.get("JARVIS_USER_ID", "").strip()
     if not bound:
         return
@@ -25,14 +25,24 @@ def enforce(requested_user_id: int) -> None:
         bound_id = int(bound)
     except ValueError:
         return
-    if int(requested_user_id) == bound_id:
+    # A buggy caller could pass a non-numeric --user; refuse cleanly with
+    # exit 2 instead of letting an uncaught TypeError/ValueError propagate.
+    try:
+        requested_int = int(requested_user_id)
+    except (TypeError, ValueError):
+        print(
+            f"Refused: --user must be a numeric Telegram ID, got {requested_user_id!r}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if requested_int == bound_id:
         return
     try:
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from core.config import is_admin
         if is_admin(bound_id):
             print(
-                f"session_guard: admin user {bound_id} acting on user {requested_user_id}",
+                f"session_guard: admin user {bound_id} acting on user {requested_int}",
                 file=sys.stderr,
             )
             return
@@ -40,7 +50,7 @@ def enforce(requested_user_id: int) -> None:
         pass
     print(
         f"Refused: this bot session is bound to user {bound_id}; "
-        f"--user {requested_user_id} is not allowed.",
+        f"--user {requested_int} is not allowed.",
         file=sys.stderr,
     )
     sys.exit(2)

@@ -107,6 +107,12 @@ _user_locks: dict[int, asyncio.Lock] = {}
 # avoiding redundant disk reads within the same request cycle.
 _conversation_cache: dict[int, list] = {}
 
+# Tracks the monotonic timestamp of each user's most recent /clear. A
+# compaction task scheduled before the clear must abort its summary write,
+# otherwise it would re-create stale "Session Continuation" content the
+# user just asked us to discard.
+_user_cleared_at: dict[int, float] = {}
+
 
 def _get_user_lock(user_id: int) -> asyncio.Lock:
     # setdefault is atomic under the GIL, so two coroutines racing to create a
@@ -177,11 +183,37 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
 
     This prevents the compaction subprocess from running concurrently with
     user-facing LLM calls on low-resource machines.
+
+    Honors _user_cleared_at: if /clear ran after this task was scheduled,
+    abort before/after the Claude call so we never re-create a summary the
+    user just asked us to discard. summary_file lives at
+    data/users/<user_id>/conversation_summary.json, so we can derive the
+    user_id from its parent dir.
     """
     from core.session import _compaction_scheduled
     sf_key = str(summary_file)
+    start_time = time.monotonic()
+
+    user_id: int | None = None
+    try:
+        user_id = int(Path(summary_file).parent.name)
+    except (ValueError, AttributeError):
+        user_id = None
+
+    def _was_cleared() -> bool:
+        if user_id is None:
+            return False
+        cleared_at = _user_cleared_at.get(user_id)
+        return cleared_at is not None and cleared_at > start_time
+
     try:
         async with _get_llm_semaphore():
+            if _was_cleared():
+                logger.info(
+                    f"Compaction for user {user_id} aborted before Claude call: "
+                    f"/clear ran while task was queued"
+                )
+                return
             proc = await asyncio.create_subprocess_exec(
                 "claude", "-p", "-",
                 stdin=asyncio.subprocess.PIPE,
@@ -200,6 +232,12 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
                 return
 
             if proc.returncode == 0 and stdout.strip():
+                if _was_cleared():
+                    logger.info(
+                        f"Compaction for user {user_id} discarded after Claude call: "
+                        f"/clear ran during summarization"
+                    )
+                    return
                 from utils.safe_json import save_json as _sj
                 _sj(summary_file, {
                     "summary": stdout.decode(errors="replace").strip(),
@@ -249,6 +287,21 @@ def _extract_pdf_text(file_path: str, max_chars: int = 50000, max_ocr_pages: int
     which can consume excessive memory (rendering pages as images) and crash
     resource-constrained machines.
     """
+    # Hard size cap: with the local Bot API we can receive 2GB documents, but
+    # PdfReader builds an in-memory page index that scales with file size. A
+    # 500MB PDF can OOM the bot process. Reject anything over 200MB and let
+    # the user split the document or extract pages externally first.
+    PDF_MAX_BYTES = 200 * 1024 * 1024
+    try:
+        size = os.path.getsize(file_path)
+    except OSError as e:
+        return f"[PDF extraction failed: cannot stat file ({e})]"
+    if size > PDF_MAX_BYTES:
+        return (
+            f"[PDF too large for extraction: {size / 1024 / 1024:.0f}MB "
+            f"exceeds {PDF_MAX_BYTES // 1024 // 1024}MB limit. "
+            f"Split the document or extract pages externally first.]"
+        )
     try:
         # Try pypdf first (used by the pdf skill), then PyPDF2 as fallback
         try:
@@ -1554,6 +1607,10 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # racing with an in-flight call_llm would lose the clear: _save_and_send
     # would still pop the pre-clear cached history and write it back.
     _conversation_cache.pop(user_id, None)
+    # Mark the clear time so any compaction tasks queued before this moment
+    # abort their summary write — _run_compaction_under_semaphore reads this
+    # dict to gate both the pre-Claude and post-Claude paths.
+    _user_cleared_at[user_id] = time.monotonic()
     await update.message.reply_text("Conversation cleared.")
     logger.info(f"Context cleared by user {user_id}")
 

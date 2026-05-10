@@ -42,7 +42,14 @@ def api_url(token: str, method: str) -> str:
 
 
 def send_message(token, chat_id, text):
-    r = httpx.post(api_url(token, "sendMessage"), data={"chat_id": chat_id, "text": text})
+    # Without an explicit timeout httpx waits forever; a frozen Bot API server
+    # would hang the calling process indefinitely. send_file already sets one;
+    # send_message must too.
+    r = httpx.post(
+        api_url(token, "sendMessage"),
+        data={"chat_id": chat_id, "text": text},
+        timeout=30,
+    )
     return r.json().get("ok", False)
 
 
