@@ -160,10 +160,9 @@ If you need kernel-enforced isolation between multiple humans on one machine, ru
 | `/cleanup` | Clean old files, rotate logs |
 | `/update` | Pull latest updates |
 | `/restart` | Restart the bot |
-| `/users` | List bound user slots (admin, multi-user only) |
-| `/adduser <id> <name>` | Bind a free slot to a Telegram ID (admin, multi-user only) |
-| `/removeuser <id>` | Unbind a user and archive their data (admin, multi-user only) |
-| `/purgeuser <id>` | Permanently delete archived data (admin, multi-user only) |
+| `/users` | List registered Telegram users (admin) |
+| `/adduser <id> <name> [admin]` | Add a Telegram user (admin) |
+| `/removeuser <id>` | Remove a Telegram user (admin; refuses to remove last admin) |
 
 ## Custom shortcuts
 

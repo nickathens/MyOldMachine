@@ -1,8 +1,8 @@
 # MemPalace -- Per-user Permanent Conversation Memory
 
 Each user owns a private semantic-search palace over their full conversation
-history. Vector store lives inside the user's data directory, so multi-user
-filesystem isolation keeps it private at the kernel level.
+history. Vector store lives inside the user's data directory; per-Telegram-user
+separation is at the application level.
 
 ## When to Use
 
@@ -16,9 +16,9 @@ Do NOT use for general queries or when the answer is in current context.
 
 ```
 <BOT_DIR>/data/mempalace/
-  venv/                       # SHARED Python venv (orchestrator-installed)
+  venv/                       # SHARED Python venv (one install per machine)
 
-<user_dir>/mempalace/         # PER-USER palace (slot-private)
+<user_dir>/mempalace/         # PER-USER palace
   palace/                     # ChromaDB vector store
   convos/                     # Per-day session JSON exports
   sync_state.json             # Last sync timestamp + drawer count
@@ -80,9 +80,6 @@ Schedule a daily job per user so each palace stays current:
     --command "<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_sync.py --user-dir <USER_DIR>" \
     --repeat daily --name "MemPalace daily sync" --no-notify
 ```
-
-In multi-user mode the orchestrator runs the job as the slot user, so writes
-land in the user's own dir without privilege escalation.
 
 Manual sync:
 

@@ -568,8 +568,10 @@ class PollingHealthMonitor:
         """
         logger.info("Attempting local Bot API restart. Reason: %s", reason)
 
+        system = platform.system()
+
         # Detect the service manager and try to restart
-        if platform.system() == "Linux":
+        if system == "Linux":
             # Try user-level systemd first, then system-level
             for cmd in [
                 ["systemctl", "--user", "restart", "telegram-bot-api"],
@@ -590,6 +592,68 @@ class PollingHealthMonitor:
                 except (asyncio.TimeoutError, Exception) as e:
                     logger.debug("Restart via %s failed: %s", " ".join(cmd), e)
                     continue
+
+        elif system == "Darwin":
+            # On macOS the local Bot API runs as a LaunchDaemon labeled
+            # com.telegram-bot-api. `launchctl kickstart -k` is the most
+            # reliable way to bounce it without reloading the plist.
+            #
+            # We try the no-sudo path first (works if the daemon is in the
+            # current user's gui domain — rare). Then fall back to the
+            # system-domain path with sudo, reading the password from
+            # ~/.sudo_pass that the install wizard stored mode 0600.
+            kickstart_no_sudo = [
+                "launchctl", "kickstart", "-k", "system/com.telegram-bot-api",
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *kickstart_no_sudo,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+                if proc.returncode == 0:
+                    logger.info("Restarted telegram-bot-api via %s",
+                                " ".join(kickstart_no_sudo))
+                    await asyncio.sleep(5)
+                    self.last_update_time = time.monotonic()
+                    return True
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.debug("kickstart (no-sudo) failed: %s", e)
+
+            sudo_pass_file = Path.home() / ".sudo_pass"
+            password: Optional[str] = None
+            try:
+                if sudo_pass_file.exists():
+                    password = sudo_pass_file.read_text(
+                        encoding="utf-8"
+                    ).strip() or None
+            except OSError:
+                password = None
+
+            sudo_cmd = ["sudo", "-S", "launchctl", "kickstart", "-k",
+                        "system/com.telegram-bot-api"] if password else \
+                       ["sudo", "-n", "launchctl", "kickstart", "-k",
+                        "system/com.telegram-bot-api"]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *sudo_cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdin_data = (password + "\n").encode() if password else None
+                _, _ = await asyncio.wait_for(
+                    proc.communicate(input=stdin_data), timeout=30,
+                )
+                if proc.returncode == 0:
+                    logger.info("Restarted telegram-bot-api via %s",
+                                " ".join(sudo_cmd[:4] + ["..."]))
+                    await asyncio.sleep(5)
+                    self.last_update_time = time.monotonic()
+                    return True
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.debug("kickstart (sudo) failed: %s", e)
 
         logger.warning("Could not restart local Bot API")
         return False

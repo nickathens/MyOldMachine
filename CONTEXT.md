@@ -174,7 +174,7 @@ utils/
 | Ollama Cloud | OpenAI-compat | qwen3.5:cloud | Cloud-hosted, free, no local GPU needed |
 | OpenRouter | OpenAI-compat | nemotron-3-super-120b:free | ~15 free models w/tool-use, ~200 req/day |
 
-**Total: 11 providers.**
+**Total: 12 providers** (Claude CLI, Codex CLI, Claude API, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud).
 
 ## Boot Persistence
 
@@ -260,7 +260,7 @@ Skill count: 59 → 61 (also retroactively counted `mempalace` which was added w
 
 ## MemPalace per-user permanent memory (May 8)
 
-`mempalace` is now a **per-user** permanent memory: each user's ChromaDB palace, conversation exports, and sync state live entirely under `<user_dir>/mempalace/`, kernel-isolated by the slot's filesystem permissions. The shared `data/mempalace/venv/` holds only the Python interpreter and the `mempalace` library — no user data.
+`mempalace` is a **per-user** permanent memory: each user's ChromaDB palace, conversation exports, and sync state live entirely under `<user_dir>/mempalace/`. Per-Telegram-user separation is at the application level; the shared `data/mempalace/venv/` holds only the Python interpreter and the `mempalace` library — no user data.
 
 Scripts now accept `--user-dir <path>`:
 

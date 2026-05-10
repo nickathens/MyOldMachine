@@ -3,8 +3,9 @@
 MyOldMachine — LLM-Powered Telegram Bot
 
 A self-hosted, provider-agnostic Telegram bot that turns any old machine into
-a dedicated AI assistant. Supports Claude CLI (with full tool-use), Claude API,
-OpenAI, Gemini, Kimi, MiniMax, Ollama, and OpenRouter.
+a dedicated AI assistant. Supports Claude CLI and Codex CLI (with full
+tool-use), Claude API, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek,
+OpenRouter, Ollama, and Ollama Cloud.
 """
 
 import asyncio

@@ -8,11 +8,10 @@ Run with the bot's Python:
         --user-dir <user_dir>
 
 Provisioning is split:
-  - The mempalace venv is shared at <BOT_DIR>/data/mempalace/venv/. It is
-    installed orchestrator-wide; slot users only need read access.
+  - The mempalace venv is shared at <BOT_DIR>/data/mempalace/venv/. One
+    install per machine.
   - The actual palace, conversation exports, and sync state live entirely
-    inside <user_dir>/mempalace/. Filesystem permissions on the user's slot
-    keep that directory private to them.
+    inside <user_dir>/mempalace/, one tree per Telegram user.
 
 Pass --shared-only to install just the venv (e.g. during one-time bootstrap).
 """
