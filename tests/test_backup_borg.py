@@ -535,15 +535,12 @@ class BorgSetupTests(unittest.TestCase):
         from install import borg_setup
         self.bs = borg_setup
 
-    def test_passphrase_path_for_single_user(self):
+    def test_passphrase_path_for(self):
         repo = Path("/opt/MOM")
-        p = self.bs.passphrase_path_for(repo, multiuser=False)
-        self.assertEqual(p, repo / "data" / "borg-passphrase")
-
-    def test_passphrase_path_for_multiuser(self):
-        repo = Path("/opt/MOM")
-        p = self.bs.passphrase_path_for(repo, multiuser=True)
-        self.assertEqual(p, repo / "data" / "orchestrator" / "borg-passphrase")
+        self.assertEqual(
+            self.bs.passphrase_path_for(repo),
+            repo / "data" / "borg-passphrase",
+        )
 
     def test_install_borg_no_op_when_present(self):
         with mock.patch.object(self.bs, "have_borg", return_value=True):

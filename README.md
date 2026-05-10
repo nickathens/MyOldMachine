@@ -38,7 +38,7 @@ The setup wizard walks you through these steps:
 2. **Telegram bot token + your Telegram user ID** (takes 2 minutes via [@BotFather](https://t.me/BotFather); the wizard explains how to find both)
 3. **Which AI provider to use** (free options available — you can change later)
 4. **Bot name and timezone**
-5. **Number of users** — Linux: 1 = just you, 2-8 = share the machine (see [Multi-user mode](docs/MULTIUSER.md)). macOS: single-user only.
+5. **Queue scope** — universal (one LLM call at a time across the whole bot) or per-user (each Telegram user runs in parallel)
 6. **Local Telegram Bot API server** (optional — lifts upload caps from 50 MB to ~2 GB; adds a 30-60 min build step)
 7. **Install mode** — workstation, minimal, or headless
 8. **System password** — stored locally with mode 0600 so the bot can install software without prompting later
@@ -113,13 +113,20 @@ The bot runs as a background service. Your existing apps and settings stay untou
 
 Strips the desktop, disables sleep, turns the machine into a dedicated bot appliance. You interact with it only through Telegram or SSH. Frees up resources. Good for machines you'll never sit in front of again.
 
-## Multi-user mode
+## Sharing the bot with multiple Telegram users
 
-You can share one Linux machine with up to 8 people while keeping each person's data, conversations, memories, and skill state fully private. The bot picks an isolated slot at install time, the kernel enforces the boundaries, and one person becomes the admin who can add or remove users from Telegram. Existing single-user installs are not affected; multi-user is opt-in only.
+One install can serve any number of Telegram users from a single OS user. Each Telegram user gets their own data directory at `data/users/<telegram_id>/` — separate conversations, attachments, scheduled jobs, memories, and per-user profile. The bot routes messages by Telegram ID; isolation is at the application level, not kernel-enforced.
 
-See [docs/MULTIUSER.md](docs/MULTIUSER.md) for the full walkthrough, the privacy model, and the admin commands.
+The first user is the admin. From Telegram:
 
-**Platform support:** Linux only. macOS role accounts (the slot mechanism) have no Keychain, no GUI session, and cannot launch a browser — so the CLI's OAuth login flow cannot complete inside a slot. The wizard refuses multi-user on macOS unless you pass `--experimental` and explicitly accept that the install is known broken. If you need real isolation between several humans on one Mac, run a separate MyOldMachine install per macOS user account. Multiple Telegram users on a single-user macOS install still get separate conversations, attachments, and scheduled jobs at the application level (same as the default Linux single-user setup).
+```
+/adduser 123456789 Alice          # add a regular user
+/adduser 123456789 Alice admin    # add another admin
+/removeuser 123456789             # remove a user (refuses to remove the last admin)
+/users                            # list registered users
+```
+
+If you need kernel-enforced isolation between multiple humans on one machine, run a separate MyOldMachine install per OS user account.
 
 ## Telegram commands
 
@@ -187,8 +194,6 @@ The bot itself is your primary troubleshooting tool. Tell it what went wrong and
 **"Ollama is not compatible"?** Ollama needs macOS 12+. Use OpenRouter (free) or another cloud provider instead.
 
 **Homebrew slow on old Mac?** Normal — Homebrew compiles from source on older systems. The installer downloads ffmpeg and Node.js directly when Homebrew can't handle it.
-
-**Stuck in a broken multi-user install?** If you ended up in multi-user mode and want to roll back to a single-user install on the same machine without wiping your `.env` and data, run `./install.sh --convert-multiuser-to-single` from inside `~/MyOldMachine`. It stops the service, removes the slot accounts and sudoers fragment, chowns `data/` back to your user, and re-registers the service in single-user mode.
 
 **Something else?** Every machine is different. Start the bot, describe the problem, and work through it together. That's how this project is designed to work.
 

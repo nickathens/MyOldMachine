@@ -21,9 +21,8 @@ Layout (relative to repo_dir):
 Credentials live in the main `.env` as TELEGRAM_API_ID and
 TELEGRAM_API_HASH; the systemd unit / launchd plist sources that file.
 
-Service runs as the orchestrator user in multi-user mode, otherwise as the
-current user. A single server instance is shared across all slots — slot
-accounts only need to talk to localhost:8081, not read the data dir.
+Service runs as the install user. A single instance is shared across all
+Telegram users since the bot is the only client.
 """
 
 from __future__ import annotations
@@ -274,45 +273,15 @@ def render_launchd_plist(template: str, *, user: str, env_file: Path,
 
 
 def _ensure_state_dir_owned(state_dir: Path, user: str,
-                            multiuser_enabled: bool,
                             password: Optional[str]) -> bool:
-    """Create state_dir and ensure the runtime user owns it with mode 0700.
+    """Create state_dir and tighten permissions to mode 0700.
 
-    The daemon runs as ``user`` and writes ``api.log`` plus (on macOS) the
-    launchd-redirected ``launchd-stdout.log`` / ``launchd-stderr.log`` here.
-    If the directory was created by the install user but the daemon runs as
-    a different user (the multi-user case where the daemon runs as
-    ``mom_orchestrator``), launchd fails with EX_CONFIG (78) before the
-    binary even starts, and systemd fails the first write to api.log.
-
-    Single-user mode: install user already owns the dir from mkdir, so we
-    only tighten the mode to 0o700. No sudo needed.
-
-    Multi-user mode: ``user`` is the orchestrator account. Use sudo via
-    ``install.multiuser.set_owner`` / ``set_perms`` to chown + chmod.
+    The daemon runs as the install user, which already owns the dir from
+    mkdir, so we only need to tighten the mode. ``user`` and ``password``
+    are kept in the signature for symmetry with prior behavior; password
+    is unused on this path.
     """
     state_dir.mkdir(parents=True, exist_ok=True)
-
-    if multiuser_enabled:
-        try:
-            from install.multiuser import set_owner, set_perms
-        except ImportError as exc:
-            error(
-                "install.multiuser unavailable; cannot chown state_dir "
-                f"to {user}: {exc}"
-            )
-            return False
-        if not set_owner(state_dir, user, password=password, recursive=True):
-            error(
-                f"Failed to chown {state_dir} to {user}. The daemon will "
-                "fail to start with EX_CONFIG (78) until this is fixed."
-            )
-            return False
-        if not set_perms(state_dir, 0o700, password=password):
-            error(f"Failed to chmod 0700 {state_dir}")
-            return False
-        return True
-
     try:
         os.chmod(state_dir, 0o700)
     except OSError as exc:
@@ -474,21 +443,15 @@ def setup_telegram_bot_api(repo_dir: Path, config: dict, os_info: OSInfo,
 
     # Service registration
     env_file = repo_dir / ".env"
-    user = (config.get("multiuser_orchestrator_user")
-            if config.get("multiuser_enabled")
-            else os.environ.get("USER") or "")
+    user = os.environ.get("USER") or ""
     if not user:
-        # Fallback for environments without USER set
         try:
             import getpass
             user = getpass.getuser()
         except Exception:
             user = "root"
 
-    multiuser_enabled = bool(config.get("multiuser_enabled"))
-    if not _ensure_state_dir_owned(
-        paths["state_dir"], user, multiuser_enabled, password,
-    ):
+    if not _ensure_state_dir_owned(paths["state_dir"], user, password):
         return False
 
     if os_info.os_type == "linux":

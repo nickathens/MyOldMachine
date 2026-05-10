@@ -389,10 +389,8 @@ class NoClaudeLoginInUserFacingStringsTests(unittest.TestCase):
     def test_no_unqualified_claude_login_in_install_or_docs(self):
         targets = [
             ROOT / "install" / "wizard.py",
-            ROOT / "install" / "multiuser.py",
-            ROOT / "install" / "convert_to_single_user.py",
             ROOT / ".env.example",
-            ROOT / "docs" / "MULTIUSER.md",
+            ROOT / "README.md",
         ]
         offences: list[str] = []
         for path in targets:

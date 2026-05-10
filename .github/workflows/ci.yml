@@ -22,7 +22,7 @@ jobs:
       - name: Check Python syntax (all .py files)
         run: python -m py_compile bot.py && find core/ install/ utils/ -name '*.py' -exec python -m py_compile {} +
       - name: Run unit tests (offline, mocks all network)
-        run: python -m unittest tests.test_macos_resolver tests.test_multiuser_macos -v
+        run: python -m unittest discover -s tests -v
       - name: Check for obvious import errors
         run: |
           pip install -q python-telegram-bot python-dotenv httpx apscheduler sqlalchemy
@@ -183,101 +183,7 @@ jobs:
           print(f'Has Homebrew:  {info.has_homebrew_support}')
           assert not info.blockers, f'Unexpected blockers on stock macOS-14 runner: {info.blockers}'
           "
-      - name: Multiuser module pure-function tests
-        run: |
-          . .venv/bin/activate
-          python -c "
-          from pathlib import Path
-          from install.multiuser import (
-              build_sudoers_fragment,
-              _validate_username,
-              slot_user,
-              can_sudo_passwordless,
-              ORCHESTRATOR_USER,
-          )
-
-          # slot_user
-          assert slot_user(1) == 'mom_user1'
-          assert slot_user(4) == 'mom_user4'
-          try:
-              slot_user(0)
-              raise SystemExit('expected ValueError for slot 0')
-          except ValueError:
-              pass
-
-          # _validate_username
-          _validate_username('mom_orchestrator')
-          _validate_username('mom_user1')
-          for bad in ('Bad Name', 'a' * 32, '', '1user', 'name with space'):
-              try:
-                  _validate_username(bad)
-                  raise SystemExit(f'expected ValueError for {bad!r}')
-              except ValueError:
-                  pass
-
-          # build_sudoers_fragment
-          frag = build_sudoers_fragment(
-              ORCHESTRATOR_USER,
-              ['mom_user1', 'mom_user2'],
-              [Path('/usr/local/bin/claude'), Path('/usr/local/bin/codex')],
-          )
-          assert 'Runas_Alias MOM_USERS = mom_user1, mom_user2' in frag
-          assert 'Cmnd_Alias MOM_BINS = /usr/local/bin/claude, /usr/local/bin/codex' in frag
-          assert 'mom_orchestrator ALL=(MOM_USERS) NOPASSWD: MOM_BINS' in frag
-          assert frag.startswith('# Managed by MyOldMachine')
-
-          # Empty inputs must raise
-          for args in (
-              (ORCHESTRATOR_USER, [], [Path('/usr/local/bin/claude')]),
-              (ORCHESTRATOR_USER, ['mom_user1'], []),
-          ):
-              try:
-                  build_sudoers_fragment(*args)
-                  raise SystemExit(f'expected ValueError for empty input: {args}')
-              except ValueError:
-                  pass
-
-          # GitHub macOS runners run as a passwordless-sudo user
-          assert can_sudo_passwordless(), 'GitHub macOS runners should have passwordless sudo'
-          print('multiuser.py pure-function tests passed')
-          "
-      - name: Validate launch-daemon plist (multi-user mode)
-        run: |
-          . .venv/bin/activate
-          python -c "
-          import subprocess, tempfile
-          from pathlib import Path
-
-          repo_dir = Path('.').absolute()
-          template = repo_dir / 'install' / 'templates' / 'com.myoldmachine.daemon.plist'
-          assert template.exists(), f'Template not found: {template}'
-
-          content = template.read_text(encoding='utf-8')
-          subs = {
-              '{{ORCHESTRATOR_USER}}': 'mom_orchestrator',
-              '{{PYTHON}}': str(repo_dir / '.venv' / 'bin' / 'python'),
-              '{{WORKING_DIR}}': str(repo_dir),
-              '{{BOT_PY}}': str(repo_dir / 'bot.py'),
-              '{{LOG_DIR}}': str(repo_dir / 'data' / 'logs'),
-              '{{ENV_FILE}}': str(repo_dir / '.env'),
-              '{{VENV_BIN}}': str(repo_dir / '.venv' / 'bin'),
-              '{{HOME}}': str(repo_dir / 'data' / 'orchestrator'),
-              '{{CLI_BIN_PATHS}}': '',
-          }
-          for k, v in subs.items():
-              content = content.replace(k, v)
-          assert '{{' not in content, f'unsubstituted placeholder:\n{content}'
-
-          with tempfile.NamedTemporaryFile(suffix='.plist', mode='w', delete=False) as f:
-              f.write(content)
-              tmp = f.name
-
-          result = subprocess.run(['plutil', '-lint', tmp], capture_output=True, text=True)
-          if result.returncode != 0:
-              raise SystemExit(f'plutil -lint failed:\nstdout={result.stdout}\nstderr={result.stderr}')
-          print('daemon plist passes plutil -lint')
-          "
-      - name: Validate launch-agent plist (single-user mode)
+      - name: Validate launch-agent plist
         run: |
           . .venv/bin/activate
           python -c "
@@ -320,10 +226,6 @@ jobs:
         run: |
           . .venv/bin/activate
           python install/provisioner.py --repo-dir . --takeover minimal --dry-run
-      - name: multiuser.py info subcommand
-        run: |
-          . .venv/bin/activate
-          python install/multiuser.py info
       - name: Verify bot imports on macOS
         run: |
           . .venv/bin/activate

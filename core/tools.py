@@ -477,17 +477,12 @@ def _build_command_env() -> dict:
 def build_cli_env(
     provider_keys: frozenset,
     extra: Optional[dict] = None,
-    keep_home: bool = True,
 ) -> dict:
     """Build sanitized env for an LLM CLI subprocess (Claude CLI, Codex CLI).
 
     Same allow-list as _build_command_env(), plus a small set of provider
     keys explicitly allowed back in (e.g. ANTHROPIC_API_KEY for Claude,
     OPENAI_API_KEY for Codex). Anything else from the bot's env is dropped.
-
-    keep_home: When True (default, single-user mode), HOME is set to the
-    bot user's home dir. When False (multi-user mode under sudo), HOME is
-    removed so sudo can resolve it from the slot user's passwd entry.
     """
     env = _build_command_env()
     for key in provider_keys:
@@ -496,8 +491,6 @@ def build_cli_env(
             env[key] = val
     if extra:
         env.update(extra)
-    if not keep_home:
-        env.pop("HOME", None)
     return env
 
 

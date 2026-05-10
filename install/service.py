@@ -103,10 +103,6 @@ def _remove_stale_telegram_bot_api_plist_macos(current_user: str,
                                                password: str | None) -> None:
     """Best-effort: remove a telegram-bot-api LaunchDaemon plist that
     references a different UserName than the bot we are about to register.
-
-    A working single-user Bot API install has UserName=<install_user>; a
-    leftover multi-user install has UserName=mom_orchestrator. Only
-    tear down the leftover — never disturb a healthy install.
     """
     plist = "/Library/LaunchDaemons/com.telegram-bot-api.plist"
     if not Path(plist).exists():
@@ -146,13 +142,6 @@ def _remove_stale_telegram_bot_api_unit_linux(current_user: str,
                                               password: str | None) -> None:
     """Best-effort: remove a telegram-bot-api systemd unit that references a
     different user than the bot we are about to register.
-
-    When a multi-user install is converted back to single-user (or replaced
-    by a fresh single-user install over the top), the telegram-bot-api unit
-    still runs as ``mom_orchestrator`` (or another slot user) and reads the
-    new single-user .env which lacks TELEGRAM_API_BASE / API_ID / API_HASH.
-    Result: crash-loop. Tear it down here. The user can opt back into the
-    Bot API later via ./install.sh's optional-features prompt.
     """
     unit_path = "/etc/systemd/system/telegram-bot-api.service"
     if not Path(unit_path).exists():
@@ -185,14 +174,15 @@ def _remove_stale_telegram_bot_api_unit_linux(current_user: str,
     ok(f"Removed stale {unit_path}")
 
 
-def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) -> bool:
+def setup_linux_service(repo_dir: Path) -> bool:
     """Create and enable systemd service. Returns True on success.
 
-    When orchestrator_user is set, the service runs as that user (multi-user
-    mode). Otherwise it runs as the current user (single-user mode).
+    The service runs as the current user. Multi-user-style kernel
+    isolation is not used; per-Telegram-user separation is handled at
+    the application level inside the bot.
     """
     password = get_sudo_password()
-    username = orchestrator_user if orchestrator_user else getpass.getuser()
+    username = getpass.getuser()
     venv_python = repo_dir / ".venv" / "bin" / "python"
 
     if not venv_python.exists():
@@ -201,8 +191,7 @@ def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) ->
         return False
 
     # Tear down a telegram-bot-api unit that points at a different user than
-    # the bot we are about to register. Keeps single-user re-installs after
-    # multi-user from inheriting a crash-looping daemon.
+    # the bot we are about to register, to avoid stale crash-loops.
     _remove_stale_telegram_bot_api_unit_linux(username, password)
 
     template_path = repo_dir / "install" / "templates" / "myoldmachine.service"
@@ -215,27 +204,10 @@ def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) ->
     content = content.replace("{{WORKING_DIR}}", str(repo_dir))
     content = content.replace("{{PYTHON}}", str(venv_python))
     content = content.replace("{{LOG_DIR}}", str(repo_dir / "data" / "logs"))
-    # Resolve CLI bin paths against the install user's home — the orchestrator
-    # account in multi-user mode has no installed CLIs, but its sudoers entry
-    # still pins absolute paths so PATH augmentation here is just for the
-    # bot's own discovery via shutil.which / _find_cli_binary.
-    install_user_home = Path("/home") / getpass.getuser()
+    install_user_home = Path("/home") / username
     if not install_user_home.is_dir():
         install_user_home = Path.home()
     content = content.replace("{{CLI_BIN_PATHS}}", _discover_cli_bin_paths(install_user_home))
-
-    # In multi-user mode the orchestrator user has its home at data/orchestrator
-    # but no real shell. Set HOME explicitly so libraries that depend on it
-    # (telethon session files, openai cache, etc.) write to the right place.
-    if orchestrator_user:
-        home_path = repo_dir / "data" / "orchestrator"
-        # Inject HOME into Environment= line. The template has the literal
-        # `Environment=PYTHONUNBUFFERED=1`; append HOME alongside it so we
-        # don't need to rewrite the template structure.
-        content = content.replace(
-            "Environment=PYTHONUNBUFFERED=1",
-            f"Environment=PYTHONUNBUFFERED=1\nEnvironment=HOME={home_path}",
-        )
 
     # Ensure log directory exists
     (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)
@@ -277,14 +249,11 @@ def setup_linux_service(repo_dir: Path, orchestrator_user: str | None = None) ->
 
 
 def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
-    """Install a per-user LaunchAgent (single-user mode). Returns True on success.
+    """Install a per-user LaunchAgent. Returns True on success.
 
-    If a system-wide LaunchDaemon (multi-user) is present at
-    /Library/LaunchDaemons/com.myoldmachine.bot.plist, it is unloaded and
-    removed first. Both share Label "com.myoldmachine.bot"; without this
-    teardown launchd would have two services racing to bind the same bot.
-    The accompanying telegram-bot-api LaunchDaemon (registered to run as
-    a slot user that may no longer exist) is also unloaded.
+    If a stale system-wide LaunchDaemon at /Library/LaunchDaemons/
+    com.myoldmachine.bot.plist is present from a prior install, it is
+    unloaded and removed first to avoid a Label conflict.
     """
     venv_python = repo_dir / ".venv" / "bin" / "python"
 
@@ -298,15 +267,10 @@ def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
         error(f"Plist template not found: {template_path}")
         return False
 
-    # Tear down any pre-existing multi-user LaunchDaemon for the bot. It
-    # targets the same Label "com.myoldmachine.bot" as our LaunchAgent,
-    # so leaving it behind would race with our agent. Best-effort:
-    # failures here are warned, not fatal.
-    #
-    # The telegram-bot-api LaunchDaemon is only torn down when its
-    # UserName= references a different user than the bot we're about to
-    # register — otherwise it's a healthy single-user Bot API install
-    # that we should leave alone.
+    # Tear down any stale LaunchDaemon for the bot left from a prior
+    # install. It targets the same Label "com.myoldmachine.bot" as our
+    # LaunchAgent, so leaving it behind would race with our agent.
+    # Best-effort: failures here are warned, not fatal.
     password = get_sudo_password()
     bot_daemon = "/Library/LaunchDaemons/com.myoldmachine.bot.plist"
     if Path(bot_daemon).exists():
@@ -345,87 +309,6 @@ def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
 
     ok(f"LaunchAgent installed at {plist_path}")
     ok("Service will start on boot and restart on crash")
-    return True
-
-
-def _setup_macos_launch_daemon(repo_dir: Path, orchestrator_user: str,
-                                os_info=None) -> bool:
-    """Install a system-wide LaunchDaemon (multi-user mode). Returns True on success.
-
-    The daemon runs as the orchestrator user and lives in /Library/LaunchDaemons/
-    so it starts at boot regardless of which user is logged in (or if nobody is).
-    Installation requires root (sudo).
-    """
-    password = get_sudo_password()
-    venv_python = repo_dir / ".venv" / "bin" / "python"
-
-    if not venv_python.exists():
-        error(f"Virtual environment not found at {venv_python}")
-        warn("Run the installer again to create it")
-        return False
-
-    template_path = repo_dir / "install" / "templates" / "com.myoldmachine.daemon.plist"
-    if not template_path.exists():
-        error(f"Daemon plist template not found: {template_path}")
-        return False
-
-    orchestrator_home = repo_dir / "data" / "orchestrator"
-
-    content = template_path.read_text(encoding="utf-8")
-    content = content.replace("{{ORCHESTRATOR_USER}}", orchestrator_user)
-    content = content.replace("{{PYTHON}}", str(venv_python))
-    content = content.replace("{{WORKING_DIR}}", str(repo_dir))
-    content = content.replace("{{BOT_PY}}", str(repo_dir / "bot.py"))
-    content = content.replace("{{LOG_DIR}}", str(repo_dir / "data" / "logs"))
-    content = content.replace("{{ENV_FILE}}", str(repo_dir / ".env"))
-    content = content.replace("{{VENV_BIN}}", str(repo_dir / ".venv" / "bin"))
-    content = content.replace("{{HOME}}", str(orchestrator_home))
-    # In multi-user mode the orchestrator user has its own (mostly empty)
-    # home, so we resolve CLI dirs against the install user's home — that is
-    # where wizard-driven installs (npm, brew, native) actually placed claude
-    # / codex. Sudoers still pins the literal path the bot will spawn.
-    content = content.replace("{{CLI_BIN_PATHS}}", _discover_cli_bin_paths(Path.home()))
-
-    (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)
-
-    # If a single-user LaunchAgent exists from a prior install, unload and
-    # remove it. Both use the same label (com.myoldmachine.bot) and launchd
-    # would try to load both, causing a conflict.
-    old_agent = Path.home() / "Library" / "LaunchAgents" / "com.myoldmachine.bot.plist"
-    if old_agent.exists():
-        info("Removing old single-user LaunchAgent to avoid label conflict...")
-        try:
-            subprocess.run(
-                ["launchctl", "unload", str(old_agent)],
-                capture_output=True, timeout=10
-            )
-        except Exception:
-            pass
-        try:
-            old_agent.unlink()
-            ok("Old LaunchAgent removed")
-        except OSError as e:
-            warn(f"Could not remove old LaunchAgent at {old_agent}: {e}")
-
-    daemon_path = "/Library/LaunchDaemons/com.myoldmachine.bot.plist"
-    import shlex
-    fd, tmp_name = tempfile.mkstemp(suffix=".plist", prefix="myoldmachine_daemon_")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-        result = sudo_run(f"cp {shlex.quote(tmp_name)} {daemon_path}", password)
-        if result.returncode != 0:
-            error(f"Failed to install daemon plist: {result.stderr}")
-            return False
-        sudo_run(f"chmod 644 {daemon_path}", password)
-        sudo_run(f"chown root:wheel {daemon_path}", password)
-    finally:
-        Path(tmp_name).unlink(missing_ok=True)
-
-    _launchctl_load(Path(daemon_path), os_info, system_wide=True, password=password)
-
-    ok(f"LaunchDaemon installed at {daemon_path}")
-    ok(f"Service runs as {orchestrator_user}, starts at boot, restarts on crash")
     return True
 
 
@@ -495,16 +378,9 @@ def _launchctl_load(plist_path: Path, os_info=None, *,
                 warn(f"launchctl load warning: {result.stderr}")
 
 
-def setup_macos_service(repo_dir: Path, os_info=None,
-                        orchestrator_user: str | None = None) -> bool:
-    """Create and load launchd plist (version-aware). Returns True on success.
-
-    Single-user: installs a LaunchAgent in ~/Library/LaunchAgents/.
-    Multi-user: installs a LaunchDaemon in /Library/LaunchDaemons/ that runs
-    as the orchestrator user, independent of any login session.
-    """
-    if orchestrator_user:
-        return _setup_macos_launch_daemon(repo_dir, orchestrator_user, os_info)
+def setup_macos_service(repo_dir: Path, os_info=None) -> bool:
+    """Create and load launchd plist. Installs a LaunchAgent in
+    ~/Library/LaunchAgents/. Returns True on success."""
     return _setup_macos_launch_agent(repo_dir, os_info)
 
 
@@ -513,9 +389,6 @@ def main():
     parser.add_argument("--repo-dir", type=str, required=True)
     parser.add_argument("--os", type=str, choices=["linux", "macos"],
                         help="Override OS detection (optional)")
-    parser.add_argument("--orchestrator-user", type=str, default=None,
-                        help="System user to run the bot as (multi-user mode). "
-                             "If not given, runs as the current user.")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir)
@@ -524,18 +397,13 @@ def main():
     os_type = args.os if args.os else os_info.os_type
 
     print(f"\n{BOLD}=== Service Setup ==={NC}\n")
-    if args.orchestrator_user:
-        info(f"Setting up service for {os_info.display_name} (multi-user, "
-             f"running as {args.orchestrator_user})")
-    else:
-        info(f"Setting up service for {os_info.display_name}")
+    info(f"Setting up service for {os_info.display_name}")
 
     success = False
     if os_type == "linux":
-        success = setup_linux_service(repo_dir, orchestrator_user=args.orchestrator_user)
+        success = setup_linux_service(repo_dir)
     elif os_type == "macos":
-        success = setup_macos_service(repo_dir, os_info,
-                                      orchestrator_user=args.orchestrator_user)
+        success = setup_macos_service(repo_dir, os_info)
     else:
         error(f"Unsupported OS: {os_type}")
 

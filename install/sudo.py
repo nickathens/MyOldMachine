@@ -12,11 +12,6 @@ Modules that previously carried their own copies of these helpers
 (provisioner, service, compat, self_install, updater, system_update) now
 import from here and add only their own logging/dry-run wrappers.
 
-install/multiuser.py keeps a separate ``_sudo_run`` on purpose: it takes
-``list[str]`` and uses argv-form sudo (no shell=True) so untrusted slot
-usernames can never be parsed as shell metacharacters. Do not consolidate
-that one with this string-form helper.
-
 Keep this module minimal. Callers that need to assemble multiple sudo
 commands (e.g., apt-get update + apt-get install) should call sudo_run()
 multiple times rather than baking domain logic in here.

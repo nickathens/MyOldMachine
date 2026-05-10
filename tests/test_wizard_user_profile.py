@@ -1,20 +1,10 @@
 """Regression tests for `write_user_profile` resilience.
 
-Bug guarded against (Nick's Mac, MyOldMachine dcbfd00):
-
-  1. First install completed `_provision_multiuser`, which chowned
-     data/memory/ to mom_orchestrator with mode 0700.
-  2. User wiped ~/MyOldMachine without sudo. rm couldn't traverse the
-     mode-0700 dirs, so they survived as zombies.
-  3. Fresh `curl | bash` re-cloned on top. Wizard ran write_user_profile,
-     hit `(data/memory/projects).mkdir(parents=True, exist_ok=True)` and
-     crashed with PermissionError because data/memory/ was still
-     orchestrator-owned mode 0700.
-
-Fix: write_user_profile catches PermissionError on the memory subdir
-mkdir and continues. _provision_multiuser later rebuilds these dirs
-under the right ownership; the bot's memory system also creates dirs
-on demand at runtime.
+If a previous install left data/memory/ owned by another user with mode
+0700, a re-run of the wizard hits PermissionError on the memory-subdir
+mkdir. write_user_profile catches that and continues so the install
+flow does not crash; the bot's memory system creates dirs on demand at
+runtime if needed.
 """
 from __future__ import annotations
 
@@ -73,8 +63,8 @@ class WriteUserProfileResilienceTests(unittest.TestCase):
         self.assertTrue(memories.exists())
 
     def test_skips_memory_subdir_on_permission_error(self):
-        """The bug: data/memory/ exists but is orchestrator-owned mode 0700.
-        mkdir raises PermissionError. write_user_profile must not crash."""
+        """If data/memory/ is owned by another user and mode 0700, mkdir
+        raises PermissionError. write_user_profile must not crash."""
         # Pre-create data/memory/ so subdir mkdir is the failing point.
         (self.tmpdir / "data" / "memory").mkdir()
 

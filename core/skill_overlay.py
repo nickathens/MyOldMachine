@@ -29,9 +29,8 @@ Storage layout per user:
         scripts/...
     skill_settings.json               # overrides + notes
 
-The fork directory and settings file are owned by the slot user and
-kernel-isolated from other users via the multi-user filesystem layout
-(mode 02770 setgid, group=mom_orchestrator).
+The fork directory and settings file live in the user's data dir and
+are scoped per Telegram user at the application level.
 """
 from __future__ import annotations
 

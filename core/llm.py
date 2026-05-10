@@ -79,56 +79,6 @@ def _find_cli_binary(name: str) -> str:
     return name
 
 
-def _resolve_slot_for_user(user_id: Optional[int]) -> Optional[int]:
-    """Look up the slot bound to a Telegram user ID.
-
-    Returns the slot number (1..N) when multi-user mode is active and the
-    user is bound to a slot. Returns None for legacy single-user installs
-    or unbound IDs; caller should fall back to the legacy data dir.
-    """
-    if user_id is None:
-        return None
-    try:
-        from core.users import is_multiuser_enabled, lookup_slot
-    except ImportError:
-        return None
-    if not is_multiuser_enabled():
-        return None
-    found = lookup_slot(user_id)
-    if not found:
-        return None
-    slot, _ = found
-    return slot
-
-
-def _wrap_cli_for_slot(cmd: list[str], slot: Optional[int]) -> tuple[list[str], Optional[Path]]:
-    """Wrap a CLI invocation to run as the slot's system user via sudo.
-
-    When slot is None, returns (cmd, None); caller keeps its original cwd.
-    When slot is set, returns (sudo_prefixed_cmd, slot_data_dir) so the
-    subprocess runs as mom_userN with cwd inside that user's private dir.
-    The sudoers fragment installed at /etc/sudoers.d/myoldmachine grants
-    NOPASSWD for exactly this combination of orchestrator -> slot -> binary.
-
-    Does NOT auto-create the slot directory. Slot dirs are provisioned by
-    the install wizard with the correct ownership (mom_userN:mom_orchestrator)
-    that the orchestrator cannot replicate at runtime. If the dir is missing
-    (e.g., after /removeuser archived it and a new user was bound to the
-    same slot), the subprocess fails fast and the admin must re-provision.
-    """
-    if slot is None:
-        return cmd, None
-    from core.users import slot_user_name, slot_data_dir
-    sudo_prefix = ["sudo", "-n", "-u", slot_user_name(slot), "--"]
-    cwd = slot_data_dir(slot)
-    if not cwd.exists():
-        logger.error(
-            f"Slot {slot} data dir missing: {cwd}. "
-            f"Re-run install/wizard.py to provision it."
-        )
-    return sudo_prefix + cmd, cwd
-
-
 @dataclass
 class Message:
     role: str  # "user" or "assistant"
@@ -565,12 +515,6 @@ class ClaudeCLIProvider(LLMProvider):
             "-",  # Read from stdin
         ]
 
-        # Multi-user mode: dispatch as the slot's system user via sudo. The
-        # sudoers fragment scopes this to the orchestrator running exactly
-        # this binary as exactly the per-slot users (no other commands).
-        slot = _resolve_slot_for_user(user_id)
-        cmd, slot_cwd = _wrap_cli_for_slot(cmd, slot)
-
         typing_task = None
         process = None
         start_time = asyncio.get_running_loop().time()
@@ -600,10 +544,9 @@ class ClaudeCLIProvider(LLMProvider):
                     "ANTHROPIC_BASE_URL",
                     "CLAUDE_CONFIG_DIR",
                 }),
-                keep_home=(slot is None),
             )
 
-            cwd = str(slot_cwd) if slot_cwd is not None else str(self._bot_dir)
+            cwd = str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
@@ -1115,10 +1058,6 @@ class CodexCLIProvider(LLMProvider):
             "-",  # Read prompt from stdin
         ]
 
-        # Multi-user mode: wrap the cmd in sudo to run as the slot's system user.
-        slot = _resolve_slot_for_user(user_id)
-        cmd, slot_cwd = _wrap_cli_for_slot(cmd, slot)
-
         typing_task = None
         process = None
         start_time = asyncio.get_running_loop().time()
@@ -1152,10 +1091,9 @@ class CodexCLIProvider(LLMProvider):
                     "CODEX_HOME",
                 }),
                 extra=extra,
-                keep_home=(slot is None),
             )
 
-            cwd = str(slot_cwd) if slot_cwd is not None else str(self._bot_dir)
+            cwd = str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,

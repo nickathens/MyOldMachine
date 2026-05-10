@@ -231,12 +231,6 @@ def borg_version() -> Optional[str]:
     return (result.stdout or "").strip()
 
 
-def passphrase_path_for(repo_dir: Path, multiuser: bool = False) -> Path:
-    """Return the canonical on-disk path for the borg passphrase.
-
-    Single-user: <repo>/data/borg-passphrase
-    Multi-user:  <repo>/data/orchestrator/borg-passphrase
-    """
-    if multiuser:
-        return repo_dir / "data" / "orchestrator" / "borg-passphrase"
+def passphrase_path_for(repo_dir: Path) -> Path:
+    """Return the canonical on-disk path for the borg passphrase."""
     return repo_dir / "data" / "borg-passphrase"

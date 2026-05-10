@@ -448,38 +448,6 @@ class BackupRegistryEntryTests(unittest.TestCase):
 
             self.assertEqual(captured["backup_retention"], 7)
 
-    def test_backup_configure_borg_defers_to_runtime_in_multiuser(self):
-        """Multi-user installs run the wizard as install_user, but data/ is
-        already owned by mom_orchestrator mode 0755 — wizard can't write the
-        passphrase file. Setup must defer to /maintenance backup-tool borg."""
-        feat = next(f for f in wizard.OPTIONAL_FEATURES if f["key"] == "backup")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            captured = {}
-
-            def fake_update(**kwargs):
-                captured.update(kwargs)
-                return kwargs
-
-            answers = iter([tmpdir])
-
-            def fake_ask(prompt, default=None, **_):
-                try:
-                    return next(answers)
-                except StopIteration:
-                    return default or ""
-
-            with patch.object(wizard, "ask", side_effect=fake_ask), \
-                 patch.object(wizard, "ask_choice", return_value="borg"), \
-                 patch("utils.maintenance.update_config", side_effect=fake_update):
-                config = {"multiuser_enabled": True}
-                feat["configure"](config)
-
-            # In multi-user mode, the wizard should save tarball as a safe
-            # default and tell the user to switch via /maintenance.
-            self.assertEqual(captured.get("backup_tool"), "tarball")
-            self.assertTrue(captured.get("backup_enabled"))
-            self.assertTrue(config.get("backup_enabled"))
-
     def test_backup_configure_borg_branch_initializes_repo(self):
         """When the user picks borg, the wizard should install borg, generate
         a passphrase, init the repo, and save the borg-specific keys."""

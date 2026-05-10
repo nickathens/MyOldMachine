@@ -35,42 +35,14 @@ set -o pipefail
 # ─────────────────────────────────────────────────────────
 # CLI flags
 # ─────────────────────────────────────────────────────────
-# --experimental
-#     Unlock advanced experimental flows in the wizard. Today this means
-#     "let me attempt slot-account multi-user on macOS, even though it
-#     does not work cleanly". Without this flag, macOS installs are
-#     forced to single-user mode.
-#
-# --convert-multiuser-to-single
-#     One-way conversion of an existing multi-user install on this
-#     machine to single-user mode. Stops the service, removes slot
-#     accounts + sudoers fragment, chowns data/ back to the install
-#     user, rewrites .env, and re-registers the service. Preserves
-#     .env and existing data files. Does not touch unrelated installs.
-EXPERIMENTAL=0
-CONVERT_TO_SINGLE_USER=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --experimental)
-            EXPERIMENTAL=1
-            shift
-            ;;
-        --convert-multiuser-to-single)
-            CONVERT_TO_SINGLE_USER=1
-            shift
-            ;;
         --help|-h)
             cat <<'EOF'
 MyOldMachine installer
 
 Usage:
-  ./install.sh                              Standard install (default)
-  ./install.sh --experimental               Unlock experimental flows
-                                            (e.g. macOS multi-user, broken)
-  ./install.sh --convert-multiuser-to-single
-                                            Convert this machine from
-                                            multi-user back to single-user.
-                                            Preserves .env and data.
+  ./install.sh    Standard install (default)
 
 EOF
             exit 0
@@ -158,18 +130,17 @@ if [ -f "$CHECKPOINT_FILE" ]; then
             "$(pwd)/.env"; do
             [ -n "$env_loc" ] && [ -f "$env_loc" ] && rm -f "$env_loc" && info "Removed stale $env_loc"
         done
-        # Detect orphan-owned subdirs under data/ from a previous multi-user
-        # install. Without sudo, "rm -rf ~/MyOldMachine" can't enter mode-0700
-        # dirs owned by mom_orchestrator/mom_userN, so they survive the wipe
-        # and break the next wizard run when it tries to mkdir into them.
-        # Only check inside actual MyOldMachine repo dirs (install.sh present)
-        # to avoid wiping unrelated /tmp paths if curl|bash CWD is unusual.
+        # Detect orphan-owned subdirs under data/ from a prior install with
+        # different ownership. Without sudo, "rm -rf ~/MyOldMachine" can't
+        # enter mode-0700 dirs owned by another user, so they survive and
+        # break the next wizard run. Only check inside actual MyOldMachine
+        # repo dirs (install.sh present) to avoid wiping unrelated paths.
         for repo_loc in "$HOME/MyOldMachine" "$(pwd)"; do
             [ -d "$repo_loc/data" ] && [ -f "$repo_loc/install.sh" ] || continue
             orphan_count=$(find "$repo_loc/data" ! -user "$(id -un)" -print 2>/dev/null | head -1 | wc -l | tr -d ' ')
             if [ "${orphan_count:-0}" -gt 0 ]; then
                 warn "Detected leftover files under $repo_loc/data not owned by you."
-                warn "These are from a previous multi-user install. Cleaning with sudo..."
+                warn "Cleaning with sudo..."
                 if sudo rm -rf "$repo_loc/data"; then
                     info "Removed stale $repo_loc/data"
                 else
@@ -178,14 +149,9 @@ if [ -f "$CHECKPOINT_FILE" ]; then
                 break
             fi
         done
-        # Tear down stale system services from a previous install. Without
-        # this, a fresh single-user install over a previous multi-user MOM
-        # leaves the LaunchDaemon (Mac) / systemd unit (Linux) crash-looping
-        # because they reference users we are about to delete or .env keys
-        # we just removed. Best-effort: failures are warned, not fatal —
-        # the wizard's service.py also unloads the bot LaunchDaemon when it
-        # installs the LaunchAgent, so a missed unit here still gets
-        # caught downstream.
+        # Tear down stale system services from a previous install so a
+        # fresh install does not inherit a crash-looping LaunchDaemon /
+        # systemd unit referencing keys or users we have removed.
         # NOTE: $OS is not yet detected at this point in the script (the
         # detect_os step runs after this block), so we re-check via
         # `uname -s` inline.
@@ -431,28 +397,6 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────
-# --convert-multiuser-to-single dispatch
-# ─────────────────────────────────────────────────────────
-# Runs after REPO_DIR resolution so the user can either point at an
-# already-installed repo (./install.sh --convert-...) or run via
-# curl|bash (which falls into the "$HOME/MyOldMachine" branch above and
-# pulls latest before we run the converter from the freshly-pulled tree).
-# Skips Python provisioning, the wizard, and service registration done
-# by the regular install flow — the converter handles its own service
-# re-registration.
-if [ "${CONVERT_TO_SINGLE_USER:-0}" = "1" ]; then
-    if [ ! -x "$REPO_DIR/.venv/bin/python" ]; then
-        die "Cannot run conversion: $REPO_DIR/.venv/bin/python not found.
-  This conversion requires an existing install. Run ./install.sh first
-  to set up the venv, then re-run with --convert-multiuser-to-single."
-    fi
-    info "Converting multi-user install to single-user mode..."
-    "$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/convert_to_single_user.py" \
-        --repo-dir "$REPO_DIR" < "$TTY_INPUT"
-    exit $?
-fi
-
-# ─────────────────────────────────────────────────────────
 # Step 4: Ensure Python 3.10+
 # ─────────────────────────────────────────────────────────
 
@@ -663,9 +607,6 @@ echo ""
 # Pass checkpoint file path so wizard and provisioner can use it
 export MYOLDMACHINE_CHECKPOINT_FILE="$CHECKPOINT_FILE"
 
-WIZARD_ARGS=("--repo-dir" "$REPO_DIR" "--os" "$OS")
-if [ "${EXPERIMENTAL:-0}" = "1" ]; then
-    WIZARD_ARGS+=("--experimental")
-fi
-"$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/wizard.py" "${WIZARD_ARGS[@]}" < "$TTY_INPUT"
+"$REPO_DIR/.venv/bin/python" "$REPO_DIR/install/wizard.py" \
+    --repo-dir "$REPO_DIR" --os "$OS" < "$TTY_INPUT"
 exit $?

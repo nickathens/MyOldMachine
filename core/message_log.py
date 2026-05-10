@@ -37,20 +37,13 @@ def _strip_attachment_paths(content: str) -> str | None:
 
 
 def _get_db_path(user_id: int) -> Path:
-    """Return the path to a user's message log database.
-
-    Multi-user mode: uses slot dir (data/users/userN/).
-    Single-user mode: uses Telegram ID dir (data/users/<id>/).
-    """
+    """Return the path to a user's message log database (data/users/<id>/)."""
     try:
-        from core.users import resolve_user_dir, is_multiuser_enabled, lookup_slot
+        from core.users import resolve_user_dir
         user_dir = resolve_user_dir(user_id)
-        multiuser = is_multiuser_enabled() and lookup_slot(user_id) is not None
     except ImportError:
         user_dir = _USERS_DIR / str(user_id)
-        multiuser = False
-    if not multiuser:
-        user_dir.mkdir(parents=True, exist_ok=True)
+    user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir / "message_log.db"
 
 

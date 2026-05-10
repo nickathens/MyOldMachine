@@ -474,42 +474,7 @@ def test_setup_macos_routes_to_launchd(tmp_path, monkeypatch):
     assert flags["systemd"] is False
 
 
-def test_setup_uses_orchestrator_user_in_multiuser_mode(tmp_path, monkeypatch):
-    config = {
-        "telegram_local_api_enabled": True,
-        "telegram_api_id": "1",
-        "telegram_api_hash": "0" * 32,
-        "multiuser_enabled": True,
-        "multiuser_orchestrator_user": "mom_orchestrator",
-    }
-    os_info = mock.Mock(os_type="linux")
-
-    p = paths_for(tmp_path)
-    p["binary_path"].parent.mkdir(parents=True, exist_ok=True)
-    p["binary_path"].write_text("#!/bin/sh")
-
-    # Stub multiuser helpers so the chown path doesn't shell out to sudo.
-    fake_mu = type(sys)("install.multiuser")
-    fake_mu.set_owner = lambda *a, **kw: True
-    fake_mu.set_perms = lambda *a, **kw: True
-    monkeypatch.setitem(sys.modules, "install.multiuser", fake_mu)
-
-    captured = {}
-
-    def fake_service(repo_dir, *, binary_path, state_dir, env_file, user,
-                     password):
-        captured["user"] = user
-        return True
-
-    monkeypatch.setattr(
-        "install.telegram_bot_api._register_systemd_service", fake_service
-    )
-
-    setup_telegram_bot_api(tmp_path, config, os_info, password=None)
-    assert captured["user"] == "mom_orchestrator"
-
-
-def test_setup_uses_current_user_in_single_user_mode(tmp_path, monkeypatch):
+def test_setup_uses_current_user(tmp_path, monkeypatch):
     config = {
         "telegram_local_api_enabled": True,
         "telegram_api_id": "1",
@@ -553,9 +518,6 @@ def test_env_resume_roundtrip(tmp_path, monkeypatch):
         "bot_name": "Foo",
         "timezone": "UTC",
         "takeover": "minimal",
-        "multiuser_enabled": False,
-        "multiuser_num_slots": 1,
-        "multiuser_queue_enabled": False,
         "telegram_local_api_enabled": True,
         "telegram_api_id": "999",
         "telegram_api_hash": "abcdef0123456789abcdef0123456789",
@@ -586,9 +548,6 @@ def test_env_writes_no_tba_keys_when_disabled(tmp_path):
         "bot_name": "Foo",
         "timezone": "UTC",
         "takeover": "minimal",
-        "multiuser_enabled": False,
-        "multiuser_num_slots": 1,
-        "multiuser_queue_enabled": False,
         "telegram_local_api_enabled": False,
     }
     wizard.write_env(repo_dir, config)
@@ -614,201 +573,28 @@ def test_env_resume_default_disabled_when_keys_absent(tmp_path):
 # ---- _ensure_state_dir_owned ----
 #
 # The state_dir is what launchd redirects StandardOutPath/StandardErrorPath
-# into and what the daemon writes api.log to. If it is not owned by the
-# runtime user (the install user in single-user mode, mom_orchestrator in
-# multi-user mode), launchd fails with EX_CONFIG (78) before exec and
-# systemd fails on the first api.log write. These tests pin the contract.
+# into and what the daemon writes api.log to. If the daemon process can't
+# write here, launchd fails with EX_CONFIG (78) before exec and systemd
+# fails on the first api.log write. These tests pin the contract.
 
 
-def test_ensure_state_dir_creates_dir_in_single_user(tmp_path):
+def test_ensure_state_dir_creates_dir(tmp_path):
     state = tmp_path / "data" / "telegram-bot-api" / "state"
     assert not state.exists()
-    ok = _ensure_state_dir_owned(
-        state, "alice", multiuser_enabled=False, password=None
-    )
+    ok = _ensure_state_dir_owned(state, "alice", password=None)
     assert ok is True
     assert state.is_dir()
-    # On platforms that honor chmod (POSIX), confirm 0o700.
     import os
     if os.name == "posix":
         mode = state.stat().st_mode & 0o777
         assert mode == 0o700, f"expected 0o700, got {oct(mode)}"
 
 
-def test_ensure_state_dir_idempotent_in_single_user(tmp_path):
+def test_ensure_state_dir_idempotent(tmp_path):
     state = tmp_path / "data" / "telegram-bot-api" / "state"
     state.mkdir(parents=True, exist_ok=True)
-    # Run twice — second run must still succeed.
-    assert _ensure_state_dir_owned(
-        state, "alice", multiuser_enabled=False, password=None
-    ) is True
-    assert _ensure_state_dir_owned(
-        state, "alice", multiuser_enabled=False, password=None
-    ) is True
-
-
-def test_ensure_state_dir_no_chown_in_single_user(tmp_path, monkeypatch):
-    """Single-user mode must NOT call sudo chown — install user already owns."""
-    state = tmp_path / "data" / "telegram-bot-api" / "state"
-    sentinel = {"chown_called": False, "chmod_called": False}
-
-    def boom_set_owner(*a, **kw):
-        sentinel["chown_called"] = True
-        return True
-
-    def boom_set_perms(*a, **kw):
-        sentinel["chmod_called"] = True
-        return True
-
-    # Even if the multiuser module IS importable, we should not be calling
-    # its helpers from the single-user path.
-    fake_mu = type(sys)("install.multiuser")
-    fake_mu.set_owner = boom_set_owner
-    fake_mu.set_perms = boom_set_perms
-    monkeypatch.setitem(sys.modules, "install.multiuser", fake_mu)
-
-    ok = _ensure_state_dir_owned(
-        state, "alice", multiuser_enabled=False, password=None
-    )
-    assert ok is True
-    assert sentinel["chown_called"] is False
-    assert sentinel["chmod_called"] is False
-
-
-def test_ensure_state_dir_chowns_in_multiuser(tmp_path, monkeypatch):
-    state = tmp_path / "data" / "telegram-bot-api" / "state"
-    captured = {}
-
-    def fake_set_owner(path, user, *, password=None, recursive=False):
-        captured["set_owner"] = {
-            "path": Path(path),
-            "user": user,
-            "password": password,
-            "recursive": recursive,
-        }
-        return True
-
-    def fake_set_perms(path, mode, *, password=None, recursive=False):
-        captured["set_perms"] = {
-            "path": Path(path),
-            "mode": mode,
-            "recursive": recursive,
-        }
-        return True
-
-    fake_mu = type(sys)("install.multiuser")
-    fake_mu.set_owner = fake_set_owner
-    fake_mu.set_perms = fake_set_perms
-    monkeypatch.setitem(sys.modules, "install.multiuser", fake_mu)
-
-    ok = _ensure_state_dir_owned(
-        state, "mom_orchestrator", multiuser_enabled=True, password="pw"
-    )
-    assert ok is True
-    assert state.is_dir()
-    assert captured["set_owner"]["path"] == state
-    assert captured["set_owner"]["user"] == "mom_orchestrator"
-    assert captured["set_owner"]["password"] == "pw"
-    assert captured["set_owner"]["recursive"] is True
-    assert captured["set_perms"]["path"] == state
-    assert captured["set_perms"]["mode"] == 0o700
-
-
-def test_ensure_state_dir_chown_failure_returns_false(tmp_path, monkeypatch):
-    state = tmp_path / "data" / "telegram-bot-api" / "state"
-
-    fake_mu = type(sys)("install.multiuser")
-    fake_mu.set_owner = lambda *a, **kw: False
-    fake_mu.set_perms = lambda *a, **kw: True
-    monkeypatch.setitem(sys.modules, "install.multiuser", fake_mu)
-
-    ok = _ensure_state_dir_owned(
-        state, "mom_orchestrator", multiuser_enabled=True, password="pw"
-    )
-    assert ok is False
-
-
-def test_ensure_state_dir_chmod_failure_returns_false(tmp_path, monkeypatch):
-    state = tmp_path / "data" / "telegram-bot-api" / "state"
-
-    fake_mu = type(sys)("install.multiuser")
-    fake_mu.set_owner = lambda *a, **kw: True
-    fake_mu.set_perms = lambda *a, **kw: False
-    monkeypatch.setitem(sys.modules, "install.multiuser", fake_mu)
-
-    ok = _ensure_state_dir_owned(
-        state, "mom_orchestrator", multiuser_enabled=True, password="pw"
-    )
-    assert ok is False
-
-
-def test_setup_calls_ensure_state_dir_in_multiuser(tmp_path, monkeypatch):
-    """End-to-end: setup_telegram_bot_api must invoke ensure_state_dir
-    with multiuser_enabled=True before registering the service."""
-    config = {
-        "telegram_local_api_enabled": True,
-        "telegram_api_id": "1",
-        "telegram_api_hash": "0" * 32,
-        "multiuser_enabled": True,
-        "multiuser_orchestrator_user": "mom_orchestrator",
-    }
-    os_info = mock.Mock(os_type="linux")
-    p = paths_for(tmp_path)
-    p["binary_path"].parent.mkdir(parents=True, exist_ok=True)
-    p["binary_path"].write_text("#!/bin/sh")
-
-    captured = {}
-
-    def fake_ensure(state_dir, user, multiuser_enabled, password):
-        captured["state_dir"] = Path(state_dir)
-        captured["user"] = user
-        captured["multiuser_enabled"] = multiuser_enabled
-        captured["password"] = password
-        return True
-
-    monkeypatch.setattr(
-        "install.telegram_bot_api._ensure_state_dir_owned", fake_ensure
-    )
-    monkeypatch.setattr(
-        "install.telegram_bot_api._register_systemd_service",
-        lambda *a, **kw: True,
-    )
-
-    setup_telegram_bot_api(tmp_path, config, os_info, password="pw")
-    assert captured["state_dir"] == p["state_dir"]
-    assert captured["user"] == "mom_orchestrator"
-    assert captured["multiuser_enabled"] is True
-    assert captured["password"] == "pw"
-
-
-def test_setup_aborts_if_state_dir_chown_fails(tmp_path, monkeypatch):
-    config = {
-        "telegram_local_api_enabled": True,
-        "telegram_api_id": "1",
-        "telegram_api_hash": "0" * 32,
-        "multiuser_enabled": True,
-        "multiuser_orchestrator_user": "mom_orchestrator",
-    }
-    os_info = mock.Mock(os_type="linux")
-    p = paths_for(tmp_path)
-    p["binary_path"].parent.mkdir(parents=True, exist_ok=True)
-    p["binary_path"].write_text("#!/bin/sh")
-
-    monkeypatch.setattr(
-        "install.telegram_bot_api._ensure_state_dir_owned",
-        lambda *a, **kw: False,
-    )
-    service_called = {"v": False}
-    monkeypatch.setattr(
-        "install.telegram_bot_api._register_systemd_service",
-        lambda *a, **kw: service_called.update(v=True) or True,
-    )
-
-    result = setup_telegram_bot_api(tmp_path, config, os_info, password="pw")
-    assert result is False
-    assert service_called["v"] is False, (
-        "service registration must NOT proceed if state_dir ownership failed"
-    )
+    assert _ensure_state_dir_owned(state, "alice", password=None) is True
+    assert _ensure_state_dir_owned(state, "alice", password=None) is True
 
 
 def test_default_port_is_8081():

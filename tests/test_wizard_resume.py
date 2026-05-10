@@ -1,10 +1,9 @@
 """Regression tests for install.wizard._load_config_from_env on resume.
 
 The wizard stores the sudo password in ~/.sudo_pass (mode 0600) instead of
-.env, since .env later gets chowned to the orchestrator group. On a resume
-re-run (env_valid path), `config["sudo_pass"]` was previously missing, so
-multi-user provisioning fell back to `sudo -n` and failed on machines that
-require a password. Loading it from disk closes that gap.
+.env. On a resume re-run (env_valid path), `config["sudo_pass"]` was once
+missing so install steps that needed sudo fell back to `sudo -n` and failed
+on machines that require a password. Loading it from disk closes that gap.
 """
 from __future__ import annotations
 
@@ -47,8 +46,6 @@ class LoadConfigFromEnvTests(unittest.TestCase):
             "TELEGRAM_BOT_TOKEN=tok\n"
             "LLM_PROVIDER=openrouter\n"
             "LLM_MODEL=mini\n"
-            "MULTIUSER_ENABLED=1\n"
-            "MULTIUSER_NUM_SLOTS=2\n"
         )
         self._write_sudo_pass("hunter2")
 
@@ -57,8 +54,6 @@ class LoadConfigFromEnvTests(unittest.TestCase):
 
         self.assertEqual(cfg.get("sudo_pass"), "hunter2")
         self.assertEqual(cfg.get("telegram_token"), "tok")
-        self.assertTrue(cfg.get("multiuser_enabled"))
-        self.assertEqual(cfg.get("multiuser_num_slots"), 2)
 
     def test_missing_sudo_pass_file_is_silent(self):
         self._write_env("TELEGRAM_BOT_TOKEN=tok\n")

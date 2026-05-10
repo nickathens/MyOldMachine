@@ -96,15 +96,10 @@ class BuildCliEnvTests(unittest.TestCase):
             )
             self.assertEqual(env.get("OPENAI_API_KEY"), "explicit")
 
-    def test_keep_home_false_drops_home(self):
-        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
-            env = tools.build_cli_env(frozenset(), keep_home=False)
-            self.assertNotIn("HOME", env)
-
-    def test_keep_home_true_sets_home(self):
-        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
-            env = tools.build_cli_env(frozenset(), keep_home=True)
-            self.assertIn("HOME", env)
+    def test_home_set_from_environ(self):
+        with patch.dict(os.environ, {"PATH": "/usr/bin", "HOME": "/home/u"}, clear=True):
+            env = tools.build_cli_env(frozenset())
+            self.assertEqual(env.get("HOME"), "/home/u")
 
 
 class IsCommandBlockedTests(unittest.TestCase):

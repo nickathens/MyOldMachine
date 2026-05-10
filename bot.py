@@ -429,7 +429,7 @@ _RESERVED_COMMANDS = {
     "health", "cleanup", "system", "update", "restart",
     "provider", "model", "apikey",
     "alias",
-    "adduser", "removeuser", "users", "purgeuser",
+    "adduser", "removeuser", "users",
     "maintenance", "skillstats",
 }
 
@@ -437,39 +437,18 @@ _RESERVED_COMMANDS = {
 # --- User data helpers ---
 
 def get_user_dir(user_id: int) -> Path:
-    """Resolve the data dir for a Telegram user.
-
-    Multi-user mode: returns data/users/userN/ where N is the slot bound to
-    this Telegram ID. The dir is owned by mom_userN with the orchestrator
-    in the group, so both the bot and the slot's CLI can read/write it.
-    Slot dirs are provisioned at install time. We do NOT auto-create them
-    here, because mkdir() from the orchestrator would create an
-    orchestrator-owned dir and break the privacy model.
-
-    Single-user mode (or unbound IDs): keeps the legacy data/users/<id>/
-    layout to preserve backwards compatibility with existing installs. We
-    DO auto-create that dir since it has no privileged ownership.
-    """
-    multiuser = False
+    """Resolve the per-Telegram-user data dir at data/users/<id>/."""
     try:
-        from core.users import resolve_user_dir, is_multiuser_enabled, lookup_slot
+        from core.users import resolve_user_dir
         d = resolve_user_dir(user_id)
-        # Only treat this as a slot dir if the user is actually bound to one.
-        # Unbound users in multi-user mode fall through to legacy TID path.
-        multiuser = is_multiuser_enabled() and lookup_slot(user_id) is not None
     except ImportError:
         d = USERS_DIR / str(user_id)
-    if not multiuser:
-        d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def get_attachments_dir(user_id: int) -> Path:
     d = get_user_dir(user_id) / "attachments"
-    # parents=False: in multi-user mode, the slot dir is provisioned at
-    # install with privileged ownership we can't replicate. If the slot
-    # dir is missing, fail loudly here rather than silently creating an
-    # orchestrator-owned dir that breaks the privacy model.
     d.mkdir(exist_ok=True)
     return d
 
@@ -1954,23 +1933,19 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     report = await asyncio.to_thread(build_health_report, BOT_DIR)
 
-    # Multi-user supplement
     try:
-        from core.users import (
-            is_multiuser_enabled, num_slots, list_slots,
-            queue_enabled, concurrent_requests,
+        from core.users import list_users, queue_mode, concurrent_requests
+        users = list_users()
+        admins = sum(
+            1 for v in users.values()
+            if isinstance(v, dict) and v.get("role") == "admin"
         )
-        if is_multiuser_enabled():
-            slots = list_slots()
-            bound = sum(1 for v in slots.values() if v)
-            total = num_slots()
-            qstate = "on" if queue_enabled() else "off"
-            cr = concurrent_requests()
-            cr_text = f"{cr}" if cr > 0 else "unlimited"
-            report += (
-                f"\n\nMulti-user: {bound}/{total} slots bound\n"
-                f"Queue: {qstate} (concurrent={cr_text})"
-            )
+        cr = concurrent_requests()
+        cr_text = f"{cr}" if cr > 0 else "unlimited"
+        report += (
+            f"\n\nUsers: {len(users)} registered ({admins} admin)\n"
+            f"Queue: {queue_mode()} (concurrent={cr_text})"
+        )
     except ImportError:
         pass
 
@@ -1979,25 +1954,19 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @requires_auth
 async def adduser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bind a free slot to a Telegram ID (admin only, multi-user mode only)."""
+    """Add a Telegram user to the allowlist (admin only)."""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         return  # silently ignore; don't leak command existence
     try:
-        from core.users import is_multiuser_enabled, add_user
+        from core.users import add_user
     except ImportError:
-        await update.message.reply_text("Multi-user support unavailable.")
-        return
-    if not is_multiuser_enabled():
-        await update.message.reply_text(
-            "Multi-user mode is not enabled on this install. "
-            "Reinstall with multi-user to use this command."
-        )
+        await update.message.reply_text("User management unavailable.")
         return
     args = (context.args or [])
     if len(args) < 2:
         await update.message.reply_text(
-            "Usage: /adduser <telegram_id> <name>\n"
+            "Usage: /adduser <telegram_id> <name> [admin]\n"
             "Example: /adduser 123456789 Alice"
         )
         return
@@ -2006,29 +1975,29 @@ async def adduser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("First argument must be a numeric Telegram ID.")
         return
-    name = " ".join(args[1:]).strip()
+    role = "user"
+    name_parts = list(args[1:])
+    if name_parts and name_parts[-1].lower() == "admin":
+        role = "admin"
+        name_parts = name_parts[:-1]
+    name = " ".join(name_parts).strip()
     if not name:
         await update.message.reply_text("Name is required.")
         return
-    ok, msg, slot = await asyncio.to_thread(add_user, tid, name)
+    ok, msg = await asyncio.to_thread(add_user, tid, name, role=role)
     await update.message.reply_text(msg)
 
 
 @requires_auth
 async def removeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Unbind a Telegram ID and archive their slot dir (admin only)."""
+    """Remove a Telegram user from the allowlist (admin only)."""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         return
     try:
-        from core.users import (
-            is_multiuser_enabled, lookup_slot, remove_user, slot_data_dir,
-        )
+        from core.users import remove_user
     except ImportError:
-        await update.message.reply_text("Multi-user support unavailable.")
-        return
-    if not is_multiuser_enabled():
-        await update.message.reply_text("Multi-user mode is not enabled.")
+        await update.message.reply_text("User management unavailable.")
         return
     args = (context.args or [])
     if len(args) < 1:
@@ -2040,160 +2009,45 @@ async def removeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Argument must be a numeric Telegram ID.")
         return
 
-    # Validate the slot exists and is removable BEFORE touching the filesystem.
-    found = await asyncio.to_thread(lookup_slot, tid)
-    if not found:
-        await update.message.reply_text(
-            f"Telegram ID {tid} is not bound to any slot."
-        )
-        return
-    slot, info = found
-    if info.get("is_admin"):
-        await update.message.reply_text(
-            "Cannot remove the admin. Reinstall to change admin."
-        )
-        return
-
-    # Archive the slot's data directory FIRST. If this fails, we must NOT
-    # unbind the slot. Otherwise /adduser could re-bind a new user to a
-    # slot whose dir still contains the previous user's data, leaking it
-    # across the privacy boundary. The slot dir is owned by mom_userN, but
-    # its parent (data/users/) is orchestrator-owned, so the rename
-    # succeeds without elevation. Encode the Telegram ID in the archive
-    # name so /purgeuser can find it later.
-    archive_msg = ""
-    src = slot_data_dir(slot)
-    if src.exists():
-        try:
-            archive_root = USERS_DIR / "_archived"
-            archive_root.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            dst = archive_root / f"{stamp}_user{slot}_tid{tid}"
-            await asyncio.to_thread(src.rename, dst)
-            archive_msg = f"\nArchived slot data to: {dst.relative_to(BOT_DIR)}"
-        except OSError as e:
-            await update.message.reply_text(
-                f"Failed to archive slot {slot} data: {e}\n"
-                f"Slot remains bound to preserve privacy. "
-                f"Resolve the filesystem issue and re-run /removeuser."
-            )
-            return
-
-    ok, msg, _ = await asyncio.to_thread(remove_user, tid)
-    if not ok:
-        await update.message.reply_text(
-            f"{msg}\n(Note: slot data was already archived to "
-            f"{archive_msg.strip() or 'the archive dir'}. Manual restore may be needed.)"
-        )
-        return
-
-    # Drop the cached SessionManager so any future request from this tid
-    # (e.g., re-bound via /adduser to a different slot) rebuilds against
-    # the new data dir instead of writing into the now-archived path.
-    clear_session_manager(tid)
-
-    await update.message.reply_text(msg + archive_msg)
+    ok, msg = await asyncio.to_thread(remove_user, tid)
+    if ok:
+        # Drop any cached SessionManager so the user's next contact starts
+        # clean. Their data dir at data/users/<tid>/ is left intact; the
+        # admin can rm it manually if they want a hard wipe.
+        clear_session_manager(tid)
+    await update.message.reply_text(msg)
 
 
 @requires_auth
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List bound slots (admin only)."""
+    """List registered Telegram users (admin only)."""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         return
     try:
-        from core.users import is_multiuser_enabled, num_slots, list_slots
+        from core.users import list_users
     except ImportError:
-        await update.message.reply_text("Multi-user support unavailable.")
+        await update.message.reply_text("User management unavailable.")
         return
-    if not is_multiuser_enabled():
-        await update.message.reply_text("Multi-user mode is not enabled (single-user install).")
+    users = list_users()
+    if not users:
+        await update.message.reply_text(
+            "No users registered yet. Add one with /adduser <telegram_id> <name>."
+        )
         return
-    slots = list_slots()
-    total = num_slots()
-    lines = [f"Slots ({sum(1 for v in slots.values() if v)}/{total} bound):", ""]
-    for i in range(1, total + 1):
-        info = slots.get(str(i))
-        if not info:
-            lines.append(f"[{i}] (free)")
+    lines = [f"Registered users ({len(users)}):", ""]
+    for tid, info in sorted(users.items()):
+        if not isinstance(info, dict):
             continue
-        admin_tag = " (admin)" if info.get("is_admin") else ""
+        role = info.get("role", "user")
+        admin_tag = " (admin)" if role == "admin" else ""
         added = info.get("added", "?")
         lines.append(
-            f"[{i}] {info.get('name', '?')}{admin_tag}\n"
-            f"    Telegram ID: {info.get('telegram_id', '?')}\n"
+            f"{info.get('name', '?')}{admin_tag}\n"
+            f"    Telegram ID: {tid}\n"
             f"    Added: {added}"
         )
     await update.message.reply_text("\n".join(lines))
-
-
-@requires_auth
-async def purgeuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Permanently delete archived slot data (admin only, requires confirmation)."""
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        return
-    try:
-        from core.users import is_multiuser_enabled
-    except ImportError:
-        await update.message.reply_text("Multi-user support unavailable.")
-        return
-    if not is_multiuser_enabled():
-        await update.message.reply_text("Multi-user mode is not enabled.")
-        return
-    args = (context.args or [])
-    confirm_phrase = "PURGE I UNDERSTAND"
-    raw = " ".join(args).strip()
-    if not raw:
-        await update.message.reply_text(
-            "Usage: /purgeuser <telegram_id> PURGE I UNDERSTAND\n\n"
-            "This permanently deletes archived slot data for the given Telegram ID. "
-            "The user must already have been removed via /removeuser."
-        )
-        return
-
-    parts = raw.split(maxsplit=1)
-    try:
-        tid = int(parts[0])
-    except ValueError:
-        await update.message.reply_text("First argument must be a numeric Telegram ID.")
-        return
-
-    rest = parts[1] if len(parts) > 1 else ""
-    if rest.strip() != confirm_phrase:
-        await update.message.reply_text(
-            f"Confirmation phrase missing. To proceed, send:\n"
-            f"/purgeuser {tid} {confirm_phrase}"
-        )
-        return
-
-    archive_root = USERS_DIR / "_archived"
-    if not archive_root.exists():
-        await update.message.reply_text("No archive directory found. Nothing to purge.")
-        return
-
-    matches = sorted(archive_root.glob(f"*_user*_tid{tid}"))
-    if not matches:
-        await update.message.reply_text(
-            f"No archived data found for Telegram ID {tid}. "
-            f"(Archive name pattern: <timestamp>_userN_tid{tid})"
-        )
-        return
-
-    deleted: list[str] = []
-    errors: list[str] = []
-    for d in matches:
-        try:
-            await asyncio.to_thread(shutil.rmtree, d)
-            deleted.append(d.name)
-        except OSError as e:
-            errors.append(f"{d.name}: {e}")
-    msg_parts = [f"Purged {len(deleted)} archived directories for {tid}."]
-    if deleted:
-        msg_parts.append("Deleted:\n" + "\n".join(f"  {n}" for n in deleted))
-    if errors:
-        msg_parts.append("Errors:\n" + "\n".join(f"  {e}" for e in errors))
-    await update.message.reply_text("\n\n".join(msg_parts))
 
 
 @requires_auth
@@ -3566,12 +3420,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 return
 
         repo_dir = Path(__file__).parent
-        from utils.maintenance import load_config as _lc
-        cur_cfg = _lc()
-        multiuser = bool(cur_cfg.get("MULTIUSER_ENABLED")) or bool(
-            os.environ.get("MULTIUSER_ENABLED") in ("1", "true", "yes")
-        )
-        pass_path = _bs.passphrase_path_for(repo_dir, multiuser=multiuser)
+        pass_path = _bs.passphrase_path_for(repo_dir)
         passphrase = _bb.read_passphrase(pass_path)
         if not passphrase:
             passphrase = _bb.generate_passphrase()
@@ -4066,9 +3915,8 @@ def main():
     #     install regardless of mode.
     #   - Global semaphore (universal mode): when active, LLM calls are
     #     serialized across all users so one request runs at a time across
-    #     the bot. Set when the multi-user wizard chose 'universal' OR
-    #     when hardware is constrained enough that parallel LLM work would
-    #     OOM the box (auto-promoted regardless of wizard choice).
+    #     the bot. Set when QUEUE_MODE=universal in .env OR when hardware
+    #     is constrained enough that parallel LLM work would OOM the box.
     # Note: actual asyncio.Semaphore is created lazily on first use inside
     # the event loop (_get_llm_semaphore) because creating it here would
     # bind to the wrong loop on Python 3.8-3.9. We just set the flag.
@@ -4078,11 +3926,9 @@ def main():
     hardware_constrained = ram_gb > 0 and (ram_gb < 8 or cpu_cores <= 2)
 
     universal_mode = False
-    multiuser_active = False
     try:
-        from core.users import is_multiuser_enabled, queue_mode
-        multiuser_active = is_multiuser_enabled()
-        if multiuser_active and queue_mode() == "universal":
+        from core.users import queue_mode
+        if queue_mode() == "universal":
             universal_mode = True
     except ImportError:
         pass
@@ -4091,23 +3937,16 @@ def main():
         _semaphore_active = True
         reason_parts = []
         if universal_mode:
-            reason_parts.append("wizard chose universal queue")
+            reason_parts.append("QUEUE_MODE=universal")
         if hardware_constrained:
             reason_parts.append(f"hardware ({ram_gb}GB RAM, {cpu_cores} cores)")
         logger.info(
             f"Queue mode: UNIVERSAL (one LLM call at a time across all users; "
             f"{', '.join(reason_parts)})"
         )
-    elif multiuser_active:
-        logger.info(
-            f"Queue mode: PER-USER (each user has their own queue; "
-            f"RAM: {ram_gb}GB, CPU cores: {cpu_cores})"
-        )
     else:
-        # Single-user install: per-user lock is the only queue, which IS
-        # the universal queue here because there's only one user.
         logger.info(
-            f"Queue mode: PER-USER (single-user install; "
+            f"Queue mode: PER-USER (each Telegram user has their own queue; "
             f"RAM: {ram_gb}GB, CPU cores: {cpu_cores})"
         )
 
@@ -4174,7 +4013,6 @@ def main():
     app.add_handler(CommandHandler("adduser", adduser_command))
     app.add_handler(CommandHandler("removeuser", removeuser_command))
     app.add_handler(CommandHandler("users", users_command))
-    app.add_handler(CommandHandler("purgeuser", purgeuser_command))
     app.add_handler(CommandHandler("cleanup", cleanup_command))
     app.add_handler(CommandHandler("maintenance", maintenance_command))
     app.add_handler(CommandHandler("system", system_command))

@@ -64,45 +64,30 @@ def get_telegram_api_base() -> Optional[str]:
 def get_allowed_users() -> list[int]:
     """Return the list of allowed Telegram IDs.
 
-    In multi-user mode, **users.json is the single source of truth**:
-    every authorized ID must be bound to a slot. ALLOWED_USERS in .env
-    is ignored to keep /adduser and /removeuser authoritative -- a
-    stranger added to .env by hand stays unauthorized, and a user
-    removed via /removeuser cannot re-enter via a stale .env entry.
-
-    The .env list is only consulted as a bootstrap fallback when the
-    slot table is empty (e.g., users.json was just created by the
-    installer and the admin has not been bound yet) so the admin can
-    finish configuring multi-user mode without locking themselves out.
-
-    In single-user mode, returns just ALLOWED_USERS from .env.
+    data/users.json is the source of truth: every registered Telegram ID
+    is allowed. ALLOWED_USERS in .env acts as a bootstrap fallback when
+    users.json is empty (typical right after install, before the wizard
+    has written the admin profile) so the admin is not locked out.
     """
     base = _env_list("ALLOWED_USERS")
     try:
-        from core.users import is_multiuser_enabled, list_slots
+        from core.users import list_users
     except ImportError:
         return base
-    if not is_multiuser_enabled():
-        return base
-    bound: list[int] = []
-    for info in list_slots().values():
-        if not info:
-            continue
+    registered: list[int] = []
+    for tid_str in list_users().keys():
         try:
-            bound.append(int(info["telegram_id"]))
-        except (ValueError, TypeError, KeyError):
+            registered.append(int(tid_str))
+        except (ValueError, TypeError):
             continue
-    if bound:
-        # Slot table is the authority. .env contributes nothing.
+    if registered:
         seen: set[int] = set()
         result: list[int] = []
-        for uid in bound:
+        for uid in registered:
             if uid not in seen:
                 seen.add(uid)
                 result.append(uid)
         return result
-    # Empty slot table -- fall back to .env so the admin isn't locked out
-    # before they have a chance to bind their slot.
     return base
 
 
@@ -171,13 +156,6 @@ def get_user_profile(user_id: int) -> dict:
 def is_admin(user_id: int) -> bool:
     """True if the Telegram ID has admin privileges.
 
-    Multi-user mode: checks the orchestrator's slot table for is_admin=True.
-    Single-user mode: checks the legacy data/users.json profile role.
+    Reads the role from data/users.json (the single source of truth).
     """
-    try:
-        from core.users import is_multiuser_enabled, is_multiuser_admin
-    except ImportError:
-        return get_user_profile(user_id).get("role") == "admin"
-    if is_multiuser_enabled():
-        return is_multiuser_admin(user_id)
     return get_user_profile(user_id).get("role") == "admin"
