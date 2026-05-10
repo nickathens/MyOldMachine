@@ -401,6 +401,10 @@ SAFE_ENV_VARS = {
     "LANGUAGE", "LC_MESSAGES", "LC_NUMERIC", "LC_TIME", "LC_COLLATE",
     "LC_MONETARY", "LC_PAPER", "LC_NAME", "LC_ADDRESS", "LC_TELEPHONE",
     "LC_MEASUREMENT", "LC_IDENTIFICATION",
+    # Per-user identity for skills (which Telegram user the bot is serving).
+    # Skills that touch user-private state (Gmail tokens, Calendar tokens,
+    # mempalace, etc.) read JARVIS_USER_DIR to scope to that user's dir.
+    "JARVIS_USER_ID", "JARVIS_USER_DIR",
 }
 
 

@@ -79,6 +79,27 @@ def _find_cli_binary(name: str) -> str:
     return name
 
 
+def _user_identity_env(user_id: Optional[int]) -> dict:
+    """Build per-user identity env vars for skills running inside the CLI.
+
+    Skills that touch user-private state (Gmail/Calendar tokens, mempalace,
+    etc.) read JARVIS_USER_DIR to scope to that user's dir. Critical in the
+    soft multi-user model (single OS user, multiple Telegram users) where
+    OS-level isolation is not in play.
+    """
+    if user_id is None:
+        return {}
+    try:
+        from core.users import resolve_user_dir
+        user_dir = resolve_user_dir(user_id)
+    except Exception:
+        return {}
+    return {
+        "JARVIS_USER_ID": str(user_id),
+        "JARVIS_USER_DIR": str(user_dir),
+    }
+
+
 @dataclass
 class Message:
     role: str  # "user" or "assistant"
@@ -544,6 +565,7 @@ class ClaudeCLIProvider(LLMProvider):
                     "ANTHROPIC_BASE_URL",
                     "CLAUDE_CONFIG_DIR",
                 }),
+                extra=_user_identity_env(user_id),
             )
 
             cwd = str(self._bot_dir)
@@ -1083,14 +1105,15 @@ class CodexCLIProvider(LLMProvider):
             # ~/.codex/auth.json) or OPENAI_API_KEY. Per-instance api_key
             # override gets injected into the env after the allow-list build.
             from core.tools import build_cli_env
-            extra = {"OPENAI_API_KEY": self.api_key} if self.api_key else None
+            extra = {"OPENAI_API_KEY": self.api_key} if self.api_key else {}
+            extra = {**_user_identity_env(user_id), **extra}
             cli_env = build_cli_env(
                 provider_keys=frozenset({
                     "OPENAI_API_KEY",
                     "OPENAI_BASE_URL",
                     "CODEX_HOME",
                 }),
-                extra=extra,
+                extra=extra or None,
             )
 
             cwd = str(self._bot_dir)

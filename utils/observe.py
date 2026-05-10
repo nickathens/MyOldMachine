@@ -110,6 +110,10 @@ def main():
     parser.add_argument("--limit", type=int, default=20, help="Number of entries to show (default: 20)")
 
     args = parser.parse_args()
+
+    from utils.session_guard import enforce as _enforce_session_user
+    _enforce_session_user(args.user)
+
     mm = MemoryManager(DATA_DIR)
 
     if args.search:
