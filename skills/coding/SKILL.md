@@ -15,6 +15,25 @@ Structured methodology for building and debugging software. This skill has no sc
 
 Follow this process strictly when building anything new:
 
+### 0. Workspace Isolation (git repos only)
+
+Before any non-trivial work in a git repo, set up an isolated workspace.
+
+1. **Detect existing isolation.** If `git rev-parse --git-dir` differs from `git rev-parse --git-common-dir` and you are not in a submodule, you are already in a linked worktree. Skip to Step 1.
+
+2. **For multi-pass audits, multi-file refactors, or anything you might throw away,** create a branch off main: `git checkout -b <slug>/<feature-name>`.
+
+3. **For experimental work that needs full isolation from current state,** use a worktree (preferred for parallel exploration without losing in-progress work on main):
+   - Check `.worktrees/` exists and is in `.gitignore`. If not, add it.
+   - `git worktree add .worktrees/<branch-name> -b <branch-name>`
+   - `cd .worktrees/<branch-name>`
+   - Run project setup (pip install / npm install if applicable).
+   - Run baseline tests. If they fail, report and ask before proceeding.
+
+4. **Skip if:** the working directory is not a git repo, single-line config edits, file reads, or work explicitly authorized to push direct to main.
+
+Worktrees stay around after the work lands. Clean them up with `git worktree remove .worktrees/<branch-name>` when the branch is merged.
+
 ### 1. Research
 
 Conduct thorough web research on the topic. Read official API documentation, changelogs, pricing pages, and model specs. Never rely on training data for facts about external services, libraries, or APIs. Verify every claim against a live source.
@@ -24,6 +43,32 @@ Conduct thorough web research on the topic. Read official API documentation, cha
 ### 2. Plan
 
 Break the work into concrete steps. Identify dependencies, potential failure points, and integration surfaces. Write the plan down (use todo tracking). If the scope is large, check in with the plan before implementing.
+
+For multi-step builds (anything that takes more than 2-3 tool calls or touches >2 files), the plan must satisfy this rubric before implementation starts:
+
+**File map.** Before listing tasks, enumerate every file being created or modified with a one-line responsibility for each. Locks decomposition in.
+
+**Bite-sized tasks.** Each step is one action: write failing test, run to verify it fails, implement minimal code, run to verify pass, commit. 2-5 minutes per step.
+
+**Exact paths and complete code.** Every task includes:
+- Files: Create `exact/path.py` / Modify `exact/path.py:123-145` / Test `tests/path.py`
+- Test code shown in full
+- Implementation code shown in full
+- Exact command to run with expected output
+
+**No placeholders.** These are plan failures, never write them:
+- "TBD" / "TODO" / "implement later" / "fill in details"
+- "Add appropriate error handling" / "handle edge cases" / "add validation"
+- "Write tests for the above" (without the actual test code)
+- "Similar to Task N" (repeat the code)
+- Steps that describe what to do without showing how
+
+**Self-review before execution.** With the plan written, scan for:
+1. Spec coverage -- every requirement maps to a task
+2. Placeholder scan -- none of the above red flags survived
+3. Type consistency -- function/method names match across tasks
+
+Fix issues inline. Then start implementing.
 
 ### 3. Implement
 
