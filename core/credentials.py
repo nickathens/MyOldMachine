@@ -9,13 +9,11 @@ encrypted store rather than plain files:
   should fall back to env vars or a user-private file.
 
 Convention: every credential the bot saves uses the service name
-`jarvis-<service>` so they are easy to enumerate and do not collide with
+`mom-<service>` so they are easy to enumerate and do not collide with
 other apps' Keychain entries.
 
 This module shells out to `security` rather than depending on a third-party
-keyring package — keeps the bot's runtime dependencies unchanged and
-matches the existing convention already documented in
-data/memory/topics/credentials_keychain.md.
+keyring package — keeps the bot's runtime dependencies unchanged.
 """
 from __future__ import annotations
 
@@ -24,7 +22,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 
-SERVICE_PREFIX = "jarvis-"
+SERVICE_PREFIX = "mom-"
 
 _SERVICE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
@@ -55,7 +53,7 @@ def _normalize_service(service: str) -> str:
     """Normalize and validate a service short-name.
 
     Accepts either the bare short name ("surge") or the already-prefixed
-    form ("jarvis-surge") — both collapse to the bare form so the prefix
+    form ("mom-surge") — both collapse to the bare form so the prefix
     is applied exactly once.
     """
     name = service.strip().lower()
@@ -161,7 +159,7 @@ def delete(service: str, account: str | None = None) -> bool:
 
 
 def list_all() -> list[CredentialRef]:
-    """List every credential whose service starts with the `jarvis-` prefix.
+    """List every credential whose service starts with the `mom-` prefix.
 
     Parses `security dump-keychain` output. Passwords are not returned —
     only (service, account) pairs.
@@ -179,7 +177,7 @@ def list_all() -> list[CredentialRef]:
 
 
 # `security dump-keychain` prints one record per credential, e.g.:
-#     "svce"<blob>="jarvis-surge"
+#     "svce"<blob>="mom-surge"
 #     "acct"<blob>="user@example.com"
 # Records are separated by blank lines / `keychain:` headers. We pair the
 # svce+acct lines within each record.

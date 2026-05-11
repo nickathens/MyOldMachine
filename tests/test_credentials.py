@@ -33,10 +33,10 @@ class NormalizeServiceTests(unittest.TestCase):
         ref = credentials.CredentialRef(
             service=credentials._normalize_service("surge"), account="a@b.c"
         )
-        self.assertEqual(ref.keychain_service, "jarvis-surge")
+        self.assertEqual(ref.keychain_service, "mom-surge")
 
     def test_strips_existing_prefix(self, _sys):
-        self.assertEqual(credentials._normalize_service("jarvis-github"), "github")
+        self.assertEqual(credentials._normalize_service("mom-github"), "github")
 
     def test_lowercases(self, _sys):
         self.assertEqual(credentials._normalize_service("GitHub"), "github")
@@ -56,10 +56,10 @@ class SaveTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertEqual(args[:2], ["security", "add-generic-password"])
         self.assertIn("-U", args)
-        self.assertIn("jarvis-surge", args)
+        self.assertIn("mom-surge", args)
         self.assertIn("user@example.com", args)
         self.assertIn("secret", args)
-        self.assertEqual(ref.keychain_service, "jarvis-surge")
+        self.assertEqual(ref.keychain_service, "mom-surge")
 
     def test_save_requires_account(self, _sys):
         with self.assertRaises(ValueError):
@@ -134,14 +134,14 @@ class ListAllTests(unittest.TestCase):
 keychain: "/Users/x/Library/Keychains/login.keychain-db"
 class: "genp"
 attributes:
-    0x00000007 <blob>="jarvis-surge"
+    0x00000007 <blob>="mom-surge"
     "acct"<blob>="user@example.com"
-    "svce"<blob>="jarvis-surge"
+    "svce"<blob>="mom-surge"
 keychain: "/Users/x/Library/Keychains/login.keychain-db"
 class: "genp"
 attributes:
     "acct"<blob>="bot@example.com"
-    "svce"<blob>="jarvis-github"
+    "svce"<blob>="mom-github"
 keychain: "/Users/x/Library/Keychains/login.keychain-db"
 class: "genp"
 attributes:
@@ -149,7 +149,7 @@ attributes:
     "svce"<blob>="iCloud"
 """
 
-    def test_list_returns_only_jarvis_entries_sorted(self, _sys):
+    def test_list_returns_only_mom_entries_sorted(self, _sys):
         with patch(
             "core.credentials.subprocess.run", return_value=_proc(stdout=self.DUMP)
         ):

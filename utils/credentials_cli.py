@@ -4,7 +4,7 @@ Credentials CLI — save/get/delete/list credentials in the OS keyring.
 
 The bot uses this CLI mid-conversation to stash secrets a user gives it
 (API tokens, service passwords) into the macOS Keychain rather than a
-plain file. Every entry is namespaced under `jarvis-<service>`.
+plain file. Every entry is namespaced under `mom-<service>`.
 
 Usage:
     credentials_cli.py save --service surge --account user@example.com --password 'xxx'
@@ -81,7 +81,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
         return 0
     if not refs:
-        print("(no jarvis-* credentials stored)")
+        print("(no mom-* credentials stored)")
         return 0
     width = max(len(r.service) for r in refs)
     for r in refs:
@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--account", help="scope deletion to a specific account")
     d.set_defaults(func=cmd_delete)
 
-    ls = sub.add_parser("list", help="List all jarvis-* credentials (no passwords)")
+    ls = sub.add_parser("list", help="List all mom-* credentials (no passwords)")
     ls.add_argument("--json", action="store_true", help="emit JSON instead of a table")
     ls.set_defaults(func=cmd_list)
 
