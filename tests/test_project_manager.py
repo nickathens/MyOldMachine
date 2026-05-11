@@ -210,6 +210,48 @@ class UpdatePermissionTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.pm.update_project("foo", user_id=222, status="done")
 
+    def test_admin_cannot_silently_update_private_project(self):
+        """Admins must not silently inherit write access (regression test
+        for the issue ntouri flagged on PR #6)."""
+        with patch.object(self.pm, "_is_admin", return_value=True):
+            with self.assertRaises(SystemExit) as cm:
+                self.pm.update_project("foo", user_id=999, status="hacked")
+        self.assertEqual(cm.exception.code, 2)
+        state = json.loads(
+            (self.pm.PROJECTS_DIR / "foo" / "state.json").read_text()
+        )
+        # Owner unchanged, status unchanged.
+        self.assertEqual(state["owner"], "111")
+        self.assertNotEqual(state.get("status"), "hacked")
+
+    def test_admin_can_update_with_explicit_override(self):
+        with patch.object(self.pm, "_is_admin", return_value=True):
+            self.pm.update_project(
+                "foo", user_id=999, status="done", admin_override=True,
+            )
+        state = json.loads(
+            (self.pm.PROJECTS_DIR / "foo" / "state.json").read_text()
+        )
+        self.assertEqual(state["status"], "done")
+        # Owner preserved — override is for writing, not claiming.
+        self.assertEqual(state["owner"], "111")
+
+    def test_admin_override_alone_does_not_grant_non_admin(self):
+        with patch.object(self.pm, "_is_admin", return_value=False):
+            with self.assertRaises(SystemExit):
+                self.pm.update_project(
+                    "foo", user_id=222, status="done", admin_override=True,
+                )
+
+    def test_shared_project_writable_by_any_identified_user(self):
+        with patch.object(self.pm, "_is_admin", return_value=False):
+            self.pm.share_project("foo", user_id=111)
+            self.pm.update_project("foo", user_id=222, status="active")
+        state = json.loads(
+            (self.pm.PROJECTS_DIR / "foo" / "state.json").read_text()
+        )
+        self.assertEqual(state["status"], "active")
+
 
 if __name__ == "__main__":
     unittest.main()

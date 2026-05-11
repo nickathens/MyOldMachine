@@ -10,6 +10,13 @@ Each project has an `owner` field:
 `create` defaults to **private** for the caller. Use `--shared` to make a
 project visible to everyone from the start, or call `share <slug>` later.
 
+Reading is permissive (admins can `_can_see` anything), but writing is
+strict: `update` uses `_can_modify`, which refuses cross-user writes even
+for admins unless they pass `--admin-override`.
+
+Note: only the `projects/` tree is per-user. `decisions/` and `topics/`
+under `data/memory/` are intentionally shared knowledge across all users.
+
 Usage:
     python project_manager.py create "Name" "Summary" "/path" --user 12345
     python project_manager.py create "Name" "Summary" "/path" --user 12345 --shared
@@ -17,17 +24,21 @@ Usage:
     python project_manager.py list --all                  # admin only
     python project_manager.py status <slug> --user 12345
     python project_manager.py update <slug> --user 12345 --status active
+    python project_manager.py update <slug> --user 999 --status active --admin-override
     python project_manager.py share <slug> --user 12345
     python project_manager.py unshare <slug> --user 12345
 """
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 BOT_DIR = Path(__file__).parent.parent
 MEMORY_DIR = BOT_DIR / "data" / "memory"
@@ -65,7 +76,11 @@ def _is_admin(user_id) -> bool:
         sys.path.insert(0, str(BOT_DIR))
         from core.config import is_admin  # type: ignore
         return is_admin(int(user_id))
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "project_manager._is_admin failed for user_id=%r: %s",
+            user_id, exc,
+        )
         return False
 
 
@@ -91,6 +106,24 @@ def _can_see(state: dict, user_id) -> bool:
     if owner == str(user_id):
         return True
     return _is_admin(user_id)
+
+
+def _can_modify(state: dict, user_id, admin_override: bool = False) -> bool:
+    """True if `user_id` may write to this project.
+
+    Stricter than `_can_see`: admins do NOT silently inherit write access
+    to another user's private project. They must pass `--admin-override`.
+    Shared / legacy projects remain writable by any identified user, since
+    that's the explicit promise of the shared bucket.
+    """
+    owner = _normalize_owner(state.get("owner"))
+    if owner == SHARED_OWNER:
+        return user_id is not None
+    if user_id is None:
+        return False
+    if owner == str(user_id):
+        return True
+    return bool(admin_override) and _is_admin(user_id)
 
 
 def slugify(name: str) -> str:
@@ -219,17 +252,31 @@ def get_project_status(slug: str, user_id=None):
 
 
 def update_project(slug: str, user_id=None,
-                   status: str = None, next_step: str = None):
-    """Update project state (refuses if not visible to caller)."""
+                   status: str = None, next_step: str = None,
+                   admin_override: bool = False):
+    """Update project state.
+
+    Refuses if the caller is not the owner. Admins must pass
+    `admin_override=True` (CLI: `--admin-override`) to write into another
+    user's private project — silent admin writes are not allowed.
+    """
     state, state_file = _load_state(slug)
     if state is None:
         print(f"Project '{slug}' not found.", file=sys.stderr)
         sys.exit(1)
-    if not _can_see(state, user_id):
-        print(
-            f"Refused: project '{slug}' is private to another user.",
-            file=sys.stderr,
-        )
+    if not _can_modify(state, user_id, admin_override=admin_override):
+        owner = _normalize_owner(state.get("owner"))
+        if owner != SHARED_OWNER and _is_admin(user_id):
+            print(
+                f"Refused: '{slug}' belongs to another user. "
+                f"Pass --admin-override to write to it as admin.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Refused: project '{slug}' is private to another user.",
+                file=sys.stderr,
+            )
         sys.exit(2)
 
     if status:
@@ -339,6 +386,9 @@ def main():
     update_p.add_argument("--user", type=int, default=None)
     update_p.add_argument("--status", type=str)
     update_p.add_argument("--next", type=str, dest="next_step")
+    update_p.add_argument("--admin-override", action="store_true",
+                          dest="admin_override",
+                          help="Admin only: write into another user's private project")
 
     share_p = sub.add_parser("share", help="Move a private project to shared")
     share_p.add_argument("slug", type=str)
@@ -371,7 +421,8 @@ def main():
         get_project_status(args.slug, user_id=args.user)
     elif args.command == "update":
         update_project(args.slug, user_id=args.user,
-                       status=args.status, next_step=args.next_step)
+                       status=args.status, next_step=args.next_step,
+                       admin_override=args.admin_override)
     elif args.command == "share":
         share_project(args.slug, user_id=args.user)
     elif args.command == "unshare":
