@@ -4137,6 +4137,16 @@ def main():
         # Start proactive health monitoring (system resources)
         asyncio.create_task(_health_monitor_loop(scheduler))
 
+        # Start the silent-background-process watchdog. Kills any background
+        # shell command that produces no output for ~5 minutes so the agent
+        # loop never sits on a runaway find/grep for the full BACKGROUND_TIMEOUT.
+        try:
+            from utils.process_reaper import start_reaper
+            start_reaper()
+            logger.info("Process reaper started")
+        except Exception as e:
+            logger.warning(f"Process reaper failed to start (non-fatal): {e}")
+
         # Start polling liveness monitor (detects stale Telegram connection)
         polling_monitor = init_polling_monitor(
             local_api_base=api_base,
@@ -4182,6 +4192,12 @@ def main():
         polling_monitor = get_polling_monitor()
         if polling_monitor:
             await polling_monitor.stop()
+        # Stop the process reaper before tearing down the registry
+        try:
+            from utils.process_reaper import stop_reaper
+            await stop_reaper()
+        except Exception as e:
+            logger.warning(f"Process reaper shutdown error (non-fatal): {e}")
         scheduler = get_scheduler()
         if scheduler:
             scheduler.stop()
