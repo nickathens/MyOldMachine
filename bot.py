@@ -945,8 +945,14 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("Use memory proactively, not just when asked.")
         parts.append("")
         parts.append("**Projects:**")
-        parts.append(f"  {venv_python} {BOT_DIR}/utils/project_manager.py create \"Name\" \"Summary\" \"/path\"")
-        parts.append(f"  Project state: {memory_dir}/projects/<slug>/state.json")
+        parts.append("Projects are **private by default** to the user who creates them.")
+        parts.append("Pass --user with every project_manager call; add --shared on create only when the user explicitly says the project should be visible to everyone.")
+        parts.append("Use `share <slug>` to move a private project to shared later; `unshare <slug>` to pull it back.")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/project_manager.py create \"Name\" \"Summary\" \"/path\" --user {user_id}")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/project_manager.py create \"Name\" \"Summary\" \"/path\" --user {user_id} --shared")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/project_manager.py list --user {user_id}")
+        parts.append(f"  {venv_python} {BOT_DIR}/utils/project_manager.py share <slug> --user {user_id}")
+        parts.append(f"  Project state: {memory_dir}/projects/<slug>/state.json (carries an `owner` field)")
         parts.append("")
         parts.append("**Topic Memories:**")
         parts.append(f"  Write domain knowledge to {memory_dir}/topics/<topic>.md")
@@ -990,7 +996,9 @@ def build_system_prompt(user_id: int) -> str:
             parts.append(ctx_text)
             parts.append("")
 
-    # Active projects from memory (cap at 8 to prevent context bloat)
+    # Active projects from memory (cap at 8 to prevent context bloat).
+    # Per-user ownership: each project has an `owner` field — "shared" or a
+    # user ID. Missing owner is treated as "shared" for legacy state.
     projects_dir = memory_dir / "projects"
     if projects_dir.exists():
         project_lines = []
@@ -1006,11 +1014,15 @@ def build_system_prompt(user_id: int) -> str:
                     state = json.load(f)
                 if state.get("status") != "in_progress":
                     continue
+                owner = state.get("owner") or "shared"
+                if owner != "shared" and str(owner) != str(user_id):
+                    continue
                 if project_count >= 8:
                     break
                 project_count += 1
                 block = []
-                block.append(f"\n**{state.get('name', 'Unknown')}**")
+                visibility = "shared" if owner == "shared" else "private"
+                block.append(f"\n**{state.get('name', 'Unknown')}** [{visibility}]")
                 block.append(f"  Location: {state.get('location', 'unknown')}")
                 if state.get("summary"):
                     block.append(f"  Summary: {state['summary']}")
