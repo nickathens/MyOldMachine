@@ -24,10 +24,6 @@ from core.tools import get_process_registry  # noqa: E402
 from utils import process_reaper  # noqa: E402
 
 
-def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
-
-
 class ReapOnceTests(unittest.TestCase):
     """reap_once: kills silent backgrounds, leaves chatty + foreground alone."""
 
