@@ -156,6 +156,7 @@ utils/
 - **Blocked commands:** `rm -rf /`, `mkfs`, `dd` to disk, fork bombs, `mv /`, `rm -rf /etc`, `curl|sudo bash`, `wget|sudo bash`
 - **Write path blocklist:** `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `/etc/sudoers.d/`, `/boot/`, `/boot/grub/`, `/etc/crontab`, `/var/spool/cron/`
 - **Limits:** 120s foreground timeout, 3600s background timeout, 50K char output cap, 25 tool iterations per request
+- **Silent-background reaper (`utils/process_reaper.py`):** Periodic watchdog that kills any background `run_command` process that produces no stdout/stderr for >5 minutes. Prevents runaway commands (e.g. unbounded `find $HOME ... | head -20`) from pinning the agent loop for the full 1h background timeout. Foreground commands aren't touched — they already have the 120s inline timeout. Started in `post_init`, stopped in `post_shutdown`.
 - **Environment:** Sanitized (no leaked secrets), clean PATH per-OS, no bot venv leakage
 
 ## LLM Providers

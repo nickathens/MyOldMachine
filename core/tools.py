@@ -759,6 +759,11 @@ class ManagedProcess:
     return_code: Optional[int] = None
     is_background: bool = False
     _read_offset: int = 0  # Track what the LLM has already seen
+    # Last time a non-empty output chunk was appended. Starts equal to
+    # started_at so the silence watchdog has a sensible baseline for
+    # processes that produce no output at all.
+    last_output_at: float = field(default_factory=time.time)
+    reaped: bool = False  # Set when the watchdog kills it for silence
 
     @property
     def is_running(self) -> bool:
@@ -768,6 +773,12 @@ class ManagedProcess:
     def elapsed(self) -> float:
         end = self.finished_at or time.time()
         return end - self.started_at
+
+    @property
+    def silent_for(self) -> float:
+        """Seconds since the last output chunk arrived (or since start)."""
+        end = self.finished_at or time.time()
+        return end - self.last_output_at
 
     @property
     def full_output(self) -> str:
@@ -1243,6 +1254,7 @@ async def _stream_process_output(managed: ManagedProcess, timeout: float):
                     text = line.decode(errors="replace")
                     chunk = prefix + text
                     managed.output_chunks.append(chunk)
+                    managed.last_output_at = time.time()
                     output_length[0] += len(chunk)
 
                     # Check total output size
