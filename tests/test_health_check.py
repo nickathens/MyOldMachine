@@ -351,7 +351,7 @@ class CodexCLIHealthCheckTests(unittest.TestCase):
         return proc
 
     def test_healthy(self):
-        provider = llm.CodexCLIProvider("gpt-5-codex", api_key="")
+        provider = llm.CodexCLIProvider("gpt-5.3-codex", api_key="")
         provider._cli_binary = "/usr/bin/env"
         proc = self._make_proc(b"codex 0.5.1\n", b"", 0)
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
@@ -359,7 +359,7 @@ class CodexCLIHealthCheckTests(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_dyld_failure(self):
-        provider = llm.CodexCLIProvider("gpt-5-codex", api_key="")
+        provider = llm.CodexCLIProvider("gpt-5.3-codex", api_key="")
         provider._cli_binary = "/usr/bin/env"
         proc = self._make_proc(b"", b"dyld[3]: Symbol not found: _foo\n", 1)
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
