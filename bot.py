@@ -2254,14 +2254,14 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = command_body(update.message.text)
 
     # Default models per provider — keep in sync with install/wizard.py DEFAULT_MODELS
-    # Last updated: April 24, 2026
+    # Last updated: May 14, 2026
     default_models = {
         "claude": "claude-sonnet-4-6",
         "claude-cli": "claude-sonnet-4-6",
         "claude-api": "claude-sonnet-4-6",
         "openai": "gpt-5.5",
         "deepseek": "deepseek-v4-flash",
-        "grok": "grok-4-1-fast-non-reasoning",
+        "grok": "grok-4.3",
         "kimi": "kimi-k2.6",
         "minimax": "MiniMax-M2.7",
         "gemini": "gemini-3-flash-preview",
