@@ -93,7 +93,7 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 Switch providers anytime:
 ```
 /provider openai gpt-5.5
-/model gpt-5-mini
+/model gpt-5.4-mini
 /apikey sk-abc123...
 ```
 
