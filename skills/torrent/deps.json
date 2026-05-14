@@ -1,0 +1,10 @@
+{
+  "apt": ["aria2"],
+  "brew": ["aria2"],
+  "check": {
+    "aria2c": "aria2c --version",
+    "docker": "docker --version"
+  },
+  "weight": "medium",
+  "install_note": "Also requires Docker (for the Jackett container) and the ProtonVPN CLI (for the VPN gate). See SKILL.md for one-time Jackett bootstrap."
+}
