@@ -41,13 +41,18 @@ def _vpn_connected_linux() -> bool:
 
 
 def _vpn_connected_mac() -> bool:
-    """Shell out to the protonvpn CLI and parse `status` output."""
-    binary = shutil.which("protonvpn") or shutil.which("protonvpn-cli")
-    if binary is None:
+    """Detect an active VPN tunnel via `scutil --nwi`.
+
+    ProtonVPN on macOS ships only a GUI app (no CLI), so we read the system
+    network state instead. When any IKEv2/IPSec tunnel is up, `scutil --nwi`
+    lists the tunnel interface with a literal "VPN server :" line. That string
+    is absent whenever no VPN is connected.
+    """
+    if shutil.which("scutil") is None:
         return False
     try:
         result = subprocess.run(
-            [binary, "status"],
+            ["scutil", "--nwi"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -56,12 +61,7 @@ def _vpn_connected_mac() -> bool:
         return False
     if result.returncode != 0:
         return False
-    out = result.stdout.lower()
-    if "no active" in out or "disconnected" in out or "not connected" in out:
-        return False
-    # If status command succeeds and doesn't contain a disconnected marker,
-    # treat as connected.
-    return bool(out.strip())
+    return "VPN server" in result.stdout
 
 
 def vpn_connected() -> bool:
