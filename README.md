@@ -184,6 +184,8 @@ The bot itself is your primary troubleshooting tool. Tell it what went wrong and
 
 **Bot not responding?** Check the service: `sudo systemctl status myoldmachine` (Linux) or `launchctl list | grep myoldmachine` (macOS). Logs are in `data/logs/bot.log`.
 
+**Bot offline after a reboot or power outage on macOS?** The bot runs as a user-level LaunchAgent, so it only starts after you log into your account. Until someone types the login passcode, the bot stays offline. Fix: enable auto-login in **System Settings → Users & Groups → "Automatically log in as"**, pick your account, confirm with your passcode. After this, cold boots bring the bot back in seconds. Sleep/wake and manual logout still require the passcode, so day-to-day security is unchanged. Note: FileVault disk encryption must be off for auto-login to be available. If you can't use auto-login (shared space, FileVault required), convert the bot to a system-level LaunchDaemon instead.
+
 **OpenRouter "rate limit" errors?** Free models have a 200 req/day limit, and tool-use consumes 5-6 requests per user message. Switch to a model with higher limits or add billing.
 
 **Gemini "quota exhausted"?** Google's free tier quotas reset daily at midnight Pacific. Use Flash-Lite (1000 RPD) instead of Pro (100 RPD) for higher limits.
