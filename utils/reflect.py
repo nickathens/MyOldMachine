@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 LOG_FILE = DATA_DIR / "logs" / "reflection.log"
 
 # Importance threshold: sum of importance scores must exceed this to trigger reflection
-DEFAULT_THRESHOLD = 18
+DEFAULT_THRESHOLD = 16
 
 
 def log(msg: str):

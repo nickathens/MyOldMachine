@@ -525,10 +525,12 @@ class ClaudeCLIProvider(LLMProvider):
             prompt += f"<{msg.role}>{msg.content}</{msg.role}>\n"
         prompt += "\nContinue the conversation naturally, responding to the latest message."
 
+        from core.config import get_llm_effort
         cmd = [
             self._cli_binary,
             "-p",
             "--model", self.model,
+            "--effort", get_llm_effort(),
             "--dangerously-skip-permissions",
             "--disallowedTools", "Task,EnterPlanMode",
             "--output-format", "stream-json",
