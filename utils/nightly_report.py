@@ -25,7 +25,8 @@ TM_PLIST = Path("/Library/Preferences/com.apple.TimeMachine.plist")
 SEND_SCRIPT = BOT_DIR / "utils" / "send_to_telegram.py"
 VENV_PYTHON = BOT_DIR / ".venv" / "bin" / "python"
 
-ADMIN_USER_ID = 8044898180
+sys.path.insert(0, str(BOT_DIR))
+from core.config import get_allowed_users  # noqa: E402
 
 JOBS_OF_INTEREST = [
     ("Nightly cleanup", "Cleanup"),
@@ -189,10 +190,15 @@ def build_report() -> str:
 
 def send(text: str) -> int:
     """Send the report via the bot's Telegram helper. Returns its exit code."""
+    allowed = get_allowed_users()
+    if not allowed:
+        print("nightly_report: no allowed users configured, nothing to send", file=sys.stderr)
+        return 1
+    admin_id = allowed[0]
     proc = subprocess.run(
         [
             str(VENV_PYTHON), str(SEND_SCRIPT),
-            "--user", str(ADMIN_USER_ID),
+            "--user", str(admin_id),
             "--message", text,
         ],
         capture_output=True, text=True, timeout=60,
