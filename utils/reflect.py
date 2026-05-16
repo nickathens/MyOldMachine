@@ -39,6 +39,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from shutil import which
@@ -60,6 +61,13 @@ LOG_FILE = DATA_DIR / "logs" / "reflection.log"
 
 # Importance threshold: sum of importance scores must exceed this to trigger reflection
 DEFAULT_THRESHOLD = 16
+
+# Phase 2 dual-budget retry caps. Two failure modes get distinct budgets:
+# - 0-byte returns: transient model burp, deserve generous retries with backoff
+# - Non-empty unparseable returns: real format issue, fewer retries before giving up
+PHASE2_MAX_EMPTY_RETRIES = 4
+PHASE2_MAX_FORMAT_RETRIES = 2
+PHASE2_RETRY_BACKOFF_SEC = 30
 
 
 def log(msg: str):
@@ -470,6 +478,78 @@ def _call_api(prompt: str) -> str:
         return ""
 
 
+def _call_llm_for_phase2(prompt: str) -> str:
+    """Run one Phase 2 call attempt: try Claude CLI, then API fallback.
+
+    Returns the raw output text, or empty string if both providers returned nothing.
+    """
+    output = _call_claude_cli(prompt)
+    if not output:
+        output = _call_api(prompt)
+    return output
+
+
+def _run_phase2_with_retry(prompt: str, mm) -> tuple:
+    """Phase 2 (model update) with dual-budget retry on transient failures.
+
+    Two independent budgets:
+        empty_count: 0-byte returns from both providers (transient model burp)
+        format_count: non-empty returns whose markers can't be parsed (real format issue)
+
+    The CLI 0-byte burp surfaces as 'subprocess returns exit 0 with empty stdout'.
+    A single hard failure on those used to land the whole reflection in parse_error.
+    The retry budget catches the burp without infinitely looping on real format bugs.
+
+    Returns:
+        (model_content, summary, failure_status)
+            On success: (model_content, summary, None)
+            On all-empty exhaustion: ("", "", "no_llm")
+            On format exhaustion: ("", "", "parse_error")
+    """
+    empty_count = 0
+    format_count = 0
+    attempt = 0
+
+    while empty_count < PHASE2_MAX_EMPTY_RETRIES and format_count < PHASE2_MAX_FORMAT_RETRIES:
+        attempt += 1
+        output = _call_llm_for_phase2(prompt)
+
+        if not output:
+            empty_count += 1
+            log(f"  Phase 2 attempt {attempt}: both providers returned 0 bytes "
+                f"(empty {empty_count}/{PHASE2_MAX_EMPTY_RETRIES}, "
+                f"format {format_count}/{PHASE2_MAX_FORMAT_RETRIES})")
+            if empty_count < PHASE2_MAX_EMPTY_RETRIES:
+                log(f"    transient burp — backing off {PHASE2_RETRY_BACKOFF_SEC}s before retry...")
+                time.sleep(PHASE2_RETRY_BACKOFF_SEC)
+            continue
+
+        model_content, summary = mm.parse_reflection_output(output)
+
+        if model_content:
+            if attempt > 1:
+                log(f"  Phase 2 parsed on attempt {attempt} "
+                    f"(empty={empty_count}, format={format_count})")
+            return model_content, summary, None
+
+        format_count += 1
+        log(f"  Phase 2 attempt {attempt}: call returned {len(output)}B "
+            f"but parser found no model markers "
+            f"(empty {empty_count}/{PHASE2_MAX_EMPTY_RETRIES}, "
+            f"format {format_count}/{PHASE2_MAX_FORMAT_RETRIES})")
+        log(f"    output[:500]: {output[:500]}")
+
+        if format_count < PHASE2_MAX_FORMAT_RETRIES:
+            log(f"    backing off {PHASE2_RETRY_BACKOFF_SEC}s before retry...")
+            time.sleep(PHASE2_RETRY_BACKOFF_SEC)
+
+    if empty_count >= PHASE2_MAX_EMPTY_RETRIES:
+        log(f"  Phase 2 gave up: {empty_count} total 0-byte returns from providers")
+        return "", "", "no_llm"
+    log(f"  Phase 2 gave up: {format_count} total unparseable returns from providers")
+    return "", "", "parse_error"
+
+
 # ─── Provider Capability Detection ────────────────────────────────
 
 # Providers capable enough for two-phase reflection (question generation + model update).
@@ -836,18 +916,16 @@ def run_reflection(mm: MemoryManager, user_id: int, dry_run: bool = False,
         log("  Single-call mode (provider not capable of two-phase)...")
         prompt = _build_simple_prompt(model, observations_text, routing_note)
 
-    # Try Claude CLI first (best quality), then API
-    output = _call_claude_cli(prompt)
-    if not output:
-        output = _call_api(prompt)
-    if not output:
-        log(f"No LLM available for reflection on user {user_id}")
+    # Phase 2 with dual-budget retry: handles transient 0-byte returns separately
+    # from real parser failures so a single Sonnet burp doesn't kill the reflection.
+    model_content, summary, failure = _run_phase2_with_retry(prompt, mm)
+
+    if failure == "no_llm":
+        log(f"No LLM available for reflection on user {user_id} after retries")
         return {"user_id": user_id, "status": "no_llm", "reason": "No capable model available"}
 
-    model_content, summary = mm.parse_reflection_output(output)
-
-    if not model_content:
-        log(f"Could not parse model update for user {user_id}")
+    if failure == "parse_error" or not model_content:
+        log(f"Could not parse model update for user {user_id} after retries")
         return {"user_id": user_id, "status": "parse_error", "reason": "no model content in output"}
 
     # Update the person model
