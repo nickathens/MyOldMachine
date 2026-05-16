@@ -1,7 +1,8 @@
 {
-  "pip": ["requests"],
+  "pip": ["requests", "python-pptx"],
   "check": {
-    "requests": "python3 -c 'import requests'"
+    "requests": "python3 -c 'import requests'",
+    "python-pptx": "python3 -c 'import pptx'"
   },
   "optional": {
     "pip": ["playwright"],
