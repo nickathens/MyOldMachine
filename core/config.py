@@ -116,6 +116,18 @@ def get_llm_api_key() -> str:
     return _env("LLM_API_KEY", "")
 
 
+_VALID_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def get_llm_effort() -> str:
+    """Effort level passed to `claude --effort`. Validates against the CLI's
+    accepted set; falls back to "max" if the env var is unset or unrecognized."""
+    value = _env("LLM_EFFORT", "max").strip().lower()
+    if value in _VALID_EFFORT_LEVELS:
+        return value
+    return "max"
+
+
 def get_ollama_base_url() -> str:
     return _env("OLLAMA_BASE_URL", "http://localhost:11434")
 
