@@ -73,7 +73,7 @@ from logging.handlers import RotatingFileHandler
 class _TokenRedactFilter(logging.Filter):
     """Redact bot tokens from log output to prevent credential leaks."""
     import re as _re
-    _pattern = _re.compile(r'\d{8,10}:[A-Za-z0-9_\-]{30,}')
+    _pattern = _re.compile(r'\d{8,12}:[A-Za-z0-9_\-]{30,}')
 
     def filter(self, record):
         if record.args:
@@ -1268,11 +1268,23 @@ def sanitize_response(content: str) -> str:
     for p in patterns:
         content = re.sub(p, "", content, flags=re.IGNORECASE | re.DOTALL)
 
-    # Strip hallucinated assistant continuations
-    assistant_patterns = [
-        r"\n\s*Assistant\s*:.*", r"\n\s*Claude\s*:.*", r"\n\s*AI\s*:.*",
+    # Aggressive: strip everything from an explicit Assistant: marker.
+    aggressive_patterns = [
+        r"\n\s*Assistant\s*:.*",
     ]
-    for p in assistant_patterns:
+    for p in aggressive_patterns:
+        match = re.search(p, content, flags=re.IGNORECASE)
+        if match and match.start() > 50:
+            content = content[:match.start()]
+
+    # Conservative: only strip Claude:/AI: when preceded by a blank line
+    # (paragraph break). This avoids nuking legitimate prose that mentions
+    # these words mid-sentence -- relevant on multi-provider runs where the
+    # responding model is not Claude but the output may still cite it.
+    conservative_patterns = [
+        r"\n\s*\n\s*Claude\s*:.*", r"\n\s*\n\s*AI\s*:.*",
+    ]
+    for p in conservative_patterns:
         match = re.search(p, content, flags=re.IGNORECASE)
         if match and match.start() > 50:
             content = content[:match.start()]

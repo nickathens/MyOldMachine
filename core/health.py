@@ -577,6 +577,7 @@ class PollingHealthMonitor:
                 ["systemctl", "--user", "restart", "telegram-bot-api"],
                 ["systemctl", "restart", "telegram-bot-api"],
             ]:
+                proc = None
                 try:
                     proc = await asyncio.create_subprocess_exec(
                         *cmd,
@@ -589,7 +590,16 @@ class PollingHealthMonitor:
                         await asyncio.sleep(5)
                         self.last_update_time = time.monotonic()
                         return True
-                except (asyncio.TimeoutError, Exception) as e:
+                except asyncio.TimeoutError:
+                    logger.warning("Restart via %s timed out after 30s", " ".join(cmd))
+                    if proc is not None:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except Exception:
+                            pass
+                    continue
+                except Exception as e:
                     logger.debug("Restart via %s failed: %s", " ".join(cmd), e)
                     continue
 
@@ -605,6 +615,7 @@ class PollingHealthMonitor:
             kickstart_no_sudo = [
                 "launchctl", "kickstart", "-k", "system/com.telegram-bot-api",
             ]
+            proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *kickstart_no_sudo,
@@ -618,7 +629,15 @@ class PollingHealthMonitor:
                     await asyncio.sleep(5)
                     self.last_update_time = time.monotonic()
                     return True
-            except (asyncio.TimeoutError, Exception) as e:
+            except asyncio.TimeoutError:
+                logger.warning("kickstart (no-sudo) timed out after 15s")
+                if proc is not None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except Exception:
+                        pass
+            except Exception as e:
                 logger.debug("kickstart (no-sudo) failed: %s", e)
 
             sudo_pass_file = Path.home() / ".sudo_pass"
@@ -635,6 +654,7 @@ class PollingHealthMonitor:
                         "system/com.telegram-bot-api"] if password else \
                        ["sudo", "-n", "launchctl", "kickstart", "-k",
                         "system/com.telegram-bot-api"]
+            proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *sudo_cmd,
@@ -652,7 +672,15 @@ class PollingHealthMonitor:
                     await asyncio.sleep(5)
                     self.last_update_time = time.monotonic()
                     return True
-            except (asyncio.TimeoutError, Exception) as e:
+            except asyncio.TimeoutError:
+                logger.warning("kickstart (sudo) timed out after 30s")
+                if proc is not None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except Exception:
+                        pass
+            except Exception as e:
                 logger.debug("kickstart (sudo) failed: %s", e)
 
         logger.warning("Could not restart local Bot API")
