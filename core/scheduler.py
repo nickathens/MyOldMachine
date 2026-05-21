@@ -560,12 +560,12 @@ async def _execute_command(job_id: str):
 
         if not success:
             error_msg = f"Command job failed: {meta['name']}\nExit code: {proc.returncode}\n{output[-500:]}"
-            await scheduler.send_message(meta["user_id"], error_msg)
+            await _send_with_retry(scheduler, meta["user_id"], error_msg)
             _log_execution(job_id, meta["user_id"], meta.get("message", ""),
                            False, f"Exit code {proc.returncode}")
         else:
             if meta.get("notify") and meta.get("message"):
-                await scheduler.send_message(meta["user_id"], meta["message"])
+                await _send_with_retry(scheduler, meta["user_id"], meta["message"])
             _log_execution(job_id, meta["user_id"], meta.get("message", ""), True)
 
         logger.info(f"Command job {job_id} finished (exit={proc.returncode})")
@@ -573,11 +573,17 @@ async def _execute_command(job_id: str):
     except asyncio.TimeoutError:
         logger.error(f"Command job {job_id} timed out after {cmd_timeout}s")
         _log_execution(job_id, meta["user_id"], "", False, f"Timed out after {cmd_timeout}s")
-        await scheduler.send_message(meta["user_id"], f"Command job timed out: {meta['name']}")
+        await _send_with_retry(
+            scheduler, meta["user_id"],
+            f"Command job timed out: {meta['name']}",
+        )
     except Exception as e:
         logger.error(f"Command job {job_id} failed: {e}")
         _log_execution(job_id, meta["user_id"], "", False, str(e))
-        await scheduler.send_message(meta["user_id"], f"Command job error: {meta['name']}\n{str(e)[:200]}")
+        await _send_with_retry(
+            scheduler, meta["user_id"],
+            f"Command job error: {meta['name']}\n{str(e)[:200]}",
+        )
 
     if not meta.get("repeat"):
         if success:

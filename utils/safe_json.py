@@ -22,7 +22,7 @@ def load_json(path: Path, default=None):
 
 
 def save_json(path: Path, data, indent=2):
-    """Save JSON atomically: write to temp file, fsync, rename."""
+    """Save JSON atomically: write to temp file, fsync, rename, fsync dir."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -30,3 +30,14 @@ def save_json(path: Path, data, indent=2):
         f.flush()
         os.fsync(f.fileno())
     tmp.rename(path)
+    # Fsync the parent directory so the rename's metadata change is durable
+    # across a power cut. Some filesystems (e.g. FAT/exFAT) cannot fsync a
+    # directory -- swallow OSError there rather than failing the save.
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
