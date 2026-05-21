@@ -73,7 +73,7 @@ from logging.handlers import RotatingFileHandler
 class _TokenRedactFilter(logging.Filter):
     """Redact bot tokens from log output to prevent credential leaks."""
     import re as _re
-    _pattern = _re.compile(r'\d{8,12}:[A-Za-z0-9_\-]{30,}')
+    _pattern = _re.compile(r'\d{8,}:[A-Za-z0-9_\-]{30,}')
 
     def filter(self, record):
         if record.args:
