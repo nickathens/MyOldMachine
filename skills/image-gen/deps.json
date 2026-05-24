@@ -2,5 +2,13 @@
   "pip": ["httpx>=0.27"],
   "check": {
     "httpx": "python3 -c \"import httpx\""
-  }
+  },
+  "optional": {
+    "npm": ["@higgsfield/cli"],
+    "note": "Higgsfield CLI unlocks 20+ image models, 16 video models, and up to 4K resolution. Without it, the skill falls back to Pollinations.ai (free, no auth, 768x768 max, image only). After installing, run `higgsfield auth login` once per OS user to store the auth token locally. Do not commit the token file."
+  },
+  "weight": "light",
+  "min_ram_gb": 0.5,
+  "min_disk_gb": 0.1,
+  "install_note": "Core image generation uses Pollinations.ai (free, no auth). Install the optional Higgsfield CLI for paid premium models and video generation."
 }

@@ -1,5 +1,10 @@
 {
   "stop": {
-    "clean_patterns": ["/tmp/generated_image*.png", "/tmp/pollinations_*.png"]
+    "clean_patterns": [
+      "/tmp/generated_image*.png",
+      "/tmp/generated_image*.jpg",
+      "/tmp/generated_video*.mp4",
+      "/tmp/pollinations_*.png"
+    ]
   }
 }
