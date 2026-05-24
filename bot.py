@@ -3056,10 +3056,14 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
     attachments = await download_attachments(update, context)
     user_message = update.message.text or update.message.caption or ""
 
-    # Check for pending Mini App media generation request
+    # Check for pending Mini App media generation request (10 min TTL)
     pending_mg = Path(f"/tmp/media_gen_pending_{user_id}.json")
     if pending_mg.exists():
         try:
+            mg_age = time.time() - pending_mg.stat().st_mtime
+            if mg_age > 600:
+                pending_mg.unlink(missing_ok=True)
+                raise ValueError("expired")
             mg = json.loads(pending_mg.read_text())
             pending_mg.unlink()
             mg_type = mg.get("type", "image")
@@ -3086,6 +3090,8 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                 "cinematic-v2": "cinematic-video.md",
                 "hailuo": "hailuo.md", "wan": "wan.md", "wan2.6": "wan.md",
                 "soul-cast": "soul-cast.md", "marketing": "marketing-studio.md",
+                "ms": "nano-banana.md", "ms-studio": "nano-banana.md",
+                "z": "nano-banana.md", "auto": "nano-banana.md",
             }
             guide_file = _MODEL_GUIDES.get(mg_model, "nano-banana.md")
             guide_path = f"skills/image-gen/models/{guide_file}"

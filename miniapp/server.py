@@ -661,6 +661,48 @@ async def unarchive_project(slug: str, user: dict = Depends(_get_user)):
 # ─── /api/media ──────────────────────────────────────────────────────
 
 
+_ALL_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"]
+
+_PER_MODEL_RATIOS = {
+    "nano_banana": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
+    "nano_banana_flash": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"],
+    "nano_banana_2": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
+    "flux_2": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "flux_kontext": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "gpt_image_2": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    "imagegen_2_0": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    "grok_image": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "text2image_soul_v2": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    "soul_cinematic": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4"],
+    "soul_location": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "9:21"],
+    "seedream_v4_5": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4"],
+    "seedream_v5_lite": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "openai_hazel": ["1:1", "16:9", "9:16", "4:3"],
+    "cinematic_studio_2_5": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "kling_omni_image": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5"],
+    "image_auto": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "ms_image": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
+    "marketing_studio_image": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
+    "z_image": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "soul_cast": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
+    "kling3_0": ["1:1", "16:9", "9:16"],
+    "kling2_6": ["1:1", "16:9", "9:16"],
+    "veo3": ["16:9", "9:16"],
+    "veo3_1": ["16:9", "9:16"],
+    "veo3_1_lite": ["16:9", "9:16", "1:1"],
+    "seedance_2_0": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    "seedance1_5": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    "minimax_hailuo": [],
+    "wan2_7": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "wan2_6": ["1:1", "16:9", "9:16"],
+    "grok_video": ["1:1", "16:9", "9:16"],
+    "cinematic_studio_3_0": ["1:1", "16:9", "9:16"],
+    "cinematic_studio_video": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "cinematic_studio_video_v2": ["1:1", "16:9", "9:16", "4:3", "3:4"],
+    "marketing_studio_video": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+}
+
+
 @app.get("/api/media/model-ratios")
 async def media_model_ratios(user: dict = Depends(_get_user)):
     try:
@@ -668,12 +710,10 @@ async def media_model_ratios(user: dict = Depends(_get_user)):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         aliases = {}
-        aspect_ratios = getattr(mod, "MODEL_ASPECT_RATIOS", {})
-        all_ratios = list(getattr(mod, "ASPECT_RATIOS", {}).keys())
         for alias, jst in mod.MODEL_ALIASES.items():
-            aliases[alias] = aspect_ratios.get(jst, all_ratios)
+            aliases[alias] = _PER_MODEL_RATIOS.get(jst, _ALL_RATIOS)
         for alias, jst in mod.VIDEO_MODEL_ALIASES.items():
-            aliases[alias] = aspect_ratios.get(jst, ["16:9", "9:16", "1:1"])
+            aliases[alias] = _PER_MODEL_RATIOS.get(jst, ["16:9", "9:16", "1:1"])
         return aliases
     except Exception as e:
         log.error("Model ratios failed: %s", e)
