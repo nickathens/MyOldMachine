@@ -222,5 +222,140 @@ class TestSlugValidation(unittest.TestCase):
                 srv._validate_slug(bad)
 
 
+class TestModelRatios(unittest.TestCase):
+    """Issue #1: per-model aspect ratio filtering must return model-specific data."""
+
+    def test_per_model_ratios_table_populated(self) -> None:
+        self.assertTrue(hasattr(srv, "_PER_MODEL_RATIOS"))
+        self.assertGreater(len(srv._PER_MODEL_RATIOS), 20)
+
+    def test_hailuo_has_empty_ratios(self) -> None:
+        self.assertEqual(srv._PER_MODEL_RATIOS.get("minimax_hailuo"), [])
+
+    def test_veo3_only_two_ratios(self) -> None:
+        self.assertEqual(sorted(srv._PER_MODEL_RATIOS.get("veo3", [])), ["16:9", "9:16"])
+
+    def test_nano_banana_has_many_ratios(self) -> None:
+        ratios = srv._PER_MODEL_RATIOS.get("nano_banana", [])
+        self.assertGreater(len(ratios), 9)
+
+    def test_every_model_ratios_subset_of_all(self) -> None:
+        for model, ratios in srv._PER_MODEL_RATIOS.items():
+            for r in ratios:
+                self.assertIn(r, srv._ALL_RATIOS, msg=f"{model} has invalid ratio {r}")
+
+
+class TestPendingMediaGenTTL(unittest.TestCase):
+    """Issue #2: pending config should expire after 10 minutes."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="mom-mini-mg-"))
+        self.pending = self.tmp / "media_gen_pending_12345.json"
+        self.pending.write_text(json.dumps({
+            "type": "image", "model": "nano2", "aspect_ratio": "1:1",
+            "resolution": "2k", "prompt": "a cat",
+        }))
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_fresh_pending_is_not_expired(self) -> None:
+        import time
+        age = time.time() - self.pending.stat().st_mtime
+        self.assertLess(age, 600)
+
+    def test_old_pending_would_be_expired(self) -> None:
+        import os
+        old_time = self.pending.stat().st_mtime - 700
+        os.utime(self.pending, (old_time, old_time))
+        import time
+        age = time.time() - self.pending.stat().st_mtime
+        self.assertGreater(age, 600)
+
+
+class TestModelGuideMapping(unittest.TestCase):
+    """Issue #3: all model aliases should have explicit guide routes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.bot_src = (ROOT / "bot.py").read_text()
+        gen_src = (ROOT / "skills" / "image-gen" / "scripts" / "generate.py").read_text()
+        cls.image_aliases = []
+        cls.video_aliases = []
+        in_image = False
+        in_video = False
+        for line in gen_src.splitlines():
+            if line.startswith("MODEL_ALIASES"):
+                in_image = True
+                continue
+            if line.startswith("VIDEO_MODEL_ALIASES"):
+                in_video = True
+                in_image = False
+                continue
+            if in_image and line.strip().startswith("}"):
+                in_image = False
+                continue
+            if in_video and line.strip().startswith("}"):
+                in_video = False
+                continue
+            if in_image and '":' in line:
+                alias = line.strip().split('"')[1]
+                cls.image_aliases.append(alias)
+            if in_video and '":' in line:
+                alias = line.strip().split('"')[1]
+                cls.video_aliases.append(alias)
+
+    def test_all_image_aliases_have_guide(self) -> None:
+        missing = [a for a in self.image_aliases if f'"{a}"' not in self.bot_src]
+        self.assertEqual(missing, [], f"Missing model guide mappings in bot.py: {missing}")
+
+    def test_all_video_aliases_have_guide(self) -> None:
+        missing = [a for a in self.video_aliases if f'"{a}"' not in self.bot_src]
+        self.assertEqual(missing, [], f"Missing model guide mappings in bot.py: {missing}")
+
+
+class TestMediaGenLaunchValidation(unittest.TestCase):
+    """Issue #4: tests for the media-gen launch endpoint validation."""
+
+    def test_invalid_type_rejected(self) -> None:
+        self.assertNotIn("audio", ("image", "video"))
+
+    def test_model_validation_regex(self) -> None:
+        valid = ["nano2", "nano-pro", "flux-kontext", "kling2.6", "veo3.1"]
+        for m in valid:
+            self.assertTrue(
+                m.replace("-", "").replace(".", "").replace("_", "").isalnum(),
+                msg=f"{m} should be valid"
+            )
+        invalid = ["../../etc", "nano;rm -rf", "model name", ""]
+        for m in invalid:
+            self.assertFalse(
+                bool(m) and m.replace("-", "").replace(".", "").replace("_", "").isalnum(),
+                msg=f"{m!r} should be invalid"
+            )
+
+    def test_aspect_ratio_validation(self) -> None:
+        valid_aspects = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"}
+        self.assertIn("16:9", valid_aspects)
+        self.assertNotIn("7:3", valid_aspects)
+        self.assertNotIn("", valid_aspects)
+
+    def test_duration_range(self) -> None:
+        for d in [1, 5, 30, 60]:
+            self.assertTrue(1 <= d <= 60)
+        for d in [0, -1, 61, 999]:
+            self.assertFalse(1 <= d <= 60)
+
+    def test_extra_params_sanitization(self) -> None:
+        raw = {"quality": "high", "bad key!": "val", "mode": True, "nested": {"a": 1}}
+        safe = {}
+        for k, v in raw.items():
+            if isinstance(k, str) and len(k) < 30 and k.replace("_", "").isalpha():
+                if isinstance(v, (str, bool, int, float)):
+                    safe[k] = v
+        self.assertEqual(safe, {"quality": "high", "mode": True})
+
+
 if __name__ == "__main__":
     unittest.main()

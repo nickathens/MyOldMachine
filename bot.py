@@ -1152,6 +1152,41 @@ def build_system_prompt(user_id: int) -> str:
         if skills_ctx:
             parts.append(skills_ctx)
 
+        # Auto-refinement for image-gen: when the skill is available,
+        # inject mandatory instructions to read model guides and refine
+        # prompts before any generation, even from regular chat.
+        if _skill_manager.get_skill("image-gen"):
+            parts.append(
+                "### Media Generation -- Prompt Refinement (MANDATORY):\n"
+                "Before ANY image or video generation (including casual chat requests):\n"
+                "1. Read the model-specific guide from skills/image-gen/models/ "
+                "(see skills/image-gen/SKILL.md for the guide-file mapping table).\n"
+                "2. Refine the user's prompt following that guide's structure, "
+                "length, and technique recommendations.\n"
+                "3. Estimate cost with --cost flag.\n"
+                "4. Present: original prompt, refined prompt, estimated cost.\n"
+                "5. Wait for explicit approval before generating.\n"
+                "NEVER generate without explicit user approval. Credits are real money.\n"
+                "When generating, always pass --user <telegram_user_id> for iteration tracking.\n"
+            )
+
+            # Inject last-generation context for iteration support
+            last_gen = Path(f"/tmp/media_gen_last/last_{user_id}.json")
+            if last_gen.exists():
+                try:
+                    lg = json.loads(last_gen.read_text())
+                    parts.append(
+                        f"Last Generated Media (for iteration):\n"
+                        f"  Path: {lg.get('path', 'unknown')}\n"
+                        f"  Type: {lg.get('type', 'unknown')}\n"
+                        f"  Model: {lg.get('model', 'unknown')}\n"
+                        f"  Prompt: {lg.get('prompt', '')[:100]}\n"
+                        f"If the user says 'make it more X', 'change', 'iterate', "
+                        f"'adjust', use -r {lg.get('path', '')} as reference image.\n"
+                    )
+                except (json.JSONDecodeError, OSError):
+                    pass
+
         # Per-user skill customization tools / hints
         user_dir = get_user_dir(user_id)
         if is_cli_provider:
@@ -3020,6 +3055,85 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
 
     attachments = await download_attachments(update, context)
     user_message = update.message.text or update.message.caption or ""
+
+    # Check for pending Mini App media generation request (10 min TTL)
+    pending_mg = Path(f"/tmp/media_gen_pending_{user_id}.json")
+    if pending_mg.exists():
+        try:
+            mg_age = time.time() - pending_mg.stat().st_mtime
+            if mg_age > 600:
+                pending_mg.unlink(missing_ok=True)
+                raise ValueError("expired")
+            mg = json.loads(pending_mg.read_text())
+            pending_mg.unlink()
+            mg_type = mg.get("type", "image")
+            mg_model = mg.get("model", "nano2")
+            mg_aspect = mg.get("aspect_ratio", "1:1")
+            mg_res = mg.get("resolution", "2k")
+            mg_duration = mg.get("duration")
+            mg_prompt = mg.get("prompt", "")
+            mg_extra = mg.get("extra_params", {})
+
+            _MODEL_GUIDES = {
+                "nano": "nano-banana.md", "nano2": "nano-banana.md", "nano-pro": "nano-banana.md",
+                "gpt": "gpt-image.md", "hazel": "gpt-image.md",
+                "flux": "flux.md", "flux-kontext": "flux.md",
+                "grok": "grok.md", "grok-video": "grok-video.md",
+                "soul": "soul.md", "soul-cinematic": "soul.md", "soul-location": "soul.md",
+                "cinematic": "cinematic-studio.md",
+                "seedream": "seedream.md", "seedream-lite": "seedream.md",
+                "kling": "kling-video.md" if mg_type == "video" else "nano-banana.md",
+                "kling2.6": "kling-video.md",
+                "veo3": "veo.md", "veo3.1": "veo.md", "veo3-lite": "veo.md",
+                "seedance": "seedance.md", "seedance1.5": "seedance.md",
+                "cinematic3": "cinematic-video.md", "cinematic-video": "cinematic-video.md",
+                "cinematic-v2": "cinematic-video.md",
+                "hailuo": "hailuo.md", "wan": "wan.md", "wan2.6": "wan.md",
+                "soul-cast": "soul-cast.md", "marketing": "marketing-studio.md",
+                "ms": "nano-banana.md", "ms-studio": "nano-banana.md",
+                "z": "nano-banana.md", "auto": "nano-banana.md",
+            }
+            guide_file = _MODEL_GUIDES.get(mg_model, "nano-banana.md")
+            guide_path = f"skills/image-gen/models/{guide_file}"
+
+            mg_context = (
+                f"[Mini App Media Generation Request]\n"
+                f"Type: {mg_type}\n"
+                f"Model: {mg_model}\n"
+                f"Aspect Ratio: {mg_aspect}\n"
+            )
+            if mg_type == "image":
+                mg_context += f"Resolution: {mg_res}\n"
+            if mg_type == "video" and mg_duration:
+                mg_context += f"Duration: {mg_duration}s\n"
+            if mg_extra:
+                for ek, ev in mg_extra.items():
+                    mg_context += f"{ek}: {ev}\n"
+
+            mg_context += (
+                f"Prompt: {mg_prompt}\n\n"
+                f"MANDATORY: Read the prompt guide at {guide_path} before refining.\n"
+                f"Refine the user's prompt following that guide's techniques, structure, and length recommendations.\n\n"
+                f"Then estimate cost with:\n"
+                f"python skills/image-gen/scripts/generate.py "
+                f'"{mg_prompt[:80]}" --cost -m {mg_model} -a {mg_aspect}'
+            )
+            if mg_type == "image":
+                mg_context += f" --resolution {mg_res}"
+            if mg_type == "video":
+                mg_context += " --video"
+                if mg_duration:
+                    mg_context += f" --duration {mg_duration}"
+            if mg_extra:
+                mg_context += f" --extra '{json.dumps(mg_extra)}'"
+            mg_context += (
+                f"\n\nPresent: original prompt, refined prompt for this specific model, estimated cost, and credits remaining. "
+                f"Ask the user to approve before generating. Do NOT generate without explicit approval. "
+                f"When generating, ALWAYS include --user {user_id} so the output is tracked for iteration."
+            )
+            user_message = mg_context + ("\n\nUser says: " + user_message if user_message else "")
+        except Exception:
+            pending_mg.unlink(missing_ok=True)
 
     # Collect image paths for multimodal vision support
     image_paths = [str(p) for p, t in attachments if t == "image"] if attachments else []
