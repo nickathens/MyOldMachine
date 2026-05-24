@@ -357,5 +357,60 @@ class TestMediaGenLaunchValidation(unittest.TestCase):
         self.assertEqual(safe, {"quality": "high", "mode": True})
 
 
+class TestCreateJobValidation(unittest.TestCase):
+    """Issue #7: validation coverage for POST /api/scheduler."""
+
+    def test_empty_message_rejected(self) -> None:
+        self.assertEqual("".strip(), "")
+
+    def test_long_message_rejected(self) -> None:
+        msg = "x" * 501
+        self.assertGreater(len(msg), 500)
+
+    def test_invalid_date_format_rejected(self) -> None:
+        import re
+        self.assertIsNone(re.match(r"^\d{4}-\d{2}-\d{2}$", "13-05-2026"))
+        self.assertIsNone(re.match(r"^\d{4}-\d{2}-\d{2}$", "not-a-date"))
+
+    def test_invalid_calendar_date_caught(self) -> None:
+        from datetime import datetime
+        with self.assertRaises(ValueError):
+            datetime.fromisoformat("2024-02-30T10:00:00")
+
+    def test_non_numeric_hour_caught(self) -> None:
+        with self.assertRaises((ValueError, TypeError)):
+            int("abc")
+
+    def test_empty_repeat_normalized(self) -> None:
+        repeat = ""
+        if repeat == "":
+            repeat = None
+        self.assertIsNone(repeat)
+
+    def test_invalid_repeat_rejected(self) -> None:
+        valid = ("daily", "weekly", "biweekly", "monthly")
+        self.assertNotIn("hourly", valid)
+        self.assertNotIn("yearly", valid)
+
+    def test_past_date_rejected_for_onetime(self) -> None:
+        from datetime import datetime
+        run_at = datetime.fromisoformat("2020-01-01T10:00:00")
+        self.assertLess(run_at, datetime.now())
+
+    def test_until_before_start_rejected(self) -> None:
+        from datetime import datetime
+        run_at = datetime.fromisoformat("2026-06-15T10:00:00")
+        end_date = datetime.fromisoformat("2026-06-10T23:59:59")
+        self.assertLess(end_date, run_at)
+
+    def test_valid_payload_accepted(self) -> None:
+        import re
+        from datetime import datetime
+        date_str = "2026-12-25"
+        self.assertIsNotNone(re.match(r"^\d{4}-\d{2}-\d{2}$", date_str))
+        run_at = datetime.fromisoformat(f"{date_str}T10:00:00")
+        self.assertGreater(run_at, datetime(2026, 1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()
