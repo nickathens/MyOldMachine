@@ -406,7 +406,7 @@ class ClaudeCLIProvider(LLMProvider):
     IDLE_TIMEOUT = 1800  # 30 min of no output = stuck
     NO_TEXT_TIMEOUT = 180  # 3 min of tool activity with zero user-facing text = stuck
     ABSOLUTE_TIMEOUT = 3600  # 1 hour hard ceiling per request, even with continuous activity
-    PROGRESS_INTERVAL = 120  # Send progress report every 2 minutes
+    PROGRESS_INTERVAL = 600  # Send progress report every 10 minutes
 
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
         super().__init__(model, api_key)
@@ -986,7 +986,7 @@ class CodexCLIProvider(LLMProvider):
     IDLE_TIMEOUT = 1800
     NO_TEXT_TIMEOUT = 180
     ABSOLUTE_TIMEOUT = 3600
-    PROGRESS_INTERVAL = 120
+    PROGRESS_INTERVAL = 600
 
     def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
         super().__init__(model, api_key)
