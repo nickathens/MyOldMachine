@@ -102,6 +102,7 @@ logger = logging.getLogger(__name__)
 
 # Per-user locks
 _user_locks: dict[int, asyncio.Lock] = {}
+_stop_drain: set[int] = set()
 
 # Cache conversation history from build_messages for reuse in _save_and_send,
 # avoiding redundant disk reads within the same request cycle.
@@ -1912,6 +1913,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     killed = _llm_provider.stop_user(user_id)
     if killed:
+        _stop_drain.add(user_id)
         await update.message.reply_text("Stopping current task...")
     else:
         await update.message.reply_text("No active task to stop.")
@@ -2866,68 +2868,78 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
             )
         except Exception:
             pass
+        async with lock:
+            if user_id in _stop_drain:
+                return
+            await _process_media_group_inner(updates, user_id, context)
+        return
 
+    _stop_drain.discard(user_id)
     async with lock:
-        # Daily reset check (same as _process_single)
-        session = get_session(user_id)
-        if session.should_daily_reset():
-            session.perform_daily_reset()
-            logger.info(f"Daily reset performed for user {user_id}")
+        await _process_media_group_inner(updates, user_id, context)
 
-        all_attachments = []
-        caption = ""
-        for idx, upd in enumerate(updates):
-            attachments = await download_attachments(upd, context, group_index=idx)
-            all_attachments.extend(attachments)
-            if not caption:
-                caption = upd.message.text or upd.message.caption or ""
 
-        user_message = caption
-        image_paths = [str(p) for p, t in all_attachments if t == "image"] if all_attachments else []
-        if all_attachments:
-            info = "\n\n[Attachments:]"
-            for path, ftype in all_attachments:
-                if str(path).lower().endswith('.pdf'):
-                    pdf_text = _extract_pdf_text(str(path))
-                    info += f"\n- document (PDF): {os.path.basename(str(path))}"
-                    info += f"\n  [PDF content pre-extracted — file not available for Read tool]\n{pdf_text}"
-                elif ftype == "image":
-                    info += f"\n- {ftype}: {path} (viewable with Read tool)"
-                else:
-                    info += f"\n- {ftype}: {path}"
-            user_message = (user_message + info) if user_message else f"[Sent {len(all_attachments)} file(s)]{info}"
+async def _process_media_group_inner(updates, user_id, context):
+    """Inner handler for media group processing (runs under per-user lock)."""
+    session = get_session(user_id)
+    if session.should_daily_reset():
+        session.perform_daily_reset()
+        logger.info(f"Daily reset performed for user {user_id}")
 
-        if not user_message:
-            return
+    all_attachments = []
+    caption = ""
+    for idx, upd in enumerate(updates):
+        attachments = await download_attachments(upd, context, group_index=idx)
+        all_attachments.extend(attachments)
+        if not caption:
+            caption = upd.message.text or upd.message.caption or ""
 
-        chat = updates[0].message.chat
-        first_msg_id = updates[0].message.message_id
-        save_pending_message(user_id, user_message, first_msg_id)
+    user_message = caption
+    image_paths = [str(p) for p, t in all_attachments if t == "image"] if all_attachments else []
+    if all_attachments:
+        info = "\n\n[Attachments:]"
+        for path, ftype in all_attachments:
+            if str(path).lower().endswith('.pdf'):
+                pdf_text = _extract_pdf_text(str(path))
+                info += f"\n- document (PDF): {os.path.basename(str(path))}"
+                info += f"\n  [PDF content pre-extracted — file not available for Read tool]\n{pdf_text}"
+            elif ftype == "image":
+                info += f"\n- {ftype}: {path} (viewable with Read tool)"
+            else:
+                info += f"\n- {ftype}: {path}"
+        user_message = (user_message + info) if user_message else f"[Sent {len(all_attachments)} file(s)]{info}"
 
+    if not user_message:
+        return
+
+    chat = updates[0].message.chat
+    first_msg_id = updates[0].message.message_id
+    save_pending_message(user_id, user_message, first_msg_id)
+
+    try:
         try:
+            await chat.send_action("typing")
+        except Exception:
+            pass
+
+        response = await call_llm(user_id, user_message, chat=chat,
+                                  images=image_paths or None)
+
+        _save_and_send(user_id, user_message, response, session=session, message_id=first_msg_id)
+
+        for chunk in split_message(response):
             try:
-                await chat.send_action("typing")
-            except Exception:
-                pass
-
-            response = await call_llm(user_id, user_message, chat=chat,
-                                      images=image_paths or None)
-
-            _save_and_send(user_id, user_message, response, session=session, message_id=first_msg_id)
-
-            for chunk in split_message(response):
-                try:
-                    await chat.send_message(chunk)
-                except Exception as e:
-                    logger.error(f"Failed to send to user {user_id}: {e}")
-        except Exception as e:
-            logger.exception(f"Error processing media group for user {user_id}")
-            try:
-                await chat.send_message(f"Error processing your message: {str(e)[:200]}")
-            except Exception:
-                pass
-        finally:
-            clear_pending_message(user_id)
+                await chat.send_message(chunk)
+            except Exception as e:
+                logger.error(f"Failed to send to user {user_id}: {e}")
+    except Exception as e:
+        logger.exception(f"Error processing media group for user {user_id}")
+        try:
+            await chat.send_message(f"Error processing your message: {str(e)[:200]}")
+        except Exception:
+            pass
+    finally:
+        clear_pending_message(user_id)
 
 
 async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2935,171 +2947,187 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lock = _get_user_lock(user_id)
 
     if lock.locked():
+        text = (update.message.text or "").strip().lower()
+        if text == "stop" and isinstance(_llm_provider, _CLI_PROVIDERS):
+            killed = _llm_provider.stop_user(user_id)
+            if killed:
+                _stop_drain.add(user_id)
+                try:
+                    await update.message.reply_text("Stopping current task...")
+                except Exception:
+                    pass
+            return
+
         try:
             await update.message.reply_text("Still working on your previous request. I'll get to this once it's done.")
         except Exception:
             pass
+        async with lock:
+            if user_id in _stop_drain:
+                return
+            await _process_single_inner(update, context)
+        return
 
+    _stop_drain.discard(user_id)
     async with lock:
-        # Daily reset check
-        session = get_session(user_id)
-        if session.should_daily_reset():
-            session.perform_daily_reset()
-            logger.info(f"Daily reset performed for user {user_id}")
+        await _process_single_inner(update, context)
 
-        # Initialize person model for new users
-        if _memory_manager and not _memory_manager.get_model(user_id):
-            user_name = update.effective_user.first_name or "User"
-            _memory_manager.init_model(user_id, name=user_name)
-            logger.info(f"Initialized person model for user {user_id} ({user_name})")
 
-        # Intro flow state. First message ever -> show intro. Second message ->
-        # run intro reflection to seed the model. Third message onward ->
-        # normal flow. Migration in post_init() sets both markers for users who
-        # already have a populated model from prior deployments.
-        intro_first_turn = False
-        intro_should_reflect = False
-        if _memory_manager:
-            if not _memory_manager.intro_shown(user_id):
-                intro_first_turn = True
-            elif not _memory_manager.intro_done(user_id):
-                intro_should_reflect = True
+async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inner handler for single message processing (runs under per-user lock)."""
+    user_id = update.effective_user.id
 
-        # Crash-loop protection
-        incomplete = get_incomplete_task(user_id)
-        if incomplete:
-            try:
-                started = datetime.fromisoformat(incomplete.get("started", ""))
-                age_seconds = (datetime.now() - started).total_seconds()
-                if age_seconds < 120 and incomplete.get("original_message", "")[:100] == (update.message.text or "")[:100]:
-                    logger.warning(f"Crash-loop detected for user {user_id}")
-                    clear_task_progress(user_id)
-                    await update.message.reply_text(
-                        "Previous attempt was interrupted. Retrying. "
-                        "If this keeps happening, try /clear."
-                    )
-            except (ValueError, TypeError):
-                pass
+    # Daily reset check
+    session = get_session(user_id)
+    if session.should_daily_reset():
+        session.perform_daily_reset()
+        logger.info(f"Daily reset performed for user {user_id}")
 
-        attachments = await download_attachments(update, context)
-        user_message = update.message.text or update.message.caption or ""
+    # Initialize person model for new users
+    if _memory_manager and not _memory_manager.get_model(user_id):
+        user_name = update.effective_user.first_name or "User"
+        _memory_manager.init_model(user_id, name=user_name)
+        logger.info(f"Initialized person model for user {user_id} ({user_name})")
 
-        # Collect image paths for multimodal vision support
-        image_paths = [str(p) for p, t in attachments if t == "image"] if attachments else []
+    # Intro flow state. First message ever -> show intro. Second message ->
+    # run intro reflection to seed the model. Third message onward ->
+    # normal flow. Migration in post_init() sets both markers for users who
+    # already have a populated model from prior deployments.
+    intro_first_turn = False
+    intro_should_reflect = False
+    if _memory_manager:
+        if not _memory_manager.intro_shown(user_id):
+            intro_first_turn = True
+        elif not _memory_manager.intro_done(user_id):
+            intro_should_reflect = True
 
-        # Auto-transcribe voice for non-CLI providers (they can't invoke Whisper via tools)
-        if attachments and not isinstance(_llm_provider, _CLI_PROVIDERS):
-            for path, ftype in attachments:
-                if ftype == "voice":
-                    transcript = await _auto_transcribe_voice(str(path))
-                    if transcript:
-                        # Replace voice path reference with transcript in the message
-                        attachments = [
-                            (p, t) if t != "voice" or str(p) != str(path)
-                            else (p, "voice_transcribed")
-                            for p, t in attachments
-                        ]
-                        user_message = (user_message + f"\n\n[Voice message transcribed]: {transcript}").strip()
-
-        if attachments:
-            info = "\n\n[Attachments:]"
-            for path, ftype in attachments:
-                if str(path).lower().endswith('.pdf'):
-                    pdf_text = _extract_pdf_text(str(path))
-                    info += f"\n- document (PDF): {os.path.basename(str(path))}"
-                    info += f"\n  [PDF content pre-extracted — file not available for Read tool]\n{pdf_text}"
-                elif ftype == "image":
-                    info += f"\n- {ftype}: {path} (viewable with Read tool)"
-                elif ftype == "voice_transcribed":
-                    continue  # Already included in user_message above
-                else:
-                    info += f"\n- {ftype}: {path}"
-            user_message = (user_message + info) if user_message else f"[Sent file(s)]{info}"
-
-        if not user_message:
-            await update.message.reply_text("Please send a message or attachment.")
-            return
-
-        logger.info(f"From {user_id}: {user_message[:100]}...")
-        save_pending_message(user_id, user_message, update.message.message_id)
-
+    # Crash-loop protection
+    incomplete = get_incomplete_task(user_id)
+    if incomplete:
         try:
-            try:
-                await update.message.chat.send_action("typing")
-            except Exception:
-                pass
-
-            # On the user's first message, swap in the orientation prompt as the
-            # LLM input. The user's clean message still gets saved to history.
-            if intro_first_turn:
-                llm_message = build_orientation_prompt(
-                    user_id, first_user_message=user_message
+            started = datetime.fromisoformat(incomplete.get("started", ""))
+            age_seconds = (datetime.now() - started).total_seconds()
+            if age_seconds < 120 and incomplete.get("original_message", "")[:100] == (update.message.text or "")[:100]:
+                logger.warning(f"Crash-loop detected for user {user_id}")
+                clear_task_progress(user_id)
+                await update.message.reply_text(
+                    "Previous attempt was interrupted. Retrying. "
+                    "If this keeps happening, try /clear."
                 )
+        except (ValueError, TypeError):
+            pass
+
+    attachments = await download_attachments(update, context)
+    user_message = update.message.text or update.message.caption or ""
+
+    # Collect image paths for multimodal vision support
+    image_paths = [str(p) for p, t in attachments if t == "image"] if attachments else []
+
+    # Auto-transcribe voice for non-CLI providers (they can't invoke Whisper via tools)
+    if attachments and not isinstance(_llm_provider, _CLI_PROVIDERS):
+        for path, ftype in attachments:
+            if ftype == "voice":
+                transcript = await _auto_transcribe_voice(str(path))
+                if transcript:
+                    attachments = [
+                        (p, t) if t != "voice" or str(p) != str(path)
+                        else (p, "voice_transcribed")
+                        for p, t in attachments
+                    ]
+                    user_message = (user_message + f"\n\n[Voice message transcribed]: {transcript}").strip()
+
+    if attachments:
+        info = "\n\n[Attachments:]"
+        for path, ftype in attachments:
+            if str(path).lower().endswith('.pdf'):
+                pdf_text = _extract_pdf_text(str(path))
+                info += f"\n- document (PDF): {os.path.basename(str(path))}"
+                info += f"\n  [PDF content pre-extracted — file not available for Read tool]\n{pdf_text}"
+            elif ftype == "image":
+                info += f"\n- {ftype}: {path} (viewable with Read tool)"
+            elif ftype == "voice_transcribed":
+                continue
             else:
-                llm_message = user_message
+                info += f"\n- {ftype}: {path}"
+        user_message = (user_message + info) if user_message else f"[Sent file(s)]{info}"
 
-            response = await call_llm(user_id, llm_message, chat=update.message.chat,
-                                      images=image_paths or None)
+    if not user_message:
+        await update.message.reply_text("Please send a message or attachment.")
+        return
 
-            # Save to current session (topic or main) with compaction
-            _save_and_send(user_id, user_message, response, session=session,
-                           message_id=update.message.message_id)
+    logger.info(f"From {user_id}: {user_message[:100]}...")
+    save_pending_message(user_id, user_message, update.message.message_id)
 
-            for chunk in split_message(response):
-                try:
-                    await update.message.reply_text(chunk)
-                except Exception as e:
-                    logger.error(f"Failed to send reply to {user_id}: {e}")
+    try:
+        try:
+            await update.message.chat.send_action("typing")
+        except Exception:
+            pass
 
-            logger.info(f"Responded to {user_id}: {len(response)} chars")
+        if intro_first_turn:
+            llm_message = build_orientation_prompt(
+                user_id, first_user_message=user_message
+            )
+        else:
+            llm_message = user_message
 
-            # Intro flow bookkeeping after a successful response
-            if _memory_manager:
-                if intro_first_turn:
-                    _memory_manager.mark_intro_shown(user_id)
-                    logger.info(f"Intro shown to user {user_id}")
-                elif intro_should_reflect:
-                    # Mark done first so a reflection failure does not loop on
-                    # every subsequent turn. Then run the reflection in a
-                    # thread so it does not block the event loop.
-                    _memory_manager.mark_intro_done(user_id)
-                    try:
-                        from utils.reflect import run_intro_reflection
-                        profile = get_user_profile(user_id)
-                        user_name = profile.get(
-                            "name", update.effective_user.first_name or "User"
-                        )
-                        intro_msg = build_orientation_prompt(user_id)
-                        loop = asyncio.get_running_loop()
-                        fut = loop.run_in_executor(
-                            None,
-                            run_intro_reflection,
-                            _memory_manager, user_id, user_name,
-                            intro_msg, user_message,
-                        )
+        response = await call_llm(user_id, llm_message, chat=update.message.chat,
+                                  images=image_paths or None)
 
-                        def _intro_reflection_done(f, uid=user_id):
-                            try:
-                                f.result()
-                            except Exception:
-                                logger.exception(
-                                    f"Intro reflection failed for user {uid}"
-                                )
+        _save_and_send(user_id, user_message, response, session=session,
+                       message_id=update.message.message_id)
 
-                        fut.add_done_callback(_intro_reflection_done)
-                        logger.info(f"Intro reflection scheduled for user {user_id}")
-                    except Exception as e:
-                        logger.error(
-                            f"Intro reflection scheduling failed for {user_id}: {e}"
-                        )
-        except Exception as e:
-            logger.exception(f"Error processing message for user {user_id}")
+        for chunk in split_message(response):
             try:
-                await update.message.reply_text(f"Error processing your message: {str(e)[:200]}")
-            except Exception:
-                pass
-        finally:
-            clear_pending_message(user_id)
+                await update.message.reply_text(chunk)
+            except Exception as e:
+                logger.error(f"Failed to send reply to {user_id}: {e}")
+
+        logger.info(f"Responded to {user_id}: {len(response)} chars")
+
+        if _memory_manager:
+            if intro_first_turn:
+                _memory_manager.mark_intro_shown(user_id)
+                logger.info(f"Intro shown to user {user_id}")
+            elif intro_should_reflect:
+                _memory_manager.mark_intro_done(user_id)
+                try:
+                    from utils.reflect import run_intro_reflection
+                    profile = get_user_profile(user_id)
+                    user_name = profile.get(
+                        "name", update.effective_user.first_name or "User"
+                    )
+                    intro_msg = build_orientation_prompt(user_id)
+                    loop = asyncio.get_running_loop()
+                    fut = loop.run_in_executor(
+                        None,
+                        run_intro_reflection,
+                        _memory_manager, user_id, user_name,
+                        intro_msg, user_message,
+                    )
+
+                    def _intro_reflection_done(f, uid=user_id):
+                        try:
+                            f.result()
+                        except Exception:
+                            logger.exception(
+                                f"Intro reflection failed for user {uid}"
+                            )
+
+                    fut.add_done_callback(_intro_reflection_done)
+                    logger.info(f"Intro reflection scheduled for user {user_id}")
+                except Exception as e:
+                    logger.error(
+                        f"Intro reflection scheduling failed for {user_id}: {e}"
+                    )
+    except Exception as e:
+        logger.exception(f"Error processing message for user {user_id}")
+        try:
+            await update.message.reply_text(f"Error processing your message: {str(e)[:200]}")
+        except Exception:
+            pass
+    finally:
+        clear_pending_message(user_id)
 
 
 async def _health_monitor_loop(scheduler):
