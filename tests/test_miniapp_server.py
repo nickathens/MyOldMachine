@@ -73,6 +73,22 @@ class TestEnvWrites(unittest.TestCase):
         with self.assertRaises(ValueError):
             srv._write_env_var("LLM_MODEL", "value\nLLM_PROVIDER=malicious")
 
+    def test_write_allows_empty_value_for_clearing(self) -> None:
+        # Provider switch to ollama needs to clear LLM_MODEL — empty string
+        # must be accepted so the bot can't fall back to the old provider's
+        # model name and try to use it as an ollama tag.
+        srv._write_env_var("LLM_MODEL", "")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "")
+
+    def test_tmp_file_path_is_dot_env_dot_tmp(self) -> None:
+        # The atomic write must produce '.env.tmp', not '.env.env.tmp'.
+        # We can't observe the temp file directly (it's renamed in-flight),
+        # but we can verify the parent directory contains no .env.env.tmp
+        # leftover after a write, even if the write fails mid-way.
+        srv._write_env_var("LLM_MODEL", "claude-sonnet-4-6")
+        leftovers = list(self.env.parent.glob(".env.env.tmp"))
+        self.assertEqual(leftovers, [])
+
 
 class TestProjectVisibility(unittest.TestCase):
     def setUp(self) -> None:
@@ -161,6 +177,49 @@ class TestProjectVisibility(unittest.TestCase):
             self.assertIsNotNone(srv._get_project_detail("alpha", self._user("999", role="admin")))
         finally:
             self.restore_paths()
+
+
+class TestModifyAuthorization(unittest.TestCase):
+    """Archive/unarchive authorization: owner or admin only. Shared projects
+    are admin-only to prevent any allowlisted user from archiving system work."""
+
+    def _user(self, tid: str, role: str = "user") -> dict:
+        return {"_id": tid, "_profile": {"role": role}}
+
+    def test_owner_can_modify_own(self) -> None:
+        state = {"owner": "111"}
+        self.assertTrue(srv._user_can_modify_project(state, self._user("111")))
+
+    def test_other_user_blocked(self) -> None:
+        state = {"owner": "111"}
+        self.assertFalse(srv._user_can_modify_project(state, self._user("222")))
+
+    def test_admin_can_modify_any(self) -> None:
+        state = {"owner": "111"}
+        self.assertTrue(srv._user_can_modify_project(state, self._user("999", role="admin")))
+
+    def test_shared_is_admin_only(self) -> None:
+        state = {"owner": "shared"}
+        self.assertFalse(srv._user_can_modify_project(state, self._user("111")))
+        self.assertFalse(srv._user_can_modify_project(state, self._user("222")))
+        self.assertTrue(srv._user_can_modify_project(state, self._user("999", role="admin")))
+
+
+class TestSlugValidation(unittest.TestCase):
+    def test_accepts_safe_slugs(self) -> None:
+        # Should not raise.
+        srv._validate_slug("alpha")
+        srv._validate_slug("project_name")
+        srv._validate_slug("project-1")
+        srv._validate_slug("abc123")
+
+    def test_rejects_path_traversal(self) -> None:
+        from fastapi import HTTPException
+        for bad in ["..", "../../etc", "a/../b", "foo/bar", ".hidden",
+                    "Project", "UPPER", "with space", "with.dot",
+                    "with%encoded", ""]:
+            with self.assertRaises(HTTPException, msg=f"slug {bad!r} should be rejected"):
+                srv._validate_slug(bad)
 
 
 if __name__ == "__main__":

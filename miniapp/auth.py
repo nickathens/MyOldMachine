@@ -65,6 +65,6 @@ def validate_init_data(
         return None
 
     try:
-        return json.loads(unquote(user_str))
+        return json.loads(user_str)
     except (json.JSONDecodeError, TypeError):
         return None

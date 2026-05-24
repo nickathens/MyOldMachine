@@ -68,6 +68,20 @@ body{
     letter-spacing:0.01em;
 }
 
+.restart-hint{
+    padding:12px 16px;
+    background:rgba(120,180,200,0.05);
+    border:1px solid rgba(120,180,200,0.12);
+    color:rgba(180,200,210,0.85);
+    border-radius:var(--radius);
+    font-size:11px;
+    font-weight:500;
+    margin-bottom:20px;
+    display:none;
+    letter-spacing:0.02em;
+    text-align:center;
+}
+
 /* Header */
 .header{
     display:flex;
@@ -1008,6 +1022,7 @@ body{
 <div id="view-settings" class="view active">
 <div class="container">
     <div id="error-banner" class="error-banner"></div>
+    <div id="restart-hint" class="restart-hint">Send /restart to the bot to apply this change.</div>
 
     <header class="header">
         <div>
@@ -1308,21 +1323,26 @@ body{
         renderSelector('model-selector',models,current,setModel);
     }
 
+    function showRestartHint(){
+        var el=document.getElementById('restart-hint');
+        if(el)el.style.display='block';
+    }
+
     function setProvider(id){
         api('/api/provider',{method:'POST',body:JSON.stringify({provider:id})})
-            .then(function(){loadStatus();if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light')})
+            .then(function(){loadStatus();showRestartHint();if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light')})
             .catch(function(e){showError(e.message)});
     }
 
     function setModel(id){
         api('/api/model',{method:'POST',body:JSON.stringify({model:id})})
-            .then(function(){loadStatus();if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light')})
+            .then(function(){loadStatus();showRestartHint();if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light')})
             .catch(function(e){showError(e.message)});
     }
 
     function setEffort(id){
         api('/api/effort',{method:'POST',body:JSON.stringify({effort:id})})
-            .then(function(){loadStatus();if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light')})
+            .then(function(){loadStatus();showRestartHint();if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light')})
             .catch(function(e){showError(e.message)});
     }
 

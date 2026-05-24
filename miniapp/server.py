@@ -26,9 +26,7 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 # Make MOM modules importable when running as a uvicorn child.
 BOT_DIR = Path(__file__).resolve().parent.parent
@@ -95,13 +93,6 @@ EFFORT_PROVIDERS = {"claude", "fcc"}
 # ─── App setup ───────────────────────────────────────────────────────
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 @app.middleware("http")
@@ -171,10 +162,14 @@ def _read_env_var(key: str, default: str = "") -> str:
 
 def _write_env_var(key: str, value: str) -> None:
     """Write or update a single key in .env atomically. Preserves comments
-    and ordering. Creates .env if missing. Raises on disk errors."""
+    and ordering. Creates .env if missing. Raises on disk errors.
+
+    Empty string is allowed for clearing a value (e.g. unset LLM_MODEL when
+    a provider has no safe default).
+    """
     if key not in WRITABLE_ENV_KEYS:
         raise ValueError(f"Refused to write env key {key!r}")
-    if not re.fullmatch(r"[A-Za-z0-9_.:/@\-+]+", value):
+    if value != "" and not re.fullmatch(r"[A-Za-z0-9_.:/@\-+]+", value):
         raise ValueError(f"Refused to write env value with unsafe chars: {value!r}")
 
     existing_lines: list[str] = []
@@ -199,7 +194,7 @@ def _write_env_var(key: str, value: str) -> None:
         new_lines.append(f"{key}={value}")
 
     content = "\n".join(new_lines) + ("\n" if not new_lines or new_lines[-1] != "" else "")
-    tmp = ENV_FILE.with_suffix(".env.tmp")
+    tmp = ENV_FILE.with_suffix(ENV_FILE.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
         f.flush()
@@ -388,6 +383,11 @@ async def set_provider(request: Request, user: dict = Depends(_get_user)):
     default_model = _WIZARD_DEFAULT_MODELS.get(provider_id, "")
     if default_model:
         _write_env_var("LLM_MODEL", default_model)
+    else:
+        # No safe default for this provider (e.g. ollama — user must pick a
+        # tag they have pulled locally). Clear LLM_MODEL so the bot can't try
+        # to use the previous provider's model string as an ollama tag.
+        _write_env_var("LLM_MODEL", "")
     return {"provider": provider_id, "model": default_model}
 
 
@@ -503,6 +503,15 @@ async def update_job(job_id: str, request: Request, user: dict = Depends(_get_us
 # ─── /api/projects ───────────────────────────────────────────────────
 
 
+_SLUG_RE = re.compile(r"^[a-z0-9_-]+$")
+
+
+def _validate_slug(slug: str) -> None:
+    """Reject anything that could escape PROJECTS_DIR via path joining."""
+    if not _SLUG_RE.fullmatch(slug):
+        raise HTTPException(status_code=400, detail="Invalid project slug")
+
+
 def _user_can_see_project(state: dict, user: dict) -> bool:
     """Mirror utils/project_manager.py visibility: shared, own, or admin."""
     owner = state.get("owner") or "shared"
@@ -571,6 +580,7 @@ async def get_projects(user: dict = Depends(_get_user)):
 
 @app.get("/api/projects/{slug}")
 async def get_project(slug: str, user: dict = Depends(_get_user)):
+    _validate_slug(slug)
     data = _get_project_detail(slug, user)
     if not data:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -578,9 +588,10 @@ async def get_project(slug: str, user: dict = Depends(_get_user)):
 
 
 def _user_can_modify_project(state: dict, user: dict) -> bool:
+    """Anyone who can SEE a project can read it; only the owner or an admin
+    can archive/unarchive. Shared projects are admin-only to prevent any
+    allowlisted user from nuking system-wide work."""
     owner = state.get("owner") or "shared"
-    if owner == "shared":
-        return True  # any identified user
     if owner == user["_id"]:
         return True
     return _is_admin(user)
@@ -588,6 +599,7 @@ def _user_can_modify_project(state: dict, user: dict) -> bool:
 
 @app.post("/api/projects/{slug}/archive")
 async def archive_project(slug: str, user: dict = Depends(_get_user)):
+    _validate_slug(slug)
     src = PROJECTS_DIR / slug
     sf = src / "state.json"
     if not sf.is_file():
@@ -617,6 +629,7 @@ async def archive_project(slug: str, user: dict = Depends(_get_user)):
 
 @app.post("/api/projects/{slug}/unarchive")
 async def unarchive_project(slug: str, user: dict = Depends(_get_user)):
+    _validate_slug(slug)
     src = ARCHIVE_DIR / slug
     sf = src / "state.json"
     if not sf.is_file():
@@ -735,7 +748,3 @@ async def health():
 @app.api_route("/app", methods=["GET", "HEAD"])
 async def index(request: Request):
     return FileResponse(STATIC_DIR / "index.html")
-
-
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
