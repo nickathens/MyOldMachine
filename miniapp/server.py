@@ -1,0 +1,741 @@
+"""MyOldMachine Telegram Mini App API server.
+
+Four panels:
+  - Settings  : provider/model/effort, bot status
+  - Schedule  : calendar view of reminders (per-user; admin sees all)
+  - Projects  : per-user projects from data/memory/projects/ (owner-scoped)
+  - Launch    : weather, media-gen, research, voice-mode, media-edit
+
+All endpoints require a valid Telegram initData HMAC (see auth.py) and the
+user must be registered in data/users.json. Writes that change global bot
+config (provider, model, effort) require admin.
+
+Bind 127.0.0.1; expose via Tailscale Funnel, Cloudflare Tunnel, or LAN.
+"""
+
+import json
+import logging
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import httpx
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+# Make MOM modules importable when running as a uvicorn child.
+BOT_DIR = Path(__file__).resolve().parent.parent
+if str(BOT_DIR) not in sys.path:
+    sys.path.insert(0, str(BOT_DIR))
+
+from miniapp.auth import validate_init_data  # noqa: E402
+
+# Optional: pull provider/model catalog from the wizard so the Mini App stays
+# in sync with the install flow. Falls back to a minimal hardcoded set if the
+# wizard module fails to import (keeps the Mini App working in odd test envs).
+try:
+    from install.wizard import (  # noqa: E402
+        DEFAULT_MODELS as _WIZARD_DEFAULT_MODELS,
+        OPENROUTER_FREE_MODELS as _WIZARD_OPENROUTER_MODELS,
+        PROVIDER_MODELS as _WIZARD_PROVIDER_MODELS,
+    )
+except Exception:  # pragma: no cover - very rare import path issue
+    _WIZARD_PROVIDER_MODELS = {}
+    _WIZARD_DEFAULT_MODELS = {}
+    _WIZARD_OPENROUTER_MODELS = []
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("miniapp")
+
+# ─── Paths and config ────────────────────────────────────────────────
+
+load_dotenv(BOT_DIR / ".env")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+DATA_DIR = BOT_DIR / "data"
+USERS_FILE = DATA_DIR / "users.json"
+SKILLS_DIR = BOT_DIR / "skills"
+SCHEDULER_DB = DATA_DIR / "scheduler" / "scheduler.db"
+PROJECTS_DIR = DATA_DIR / "memory" / "projects"
+ARCHIVE_DIR = PROJECTS_DIR / "_archive"
+ENV_FILE = BOT_DIR / ".env"
+STATIC_DIR = Path(__file__).parent / "static"
+
+# Service name used for status queries. Override with MINIAPP_BOT_SERVICE if
+# the bot was installed under a different unit name.
+BOT_SERVICE = os.getenv("MINIAPP_BOT_SERVICE", "myoldmachine")
+
+# Telegram local Bot API base URL (defaults to the public bot API).
+# Set TELEGRAM_API_BASE in .env to point at a local server (e.g. http://localhost:8081).
+TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+
+# Allowed keys that admins may write through Mini App. Anything else stays
+# read-only — .env contains secrets we never want to expose to a webapp.
+WRITABLE_ENV_KEYS = {"LLM_PROVIDER", "LLM_MODEL", "LLM_EFFORT"}
+
+VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+EFFORT_LABELS = {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "X-High",
+    "max": "Max",
+}
+
+# Subset of providers that accept --effort. Mirrors core/llm.py behavior.
+EFFORT_PROVIDERS = {"claude", "fcc"}
+
+# ─── App setup ───────────────────────────────────────────────────────
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def no_cache(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────
+
+
+def _load_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _load_users() -> dict:
+    data = _load_json(USERS_FILE)
+    return data if isinstance(data, dict) else {}
+
+
+def _save_json(path: Path, data: dict) -> None:
+    """Atomic write with fsync. Matches core/users.py semantics."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(path)
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+
+def _read_env_var(key: str, default: str = "") -> str:
+    """Read a single variable from .env without polluting os.environ."""
+    if not ENV_FILE.exists():
+        return default
+    try:
+        lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return default
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=\s*(.*?)\s*$")
+    for line in lines:
+        if line.lstrip().startswith("#"):
+            continue
+        m = pattern.match(line)
+        if m:
+            value = m.group(1)
+            if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+                value = value[1:-1]
+            return value
+    return default
+
+
+def _write_env_var(key: str, value: str) -> None:
+    """Write or update a single key in .env atomically. Preserves comments
+    and ordering. Creates .env if missing. Raises on disk errors."""
+    if key not in WRITABLE_ENV_KEYS:
+        raise ValueError(f"Refused to write env key {key!r}")
+    if not re.fullmatch(r"[A-Za-z0-9_.:/@\-+]+", value):
+        raise ValueError(f"Refused to write env value with unsafe chars: {value!r}")
+
+    existing_lines: list[str] = []
+    if ENV_FILE.exists():
+        try:
+            existing_lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            existing_lines = []
+
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    new_lines: list[str] = []
+    replaced = False
+    for line in existing_lines:
+        if pattern.match(line) and not line.lstrip().startswith("#"):
+            new_lines.append(f"{key}={value}")
+            replaced = True
+        else:
+            new_lines.append(line)
+    if not replaced:
+        if new_lines and new_lines[-1].strip() != "":
+            new_lines.append("")
+        new_lines.append(f"{key}={value}")
+
+    content = "\n".join(new_lines) + ("\n" if not new_lines or new_lines[-1] != "" else "")
+    tmp = ENV_FILE.with_suffix(".env.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(ENV_FILE)
+
+
+async def _get_user(request: Request) -> dict:
+    """Validate Telegram initData, look up the user in users.json, return the
+    augmented user dict. Raises 401 on auth failure, 403 if not in allowlist.
+    """
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    if not init_data:
+        raise HTTPException(status_code=401, detail="Missing initData")
+
+    user = validate_init_data(init_data, BOT_TOKEN)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid initData")
+
+    user_id = str(user.get("id", ""))
+    users = _load_users()
+    if user_id not in users:
+        log.warning("User %s not in allowlist", user_id)
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    user["_profile"] = users[user_id]
+    user["_id"] = user_id
+    return user
+
+
+def _is_admin(user: dict) -> bool:
+    return user["_profile"].get("role") == "admin"
+
+
+def _require_admin(user: dict) -> None:
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin only")
+
+
+# ─── Providers / Models / Effort ─────────────────────────────────────
+
+
+def _available_providers() -> list[dict]:
+    """Return providers in display order. Keep the wizard as the single
+    source of truth — if the wizard knows a provider, expose it here."""
+    order = [
+        ("claude", "Claude Code CLI"),
+        ("codex", "Codex CLI"),
+        ("claude-api", "Claude API"),
+        ("openai", "OpenAI"),
+        ("gemini", "Gemini"),
+        ("grok", "Grok"),
+        ("deepseek", "DeepSeek"),
+        ("kimi", "Kimi"),
+        ("minimax", "MiniMax"),
+        ("openrouter", "OpenRouter"),
+        ("ollama", "Ollama (local)"),
+        ("ollama-cloud", "Ollama Cloud"),
+        ("fcc", "FCC (free-claude-code)"),
+    ]
+    return [{"id": pid, "label": label} for pid, label in order]
+
+
+def _available_models(provider: str) -> list[dict]:
+    """Return the models list for a provider. OpenRouter free models are
+    surfaced as their own list; ollama returns an empty list because the
+    user picks any tag they pulled themselves."""
+    if provider == "openrouter":
+        return [{"id": mid, "label": desc} for mid, desc in _WIZARD_OPENROUTER_MODELS]
+    if provider == "ollama":
+        return []
+    entries = _WIZARD_PROVIDER_MODELS.get(provider, [])
+    return [{"id": mid, "label": desc} for mid, desc in entries]
+
+
+def _provider_supports_effort(provider: str) -> bool:
+    return provider in EFFORT_PROVIDERS
+
+
+def _bot_status() -> dict:
+    """Read the bot's systemd unit state. Linux-only; macOS/Windows return
+    a degraded status (active=False) which the UI displays as a hint."""
+    active = False
+    pid: int | None = None
+    uptime_seconds: int | None = None
+    memory_mb: int | None = None
+
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", BOT_SERVICE],
+            capture_output=True, text=True, timeout=5,
+        )
+        active = result.stdout.strip() == "active"
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return {"active": False, "pid": None, "uptime_seconds": None,
+                "memory_mb": None, "service": BOT_SERVICE, "supported": False}
+
+    if active:
+        try:
+            result = subprocess.run(
+                ["systemctl", "show", BOT_SERVICE,
+                 "--property=MainPID,ActiveEnterTimestampMonotonic,MemoryCurrent"],
+                capture_output=True, text=True, timeout=5,
+            )
+            monotonic_us = None
+            for line in result.stdout.strip().split("\n"):
+                if line.startswith("MainPID="):
+                    try:
+                        pid = int(line.split("=", 1)[1]) or None
+                    except ValueError:
+                        pass
+                elif line.startswith("ActiveEnterTimestampMonotonic="):
+                    val = line.split("=", 1)[1].strip()
+                    if val and val != "0":
+                        try:
+                            monotonic_us = int(val)
+                        except ValueError:
+                            pass
+                elif line.startswith("MemoryCurrent="):
+                    val = line.split("=", 1)[1].strip()
+                    if val and val != "[not set]":
+                        try:
+                            memory_mb = round(int(val) / 1024 / 1024)
+                        except ValueError:
+                            pass
+            if monotonic_us is not None:
+                boot_offset = int(time.time() - time.monotonic())
+                active_enter_epoch = monotonic_us / 1_000_000 + boot_offset
+                uptime_seconds = max(0, int(time.time() - active_enter_epoch))
+        except subprocess.SubprocessError:
+            pass
+
+    return {
+        "active": active,
+        "pid": pid,
+        "uptime_seconds": uptime_seconds,
+        "memory_mb": memory_mb,
+        "service": BOT_SERVICE,
+        "supported": True,
+    }
+
+
+# ─── /api/status, /api/providers, /api/model, /api/effort ────────────
+
+
+@app.get("/api/status")
+async def get_status(user: dict = Depends(_get_user)):
+    provider = _read_env_var("LLM_PROVIDER", "claude")
+    model = _read_env_var("LLM_MODEL", _WIZARD_DEFAULT_MODELS.get(provider, ""))
+    effort = _read_env_var("LLM_EFFORT", "max")
+    return {
+        "bot": _bot_status(),
+        "provider": provider,
+        "available_providers": _available_providers(),
+        "model": model,
+        "available_models": _available_models(provider),
+        "effort": effort if effort in VALID_EFFORTS else "max",
+        "available_efforts": [{"id": k, "label": EFFORT_LABELS[k]} for k in VALID_EFFORTS],
+        "provider_supports_effort": _provider_supports_effort(provider),
+        "user": {
+            "name": user["_profile"].get("display_name", user["_profile"].get("name", "User")),
+            "role": user["_profile"].get("role", "user"),
+        },
+    }
+
+
+@app.get("/api/providers/{provider_id}/models")
+async def get_provider_models(provider_id: str, user: dict = Depends(_get_user)):
+    return {
+        "provider": provider_id,
+        "models": _available_models(provider_id),
+        "default_model": _WIZARD_DEFAULT_MODELS.get(provider_id, ""),
+        "supports_effort": _provider_supports_effort(provider_id),
+    }
+
+
+@app.post("/api/provider")
+async def set_provider(request: Request, user: dict = Depends(_get_user)):
+    _require_admin(user)
+    body = await request.json()
+    provider_id = body.get("provider", "")
+    valid = {p["id"] for p in _available_providers()}
+    if provider_id not in valid:
+        raise HTTPException(status_code=400, detail="Invalid provider")
+    _write_env_var("LLM_PROVIDER", provider_id)
+    default_model = _WIZARD_DEFAULT_MODELS.get(provider_id, "")
+    if default_model:
+        _write_env_var("LLM_MODEL", default_model)
+    return {"provider": provider_id, "model": default_model}
+
+
+@app.post("/api/model")
+async def set_model(request: Request, user: dict = Depends(_get_user)):
+    _require_admin(user)
+    body = await request.json()
+    model_id = body.get("model", "").strip()
+    if not model_id:
+        raise HTTPException(status_code=400, detail="Missing model")
+    provider = _read_env_var("LLM_PROVIDER", "claude")
+    valid_models = {m["id"] for m in _available_models(provider)}
+    # Ollama models are user-defined (any tag the user pulled); skip validation.
+    if provider != "ollama" and valid_models and model_id not in valid_models:
+        raise HTTPException(status_code=400, detail="Model not valid for this provider")
+    _write_env_var("LLM_MODEL", model_id)
+    return {"model": model_id}
+
+
+@app.post("/api/effort")
+async def set_effort(request: Request, user: dict = Depends(_get_user)):
+    _require_admin(user)
+    body = await request.json()
+    effort_id = body.get("effort", "")
+    if effort_id not in VALID_EFFORTS:
+        raise HTTPException(status_code=400, detail="Invalid effort level")
+    _write_env_var("LLM_EFFORT", effort_id)
+    return {"effort": effort_id}
+
+
+# ─── /api/scheduler ─────────────────────────────────────────────────
+
+
+@app.get("/api/scheduler")
+async def get_scheduler(user: dict = Depends(_get_user)):
+    """List scheduled jobs. Admin sees everyone; non-admin sees only their own."""
+    if not SCHEDULER_DB.exists():
+        return []
+
+    conn = sqlite3.connect(str(SCHEDULER_DB), timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        if _is_admin(user):
+            rows = conn.execute("SELECT * FROM job_meta ORDER BY run_at").fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM job_meta WHERE user_id = ? ORDER BY run_at",
+                (int(user["_id"]),),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+    return [dict(row) for row in rows]
+
+
+@app.delete("/api/scheduler/{job_id}")
+async def delete_job(job_id: str, user: dict = Depends(_get_user)):
+    """Delete a scheduled job. Users may delete their own; admins delete any."""
+    conn = sqlite3.connect(str(SCHEDULER_DB), timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT user_id, job_type FROM job_meta WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not _is_admin(user) and int(row["user_id"]) != int(user["_id"]):
+            raise HTTPException(status_code=403, detail="Cannot delete other user's job")
+        # Protect system command jobs from non-admin deletion via Mini App.
+        if row["job_type"] == "command" and not _is_admin(user):
+            raise HTTPException(status_code=403, detail="System job (admin only)")
+        conn.execute("DELETE FROM job_meta WHERE job_id = ?", (job_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"deleted": job_id}
+
+
+@app.patch("/api/scheduler/{job_id}")
+async def update_job(job_id: str, request: Request, user: dict = Depends(_get_user)):
+    """Reword a scheduled job's message. Users may edit their own; admins edit any."""
+    body = await request.json()
+    message = (body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message required")
+
+    conn = sqlite3.connect(str(SCHEDULER_DB), timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT user_id FROM job_meta WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not _is_admin(user) and int(row["user_id"]) != int(user["_id"]):
+            raise HTTPException(status_code=403, detail="Cannot edit other user's job")
+        conn.execute(
+            "UPDATE job_meta SET message = ?, name = ? WHERE job_id = ?",
+            (message, message[:50], job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"updated": job_id, "message": message}
+
+
+# ─── /api/projects ───────────────────────────────────────────────────
+
+
+def _user_can_see_project(state: dict, user: dict) -> bool:
+    """Mirror utils/project_manager.py visibility: shared, own, or admin."""
+    owner = state.get("owner") or "shared"
+    if owner == "shared":
+        return True
+    if owner == user["_id"]:
+        return True
+    return _is_admin(user)
+
+
+def _list_projects(user: dict) -> list[dict]:
+    projects: list[dict] = []
+    for base, archived in [(PROJECTS_DIR, False), (ARCHIVE_DIR, True)]:
+        if not base.exists():
+            continue
+        for d in sorted(base.iterdir()):
+            if not d.is_dir():
+                continue
+            if d.name.startswith("_") or d.name.startswith("."):
+                continue
+            sf = d / "state.json"
+            if not sf.is_file():
+                continue
+            try:
+                data = json.loads(sf.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not _user_can_see_project(data, user):
+                continue
+            ns = data.get("next_steps") or []
+            bl = data.get("blockers") or []
+            projects.append({
+                "slug": data.get("slug", d.name),
+                "name": data.get("name", d.name),
+                "status": data.get("status", "unknown"),
+                "summary": data.get("summary", ""),
+                "owner": data.get("owner", "shared"),
+                "updated": data.get("updated", data.get("created", "")),
+                "next_steps_count": len(ns) if isinstance(ns, list) else 0,
+                "blockers_count": len(bl) if isinstance(bl, list) else 0,
+                "archived": archived,
+            })
+    return projects
+
+
+def _get_project_detail(slug: str, user: dict) -> dict | None:
+    for base in [PROJECTS_DIR, ARCHIVE_DIR]:
+        sf = base / slug / "state.json"
+        if not sf.is_file():
+            continue
+        try:
+            data = json.loads(sf.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        if not _user_can_see_project(data, user):
+            return None
+        data["_archived"] = base == ARCHIVE_DIR
+        return data
+    return None
+
+
+@app.get("/api/projects")
+async def get_projects(user: dict = Depends(_get_user)):
+    return _list_projects(user)
+
+
+@app.get("/api/projects/{slug}")
+async def get_project(slug: str, user: dict = Depends(_get_user)):
+    data = _get_project_detail(slug, user)
+    if not data:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return data
+
+
+def _user_can_modify_project(state: dict, user: dict) -> bool:
+    owner = state.get("owner") or "shared"
+    if owner == "shared":
+        return True  # any identified user
+    if owner == user["_id"]:
+        return True
+    return _is_admin(user)
+
+
+@app.post("/api/projects/{slug}/archive")
+async def archive_project(slug: str, user: dict = Depends(_get_user)):
+    src = PROJECTS_DIR / slug
+    sf = src / "state.json"
+    if not sf.is_file():
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        data = json.loads(sf.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not _user_can_modify_project(data, user):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    dst = ARCHIVE_DIR / slug
+    if dst.exists():
+        raise HTTPException(status_code=409, detail="Already archived")
+
+    data["status"] = "archived"
+    data["archived"] = time.strftime("%Y-%m-%d")
+    data["updated"] = time.strftime("%Y-%m-%d")
+    try:
+        sf.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        src.rename(dst)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"slug": slug, "archived": True}
+
+
+@app.post("/api/projects/{slug}/unarchive")
+async def unarchive_project(slug: str, user: dict = Depends(_get_user)):
+    src = ARCHIVE_DIR / slug
+    sf = src / "state.json"
+    if not sf.is_file():
+        raise HTTPException(status_code=404, detail="Archived project not found")
+    try:
+        data = json.loads(sf.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not _user_can_modify_project(data, user):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    dst = PROJECTS_DIR / slug
+    if dst.exists():
+        raise HTTPException(status_code=409, detail="Active project with same slug exists")
+
+    data["status"] = "in_progress"
+    data.pop("archived", None)
+    data["updated"] = time.strftime("%Y-%m-%d")
+    try:
+        sf.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        src.rename(dst)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"slug": slug, "unarchived": True}
+
+
+# ─── /api/launch ─────────────────────────────────────────────────────
+
+LAUNCH_ACTIONS = {
+    "weather": {"type": "script", "script": "weather"},
+    "media-gen": {"type": "reply", "text": "What image do you want me to generate?"},
+    "research": {"type": "reply", "text": "What should I research?"},
+    "voice-mode": {
+        "type": "reply",
+        "text": "Voice mode: send me a voice message and I'll reply in voice.",
+    },
+    "media-edit": {"type": "reply", "text": "Send me an image or video and tell me how to edit it."},
+}
+
+WEATHER_SCRIPT = SKILLS_DIR / "weather" / "scripts" / "weather.py"
+
+
+def _send_bot_message(chat_id: str, text: str) -> bool:
+    """Best-effort send via Telegram Bot API. Returns True on 200, False otherwise."""
+    if not BOT_TOKEN:
+        return False
+    url = f"{TELEGRAM_API_BASE}/bot{BOT_TOKEN}/sendMessage"
+    try:
+        r = httpx.post(
+            url,
+            json={"chat_id": int(chat_id), "text": text, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            r2 = httpx.post(
+                url,
+                json={"chat_id": int(chat_id), "text": text},
+                timeout=10,
+            )
+            return r2.status_code == 200
+        return True
+    except (httpx.HTTPError, ValueError, TypeError) as e:
+        log.error("Failed to send bot message: %s", e)
+        return False
+
+
+def _run_weather() -> str:
+    location = os.getenv("MINIAPP_WEATHER_LOCATION", "Athens")
+    if not WEATHER_SCRIPT.is_file():
+        return "Weather skill not installed. Add the 'weather' skill to use this button."
+    try:
+        result = subprocess.run(
+            [sys.executable, str(WEATHER_SCRIPT), location],
+            capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return "Could not fetch weather data."
+    except subprocess.SubprocessError as e:
+        log.error("Weather script failed: %s", e)
+        return "Weather check failed."
+
+
+@app.post("/api/launch")
+async def launch_skill(request: Request, user: dict = Depends(_get_user)):
+    body = await request.json()
+    skill = body.get("skill", "")
+
+    if skill not in LAUNCH_ACTIONS:
+        raise HTTPException(status_code=400, detail="Unknown skill")
+
+    config = LAUNCH_ACTIONS[skill]
+    user_id = user["_id"]
+
+    if config["type"] == "reply":
+        ok = _send_bot_message(user_id, config["text"])
+        return {"ok": ok, "type": "reply"}
+
+    if config["type"] == "script" and skill == "weather":
+        text = _run_weather()
+        ok = _send_bot_message(user_id, text)
+        return {"ok": ok, "type": "weather"}
+
+    raise HTTPException(status_code=400, detail="Unsupported action")
+
+
+# ─── Static + health ─────────────────────────────────────────────────
+
+
+@app.get("/health")
+async def health():
+    return {"ok": True, "service": BOT_SERVICE}
+
+
+@app.api_route("/", methods=["GET", "HEAD"])
+@app.api_route("/app", methods=["GET", "HEAD"])
+async def index(request: Request):
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")

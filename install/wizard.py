@@ -955,6 +955,16 @@ def _is_mcp_configured() -> bool:
     return (REPO_DIR / "mcp_servers.json").exists()
 
 
+def _is_miniapp_configured() -> bool:
+    from install.miniapp_setup import is_miniapp_configured
+    return is_miniapp_configured(REPO_DIR)
+
+
+def _run_miniapp_setup_step(config: dict):
+    from install.miniapp_setup import run_miniapp_setup_step
+    run_miniapp_setup_step(config, ask=ask)
+
+
 def _run_backup_setup_step(config: dict):
     """Set up nightly backup destination in maintenance.json.
 
@@ -1563,6 +1573,20 @@ OPTIONAL_FEATURES = [
         "applies_to": lambda: True,
         "is_configured": lambda c: _is_mcp_configured(),
         "configure": lambda c: _run_mcp_setup_step(c),
+    },
+    {
+        "key": "miniapp",
+        "label": "Telegram Mini App (visual dashboard)",
+        "summary": (
+            "A Telegram Mini App with four tabs: app settings (provider/model/"
+            "effort), schedule (calendar of reminders), projects (per-user, "
+            "with archive), and quick-launch (weather, media, research, voice, "
+            "edit). Bind 127.0.0.1, expose via Tailscale Funnel (default), "
+            "Cloudflare Tunnel, or LAN. Linux-only for now."
+        ),
+        "applies_to": lambda: platform.system() == "Linux",
+        "is_configured": lambda c: _is_miniapp_configured(),
+        "configure": lambda c: _run_miniapp_setup_step(c),
     },
 ]
 
