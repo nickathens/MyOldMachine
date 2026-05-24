@@ -16,11 +16,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff, runtime deps, and pytest
-        run: pip install -q ruff pytest -r requirements.txt
+        run: pip install -q ruff pytest fastapi 'uvicorn[standard]' -r requirements.txt
       - name: Lint with ruff
-        run: ruff check bot.py core/ utils/ install/ tests/
+        run: ruff check bot.py core/ utils/ install/ miniapp/ tests/
       - name: Check Python syntax (all .py files)
-        run: python -m py_compile bot.py && find core/ install/ utils/ -name '*.py' -exec python -m py_compile {} +
+        run: python -m py_compile bot.py && find core/ install/ utils/ miniapp/ -name '*.py' -exec python -m py_compile {} +
       - name: Run unit tests (offline, mocks all network)
         run: python -m unittest discover -s tests -v
       - name: Check for obvious import errors
