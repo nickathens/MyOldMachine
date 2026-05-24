@@ -20,6 +20,8 @@ import os
 import re
 import sqlite3
 import subprocess
+import uuid
+from datetime import datetime
 import sys
 import time
 from pathlib import Path
@@ -445,6 +447,62 @@ async def get_scheduler(user: dict = Depends(_get_user)):
         conn.close()
 
     return [dict(row) for row in rows]
+
+
+@app.post("/api/scheduler")
+async def create_job(request: Request, user: dict = Depends(_get_user)):
+    """Create a new scheduled job from the Mini App calendar."""
+    body = await request.json()
+    date_str = body.get("date", "")
+    hour = body.get("hour")
+    minute = body.get("minute", 0)
+    message = (body.get("message") or "").strip()
+    repeat = body.get("repeat")
+
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+    if not date_str or not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        raise HTTPException(status_code=400, detail="Invalid date format (YYYY-MM-DD)")
+    if hour is None or not (0 <= int(hour) <= 23):
+        raise HTTPException(status_code=400, detail="Hour must be 0-23")
+    if not (0 <= int(minute) <= 59):
+        raise HTTPException(status_code=400, detail="Minute must be 0-59")
+    if repeat and repeat not in ("daily", "weekly", "biweekly", "monthly"):
+        raise HTTPException(status_code=400, detail="Invalid repeat value")
+
+    hour = int(hour)
+    minute = int(minute)
+    run_at = datetime.fromisoformat(f"{date_str}T{hour:02d}:{minute:02d}:00")
+    job_id = uuid.uuid4().hex[:12]
+    user_id = int(user["_id"])
+    now_iso = datetime.now().isoformat()
+
+    conn = sqlite3.connect(str(SCHEDULER_DB), timeout=10)
+    try:
+        conn.execute("""
+            INSERT INTO job_meta (job_id, user_id, message, job_type, name, notify,
+                                  repeat, channel, created_at, run_at, raw_at, created_context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (job_id, user_id, message, "reminder", message[:50], 1,
+              repeat, "telegram", now_iso, run_at.isoformat(),
+              f"{date_str} {hour:02d}:{minute:02d}",
+              "Mini App dashboard"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "job_id": job_id,
+        "user_id": user_id,
+        "message": message,
+        "job_type": "reminder",
+        "name": message[:50],
+        "notify": 1,
+        "repeat": repeat,
+        "channel": "telegram",
+        "created_at": now_iso,
+        "run_at": run_at.isoformat(),
+    }
 
 
 @app.delete("/api/scheduler/{job_id}")

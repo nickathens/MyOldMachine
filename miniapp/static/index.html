@@ -875,6 +875,9 @@ body{
 
 .cal-day.other-month{opacity:0.12;pointer-events:none}
 
+.cal-day.past .cal-day-num{opacity:0.35}
+.cal-day.past .cal-dot{opacity:0.3}
+
 .cal-day.selected{background:rgba(255,255,255,0.05)}
 
 .cal-day-num{
@@ -886,14 +889,16 @@ body{
 }
 
 .cal-day.today .cal-day-num{
-    background:rgba(255,255,255,0.1);
+    background:rgba(80,180,220,0.2);
+    border:1.5px solid rgba(80,180,220,0.5);
     width:28px;
     height:28px;
     border-radius:50%;
     display:flex;
     align-items:center;
     justify-content:center;
-    font-weight:500;
+    font-weight:600;
+    color:#fff;
 }
 
 .cal-dots{
@@ -1034,6 +1039,361 @@ body{
     stroke-linecap:round;
 }
 
+/* ── Day View (hourly timeline) ── */
+
+.cal-dayview{animation:fadeIn 0.2s ease}
+
+.cal-dayview-header{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:0 0 20px;
+}
+
+.cal-dayview-back{
+    font-family:'Montserrat',sans-serif;
+    font-size:10px;
+    font-weight:500;
+    color:var(--text-muted);
+    background:none;
+    border:none;
+    cursor:pointer;
+    padding:4px 0;
+    letter-spacing:0.04em;
+    text-transform:uppercase;
+    -webkit-tap-highlight-color:transparent;
+    display:flex;
+    align-items:center;
+    gap:6px;
+}
+
+.cal-dayview-back:active{color:var(--text)}
+
+.cal-dayview-title{
+    font-size:16px;
+    font-weight:600;
+    letter-spacing:-0.02em;
+    flex:1;
+}
+
+.cal-dayview-add{
+    width:36px;
+    height:36px;
+    border-radius:50%;
+    border:1px solid rgba(80,180,220,0.15);
+    background:rgba(80,180,220,0.06);
+    color:var(--teal);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+    transition:all 0.15s;
+    flex-shrink:0;
+}
+
+.cal-dayview-add:active{
+    background:rgba(80,180,220,0.12);
+    transform:scale(0.92);
+}
+
+.cal-dayview-add svg{
+    width:18px;
+    height:18px;
+    stroke:currentColor;
+    fill:none;
+    stroke-width:2;
+    stroke-linecap:round;
+}
+
+.cal-hours{
+    position:relative;
+}
+
+.cal-hour{
+    display:flex;
+    align-items:flex-start;
+    min-height:44px;
+    border-top:1px solid rgba(255,255,255,0.025);
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+    transition:background 0.1s;
+    padding:2px 0;
+}
+
+.cal-hour:active{background:rgba(255,255,255,0.02)}
+
+.cal-hour.current-hour{
+    background:rgba(80,180,220,0.03);
+    border-top-color:rgba(80,180,220,0.08);
+}
+
+.cal-hour-label{
+    width:44px;
+    flex-shrink:0;
+    font-size:10px;
+    font-weight:400;
+    color:var(--text-dim);
+    font-variant-numeric:tabular-nums;
+    padding-top:4px;
+    text-align:right;
+    padding-right:12px;
+}
+
+.cal-hour.current-hour .cal-hour-label{color:var(--teal)}
+
+.cal-hour-content{
+    flex:1;
+    min-width:0;
+    padding:4px 0;
+}
+
+.cal-hour-ev{
+    padding:6px 10px;
+    border-radius:6px;
+    margin-bottom:4px;
+    font-size:12px;
+    font-weight:500;
+    line-height:1.4;
+    letter-spacing:0.01em;
+    display:flex;
+    align-items:center;
+    gap:8px;
+}
+
+.cal-hour-ev.onetime{
+    background:rgba(255,255,255,0.04);
+    border-left:2px solid rgba(255,255,255,0.3);
+    color:var(--text);
+}
+
+.cal-hour-ev.recurring{
+    background:rgba(80,180,220,0.04);
+    border-left:2px solid var(--teal);
+    color:var(--text);
+}
+
+.cal-hour-ev-time{
+    font-size:10px;
+    font-weight:400;
+    color:var(--text-muted);
+    font-variant-numeric:tabular-nums;
+    flex-shrink:0;
+}
+
+.cal-hour-ev-msg{
+    flex:1;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+}
+
+.cal-hour-ev-badge{
+    font-size:7px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    padding:1px 5px;
+    border-radius:3px;
+    background:rgba(80,180,220,0.1);
+    color:rgba(100,180,220,0.7);
+    flex-shrink:0;
+}
+
+.cal-hour-ev-del{
+    width:22px;
+    height:22px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border:none;
+    background:none;
+    color:var(--text-dim);
+    cursor:pointer;
+    border-radius:4px;
+    flex-shrink:0;
+    -webkit-tap-highlight-color:transparent;
+    transition:all 0.12s;
+}
+
+.cal-hour-ev-del:active{background:rgba(239,68,68,0.1);color:var(--inactive)}
+
+.cal-hour-ev-del svg{
+    width:12px;
+    height:12px;
+    stroke:currentColor;
+    fill:none;
+    stroke-width:1.5;
+    stroke-linecap:round;
+}
+
+/* ── Add Event Form ── */
+
+.cal-add-overlay{
+    position:fixed;
+    inset:0;
+    background:rgba(1,8,14,0.85);
+    backdrop-filter:blur(12px);
+    -webkit-backdrop-filter:blur(12px);
+    z-index:200;
+    display:flex;
+    align-items:flex-end;
+    justify-content:center;
+    animation:fadeIn 0.15s ease;
+}
+
+.cal-add-sheet{
+    width:100%;
+    max-width:480px;
+    background:linear-gradient(180deg, #0d2538 0%, #091a28 100%);
+    border-radius:20px 20px 0 0;
+    padding:28px 24px calc(env(safe-area-inset-bottom, 0px) + 24px);
+    border-top:1px solid rgba(255,255,255,0.06);
+    animation:slideUp 0.2s ease;
+}
+
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+
+.cal-add-title{
+    font-size:16px;
+    font-weight:600;
+    letter-spacing:-0.02em;
+    margin-bottom:24px;
+}
+
+.cal-add-row{
+    margin-bottom:18px;
+}
+
+.cal-add-label{
+    font-size:9px;
+    font-weight:600;
+    color:var(--text-dim);
+    text-transform:uppercase;
+    letter-spacing:0.12em;
+    margin-bottom:8px;
+}
+
+.cal-add-input{
+    width:100%;
+    padding:12px 14px;
+    border-radius:10px;
+    border:1px solid rgba(255,255,255,0.06);
+    background:rgba(4,18,30,0.6);
+    color:var(--text);
+    font-family:'Montserrat',sans-serif;
+    font-size:14px;
+    font-weight:400;
+    outline:none;
+    -webkit-appearance:none;
+    transition:border-color 0.2s;
+}
+
+.cal-add-input::placeholder{color:var(--text-dim)}
+.cal-add-input:focus{border-color:rgba(80,180,220,0.2)}
+
+.cal-add-time-row{
+    display:flex;
+    gap:10px;
+    align-items:center;
+}
+
+.cal-add-time-input{
+    width:64px;
+    padding:10px 0;
+    border-radius:10px;
+    border:1px solid rgba(255,255,255,0.06);
+    background:rgba(4,18,30,0.6);
+    color:var(--text);
+    font-family:'Montserrat',sans-serif;
+    font-size:18px;
+    font-weight:600;
+    font-variant-numeric:tabular-nums;
+    text-align:center;
+    outline:none;
+    -webkit-appearance:none;
+    transition:border-color 0.2s;
+}
+
+.cal-add-time-input:focus{border-color:rgba(80,180,220,0.2)}
+
+.cal-add-time-sep{
+    font-size:18px;
+    font-weight:600;
+    color:var(--text-muted);
+}
+
+.cal-add-repeat-row{
+    display:flex;
+    gap:6px;
+    flex-wrap:wrap;
+}
+
+.cal-add-repeat-pill{
+    font-family:'Montserrat',sans-serif;
+    font-size:11px;
+    font-weight:500;
+    padding:7px 14px;
+    border-radius:20px;
+    border:1px solid rgba(255,255,255,0.06);
+    background:rgba(4,18,30,0.5);
+    color:var(--text-muted);
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+    transition:all 0.15s ease;
+    letter-spacing:0.02em;
+}
+
+.cal-add-repeat-pill.selected{
+    background:rgba(80,180,220,0.08);
+    border-color:rgba(80,180,220,0.2);
+    color:var(--teal);
+}
+
+.cal-add-actions{
+    display:flex;
+    gap:10px;
+    margin-top:24px;
+}
+
+.cal-add-cancel{
+    flex:1;
+    padding:14px;
+    border-radius:12px;
+    border:1px solid rgba(255,255,255,0.06);
+    background:rgba(4,18,30,0.5);
+    color:var(--text-muted);
+    font-family:'Montserrat',sans-serif;
+    font-size:13px;
+    font-weight:500;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+    transition:all 0.15s;
+}
+
+.cal-add-cancel:active{background:rgba(255,255,255,0.04);color:var(--text)}
+
+.cal-add-save{
+    flex:2;
+    padding:14px;
+    border-radius:12px;
+    border:none;
+    background:linear-gradient(135deg, rgba(80,180,220,0.18) 0%, rgba(60,150,190,0.1) 100%);
+    color:var(--teal);
+    font-family:'Montserrat',sans-serif;
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+    transition:all 0.15s;
+    letter-spacing:0.02em;
+}
+
+.cal-add-save:active{transform:scale(0.98);background:linear-gradient(135deg, rgba(80,180,220,0.25) 0%, rgba(60,150,190,0.15) 100%)}
+
+.cal-add-save:disabled{opacity:0.3;cursor:default;transform:none}
+
 /* Desktop */
 @media(min-width:640px){
     .container{max-width:520px;padding:48px 28px calc(var(--tab-height) + 40px)}
@@ -1048,6 +1408,10 @@ body{
         background:rgba(239,68,68,0.1);
         color:var(--inactive);
     }
+    .cal-hour:hover{background:rgba(255,255,255,0.015)}
+    .cal-hour-ev-del:hover{background:rgba(239,68,68,0.08);color:var(--inactive)}
+    .cal-dayview-back:hover{color:var(--text)}
+    .cal-dayview-add:hover{background:rgba(80,180,220,0.12)}
     .cal-nav-btn:hover{color:var(--text)}
     .proj-card:hover{opacity:0.8}
     .proj-detail-back:hover{color:var(--text)}
@@ -1143,6 +1507,21 @@ body{
     </div>
 
 </div>
+
+<!-- Day View (hourly timeline) -->
+<div id="cal-dayview" class="cal-dayview container" style="display:none">
+    <div class="cal-dayview-header">
+        <button class="cal-dayview-back" id="dayview-back">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg> Back
+        </button>
+        <div id="dayview-title" class="cal-dayview-title"></div>
+        <button class="cal-dayview-add" id="dayview-add-btn">
+            <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+    </div>
+    <div id="dayview-hours" class="cal-hours"></div>
+</div>
+
 </div>
 
 <!-- Projects View -->
@@ -1548,9 +1927,12 @@ body{
             grid.appendChild(createDayCell(prevMonthDays-i,true,[]));
         }
 
+        var todayDate=new Date(n.getFullYear(),n.getMonth(),n.getDate());
         for(var d=1;d<=daysInMonth;d++){
             var events=dayMap[d]||[];
             var cell=createDayCell(d,false,events);
+            var cellDate=new Date(calYear,calMonth,d);
+            if(cellDate<todayDate)cell.classList.add('past');
             if(n.getFullYear()===calYear&&n.getMonth()===calMonth&&n.getDate()===d)cell.classList.add('today');
             if(calSelected&&calSelected.year===calYear&&calSelected.month===calMonth&&calSelected.day===d){
                 cell.classList.add('selected');
@@ -1564,12 +1946,11 @@ body{
             grid.appendChild(createDayCell(d,true,[]));
         }
 
-        if(calSelected&&calSelected.year===calYear&&calSelected.month===calMonth){
-            renderDayDetail(calSelected.day,dayMap[calSelected.day]||[]);
-        }else{
-            document.getElementById('cal-detail').style.display='none';
-        }
+        document.getElementById('cal-detail').style.display='none';
     }
+
+    var dayViewActive=false;
+    var dayViewDate=null;
 
     function createDayCell(dayNum,isOtherMonth,events){
         var cell=document.createElement('div');
@@ -1598,15 +1979,11 @@ body{
 
         cell.appendChild(dots);
 
-        if(!isOtherMonth&&events.length>0){
+        if(!isOtherMonth){
+            cell.classList.add('has-events');
             (function(day){
                 cell.addEventListener('click',function(){
-                    if(calSelected&&calSelected.day===day&&calSelected.year===calYear&&calSelected.month===calMonth){
-                        calSelected=null;
-                    }else{
-                        calSelected={year:calYear,month:calMonth,day:day};
-                    }
-                    renderCalendar();
+                    openDayView(calYear,calMonth,day);
                     if(tg&&tg.HapticFeedback)tg.HapticFeedback.selectionChanged();
                 });
             })(dayNum);
@@ -1615,80 +1992,257 @@ body{
         return cell;
     }
 
-    function renderDayDetail(day,events){
-        var detail=document.getElementById('cal-detail');
-        var dateEl=document.getElementById('cal-detail-date');
-        var listEl=document.getElementById('cal-detail-list');
+    function openDayView(year,month,day){
+        dayViewActive=true;
+        dayViewDate={year:year,month:month,day:day};
 
-        var date=new Date(calYear,calMonth,day);
-        dateEl.textContent=WEEKDAY_FULL[date.getDay()]+', '+MONTH_FULL[calMonth]+' '+day;
+        document.querySelector('#view-schedule > .container').style.display='none';
+        document.getElementById('cal-dayview').style.display='block';
 
-        listEl.innerHTML='';
+        var date=new Date(year,month,day);
+        document.getElementById('dayview-title').textContent=
+            WEEKDAY_FULL[date.getDay()]+', '+MONTH_FULL[month]+' '+day;
 
-        if(events.length===0){
-            var empty=document.createElement('div');
-            empty.className='cal-detail-empty';
-            empty.textContent='No reminders';
-            listEl.appendChild(empty);
-            detail.style.display='block';
-            return;
-        }
-
-        events.forEach(function(job){
-            var item=document.createElement('div');
-            item.className='ev-item';
-
-            var dot=document.createElement('div');
-            dot.className='ev-dot '+(job.repeat?'recurring':'onetime');
-            item.appendChild(dot);
-
-            var content=document.createElement('div');
-            content.className='ev-content';
-
-            var msg=document.createElement('div');
-            msg.className='ev-message';
-            msg.textContent=job.message;
-
-            var meta=document.createElement('div');
-            meta.className='ev-meta';
-
-            var runDate=new Date(job.run_at);
-            var time=document.createElement('span');
-            time.className='ev-time';
-            time.textContent=String(runDate.getHours()).padStart(2,'0')+':'+String(runDate.getMinutes()).padStart(2,'0');
-            meta.appendChild(time);
-
-            if(job.repeat){
-                var badge=document.createElement('span');
-                badge.className='ev-badge recurring';
-                badge.textContent=job.repeat;
-                meta.appendChild(badge);
-            }
-
-            content.appendChild(msg);
-            content.appendChild(meta);
-            item.appendChild(content);
-
-            if(userRole==='admin'){
-                var del=document.createElement('button');
-                del.className='ev-delete';
-                del.innerHTML='<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
-                (function(j,el){
-                    del.onclick=function(e){
-                        e.stopPropagation();
-                        confirmDelete(j,el);
-                    };
-                })(job,item);
-                item.appendChild(del);
-            }
-
-            listEl.appendChild(item);
-        });
-
-        detail.style.display='block';
+        renderDayViewHours();
     }
 
-    function confirmDelete(job,itemEl){
+    function closeDayView(){
+        dayViewActive=false;
+        dayViewDate=null;
+        document.querySelector('#view-schedule > .container').style.display='block';
+        document.getElementById('cal-dayview').style.display='none';
+        renderCalendar();
+    }
+
+    function renderDayViewHours(){
+        var el=document.getElementById('dayview-hours');
+        el.innerHTML='';
+
+        var dayMap=expandJobsForMonth(allJobs,dayViewDate.year,dayViewDate.month);
+        var dayEvents=dayMap[dayViewDate.day]||[];
+
+        var eventsByHour={};
+        dayEvents.forEach(function(job){
+            var rd=new Date(job.run_at);
+            var h=rd.getHours();
+            if(!eventsByHour[h])eventsByHour[h]=[];
+            eventsByHour[h].push(job);
+        });
+
+        var nowH=new Date();
+        var isToday=dayViewDate.year===nowH.getFullYear()&&dayViewDate.month===nowH.getMonth()&&dayViewDate.day===nowH.getDate();
+        var currentHour=isToday?nowH.getHours():-1;
+
+        for(var h=0;h<24;h++){
+            var row=document.createElement('div');
+            row.className='cal-hour'+(h===currentHour?' current-hour':'');
+
+            var label=document.createElement('div');
+            label.className='cal-hour-label';
+            label.textContent=String(h).padStart(2,'0')+':00';
+            row.appendChild(label);
+
+            var content=document.createElement('div');
+            content.className='cal-hour-content';
+
+            var hourEvs=eventsByHour[h]||[];
+            hourEvs.forEach(function(job){
+                var ev=document.createElement('div');
+                ev.className='cal-hour-ev '+(job.repeat?'recurring':'onetime');
+
+                var rd=new Date(job.run_at);
+                var timeEl=document.createElement('span');
+                timeEl.className='cal-hour-ev-time';
+                timeEl.textContent=String(rd.getHours()).padStart(2,'0')+':'+String(rd.getMinutes()).padStart(2,'0');
+                ev.appendChild(timeEl);
+
+                var msgEl=document.createElement('span');
+                msgEl.className='cal-hour-ev-msg';
+                msgEl.textContent=job.message;
+                ev.appendChild(msgEl);
+
+                if(job.repeat){
+                    var badge=document.createElement('span');
+                    badge.className='cal-hour-ev-badge';
+                    badge.textContent=job.repeat;
+                    ev.appendChild(badge);
+                }
+
+                if(userRole==='admin'){
+                    var del=document.createElement('button');
+                    del.className='cal-hour-ev-del';
+                    del.innerHTML='<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+                    (function(j){
+                        del.onclick=function(e){
+                            e.stopPropagation();
+                            confirmDelete(j);
+                        };
+                    })(job);
+                    ev.appendChild(del);
+                }
+
+                content.appendChild(ev);
+            });
+
+            row.appendChild(content);
+
+            (function(hour){
+                row.addEventListener('click',function(e){
+                    if(e.target.closest('.cal-hour-ev-del'))return;
+                    openAddForm(hour);
+                });
+            })(h);
+
+            el.appendChild(row);
+        }
+
+        if(isToday&&currentHour>3){
+            var targetRow=el.children[Math.max(0,currentHour-2)];
+            if(targetRow)targetRow.scrollIntoView({behavior:'smooth',block:'start'});
+        }
+    }
+
+    function openAddForm(prefillHour){
+        var overlay=document.createElement('div');
+        overlay.className='cal-add-overlay';
+        overlay.id='cal-add-overlay';
+
+        var sheet=document.createElement('div');
+        sheet.className='cal-add-sheet';
+
+        var title=document.createElement('div');
+        title.className='cal-add-title';
+        var d=dayViewDate;
+        title.textContent='New Event - '+MONTH_FULL[d.month]+' '+d.day;
+        sheet.appendChild(title);
+
+        var timeRow=document.createElement('div');
+        timeRow.className='cal-add-row';
+        var timeLabel=document.createElement('div');
+        timeLabel.className='cal-add-label';
+        timeLabel.textContent='Time';
+        timeRow.appendChild(timeLabel);
+        var timeInputRow=document.createElement('div');
+        timeInputRow.className='cal-add-time-row';
+        var hourInput=document.createElement('input');
+        hourInput.type='number';
+        hourInput.className='cal-add-time-input';
+        hourInput.id='add-hour';
+        hourInput.min=0;hourInput.max=23;
+        hourInput.value=prefillHour!=null?String(prefillHour).padStart(2,'0'):'09';
+        var sep=document.createElement('span');
+        sep.className='cal-add-time-sep';
+        sep.textContent=':';
+        var minInput=document.createElement('input');
+        minInput.type='number';
+        minInput.className='cal-add-time-input';
+        minInput.id='add-min';
+        minInput.min=0;minInput.max=59;
+        minInput.value='00';
+        timeInputRow.appendChild(hourInput);
+        timeInputRow.appendChild(sep);
+        timeInputRow.appendChild(minInput);
+        timeRow.appendChild(timeInputRow);
+        sheet.appendChild(timeRow);
+
+        var msgRow=document.createElement('div');
+        msgRow.className='cal-add-row';
+        var msgLabel=document.createElement('div');
+        msgLabel.className='cal-add-label';
+        msgLabel.textContent='Reminder';
+        msgRow.appendChild(msgLabel);
+        var msgInput=document.createElement('input');
+        msgInput.type='text';
+        msgInput.className='cal-add-input';
+        msgInput.id='add-msg';
+        msgInput.placeholder='What should I remind you?';
+        msgInput.autocomplete='off';
+        msgRow.appendChild(msgInput);
+        sheet.appendChild(msgRow);
+
+        var repeatRow=document.createElement('div');
+        repeatRow.className='cal-add-row';
+        var repeatLabel=document.createElement('div');
+        repeatLabel.className='cal-add-label';
+        repeatLabel.textContent='Repeat';
+        repeatRow.appendChild(repeatLabel);
+        var repeatPills=document.createElement('div');
+        repeatPills.className='cal-add-repeat-row';
+        var selectedRepeat=null;
+        var repeatOpts=['none','daily','weekly','biweekly','monthly'];
+        repeatOpts.forEach(function(r){
+            var pill=document.createElement('button');
+            pill.className='cal-add-repeat-pill'+(r==='none'?' selected':'');
+            pill.textContent=r.charAt(0).toUpperCase()+r.slice(1);
+            pill.addEventListener('click',function(){
+                selectedRepeat=(r==='none')?null:r;
+                repeatPills.querySelectorAll('.cal-add-repeat-pill').forEach(function(p){
+                    p.classList.toggle('selected',p.textContent.toLowerCase()===r);
+                });
+                if(tg&&tg.HapticFeedback)tg.HapticFeedback.selectionChanged();
+            });
+            repeatPills.appendChild(pill);
+        });
+        repeatRow.appendChild(repeatPills);
+        sheet.appendChild(repeatRow);
+
+        var actions=document.createElement('div');
+        actions.className='cal-add-actions';
+        var cancelBtn=document.createElement('button');
+        cancelBtn.className='cal-add-cancel';
+        cancelBtn.textContent='Cancel';
+        cancelBtn.addEventListener('click',function(){closeAddForm()});
+        var saveBtn=document.createElement('button');
+        saveBtn.className='cal-add-save';
+        saveBtn.id='add-save';
+        saveBtn.textContent='Save';
+        saveBtn.addEventListener('click',function(){
+            var msg=document.getElementById('add-msg').value.trim();
+            if(!msg)return;
+            var hh=parseInt(document.getElementById('add-hour').value)||0;
+            var mm=parseInt(document.getElementById('add-min').value)||0;
+            hh=Math.max(0,Math.min(23,hh));
+            mm=Math.max(0,Math.min(59,mm));
+            saveBtn.disabled=true;
+            saveBtn.textContent='Saving...';
+            var payload={
+                date:dayViewDate.year+'-'+String(dayViewDate.month+1).padStart(2,'0')+'-'+String(dayViewDate.day).padStart(2,'0'),
+                hour:hh,
+                minute:mm,
+                message:msg
+            };
+            if(selectedRepeat)payload.repeat=selectedRepeat;
+            api('/api/scheduler',{method:'POST',body:JSON.stringify(payload)}).then(function(newJob){
+                allJobs.push(newJob);
+                closeAddForm();
+                renderDayViewHours();
+                if(tg&&tg.HapticFeedback)tg.HapticFeedback.notificationOccurred('success');
+            }).catch(function(e){
+                showError('Failed to create event: '+e.message);
+                saveBtn.disabled=false;
+                saveBtn.textContent='Save';
+                if(tg&&tg.HapticFeedback)tg.HapticFeedback.notificationOccurred('error');
+            });
+        });
+        actions.appendChild(cancelBtn);
+        actions.appendChild(saveBtn);
+        sheet.appendChild(actions);
+
+        overlay.appendChild(sheet);
+        overlay.addEventListener('click',function(e){
+            if(e.target===overlay)closeAddForm();
+        });
+        document.body.appendChild(overlay);
+
+        setTimeout(function(){msgInput.focus()},250);
+    }
+
+    function closeAddForm(){
+        var overlay=document.getElementById('cal-add-overlay');
+        if(overlay)overlay.remove();
+    }
+
+    function confirmDelete(job){
         var label=job.message||'';
         if(label.length>60)label=label.substring(0,57)+'...';
 
@@ -1715,7 +2269,8 @@ body{
     function deleteJob(jobId){
         api('/api/scheduler/'+jobId,{method:'DELETE'}).then(function(){
             allJobs=allJobs.filter(function(j){return j.job_id!==jobId});
-            renderCalendar();
+            if(dayViewActive)renderDayViewHours();
+            else renderCalendar();
             if(tg&&tg.HapticFeedback)tg.HapticFeedback.notificationOccurred('success');
         }).catch(function(e){
             showError(e.message);
@@ -1727,13 +2282,6 @@ body{
         api('/api/scheduler').then(function(jobs){
             allJobs=jobs;
             calLoaded=true;
-
-            var n=new Date();
-            var todayEvents=expandJobsForMonth(jobs,n.getFullYear(),n.getMonth())[n.getDate()]||[];
-            if(todayEvents.length>0){
-                calSelected={year:n.getFullYear(),month:n.getMonth(),day:n.getDate()};
-            }
-
             renderCalendar();
         }).catch(function(e){
             showError('Failed to load schedule');
@@ -1764,6 +2312,16 @@ body{
         calSelected=null;
         renderCalendar();
         if(tg&&tg.HapticFeedback)tg.HapticFeedback.selectionChanged();
+    });
+
+    document.getElementById('dayview-back').addEventListener('click',function(){
+        closeDayView();
+        if(tg&&tg.HapticFeedback)tg.HapticFeedback.selectionChanged();
+    });
+
+    document.getElementById('dayview-add-btn').addEventListener('click',function(){
+        openAddForm(null);
+        if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');
     });
 
     // ── Projects View ──
