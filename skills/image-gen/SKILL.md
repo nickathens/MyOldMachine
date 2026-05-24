@@ -22,7 +22,7 @@ The CLI stores its token in the user's home directory. **Do not commit any auth 
 ## Image Generation
 
 ```bash
-# Default (Nano Banana 2, fast and high-quality)
+# Default (Nano Banana 2 / nano_banana_flash, fast and high-quality)
 python skills/image-gen/scripts/generate.py "a futuristic cityscape at sunset" -o /tmp/city.jpg
 
 # Specific model
@@ -82,7 +82,7 @@ python skills/image-gen/scripts/generate.py --balance
 | `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21 |
 | `-r`, `--ref-image` | Reference image for image-to-image or image-to-video |
 | `--video` | Generate video instead of image |
-| `--backend` | Backend: higgsfield, pollinations, auto (images only) |
+| `--backend` | Backend: auto (default, tries Higgsfield then Pollinations), higgsfield, pollinations |
 | `--resolution` | Resolution: 1k, 2k, 4k (default: 2k, images only) |
 | `--duration` | Video duration in seconds (model-dependent) |
 | `--extra` | JSON string of extra model params (e.g. `'{"quality":"high"}'`) |

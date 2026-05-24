@@ -162,45 +162,6 @@ ASPECT_RATIOS = {
     "9:21": (720, 1680),
 }
 
-MODEL_ASPECT_RATIOS = {
-    "nano_banana": ["auto","1:1","3:2","2:3","4:3","3:4","4:5","5:4","9:16","16:9","21:9"],
-    "nano_banana_flash": ["1:1","3:2","2:3","4:3","3:4","4:5","5:4","9:16","16:9","21:9"],
-    "nano_banana_2": ["auto","1:1","3:2","2:3","4:3","3:4","4:5","5:4","9:16","16:9","21:9"],
-    "flux_2": ["1:1","4:3","3:4","16:9","9:16"],
-    "flux_kontext": ["1:1","4:3","3:4","16:9","9:16"],
-    "gpt_image_2": ["1:1","4:3","3:4","16:9","9:16","3:2","2:3"],
-    "imagegen_2_0": ["1:1","4:3","3:4","16:9","9:16","3:2","2:3"],
-    "grok_image": ["1:1","4:3","3:4","16:9","9:16"],
-    "text2image_soul_v2": ["1:1","16:9","9:16","4:3","3:4","3:2","2:3"],
-    "soul_cinematic": ["1:1","16:9","9:16","4:3","3:4","3:2","2:3","21:9"],
-    "soul_location": ["1:1","16:9","9:16","4:3","3:4","3:2","2:3","21:9","9:21"],
-    "cinematic_studio_2_5": ["1:1","4:3","3:4","16:9","9:16"],
-    "seedream_v4_5": ["1:1","4:3","16:9","3:2","21:9","3:4","9:16","2:3"],
-    "seedream_v5_lite": ["1:1","4:3","3:4","16:9","9:16"],
-    "kling_omni_image": ["1:1","auto","16:9","9:16","4:3","3:4","3:2","2:3","21:9"],
-    "openai_hazel": ["1:1","3:2","2:3","auto"],
-    "ms_image": ["auto","1:1","3:2","2:3","4:3","3:4","4:5","5:4","9:16","16:9","21:9"],
-    "marketing_studio_image": ["auto","1:1","3:2","2:3","4:3","3:4","4:5","5:4","9:16","16:9","21:9"],
-    "z_image": ["1:1","4:3","3:4","16:9","9:16"],
-    "image_auto": ["1:1","4:3","3:4","16:9","9:16"],
-    "kling3_0": ["16:9","9:16","1:1"],
-    "kling2_6": ["16:9","9:16","1:1"],
-    "veo3": ["16:9","9:16"],
-    "veo3_1": ["16:9","9:16"],
-    "veo3_1_lite": ["16:9","9:16","auto"],
-    "grok_video": ["16:9","9:16","1:1"],
-    "seedance_2_0": ["auto","16:9","9:16","4:3","3:4","1:1","21:9"],
-    "seedance1_5": ["auto","16:9","9:16","4:3","3:4","1:1","21:9"],
-    "soul_cast": ["1:1","16:9","9:16","4:3","3:4","3:2","2:3","5:4","4:5","21:9","9:21"],
-    "cinematic_studio_3_0": ["16:9","9:16","1:1"],
-    "cinematic_studio_video": ["1:1","4:3","3:4","16:9","9:16"],
-    "cinematic_studio_video_v2": ["1:1","4:3","3:4","16:9","9:16"],
-    "marketing_studio_video": ["auto","21:9","16:9","4:3","1:1","3:4","9:16"],
-    "wan2_7": ["16:9","9:16","1:1","4:3","3:4"],
-    "wan2_6": ["16:9","9:16","1:1"],
-    "minimax_hailuo": [],
-}
-
 
 def get_account_status() -> dict:
     try:
@@ -275,7 +236,10 @@ def generate_higgsfield(
     if extra_params:
         for k, v in extra_params.items():
             if v is not None and v != "":
-                cmd.extend([f"--{k}", str(v)])
+                if isinstance(v, bool):
+                    cmd.extend([f"--{k}", str(v).lower()])
+                else:
+                    cmd.extend([f"--{k}", str(v)])
 
     try:
         result = subprocess.run(
@@ -429,6 +393,7 @@ def generate_pollinations(
     width: int = 768,
     height: int = 768,
     seed: int | None = None,
+    enhance: bool = False,
 ) -> dict:
     width = min(width, 768)
     height = min(height, 768)
@@ -437,6 +402,8 @@ def generate_pollinations(
     params = {"width": width, "height": height, "nologo": "true"}
     if seed is not None:
         params["seed"] = seed
+    if enhance:
+        params["enhance"] = "true"
 
     query = "&".join(f"{k}={v}" for k, v in params.items())
     url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?{query}"
@@ -480,7 +447,7 @@ def main():
     parser.add_argument("-a", "--aspect-ratio", default=None, choices=list(ASPECT_RATIOS.keys()), help="Aspect ratio")
     parser.add_argument("-r", "--ref-image", default=None, help="Reference image path for image-to-image or image-to-video")
     parser.add_argument("--resolution", default="2k", choices=["1k", "2k", "4k"], help="Resolution (default: 2k)")
-    parser.add_argument("--backend", default="higgsfield", choices=["higgsfield", "pollinations", "auto"], help="Backend (default: higgsfield)")
+    parser.add_argument("--backend", default="auto", choices=["higgsfield", "pollinations", "auto"], help="Backend (default: auto, tries Higgsfield then Pollinations)")
     parser.add_argument("--video", action="store_true", help="Generate video instead of image")
     parser.add_argument("--duration", type=int, default=None, help="Video duration in seconds (model-dependent)")
     parser.add_argument("--list-models", action="store_true", help="List available models and exit")
@@ -489,6 +456,10 @@ def main():
     parser.add_argument("--model-params", action="store_true", help="Print MODEL_PARAMS as JSON and exit")
     parser.add_argument("--extra", default=None, help="JSON string of extra model params (e.g. '{\"quality\":\"high\"}')")
     parser.add_argument("--user", default=None, help="User ID for per-user generation tracking")
+    parser.add_argument("-W", "--width", type=int, default=768, help="Width for Pollinations (max 768)")
+    parser.add_argument("-H", "--height", type=int, default=768, help="Height for Pollinations (max 768)")
+    parser.add_argument("-s", "--seed", type=int, default=None, help="Seed for Pollinations reproducibility")
+    parser.add_argument("--enhance", action="store_true", help="Let Pollinations enhance the prompt")
 
     args = parser.parse_args()
 
@@ -497,7 +468,7 @@ def main():
         if acct:
             print(json.dumps({"credits": acct.get("credits", "unknown"), "plan": acct.get("subscription_plan_type", "unknown"), "email": acct.get("email", "unknown")}, indent=2))
         else:
-            print(json.dumps({"error": "Could not fetch account status"}), indent=2)
+            print(json.dumps({"error": "Could not fetch account status"}, indent=2))
         return
 
     if args.model_params:
@@ -538,7 +509,7 @@ def main():
 
     if args.cost:
         if not args.prompt:
-            print(json.dumps({"error": "Prompt required for cost estimation"}), indent=2)
+            print(json.dumps({"error": "Prompt required for cost estimation"}, indent=2))
             sys.exit(1)
         if args.backend == "pollinations" and not args.video:
             print(json.dumps({"credits": 0, "credits_exact": 0, "credits_remaining": "N/A (free tier)", "note": "Pollinations is free"}, indent=2))
@@ -559,15 +530,18 @@ def main():
     else:
         print(f"Generating image with {args.backend}...", file=sys.stderr)
         if args.backend == "pollinations":
-            w, h = ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))
-            result = generate_pollinations(args.prompt, args.output, width=min(w, 768), height=min(h, 768))
+            w = min(args.width, 768) if args.width != 768 else ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))[0]
+            h = min(args.height, 768) if args.height != 768 else ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))[1]
+            result = generate_pollinations(args.prompt, args.output, width=min(w, 768), height=min(h, 768),
+                                           seed=args.seed, enhance=args.enhance)
         elif args.backend == "auto":
             result = generate_higgsfield(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
                                          resolution=args.resolution, ref_image=args.ref_image, extra_params=extra_params or None)
             if not result["success"]:
                 print(f"Higgsfield failed ({result['error']}). Falling back to Pollinations...", file=sys.stderr)
                 w, h = ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))
-                result = generate_pollinations(args.prompt, args.output, width=min(w, 768), height=min(h, 768))
+                result = generate_pollinations(args.prompt, args.output, width=min(w, 768), height=min(h, 768),
+                                               seed=args.seed, enhance=args.enhance)
         else:
             result = generate_higgsfield(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
                                          resolution=args.resolution, ref_image=args.ref_image, extra_params=extra_params or None)
