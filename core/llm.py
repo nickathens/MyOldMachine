@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 import shutil
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -402,10 +403,10 @@ class ClaudeCLIProvider(LLMProvider):
     the final result.
     """
 
-    IDLE_TIMEOUT = 3600  # 1 hour of no output = stuck
-    NO_TEXT_TIMEOUT = 600  # 10 min of tool activity with zero user-facing text = stuck
+    IDLE_TIMEOUT = 1800  # 30 min of no output = stuck
+    NO_TEXT_TIMEOUT = 180  # 3 min of tool activity with zero user-facing text = stuck
     ABSOLUTE_TIMEOUT = 3600  # 1 hour hard ceiling per request, even with continuous activity
-    PROGRESS_INTERVAL = 900  # Send progress message every 15 min
+    PROGRESS_INTERVAL = 120  # Send progress report every 2 minutes
 
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
         super().__init__(model, api_key)
@@ -532,7 +533,7 @@ class ClaudeCLIProvider(LLMProvider):
             "--model", self.model,
             "--effort", get_llm_effort(),
             "--dangerously-skip-permissions",
-            "--disallowedTools", "Task,EnterPlanMode",
+            "--disallowedTools", "Task,EnterPlanMode,AskUserQuestion,Monitor,EnterWorktree,ExitWorktree,ScheduleWakeup,RemoteTrigger,PushNotification,NotebookEdit",
             "--output-format", "stream-json",
             "--verbose",
             "-",  # Read from stdin
@@ -873,20 +874,31 @@ class ClaudeCLIProvider(LLMProvider):
                 )
 
             # No "result" message — use last assistant turn if available,
-            # otherwise fall back to all accumulated partial text
+            # otherwise extract only the last substantive section from partial_text
             last_turn = "\n".join(last_turn_text_blocks).strip()
-            fallback_text = last_turn or partial_text.strip()
-            if fallback_text:
-                logger.warning(f"No final result for user {user_id}, returning fallback text ({len(fallback_text)} chars, from_last_turn={bool(last_turn)})")
+            if last_turn:
+                logger.warning(f"No final result for user {user_id}, returning last turn ({len(last_turn)} chars)")
+                return LLMResponse(
+                    text=last_turn, model=self.model,
+                    provider=self.provider_name, tool_use=True,
+                )
+            if partial_text.strip():
+                sections = [s.strip() for s in partial_text.strip().split("\n\n") if len(s.strip()) > 50]
+                fallback_text = sections[-1] if sections else partial_text.strip()[-2000:]
+                logger.warning(f"No final result for user {user_id}, returning last section of partial_text ({len(fallback_text)} chars out of {len(partial_text)} total)")
                 return LLMResponse(
                     text=fallback_text, model=self.model,
                     provider=self.provider_name, tool_use=True,
                 )
 
-            if stderr_text:
-                logger.warning(f"No response from Claude for user {user_id}. Stderr: {stderr_text[:500]}")
-            else:
-                logger.warning(f"No response from Claude for user {user_id}. Exit code: {process.returncode}. No stderr.")
+            elapsed = time.monotonic() - start_time
+            logger.warning(
+                f"No response from Claude for user {user_id}. "
+                f"elapsed={elapsed:.1f}s, exit={process.returncode}, "
+                f"last_status={current_status}, last_tool={tool_in_progress}, "
+                f"partial_text_len={len(partial_text)}, "
+                f"stderr={stderr_text[:200] if stderr_text else 'none'}"
+            )
             return LLMResponse(
                 text="Claude produced no response. This can happen when the context is too large. Try /clear to reset, or send a shorter message.",
                 model=self.model, provider=self.provider_name,
@@ -971,10 +983,10 @@ class CodexCLIProvider(LLMProvider):
     The final answer is the last item.completed with item.type == "agent_message".
     """
 
-    IDLE_TIMEOUT = 3600
-    NO_TEXT_TIMEOUT = 600
+    IDLE_TIMEOUT = 1800
+    NO_TEXT_TIMEOUT = 180
     ABSOLUTE_TIMEOUT = 3600
-    PROGRESS_INTERVAL = 900
+    PROGRESS_INTERVAL = 120
 
     def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
         super().__init__(model, api_key)
@@ -1429,9 +1441,10 @@ class CodexCLIProvider(LLMProvider):
                     input_tokens=total_input, output_tokens=total_output,
                 )
 
-            fallback_text = partial_text.strip()
-            if fallback_text:
-                logger.warning(f"No agent_message for Codex user {user_id}, returning fallback ({len(fallback_text)} chars)")
+            if partial_text.strip():
+                sections = [s.strip() for s in partial_text.strip().split("\n\n") if len(s.strip()) > 50]
+                fallback_text = sections[-1] if sections else partial_text.strip()[-2000:]
+                logger.warning(f"No agent_message for Codex user {user_id}, returning last section ({len(fallback_text)} chars out of {len(partial_text)} total)")
                 return LLMResponse(
                     text=fallback_text, model=self.model,
                     provider=self.provider_name, tool_use=True,
@@ -1444,8 +1457,14 @@ class CodexCLIProvider(LLMProvider):
                     model=self.model, provider=self.provider_name,
                     error=turn_failed_message[:200],
                 )
-            if stderr_text:
-                logger.warning(f"No response from Codex for user {user_id}. Stderr: {stderr_text[:500]}")
+            elapsed = time.monotonic() - start_time
+            logger.warning(
+                f"No response from Codex for user {user_id}. "
+                f"elapsed={elapsed:.1f}s, exit={process.returncode}, "
+                f"last_status={current_status}, last_tool={tool_in_progress}, "
+                f"partial_text_len={len(partial_text)}, "
+                f"stderr={stderr_text[:200] if stderr_text else 'none'}"
+            )
             return LLMResponse(
                 text="Codex produced no response. This can happen when the context is too large. Try /clear to reset, or send a shorter message.",
                 model=self.model, provider=self.provider_name,
