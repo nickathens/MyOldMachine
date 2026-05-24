@@ -2299,7 +2299,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Available providers:\n"
         )
         for p, default_m in default_models.items():
-            if p in ("claude-cli", "claude-api", "free-claude"):
+            if p in ("claude-cli", "claude-api"):
                 continue
             marker = " (active)" if p == current else ""
             msg += f"  {p} — default: {default_m}{marker}\n"
@@ -2327,7 +2327,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if new_provider not in valid_providers:
         await update.message.reply_text(
             f"Unknown provider: {new_provider}\n"
-            f"Valid: {', '.join(sorted(p for p in valid_providers if p not in ('claude-cli', 'claude-api', 'free-claude')))}"
+            f"Valid: {', '.join(sorted(p for p in valid_providers if p not in ('claude-cli', 'claude-api')))}"
         )
         return
 
