@@ -174,8 +174,9 @@ utils/
 | Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
 | Ollama Cloud | OpenAI-compat | qwen3.5:cloud | Cloud-hosted, free, no local GPU needed |
 | OpenRouter | OpenAI-compat | nemotron-3-super-120b:free | ~15 free models w/tool-use, ~200 req/day |
+| FCC | Claude CLI + proxy | claude-sonnet-4-6 | Routes through free-claude-code proxy to any backend (Gemini, DeepSeek, Groq, etc.) |
 
-**Total: 12 providers** (Claude CLI, Codex CLI, Claude API, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud).
+**Total: 13 providers** (Claude CLI, Codex CLI, Claude API, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, FCC).
 
 ## Boot Persistence
 

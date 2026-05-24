@@ -356,6 +356,7 @@ _ALL_LLM_PROVIDERS = [
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
     ("ollama-cloud", "Ollama Cloud — cloud-hosted models (free tier available), no local GPU needed"),
     ("openrouter", "OpenRouter — many models, one API key (free models available), machine control"),
+    ("fcc", "Free Claude Code — proxy to free backends (Gemini, DeepSeek, Groq, etc.), full machine control"),
 ]
 
 
@@ -380,6 +381,7 @@ DEFAULT_MODELS = {
     "ollama": "llama3.1:8b",
     "ollama-cloud": "qwen3.5:cloud",
     "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
+    "fcc": "claude-sonnet-4-6",
 }
 
 # Model lists per provider — shown as numbered options during setup.

@@ -1533,6 +1533,67 @@ class CodexCLIProvider(LLMProvider):
                 logger.warning("Codex process did not exit after SIGKILL within 5s")
 
 
+class FreeCCProvider(ClaudeCLIProvider):
+    """Free Claude Code proxy provider.
+
+    Routes Claude CLI traffic through a local free-claude-code proxy server
+    (github.com/Alishahryar1/free-claude-code) that translates requests to
+    alternative backends (Gemini, DeepSeek, Groq, etc.).
+
+    Inherits all of ClaudeCLIProvider's tool-use, streaming, timeouts, and
+    /stop handling. Only differences: forces ANTHROPIC_BASE_URL to the proxy,
+    and health_check probes the proxy before checking the CLI binary.
+    """
+
+    DEFAULT_PROXY_URL = "http://localhost:8082/v1"
+
+    def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
+        super().__init__(model, api_key)
+        import os
+        self._proxy_url = os.environ.get(
+            "FCC_PROXY_URL", self.DEFAULT_PROXY_URL
+        )
+
+    @property
+    def provider_name(self) -> str:
+        return "fcc"
+
+    async def health_check(self) -> tuple[bool, str]:
+        """Check the proxy is running, then verify the CLI binary exists."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(self._proxy_url.rstrip("/v1") + "/health")
+                if resp.status_code >= 500:
+                    return False, (
+                        f"fcc: proxy at {self._proxy_url} returned {resp.status_code}. "
+                        f"Is the free-claude-code server running?"
+                    )
+        except httpx.ConnectError:
+            return False, (
+                f"fcc: cannot connect to proxy at {self._proxy_url}. "
+                f"Start it with: uv run fcc-server (in the free-claude-code directory)"
+            )
+        except Exception as e:
+            return False, f"fcc: proxy health check failed: {e}"
+        return await super().health_check()
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7,
+                       chat=None, user_id: int = None, original_message: str = "") -> LLMResponse:
+        import os
+        old_val = os.environ.get("ANTHROPIC_BASE_URL")
+        os.environ["ANTHROPIC_BASE_URL"] = self._proxy_url
+        try:
+            return await super().complete(
+                system_prompt, messages, max_tokens, temperature,
+                chat=chat, user_id=user_id, original_message=original_message,
+            )
+        finally:
+            if old_val is None:
+                os.environ.pop("ANTHROPIC_BASE_URL", None)
+            else:
+                os.environ["ANTHROPIC_BASE_URL"] = old_val
+
+
 class ClaudeAPIProvider(LLMProvider):
     """Anthropic Claude API — text-only, no tool execution layer."""
 
@@ -2546,6 +2607,8 @@ def create_provider(
         "kimi": lambda: KimiProvider(model, api_key),
         "moonshot": lambda: KimiProvider(model, api_key),
         "minimax": lambda: MiniMaxProvider(model, api_key),
+        "fcc": lambda: FreeCCProvider(model, api_key),
+        "free-claude": lambda: FreeCCProvider(model, api_key),
     }
     factory = providers.get(provider.lower())
     if not factory:

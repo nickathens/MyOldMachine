@@ -83,8 +83,9 @@ You pick your AI provider during setup. You can switch anytime from Telegram —
 | **Claude CLI** | With Pro/Max plan | Most capable. Uses your existing Anthropic subscription. |
 | **Codex CLI** | With ChatGPT Plus/Pro plan | OpenAI's parallel to Claude CLI. Same subprocess + JSON-stream pattern, full machine control. |
 | **Claude API** | No | Pay-per-token. Text-only (no machine control). |
+| **FCC** | Depends on backend | Routes Claude CLI through a [free-claude-code](https://github.com/Alishahryar1/free-claude-code) proxy. Use any backend (Gemini free, DeepSeek, Groq, etc.) with full tool-use. |
 
-**If you want free:** Start with Ollama (local, unlimited), Ollama Cloud (no GPU needed), or OpenRouter (~200 req/day).
+**If you want free:** Start with Ollama (local, unlimited), Ollama Cloud (no GPU needed), OpenRouter (~200 req/day), or FCC with a free backend (Gemini, Groq).
 
 **If you want the best quality:** Claude CLI with a Pro subscription, or OpenAI GPT-5.5.
 
@@ -206,8 +207,8 @@ If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonde
 |---|---|---|
 | **Language** | Python | TypeScript |
 | **Install** | `curl ... \| bash` — works on decade-old hardware | `npm install -g openclaw` — requires Node 24 |
-| **AI providers** | 12 — Claude CLI, Codex CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API | Primarily OpenAI, configurable profiles |
-| **Free/local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier (200 req/day), Gemini free tier | No built-in free option |
+| **AI providers** | 13 — Claude CLI, Codex CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API, FCC (free-claude-code proxy) | Primarily OpenAI, configurable profiles |
+| **Free/local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier (200 req/day), Gemini free tier, FCC with free backends | No built-in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
 | **Skills** | 63 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux/macOS — runs on 1GB RAM with Ollama small models | Modern hardware recommended |
