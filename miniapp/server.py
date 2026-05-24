@@ -13,6 +13,7 @@ config (provider, model, effort) require admin.
 Bind 127.0.0.1; expose via Tailscale Funnel, Cloudflare Tunnel, or LAN.
 """
 
+import importlib.util
 import json
 import logging
 import os
@@ -65,6 +66,7 @@ PROJECTS_DIR = DATA_DIR / "memory" / "projects"
 ARCHIVE_DIR = PROJECTS_DIR / "_archive"
 ENV_FILE = BOT_DIR / ".env"
 STATIC_DIR = Path(__file__).parent / "static"
+GENERATE_SCRIPT = SKILLS_DIR / "image-gen" / "scripts" / "generate.py"
 
 # Service name used for status queries. Override with MINIAPP_BOT_SERVICE if
 # the bot was installed under a different unit name.
@@ -656,11 +658,61 @@ async def unarchive_project(slug: str, user: dict = Depends(_get_user)):
     return {"slug": slug, "unarchived": True}
 
 
+# ─── /api/media ──────────────────────────────────────────────────────
+
+
+@app.get("/api/media/model-ratios")
+async def media_model_ratios(user: dict = Depends(_get_user)):
+    try:
+        spec = importlib.util.spec_from_file_location("generate", str(GENERATE_SCRIPT))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        aliases = {}
+        aspect_ratios = getattr(mod, "MODEL_ASPECT_RATIOS", {})
+        all_ratios = list(getattr(mod, "ASPECT_RATIOS", {}).keys())
+        for alias, jst in mod.MODEL_ALIASES.items():
+            aliases[alias] = aspect_ratios.get(jst, all_ratios)
+        for alias, jst in mod.VIDEO_MODEL_ALIASES.items():
+            aliases[alias] = aspect_ratios.get(jst, ["16:9", "9:16", "1:1"])
+        return aliases
+    except Exception as e:
+        log.error("Model ratios failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/media/model-params")
+async def media_model_params(user: dict = Depends(_get_user)):
+    try:
+        result = subprocess.run(
+            [sys.executable, str(GENERATE_SCRIPT), "--model-params"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout)
+    except Exception as e:
+        log.error("Model params failed: %s", e)
+    raise HTTPException(status_code=500, detail="Could not fetch model params")
+
+
+@app.get("/api/media/balance")
+async def media_balance(user: dict = Depends(_get_user)):
+    try:
+        result = subprocess.run(
+            [sys.executable, str(GENERATE_SCRIPT), "--balance"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout)
+    except Exception as e:
+        log.error("Balance check failed: %s", e)
+    raise HTTPException(status_code=500, detail="Could not fetch balance")
+
+
 # ─── /api/launch ─────────────────────────────────────────────────────
 
 LAUNCH_ACTIONS = {
     "weather": {"type": "script", "script": "weather"},
-    "media-gen": {"type": "reply", "text": "What image do you want me to generate?"},
+    "media-gen": {"type": "media-gen"},
     "research": {"type": "reply", "text": "What should I research?"},
     "voice-mode": {
         "type": "reply",
@@ -732,6 +784,85 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         text = _run_weather()
         ok = _send_bot_message(user_id, text)
         return {"ok": ok, "type": "weather"}
+
+    if config["type"] == "media-gen":
+        mg = body.get("config", {})
+        mg_type = mg.get("type", "image")
+        if mg_type not in ("image", "video"):
+            raise HTTPException(status_code=400, detail="Invalid type")
+        model = mg.get("model", "nano2")
+        if not model or not model.replace("-", "").replace(".", "").replace("_", "").isalnum():
+            raise HTTPException(status_code=400, detail="Invalid model")
+        aspect = mg.get("aspect_ratio", "1:1")
+        valid_aspects = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"}
+        if aspect not in valid_aspects:
+            raise HTTPException(status_code=400, detail="Invalid aspect ratio")
+        resolution = mg.get("resolution", "2k")
+        if resolution not in ("1k", "2k", "4k"):
+            raise HTTPException(status_code=400, detail="Invalid resolution")
+        duration = mg.get("duration")
+        if duration is not None:
+            try:
+                duration = int(duration)
+                if duration < 1 or duration > 60:
+                    raise HTTPException(status_code=400, detail="Duration must be 1-60 seconds")
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=400, detail="Invalid duration")
+
+        prompt = mg.get("prompt", "").strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt is required")
+
+        extra_params = mg.get("extra_params", {})
+        if extra_params and not isinstance(extra_params, dict):
+            extra_params = {}
+        safe_extra = {}
+        for k, v in extra_params.items():
+            if isinstance(k, str) and len(k) < 30 and k.replace("_", "").isalpha():
+                if isinstance(v, (str, bool, int, float)):
+                    safe_extra[k] = v
+
+        cost_info = ""
+        try:
+            cost_cmd = [sys.executable, str(GENERATE_SCRIPT), prompt[:120], "--cost", "-m", model, "-a", aspect]
+            if mg_type == "image":
+                cost_cmd.extend(["--resolution", resolution])
+            if mg_type == "video":
+                cost_cmd.append("--video")
+                if duration:
+                    cost_cmd.extend(["--duration", str(duration)])
+            if safe_extra:
+                cost_cmd.extend(["--extra", json.dumps(safe_extra)])
+            cr = subprocess.run(cost_cmd, capture_output=True, text=True, timeout=15)
+            if cr.returncode == 0:
+                cd = json.loads(cr.stdout)
+                credits = cd.get("credits", cd.get("credits_exact", "?"))
+                remaining = cd.get("credits_remaining", "?")
+                cost_info = f"\nEstimated cost: ~{credits} credits ({remaining} remaining)"
+        except Exception as e:
+            log.warning("Cost estimation failed: %s", e)
+
+        lines = [
+            f"Media Gen: {mg_type.title()} using {model}",
+            f"Aspect: {aspect}",
+        ]
+        if mg_type == "image":
+            lines.append(f"Resolution: {resolution}")
+        if mg_type == "video" and duration:
+            lines.append(f"Duration: {duration}s")
+        for k, v in safe_extra.items():
+            lines.append(f"{k.replace('_', ' ').title()}: {v}")
+        if cost_info:
+            lines.append(cost_info)
+        lines.append(f'\nPrompt: "{prompt}"')
+        lines.append("\nReply to proceed. I'll refine the prompt for this model first.")
+        _send_bot_message(user_id, "\n".join(lines))
+
+        mg["extra_params"] = safe_extra
+        pending = Path(f"/tmp/media_gen_pending_{user_id}.json")
+        pending.write_text(json.dumps(mg))
+
+        return {"ok": True, "type": "media-gen"}
 
     raise HTTPException(status_code=400, detail="Unsupported action")
 
