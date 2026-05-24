@@ -18,6 +18,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import shutil
 import time
 from abc import ABC, abstractmethod
@@ -425,6 +426,19 @@ class ClaudeCLIProvider(LLMProvider):
         self.on_progress_save = None  # (user_id, message, partial, status, tool) -> None
         self.on_progress_clear = None  # (user_id) -> None
 
+    def _get_cli_env(self, user_id: int = None) -> dict:
+        """Build the sanitized env dict for a CLI subprocess."""
+        from core.tools import build_cli_env
+        return build_cli_env(
+            provider_keys=frozenset({
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CONFIG_DIR",
+            }),
+            extra=_user_identity_env(user_id),
+        )
+
     def stop_user(self, user_id: int) -> bool:
         """Signal the active Claude process for user_id to stop.
 
@@ -557,19 +571,7 @@ class ClaudeCLIProvider(LLMProvider):
             if chat:
                 typing_task = asyncio.create_task(_send_typing_periodically(chat))
 
-            # Claude CLI: allow-list env (SAFE_ENV_VARS) plus the provider's
-            # own auth vars. Mirrors core.tools._build_command_env() so a
-            # future env addition can't accidentally leak a secret to the CLI.
-            from core.tools import build_cli_env
-            cli_env = build_cli_env(
-                provider_keys=frozenset({
-                    "ANTHROPIC_API_KEY",
-                    "ANTHROPIC_AUTH_TOKEN",
-                    "ANTHROPIC_BASE_URL",
-                    "CLAUDE_CONFIG_DIR",
-                }),
-                extra=_user_identity_env(user_id),
-            )
+            cli_env = self._get_cli_env(user_id)
 
             cwd = str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
@@ -1531,6 +1533,66 @@ class CodexCLIProvider(LLMProvider):
                 await asyncio.wait_for(proc.wait(), timeout=5)
             except asyncio.TimeoutError:
                 logger.warning("Codex process did not exit after SIGKILL within 5s")
+
+
+class FreeCCProvider(ClaudeCLIProvider):
+    """Free Claude Code proxy provider.
+
+    Routes Claude CLI traffic through a local free-claude-code proxy server
+    (github.com/Alishahryar1/free-claude-code) that translates requests to
+    alternative backends (Gemini, DeepSeek, Groq, etc.).
+
+    Inherits all of ClaudeCLIProvider's tool-use, streaming, timeouts, and
+    /stop handling. Only differences: forces ANTHROPIC_BASE_URL to the proxy,
+    and health_check probes the proxy before checking the CLI binary.
+    """
+
+    DEFAULT_PROXY_URL = "http://localhost:8082/v1"
+
+    def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
+        super().__init__(model, api_key)
+        self._proxy_url = os.environ.get(
+            "FCC_PROXY_URL", self.DEFAULT_PROXY_URL
+        )
+
+    @property
+    def provider_name(self) -> str:
+        return "fcc"
+
+    async def health_check(self) -> tuple[bool, str]:
+        """Check the proxy is running, then verify the CLI binary exists."""
+        health_url = self._proxy_url.removesuffix("/v1") + "/health"
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(health_url)
+                if resp.status_code >= 500:
+                    return False, (
+                        f"fcc: proxy at {self._proxy_url} returned {resp.status_code}. "
+                        f"Is the free-claude-code server running?"
+                    )
+        except httpx.ConnectError:
+            return False, (
+                f"fcc: cannot connect to proxy at {self._proxy_url}. "
+                f"Start it with: uv run fcc-server (in the free-claude-code directory)"
+            )
+        except Exception as e:
+            return False, f"fcc: proxy health check failed: {e}"
+        return await super().health_check()
+
+    def _get_cli_env(self, user_id: int = None) -> dict:
+        """Build env with ANTHROPIC_BASE_URL forced to the proxy URL."""
+        from core.tools import build_cli_env
+        return build_cli_env(
+            provider_keys=frozenset({
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "CLAUDE_CONFIG_DIR",
+            }),
+            extra={
+                "ANTHROPIC_BASE_URL": self._proxy_url,
+                **(_user_identity_env(user_id) or {}),
+            },
+        )
 
 
 class ClaudeAPIProvider(LLMProvider):
@@ -2546,6 +2608,7 @@ def create_provider(
         "kimi": lambda: KimiProvider(model, api_key),
         "moonshot": lambda: KimiProvider(model, api_key),
         "minimax": lambda: MiniMaxProvider(model, api_key),
+        "fcc": lambda: FreeCCProvider(model, api_key),
     }
     factory = providers.get(provider.lower())
     if not factory:

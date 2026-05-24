@@ -2282,6 +2282,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ollama": "llama3.1:8b",
         "ollama-cloud": "qwen3.5:cloud",
         "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
+        "fcc": "claude-sonnet-4-6",
     }
 
     if not text:
