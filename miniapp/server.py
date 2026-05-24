@@ -20,10 +20,10 @@ import os
 import re
 import sqlite3
 import subprocess
-import uuid
-from datetime import datetime
 import sys
 import time
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -458,39 +458,64 @@ async def create_job(request: Request, user: dict = Depends(_get_user)):
     minute = body.get("minute", 0)
     message = (body.get("message") or "").strip()
     repeat = body.get("repeat")
+    until = body.get("until")
 
     if not message:
         raise HTTPException(status_code=400, detail="Message is required")
+    if len(message) > 500:
+        raise HTTPException(status_code=400, detail="Message too long (500 char max)")
     if not date_str or not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         raise HTTPException(status_code=400, detail="Invalid date format (YYYY-MM-DD)")
-    if hour is None or not (0 <= int(hour) <= 23):
+    try:
+        hour = int(hour) if hour is not None else -1
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Hour must be a number 0-23")
+    if not (0 <= hour <= 23):
         raise HTTPException(status_code=400, detail="Hour must be 0-23")
-    if not (0 <= int(minute) <= 59):
+    try:
+        minute = int(minute)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Minute must be a number 0-59")
+    if not (0 <= minute <= 59):
         raise HTTPException(status_code=400, detail="Minute must be 0-59")
     if repeat and repeat not in ("daily", "weekly", "biweekly", "monthly"):
         raise HTTPException(status_code=400, detail="Invalid repeat value")
+    if repeat == "":
+        repeat = None
 
-    hour = int(hour)
-    minute = int(minute)
-    run_at = datetime.fromisoformat(f"{date_str}T{hour:02d}:{minute:02d}:00")
-    job_id = uuid.uuid4().hex[:12]
-    user_id = int(user["_id"])
-    now_iso = datetime.now().isoformat()
-
-    conn = sqlite3.connect(str(SCHEDULER_DB), timeout=10)
     try:
-        conn.execute("""
-            INSERT INTO job_meta (job_id, user_id, message, job_type, name, notify,
-                                  repeat, channel, created_at, run_at, raw_at, created_context)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (job_id, user_id, message, "reminder", message[:50], 1,
-              repeat, "telegram", now_iso, run_at.isoformat(),
-              f"{date_str} {hour:02d}:{minute:02d}",
-              "Mini App dashboard"))
-        conn.commit()
-    finally:
-        conn.close()
+        run_at = datetime.fromisoformat(f"{date_str}T{hour:02d}:{minute:02d}:00")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date (e.g. Feb 30)")
 
+    if not repeat and run_at < datetime.now():
+        raise HTTPException(status_code=400, detail="Cannot schedule a one-time event in the past")
+
+    end_date = None
+    if until:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", until):
+            raise HTTPException(status_code=400, detail="Invalid until date format (YYYY-MM-DD)")
+        try:
+            end_date = datetime.fromisoformat(f"{until}T23:59:59")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid until date")
+        if end_date < run_at:
+            raise HTTPException(status_code=400, detail="Until date must be after the start date")
+
+    job_id = uuid.uuid4().hex
+    user_id = int(user["_id"])
+
+    from core.scheduler import _save_meta
+    _save_meta(
+        job_id=job_id, user_id=user_id, message=message,
+        job_type="reminder", name=message[:50], notify=True,
+        repeat=repeat, channel="telegram", run_at=run_at,
+        raw_at=f"{date_str} {hour:02d}:{minute:02d}",
+        created_context="Mini App dashboard",
+        end_date=end_date,
+    )
+
+    now_iso = datetime.now().isoformat()
     return {
         "job_id": job_id,
         "user_id": user_id,
@@ -502,6 +527,7 @@ async def create_job(request: Request, user: dict = Depends(_get_user)):
         "channel": "telegram",
         "created_at": now_iso,
         "run_at": run_at.isoformat(),
+        "end_date": end_date.isoformat() if end_date else None,
     }
 
 
