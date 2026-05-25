@@ -779,6 +779,83 @@ body{
 .mg-prompt::placeholder{color:var(--text-dim)}
 .mg-prompt:focus{border-color:rgba(220,180,100,0.2)}
 
+.mg-attach-section{margin-top:4px}
+.mg-attach-zone{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:14px 16px;
+    border-radius:12px;
+    border:1px dashed rgba(255,255,255,0.1);
+    background:linear-gradient(165deg, rgba(12,30,50,0.3) 0%, rgba(4,18,30,0.15) 100%);
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+    transition:border-color 0.2s, background 0.2s;
+}
+.mg-attach-zone:active{
+    border-color:rgba(220,180,100,0.2);
+    background:linear-gradient(165deg, rgba(12,30,50,0.4) 0%, rgba(4,18,30,0.25) 100%);
+}
+.mg-attach-zone.has-file{
+    border-style:solid;
+    border-color:rgba(80,180,220,0.15);
+}
+.mg-attach-icon{
+    width:36px;height:36px;
+    border-radius:10px;
+    background:rgba(255,255,255,0.04);
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+}
+.mg-attach-icon svg{width:18px;height:18px;stroke:rgba(255,255,255,0.35);fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.mg-attach-text{
+    flex:1;
+    font-size:12px;
+    color:var(--text-muted);
+    line-height:1.4;
+}
+.mg-attach-text .name{
+    color:rgba(255,255,255,0.7);
+    font-weight:500;
+    font-size:13px;
+}
+.mg-attach-preview{
+    position:relative;
+    width:48px;height:48px;
+    border-radius:8px;
+    overflow:hidden;
+    flex-shrink:0;
+}
+.mg-attach-preview img{
+    width:100%;height:100%;
+    object-fit:cover;
+}
+.mg-attach-remove{
+    position:absolute;
+    top:-4px;right:-4px;
+    width:18px;height:18px;
+    border-radius:50%;
+    background:rgba(0,0,0,0.7);
+    border:1px solid rgba(255,255,255,0.15);
+    color:#fff;
+    font-size:10px;
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;
+    line-height:1;
+}
+.mg-attach-uploading{
+    font-size:11px;
+    color:rgba(80,180,220,0.7);
+    margin-top:4px;
+}
+.mg-attach-required{
+    font-size:10px;
+    color:rgba(220,160,80,0.6);
+    margin-top:2px;
+    letter-spacing:0.04em;
+    text-transform:uppercase;
+}
+
 .mg-generate-btn{width:100%;padding:16px;border-radius:12px;border:none;background:linear-gradient(135deg,rgba(220,180,100,0.2) 0%,rgba(200,160,80,0.12) 100%);color:rgba(230,195,120,0.95);font-family:'Montserrat',sans-serif;font-size:14px;font-weight:600;letter-spacing:0.02em;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:all 0.2s ease;margin-top:8px}
 .mg-generate-btn:active{transform:scale(0.98);background:linear-gradient(135deg,rgba(220,180,100,0.3) 0%,rgba(200,160,80,0.18) 100%)}
 .mg-generate-btn:disabled{opacity:0.3;cursor:default;transform:none}
@@ -1497,6 +1574,19 @@ body{
         <section class="section" id="mg-options-section" style="display:none">
             <div class="section-label">Options</div>
             <div id="mg-options" class="mg-options-grid"></div>
+        </section>
+
+        <section class="section" id="mg-attach-section" style="display:none">
+            <div class="section-label">Reference Image <span id="mg-attach-req" class="mg-attach-required" style="display:none">required</span></div>
+            <div class="mg-attach-zone" id="mg-attach-zone">
+                <div class="mg-attach-icon">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                </div>
+                <div class="mg-attach-text" id="mg-attach-text">Tap to attach an image</div>
+                <div class="mg-attach-preview" id="mg-attach-preview" style="display:none"></div>
+            </div>
+            <input type="file" id="mg-attach-input" accept="image/jpeg,image/png,image/webp" style="display:none">
+            <div class="mg-attach-uploading" id="mg-attach-status"></div>
         </section>
 
         <section class="section">
@@ -2571,6 +2661,110 @@ body{
 
     var mgState={type:'image',model:'nano2',aspect:'1:1',resolution:'2k',duration:5};
 
+    var MODEL_INPUTS={
+        'nano':true,'nano2':true,'nano-pro':true,
+        'flux':true,'flux-kontext':true,
+        'gpt':true,'grok':true,
+        'soul':true,'soul-cinematic':true,
+        'seedream':true,'seedream-lite':true,
+        'cinematic':true,'kling':true,
+        'auto':true,'ms':true,'ms-studio':true,
+        'hazel':true,
+        'kling2.6':true,
+        'veo3':'required',
+        'veo3.1':true,'veo3-lite':true,
+        'seedance':true,'seedance1.5':true,
+        'hailuo':true,
+        'wan':true,'wan2.6':true,
+        'grok-video':true,
+        'cinematic-video':true,'cinematic-v2':true,'cinematic3':true,
+        'marketing':true
+    };
+
+    var mgAttachState={path:null,uploading:false};
+
+    function renderMgAttach(){
+        var sec=document.getElementById('mg-attach-section');
+        var support=MODEL_INPUTS[mgState.model];
+        if(!support){
+            sec.style.display='none';
+            mgAttachState.path=null;
+            document.getElementById('mg-attach-preview').style.display='none';
+            document.getElementById('mg-attach-preview').innerHTML='';
+            document.getElementById('mg-attach-text').innerHTML='Tap to attach an image';
+            document.getElementById('mg-attach-status').textContent='';
+            return;
+        }
+        sec.style.display='';
+        var reqBadge=document.getElementById('mg-attach-req');
+        reqBadge.style.display=(support==='required')?'inline':'none';
+        updateGenerateBtn();
+    }
+
+    function showAttachPreview(file,serverPath){
+        var preview=document.getElementById('mg-attach-preview');
+        var text=document.getElementById('mg-attach-text');
+        preview.innerHTML='';
+        var img=document.createElement('img');
+        img.src=URL.createObjectURL(file);
+        preview.appendChild(img);
+        var rm=document.createElement('div');
+        rm.className='mg-attach-remove';
+        rm.textContent='×';
+        rm.addEventListener('click',function(e){
+            e.stopPropagation();
+            mgAttachState.path=null;
+            preview.style.display='none';
+            preview.innerHTML='';
+            text.innerHTML='Tap to attach an image';
+            document.getElementById('mg-attach-status').textContent='';
+            updateGenerateBtn();
+            if(tg&&tg.HapticFeedback)tg.HapticFeedback.selectionChanged();
+        });
+        preview.appendChild(rm);
+        preview.style.display='block';
+        text.innerHTML='<span class="name">'+file.name.substring(0,24)+'</span><br>'+Math.round(file.size/1024)+' KB';
+        mgAttachState.path=serverPath;
+    }
+
+    document.getElementById('mg-attach-zone').addEventListener('click',function(){
+        if(mgAttachState.uploading)return;
+        document.getElementById('mg-attach-input').click();
+    });
+
+    document.getElementById('mg-attach-input').addEventListener('change',function(e){
+        var file=e.target.files&&e.target.files[0];
+        if(!file)return;
+        if(file.size>10*1024*1024){
+            showError('File too large (max 10 MB)');
+            e.target.value='';
+            return;
+        }
+        mgAttachState.uploading=true;
+        var status=document.getElementById('mg-attach-status');
+        status.textContent='Uploading...';
+        var fd=new FormData();
+        fd.append('file',file);
+        var headers={};
+        if(window._initData)headers['X-Telegram-Init-Data']=window._initData;
+        fetch(API_BASE+'/api/media/upload',{method:'POST',headers:headers,body:fd}).then(function(r){
+            if(!r.ok)throw new Error('Upload failed ('+r.status+')');
+            return r.json();
+        }).then(function(data){
+            mgAttachState.uploading=false;
+            status.textContent='';
+            showAttachPreview(file,data.path);
+            updateGenerateBtn();
+            if(tg&&tg.HapticFeedback)tg.HapticFeedback.notificationOccurred('success');
+        }).catch(function(err){
+            mgAttachState.uploading=false;
+            status.textContent='';
+            showError('Upload failed: '+err.message);
+            if(tg&&tg.HapticFeedback)tg.HapticFeedback.notificationOccurred('error');
+        });
+        e.target.value='';
+    });
+
     function launchSkill(skill){
         if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('medium');
         if(skill==='media-gen'){showMediaGenConfig();return;}
@@ -2582,7 +2776,7 @@ body{
     }
 
     function renderAllMg(){
-        renderMgType();renderMgModels();renderMgAspect();renderMgResolution();renderMgDuration();renderMgOptions();updateGenerateBtn();
+        renderMgType();renderMgModels();renderMgAspect();renderMgResolution();renderMgDuration();renderMgOptions();renderMgAttach();updateGenerateBtn();
     }
 
     function showMediaGenConfig(){
@@ -2622,6 +2816,12 @@ body{
     function hideMediaGenConfig(){
         document.getElementById('launch-main').style.display='block';
         document.getElementById('media-gen-config').style.display='none';
+        mgAttachState.path=null;
+        mgAttachState.uploading=false;
+        document.getElementById('mg-attach-preview').style.display='none';
+        document.getElementById('mg-attach-preview').innerHTML='';
+        document.getElementById('mg-attach-text').innerHTML='Tap to attach an image';
+        document.getElementById('mg-attach-status').textContent='';
         if(tg&&tg.HapticFeedback)tg.HapticFeedback.selectionChanged();
     }
 
@@ -2846,7 +3046,8 @@ body{
     function updateGenerateBtn(){
         var btn=document.getElementById('mg-generate');
         var prompt=document.getElementById('mg-prompt').value.trim();
-        btn.disabled=!prompt;
+        var needsAttach=(MODEL_INPUTS[mgState.model]==='required')&&!mgAttachState.path;
+        btn.disabled=!prompt||needsAttach;
     }
 
     document.getElementById('mg-back').addEventListener('click',hideMediaGenConfig);
@@ -2866,6 +3067,9 @@ body{
         if(mgState.type==='video'){
             var dur=MODEL_DURATIONS[mgState.model];
             if(dur)config.duration=mgState.duration;
+        }
+        if(mgAttachState.path){
+            config.ref_image=mgAttachState.path;
         }
         if(Object.keys(mgExtraState).length){
             config.extra_params=mgExtraState;

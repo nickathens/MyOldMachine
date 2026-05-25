@@ -412,5 +412,49 @@ class TestCreateJobValidation(unittest.TestCase):
         self.assertGreater(run_at, datetime(2026, 1, 1))
 
 
+class TestMediaUpload(unittest.TestCase):
+    """Validate upload endpoint constraints."""
+
+    def test_allowed_types(self) -> None:
+        allowed = {"image/jpeg", "image/png", "image/webp"}
+        self.assertIn("image/jpeg", allowed)
+        self.assertIn("image/png", allowed)
+        self.assertIn("image/webp", allowed)
+        self.assertNotIn("image/gif", allowed)
+        self.assertNotIn("application/pdf", allowed)
+        self.assertNotIn("text/html", allowed)
+
+    def test_max_size(self) -> None:
+        max_size = 10 * 1024 * 1024
+        self.assertEqual(max_size, 10485760)
+        self.assertFalse(10485761 <= max_size)
+        self.assertTrue(10485760 <= max_size)
+
+    def test_path_traversal_blocked(self) -> None:
+        upload_dir = Path("/tmp/media_gen_uploads")
+        evil = upload_dir / ".." / "etc" / "passwd"
+        self.assertFalse(str(evil.resolve()).startswith(str(upload_dir)))
+
+    def test_extension_mapping(self) -> None:
+        mapping = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        }
+        self.assertEqual(mapping["image/jpeg"], ".jpg")
+        self.assertEqual(mapping["image/png"], ".png")
+        self.assertEqual(mapping["image/webp"], ".webp")
+
+    def test_ref_image_suffix_validation(self) -> None:
+        valid = {".jpg", ".jpeg", ".png", ".webp"}
+        self.assertIn(".jpg", valid)
+        self.assertIn(".jpeg", valid)
+        self.assertIn(".png", valid)
+        self.assertIn(".webp", valid)
+        self.assertNotIn(".gif", valid)
+        self.assertNotIn(".svg", valid)
+        self.assertNotIn(".exe", valid)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -832,6 +832,45 @@ async def media_balance(user: dict = Depends(_get_user)):
     raise HTTPException(status_code=500, detail="Could not fetch balance")
 
 
+# ─── /api/media/upload ──────────────────────────────────────────────
+
+UPLOAD_DIR = Path("/tmp/media_gen_uploads")
+UPLOAD_MAX_SIZE = 10 * 1024 * 1024
+UPLOAD_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+
+@app.post("/api/media/upload")
+async def media_upload(request: Request, user: dict = Depends(_get_user)):
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    if hasattr(file, "content_type") and file.content_type not in UPLOAD_ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, and WebP images allowed")
+
+    contents = await file.read()
+    if len(contents) > UPLOAD_MAX_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+
+    UPLOAD_DIR.mkdir(exist_ok=True)
+    ext = ".jpg"
+    if hasattr(file, "content_type"):
+        if file.content_type == "image/png":
+            ext = ".png"
+        elif file.content_type == "image/webp":
+            ext = ".webp"
+
+    user_id = user["_id"]
+    filename = f"{user_id}_{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
+    filepath = UPLOAD_DIR / filename
+    if not str(filepath).startswith(str(UPLOAD_DIR)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    filepath.write_bytes(contents)
+    log.info("Upload: user=%s file=%s size=%d", user_id, filename, len(contents))
+    return {"path": str(filepath), "filename": filename, "size": len(contents)}
+
+
 # ─── /api/launch ─────────────────────────────────────────────────────
 
 LAUNCH_ACTIONS = {
@@ -937,6 +976,14 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
 
+        ref_image = mg.get("ref_image", "")
+        if ref_image:
+            ref_path = Path(ref_image)
+            if not ref_path.exists() or not str(ref_path).startswith(str(UPLOAD_DIR)):
+                raise HTTPException(status_code=400, detail="Invalid reference image")
+            if ref_path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+                raise HTTPException(status_code=400, detail="Invalid image format")
+
         extra_params = mg.get("extra_params", {})
         if extra_params and not isinstance(extra_params, dict):
             extra_params = {}
@@ -974,6 +1021,8 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
             lines.append(f"Resolution: {resolution}")
         if mg_type == "video" and duration:
             lines.append(f"Duration: {duration}s")
+        if ref_image:
+            lines.append("Reference image: attached")
         for k, v in safe_extra.items():
             lines.append(f"{k.replace('_', ' ').title()}: {v}")
         if cost_info:
@@ -983,6 +1032,8 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         _send_bot_message(user_id, "\n".join(lines))
 
         mg["extra_params"] = safe_extra
+        if ref_image:
+            mg["ref_image"] = str(ref_image)
         pending = Path(f"/tmp/media_gen_pending_{user_id}.json")
         pending.write_text(json.dumps(mg))
 
