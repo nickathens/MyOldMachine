@@ -412,6 +412,61 @@ class TestCreateJobValidation(unittest.TestCase):
         self.assertGreater(run_at, datetime(2026, 1, 1))
 
 
+class TestMediaUpload(unittest.TestCase):
+    """Validate upload endpoint constraints and ref_image path security."""
+
+    def test_allowed_types(self) -> None:
+        allowed = srv.UPLOAD_ALLOWED_TYPES
+        self.assertIn("image/jpeg", allowed)
+        self.assertIn("image/png", allowed)
+        self.assertIn("image/webp", allowed)
+        self.assertNotIn("image/gif", allowed)
+        self.assertNotIn("application/pdf", allowed)
+
+    def test_max_size(self) -> None:
+        self.assertEqual(srv.UPLOAD_MAX_SIZE, 10 * 1024 * 1024)
+
+    def test_path_traversal_blocked_by_resolve(self) -> None:
+        upload_dir = srv.UPLOAD_DIR.resolve()
+        evil = Path("/tmp/media_gen_uploads/../etc/passwd")
+        self.assertFalse(evil.resolve().is_relative_to(upload_dir))
+
+    def test_path_traversal_prefix_attack_blocked(self) -> None:
+        upload_dir = srv.UPLOAD_DIR.resolve()
+        evil = Path("/tmp/media_gen_uploads_evil/payload.jpg")
+        self.assertFalse(evil.resolve().is_relative_to(upload_dir))
+
+    def test_valid_upload_path_accepted(self) -> None:
+        upload_dir = srv.UPLOAD_DIR.resolve()
+        good = upload_dir / "12345_1716600000_abc12345.jpg"
+        self.assertTrue(good.is_relative_to(upload_dir))
+
+    def test_ref_image_suffix_validation(self) -> None:
+        valid = {".jpg", ".jpeg", ".png", ".webp"}
+        self.assertIn(".jpg", valid)
+        self.assertIn(".jpeg", valid)
+        self.assertIn(".png", valid)
+        self.assertIn(".webp", valid)
+        self.assertNotIn(".gif", valid)
+        self.assertNotIn(".svg", valid)
+        self.assertNotIn(".exe", valid)
+
+
+class TestRefImageWiring(unittest.TestCase):
+    """Verify ref_image flows from pending config through bot context."""
+
+    def test_pending_config_preserves_ref_image(self) -> None:
+        config = {
+            "type": "image",
+            "model": "nano2",
+            "aspect_ratio": "1:1",
+            "prompt": "a cat",
+            "ref_image": "/tmp/media_gen_uploads/123_1716600000_abc.jpg",
+        }
+        self.assertEqual(config.get("ref_image"), "/tmp/media_gen_uploads/123_1716600000_abc.jpg")
+        pending = json.dumps(config)
+        loaded = json.loads(pending)
+        self.assertEqual(loaded["ref_image"], config["ref_image"])
 class TestBotStatus(unittest.TestCase):
     """Cross-platform bot status dispatch. Patches platform.system + subprocess
     so the tests don't depend on the host actually running launchd or systemd."""

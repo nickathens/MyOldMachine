@@ -3073,6 +3073,7 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
             mg_duration = mg.get("duration")
             mg_prompt = mg.get("prompt", "")
             mg_extra = mg.get("extra_params", {})
+            mg_ref = mg.get("ref_image", "")
 
             _MODEL_GUIDES = {
                 "nano": "nano-banana.md", "nano2": "nano-banana.md", "nano-pro": "nano-banana.md",
@@ -3110,6 +3111,8 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                 for ek, ev in mg_extra.items():
                     mg_context += f"{ek}: {ev}\n"
 
+            if mg_ref:
+                mg_context += f"Reference image: {mg_ref}\n"
             mg_context += (
                 f"Prompt: {mg_prompt}\n\n"
                 f"MANDATORY: Read the prompt guide at {guide_path} before refining.\n"
@@ -3126,6 +3129,8 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                     mg_context += f" --duration {mg_duration}"
             if mg_extra:
                 mg_context += f" --extra '{json.dumps(mg_extra)}'"
+            if mg_ref:
+                mg_context += f' -r "{mg_ref}"'
             mg_context += (
                 f"\n\nPresent: original prompt, refined prompt for this specific model, estimated cost, and credits remaining. "
                 f"Ask the user to approve before generating. Do NOT generate without explicit approval. "

@@ -83,7 +83,7 @@ def _install_python_deps(repo_dir: Path) -> bool:
     info("Installing fastapi + uvicorn into venv...")
     try:
         result = subprocess.run(
-            [str(venv_pip), "install", "fastapi>=0.110", "uvicorn[standard]>=0.27"],
+            [str(venv_pip), "install", "fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.6"],
             capture_output=True, text=True, timeout=300,
         )
     except subprocess.TimeoutExpired:
