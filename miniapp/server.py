@@ -864,8 +864,6 @@ async def media_upload(request: Request, user: dict = Depends(_get_user)):
     user_id = user["_id"]
     filename = f"{user_id}_{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
     filepath = UPLOAD_DIR / filename
-    if not str(filepath).startswith(str(UPLOAD_DIR)):
-        raise HTTPException(status_code=400, detail="Invalid filename")
     filepath.write_bytes(contents)
     log.info("Upload: user=%s file=%s size=%d", user_id, filename, len(contents))
     return {"path": str(filepath), "filename": filename, "size": len(contents)}
@@ -979,7 +977,7 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         ref_image = mg.get("ref_image", "")
         if ref_image:
             ref_path = Path(ref_image)
-            if not ref_path.exists() or not str(ref_path).startswith(str(UPLOAD_DIR)):
+            if not ref_path.exists() or not ref_path.resolve().is_relative_to(UPLOAD_DIR.resolve()):
                 raise HTTPException(status_code=400, detail="Invalid reference image")
             if ref_path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
                 raise HTTPException(status_code=400, detail="Invalid image format")

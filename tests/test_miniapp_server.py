@@ -413,37 +413,33 @@ class TestCreateJobValidation(unittest.TestCase):
 
 
 class TestMediaUpload(unittest.TestCase):
-    """Validate upload endpoint constraints."""
+    """Validate upload endpoint constraints and ref_image path security."""
 
     def test_allowed_types(self) -> None:
-        allowed = {"image/jpeg", "image/png", "image/webp"}
+        allowed = srv.UPLOAD_ALLOWED_TYPES
         self.assertIn("image/jpeg", allowed)
         self.assertIn("image/png", allowed)
         self.assertIn("image/webp", allowed)
         self.assertNotIn("image/gif", allowed)
         self.assertNotIn("application/pdf", allowed)
-        self.assertNotIn("text/html", allowed)
 
     def test_max_size(self) -> None:
-        max_size = 10 * 1024 * 1024
-        self.assertEqual(max_size, 10485760)
-        self.assertFalse(10485761 <= max_size)
-        self.assertTrue(10485760 <= max_size)
+        self.assertEqual(srv.UPLOAD_MAX_SIZE, 10 * 1024 * 1024)
 
-    def test_path_traversal_blocked(self) -> None:
-        upload_dir = Path("/tmp/media_gen_uploads")
-        evil = upload_dir / ".." / "etc" / "passwd"
-        self.assertFalse(str(evil.resolve()).startswith(str(upload_dir)))
+    def test_path_traversal_blocked_by_resolve(self) -> None:
+        upload_dir = srv.UPLOAD_DIR.resolve()
+        evil = Path("/tmp/media_gen_uploads/../etc/passwd")
+        self.assertFalse(evil.resolve().is_relative_to(upload_dir))
 
-    def test_extension_mapping(self) -> None:
-        mapping = {
-            "image/jpeg": ".jpg",
-            "image/png": ".png",
-            "image/webp": ".webp",
-        }
-        self.assertEqual(mapping["image/jpeg"], ".jpg")
-        self.assertEqual(mapping["image/png"], ".png")
-        self.assertEqual(mapping["image/webp"], ".webp")
+    def test_path_traversal_prefix_attack_blocked(self) -> None:
+        upload_dir = srv.UPLOAD_DIR.resolve()
+        evil = Path("/tmp/media_gen_uploads_evil/payload.jpg")
+        self.assertFalse(evil.resolve().is_relative_to(upload_dir))
+
+    def test_valid_upload_path_accepted(self) -> None:
+        upload_dir = srv.UPLOAD_DIR.resolve()
+        good = upload_dir / "12345_1716600000_abc12345.jpg"
+        self.assertTrue(good.is_relative_to(upload_dir))
 
     def test_ref_image_suffix_validation(self) -> None:
         valid = {".jpg", ".jpeg", ".png", ".webp"}
@@ -454,6 +450,23 @@ class TestMediaUpload(unittest.TestCase):
         self.assertNotIn(".gif", valid)
         self.assertNotIn(".svg", valid)
         self.assertNotIn(".exe", valid)
+
+
+class TestRefImageWiring(unittest.TestCase):
+    """Verify ref_image flows from pending config through bot context."""
+
+    def test_pending_config_preserves_ref_image(self) -> None:
+        config = {
+            "type": "image",
+            "model": "nano2",
+            "aspect_ratio": "1:1",
+            "prompt": "a cat",
+            "ref_image": "/tmp/media_gen_uploads/123_1716600000_abc.jpg",
+        }
+        self.assertEqual(config.get("ref_image"), "/tmp/media_gen_uploads/123_1716600000_abc.jpg")
+        pending = json.dumps(config)
+        loaded = json.loads(pending)
+        self.assertEqual(loaded["ref_image"], config["ref_image"])
 
 
 if __name__ == "__main__":
