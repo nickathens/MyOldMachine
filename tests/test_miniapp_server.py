@@ -467,6 +467,127 @@ class TestRefImageWiring(unittest.TestCase):
         pending = json.dumps(config)
         loaded = json.loads(pending)
         self.assertEqual(loaded["ref_image"], config["ref_image"])
+class TestBotStatus(unittest.TestCase):
+    """Cross-platform bot status dispatch. Patches platform.system + subprocess
+    so the tests don't depend on the host actually running launchd or systemd."""
+
+    def setUp(self) -> None:
+        import platform as _platform
+        import subprocess as _subprocess
+        self._platform = _platform
+        self._subprocess = _subprocess
+        self._saved_system = _platform.system
+        self._saved_run = _subprocess.run
+
+    def tearDown(self) -> None:
+        self._platform.system = self._saved_system
+        self._subprocess.run = self._saved_run
+
+    def _patch_run(self, handler) -> None:
+        self._subprocess.run = handler  # type: ignore[assignment]
+
+    def test_macos_running_launchagent_reports_active(self) -> None:
+        self._platform.system = lambda: "Darwin"  # type: ignore[assignment]
+        launchctl_out = (
+            "gui/501/com.myoldmachine.bot = {\n"
+            "\tactive count = 1\n"
+            "\tstate = running\n"
+            "\tpid = 4242\n"
+            "\tsub = {\n"
+            "\t\tstate = active\n"
+            "\t}\n"
+            "}\n"
+        )
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = R()
+            if cmd[0] == "launchctl":
+                r.stdout = launchctl_out
+            elif cmd[0] == "ps":
+                # etime 1-02:03:04 -> 1 day, 2h, 3m, 4s -> 93784 seconds
+                # rss 102400 KB -> 100 MB
+                r.stdout = "1-02:03:04 102400\n"
+            return r
+
+        self._patch_run(fake_run)
+        status = srv._bot_status()
+        self.assertTrue(status["active"])
+        self.assertEqual(status["pid"], 4242)
+        self.assertEqual(status["uptime_seconds"], 93784)
+        self.assertEqual(status["memory_mb"], 100)
+        self.assertTrue(status["supported"])
+        self.assertEqual(status["service"], srv.BOT_LAUNCHD_LABEL)
+
+    def test_macos_no_launchagent_falls_back_to_pgrep(self) -> None:
+        self._platform.system = lambda: "Darwin"  # type: ignore[assignment]
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = R()
+            if cmd[0] == "launchctl":
+                r.returncode = 1  # not registered
+            elif cmd[0] == "pgrep":
+                r.stdout = "9999\n"
+            elif cmd[0] == "ps":
+                r.stdout = "05:30 51200\n"  # 5m30s, 50 MB
+            return r
+
+        self._patch_run(fake_run)
+        status = srv._bot_status()
+        self.assertTrue(status["active"])
+        self.assertEqual(status["pid"], 9999)
+        self.assertEqual(status["uptime_seconds"], 330)
+        self.assertEqual(status["memory_mb"], 50)
+        self.assertTrue(status["supported"])
+
+    def test_macos_nothing_running_returns_inactive_supported(self) -> None:
+        self._platform.system = lambda: "Darwin"  # type: ignore[assignment]
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 1
+                stdout = ""
+                stderr = ""
+            return R()
+
+        self._patch_run(fake_run)
+        status = srv._bot_status()
+        self.assertFalse(status["active"])
+        self.assertTrue(status["supported"])  # mac IS supported
+        self.assertIsNone(status["pid"])
+
+    def test_linux_path_uses_systemctl(self) -> None:
+        self._platform.system = lambda: "Linux"  # type: ignore[assignment]
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = R()
+            if cmd[:2] == ["systemctl", "is-active"]:
+                r.stdout = "active\n"
+            elif cmd[:2] == ["systemctl", "show"]:
+                r.stdout = (
+                    "MainPID=1234\n"
+                    "ActiveEnterTimestampMonotonic=0\n"
+                    "MemoryCurrent=104857600\n"
+                )
+            return r
+
+        self._patch_run(fake_run)
+        status = srv._bot_status()
+        self.assertTrue(status["active"])
+        self.assertEqual(status["pid"], 1234)
+        self.assertEqual(status["memory_mb"], 100)
+        self.assertEqual(status["service"], srv.BOT_SERVICE)
 
 
 if __name__ == "__main__":
