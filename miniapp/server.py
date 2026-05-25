@@ -17,6 +17,7 @@ import importlib.util
 import json
 import logging
 import os
+import platform
 import re
 import sqlite3
 import subprocess
@@ -71,8 +72,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 GENERATE_SCRIPT = SKILLS_DIR / "image-gen" / "scripts" / "generate.py"
 
 # Service name used for status queries. Override with MINIAPP_BOT_SERVICE if
-# the bot was installed under a different unit name.
+# the bot was installed under a different unit name. On Linux this is the
+# systemd unit name; on macOS the LaunchAgent uses a separate label below.
 BOT_SERVICE = os.getenv("MINIAPP_BOT_SERVICE", "myoldmachine")
+
+# macOS LaunchAgent label installed by install/service.py. Override with
+# MINIAPP_BOT_LAUNCHD_LABEL if a different label was used.
+BOT_LAUNCHD_LABEL = os.getenv("MINIAPP_BOT_LAUNCHD_LABEL", "com.myoldmachine.bot")
 
 # Telegram local Bot API base URL (defaults to the public bot API).
 # Set TELEGRAM_API_BASE in .env to point at a local server (e.g. http://localhost:8081).
@@ -278,9 +284,52 @@ def _provider_supports_effort(provider: str) -> bool:
     return provider in EFFORT_PROVIDERS
 
 
-def _bot_status() -> dict:
-    """Read the bot's systemd unit state. Linux-only; macOS/Windows return
-    a degraded status (active=False) which the UI displays as a hint."""
+def _unsupported_bot_status(service: str) -> dict:
+    return {"active": False, "pid": None, "uptime_seconds": None,
+            "memory_mb": None, "service": service, "supported": False}
+
+
+def _ps_pid_stats(pid: int) -> tuple[int | None, int | None]:
+    """Return (uptime_seconds, memory_mb) for a running PID via ps. Both
+    fields may be None if ps fails or the PID has already exited."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "etime=,rss=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None, None
+    parts = result.stdout.strip().split()
+    if len(parts) < 2:
+        return None, None
+    etime_str, rss_str = parts[0], parts[1]
+    # etime format: [[DD-]HH:]MM:SS
+    uptime: int | None
+    try:
+        days = 0
+        if "-" in etime_str:
+            d, etime_str = etime_str.split("-", 1)
+            days = int(d)
+        segments = [int(x) for x in etime_str.split(":")]
+        if len(segments) == 3:
+            h, m, s = segments
+        elif len(segments) == 2:
+            h, m, s = 0, segments[0], segments[1]
+        else:
+            h, m, s = 0, 0, segments[0]
+        uptime = days * 86400 + h * 3600 + m * 60 + s
+    except (ValueError, IndexError):
+        uptime = None
+    try:
+        memory_mb: int | None = round(int(rss_str) / 1024)
+    except ValueError:
+        memory_mb = None
+    return uptime, memory_mb
+
+
+def _bot_status_linux() -> dict:
+    """Read systemd unit state. Returns supported=False if systemctl is
+    missing or the unit isn't registered."""
     active = False
     pid: int | None = None
     uptime_seconds: int | None = None
@@ -293,8 +342,7 @@ def _bot_status() -> dict:
         )
         active = result.stdout.strip() == "active"
     except (FileNotFoundError, subprocess.SubprocessError):
-        return {"active": False, "pid": None, "uptime_seconds": None,
-                "memory_mb": None, "service": BOT_SERVICE, "supported": False}
+        return _unsupported_bot_status(BOT_SERVICE)
 
     if active:
         try:
@@ -339,6 +387,111 @@ def _bot_status() -> dict:
         "service": BOT_SERVICE,
         "supported": True,
     }
+
+
+def _bot_status_macos() -> dict:
+    """Read launchd state for the bot's LaunchAgent. Falls through to a
+    process-table scan if the agent isn't registered (e.g. when running the
+    bot manually from a terminal)."""
+    label = BOT_LAUNCHD_LABEL
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return _bot_status_macos_fallback(label)
+
+    if result.returncode != 0:
+        return _bot_status_macos_fallback(label)
+
+    # `launchctl print` returns the LaunchAgent block followed by nested
+    # entries (spawn settings, domain entries) which also contain "state ="
+    # and other keys. We only want the top-level fields, which are indented
+    # with a single leading tab. Anything more indented is a nested entry.
+    pid: int | None = None
+    state: str = ""
+    for raw in result.stdout.splitlines():
+        if not raw.startswith("\t") or raw.startswith("\t\t"):
+            continue
+        line = raw.strip()
+        if not state and line.startswith("state ="):
+            state = line.split("=", 1)[1].strip()
+        elif pid is None and line.startswith("pid ="):
+            try:
+                pid = int(line.split("=", 1)[1].strip()) or None
+            except ValueError:
+                pid = None
+
+    active = state == "running" and pid is not None
+    uptime_seconds: int | None = None
+    memory_mb: int | None = None
+    if active and pid is not None:
+        uptime_seconds, memory_mb = _ps_pid_stats(pid)
+
+    return {
+        "active": active,
+        "pid": pid,
+        "uptime_seconds": uptime_seconds,
+        "memory_mb": memory_mb,
+        "service": label,
+        "supported": True,
+    }
+
+
+def _bot_status_macos_fallback(label: str) -> dict:
+    """If the LaunchAgent isn't registered, look for a running bot.py
+    process owned by the current user. Lets the dot turn green when the bot
+    is run manually (e.g. during development)."""
+    bot_py = str(BOT_DIR / "bot.py")
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", bot_py],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return _unsupported_bot_status(label)
+
+    for token in result.stdout.split():
+        try:
+            pid = int(token)
+        except ValueError:
+            continue
+        if pid <= 0:
+            continue
+        uptime_seconds, memory_mb = _ps_pid_stats(pid)
+        if uptime_seconds is None and memory_mb is None:
+            continue
+        return {
+            "active": True,
+            "pid": pid,
+            "uptime_seconds": uptime_seconds,
+            "memory_mb": memory_mb,
+            "service": label,
+            "supported": True,
+        }
+
+    return {
+        "active": False,
+        "pid": None,
+        "uptime_seconds": None,
+        "memory_mb": None,
+        "service": label,
+        "supported": True,
+    }
+
+
+def _bot_status() -> dict:
+    """Read the bot's service state. Dispatches by OS:
+      - macOS:  launchd LaunchAgent (with a pgrep fallback for manual runs)
+      - Linux:  systemd unit
+      - other:  degraded status (supported=False) which the UI displays as a hint"""
+    system = platform.system()
+    if system == "Darwin":
+        return _bot_status_macos()
+    if system == "Linux":
+        return _bot_status_linux()
+    return _unsupported_bot_status(BOT_SERVICE)
 
 
 # ─── /api/status, /api/providers, /api/model, /api/effort ────────────
