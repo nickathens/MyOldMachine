@@ -245,6 +245,23 @@ class TestModelRatios(unittest.TestCase):
                 self.assertIn(r, srv._ALL_RATIOS, msg=f"{model} has invalid ratio {r}")
 
 
+class TestClaudeModelCatalog(unittest.TestCase):
+    """Opus 4.8 port: selectable for claude/claude-api, default unchanged."""
+
+    def test_opus_4_8_selectable_for_claude(self) -> None:
+        ids = {m["id"] for m in srv._available_models("claude")}
+        self.assertIn("claude-opus-4-8", ids)
+
+    def test_opus_4_8_selectable_for_claude_api(self) -> None:
+        ids = {m["id"] for m in srv._available_models("claude-api")}
+        self.assertIn("claude-opus-4-8", ids)
+
+    def test_default_stays_sonnet_4_6(self) -> None:
+        # Adding Opus 4.8 must not hijack the recommended/default model.
+        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude"), "claude-sonnet-4-6")
+        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude-api"), "claude-sonnet-4-6")
+
+
 class TestPendingMediaGenTTL(unittest.TestCase):
     """Issue #2: pending config should expire after 10 minutes."""
 
