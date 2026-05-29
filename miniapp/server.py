@@ -26,6 +26,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -1017,11 +1018,34 @@ async def media_balance(user: dict = Depends(_get_user)):
 
 UPLOAD_DIR = Path("/tmp/media_gen_uploads")
 UPLOAD_MAX_SIZE = 10 * 1024 * 1024
+# Coarse early-out cap for the declared Content-Length. The multipart envelope
+# (field names, boundaries) adds a few hundred bytes over the raw file, so we
+# leave 1 MB of slack and rely on the exact bounded read below as the real cap.
+UPLOAD_REQUEST_MAX_SIZE = UPLOAD_MAX_SIZE + 1024 * 1024
 UPLOAD_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+
+def _reject_oversized_upload(content_length: Optional[str]) -> None:
+    """413 before parsing the body if the declared size is clearly too large.
+
+    Browsers always send Content-Length for multipart uploads, so this lets us
+    reject before Starlette spools the whole request to a temp file. A missing
+    or malformed header is not trusted to be safe; the bounded read in
+    media_upload() still caps what we pull into memory.
+    """
+    if not content_length:
+        return
+    try:
+        declared = int(content_length)
+    except (TypeError, ValueError):
+        return
+    if declared > UPLOAD_REQUEST_MAX_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
 
 
 @app.post("/api/media/upload")
 async def media_upload(request: Request, user: dict = Depends(_get_user)):
+    _reject_oversized_upload(request.headers.get("content-length"))
     form = await request.form()
     file = form.get("file")
     if not file:
@@ -1030,9 +1054,9 @@ async def media_upload(request: Request, user: dict = Depends(_get_user)):
     if hasattr(file, "content_type") and file.content_type not in UPLOAD_ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, and WebP images allowed")
 
-    contents = await file.read()
+    contents = await file.read(UPLOAD_MAX_SIZE + 1)
     if len(contents) > UPLOAD_MAX_SIZE:
-        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+        raise HTTPException(status_code=413, detail="File too large (max 10 MB)")
 
     UPLOAD_DIR.mkdir(exist_ok=True)
     ext = ".jpg"
@@ -1160,6 +1184,11 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
             ref_path = Path(ref_image)
             if not ref_path.exists() or not ref_path.resolve().is_relative_to(UPLOAD_DIR.resolve()):
                 raise HTTPException(status_code=400, detail="Invalid reference image")
+            # Uploads are named "{user_id}_...", so the prefix scopes a ref
+            # image to its uploader. Without this, any user could reference
+            # another user's uploaded image by guessing the path.
+            if not ref_path.name.startswith(f"{user_id}_"):
+                raise HTTPException(status_code=403, detail="Reference image does not belong to you")
             if ref_path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
                 raise HTTPException(status_code=400, detail="Invalid image format")
 

@@ -426,6 +426,9 @@ def _build_command_env() -> dict:
     - Strips API keys, tokens, and secrets from inherited env
     - Ensures standard paths are present (including Homebrew on macOS)
     - Doesn't leak the bot's Python venv
+    - Threads the per-request user identity (JARVIS_USER_DIR/JARVIS_USER_ID)
+      from the dispatch contextvar, so tools spawned under API providers get
+      the same per-user scoping as the CLI path
     """
     # Start from a filtered copy of the current environment
     env = {}
@@ -475,6 +478,21 @@ def _build_command_env() -> dict:
         path_parts.insert(0, user_local_bin)
 
     env["PATH"] = ":".join(p for p in path_parts if p)
+
+    # Thread the per-request user identity into the subprocess env. The CLI
+    # providers set these explicitly via build_cli_env(extra=...), but the
+    # API-provider tool loop reaches subprocesses only through this helper.
+    # Without this, JARVIS_USER_DIR is unset on the API path and user-scoped
+    # skills silently fall back to the shared bot-root (e.g. Gmail/Calendar
+    # tokens) while session_guard stops enforcing the caller's binding.
+    # The contextvar is set by the bot dispatch layer for every LLM call and
+    # is None for scheduler/MCP/admin contexts, where no per-user scoping
+    # applies, so this is a no-op there.
+    user_dir = get_current_user_dir()
+    if user_dir is not None:
+        env["JARVIS_USER_DIR"] = str(user_dir)
+        env["JARVIS_USER_ID"] = user_dir.name
+
     return env
 
 
@@ -502,7 +520,10 @@ def build_cli_env(
 # 3. SAFETY LAYER
 # ============================================================================
 
-# Commands that should never be executed
+# Catastrophic command patterns blocked outright. This is accident prevention
+# (catching a fat-fingered "rm -rf /" or a model echoing a destructive
+# command), not a containment boundary: a user who can run tools has many
+# ways around a regex blocklist. See the README "Trust model" section.
 BLOCKED_PATTERNS = [
     r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/\s*($|[;&|])",
     r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/\*",

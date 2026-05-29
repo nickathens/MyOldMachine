@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import miniapp.server as srv  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 
 class TestEnvWrites(unittest.TestCase):
@@ -467,6 +468,47 @@ class TestMediaUpload(unittest.TestCase):
         self.assertNotIn(".gif", valid)
         self.assertNotIn(".svg", valid)
         self.assertNotIn(".exe", valid)
+
+    def test_ref_image_scoped_to_uploader(self) -> None:
+        # Uploads are named "{user_id}_...", and /api/launch requires the
+        # ref_image filename to carry the caller's prefix (F3).
+        owner = 12345
+        own_file = f"{owner}_1716600000_abc12345.jpg"
+        self.assertTrue(own_file.startswith(f"{owner}_"))
+        # Another user's upload must not match the caller's prefix.
+        other_file = "98765_1716600000_def67890.jpg"
+        self.assertFalse(other_file.startswith(f"{owner}_"))
+
+    def test_ref_image_prefix_no_collision_across_ids(self) -> None:
+        # The trailing underscore prevents user 12 from matching user 123's
+        # files (and vice versa).
+        self.assertFalse("123_1716600000_a.jpg".startswith("12_"))
+        self.assertFalse("12_1716600000_a.jpg".startswith("123_"))
+
+
+class TestUploadSizeGuard(unittest.TestCase):
+    """_reject_oversized_upload: coarse Content-Length early-out (F2)."""
+
+    def test_request_max_leaves_multipart_slack(self) -> None:
+        self.assertEqual(srv.UPLOAD_REQUEST_MAX_SIZE, srv.UPLOAD_MAX_SIZE + 1024 * 1024)
+
+    def test_missing_header_does_not_raise(self) -> None:
+        srv._reject_oversized_upload(None)
+        srv._reject_oversized_upload("")
+
+    def test_malformed_header_does_not_raise(self) -> None:
+        # Garbage/absent length is not trusted as safe; the bounded read in
+        # media_upload() is the real cap, so the early-out simply abstains.
+        srv._reject_oversized_upload("not-a-number")
+
+    def test_within_cap_does_not_raise(self) -> None:
+        srv._reject_oversized_upload(str(srv.UPLOAD_MAX_SIZE))
+        srv._reject_oversized_upload(str(srv.UPLOAD_REQUEST_MAX_SIZE))
+
+    def test_oversized_raises_413(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            srv._reject_oversized_upload(str(srv.UPLOAD_REQUEST_MAX_SIZE + 1))
+        self.assertEqual(ctx.exception.status_code, 413)
 
 
 class TestRefImageWiring(unittest.TestCase):
