@@ -575,6 +575,34 @@ async def set_effort(request: Request, user: dict = Depends(_get_user)):
     return {"effort": effort_id}
 
 
+# ─── /api/restart ───────────────────────────────────────────────────
+
+VALID_RESTART_TARGETS = ("bot", "miniapp")
+
+
+@app.post("/api/restart")
+async def restart_target(request: Request, user: dict = Depends(_get_user)):
+    """Restart the bot or the Mini App itself. Admin only.
+
+    The restart is scheduled via a detached shell script that sleeps ~3s
+    before unloading and reloading the launchd/systemd unit, so this
+    endpoint returns *before* the target process is killed. For target=
+    "miniapp", that means the response is delivered, then the server dies
+    a few seconds later; clients should poll /health to detect recovery.
+    """
+    _require_admin(user)
+    body = await request.json()
+    target = (body.get("target") or "").strip()
+    if target not in VALID_RESTART_TARGETS:
+        raise HTTPException(status_code=400, detail="Invalid restart target")
+
+    from core.updater import restart_service
+    success, message = restart_service(target)
+    if not success:
+        raise HTTPException(status_code=500, detail=message)
+    return {"target": target, "message": message}
+
+
 # ─── /api/scheduler ─────────────────────────────────────────────────
 
 

@@ -139,29 +139,82 @@ def pull_updates(bot_dir: Path) -> tuple[bool, str]:
     return True, f"Updated: {current} → {new}"
 
 
-def restart_service() -> tuple[bool, str]:
+_SERVICE_TARGETS = {
+    "bot": {
+        "linux_service": "myoldmachine",
+        "macos_plist_name": "com.myoldmachine.bot.plist",
+    },
+    "miniapp": {
+        "linux_service": "myoldmachine-miniapp",
+        "macos_plist_name": "com.myoldmachine.miniapp.plist",
+    },
+}
+
+
+def restart_service(target: str = "bot") -> tuple[bool, str]:
     """
-    Restart the bot service.
-    Returns (success, message).
+    Restart a MyOldMachine service.
+
+    target: "bot" (default, the Telegram bot) or "miniapp" (the dashboard server).
+    Returns (success, message). Success means the restart was *scheduled*; the
+    caller's process may continue running for a few seconds before being killed
+    when the detached launchctl reload / systemctl restart step runs.
     """
-    password = get_sudo_password()
+    spec = _SERVICE_TARGETS.get(target)
+    if spec is None:
+        return False, f"Unknown restart target: {target!r}"
+
     system = platform.system()
 
     if system == "Linux":
         import re as _re
-        service_name = os.environ.get("SERVICE_NAME", "myoldmachine")
+        import tempfile
+        # Allow override via env (used by tests + custom installs). The bot
+        # target additionally honors the legacy SERVICE_NAME env var.
+        env_key = "MOM_MINIAPP_SERVICE" if target == "miniapp" else "SERVICE_NAME"
+        service_name = os.environ.get(env_key, spec["linux_service"])
+        # Validate synchronously, before spawning anything: service_name is
+        # interpolated into the shell script below, so reject anything with
+        # shell-meta characters or whitespace.
         if not _re.fullmatch(r"[a-zA-Z0-9_@.-]+", service_name):
-            return False, f"Invalid SERVICE_NAME: {service_name!r}"
-        cmd = ["sudo", "-S", "systemctl", "restart", service_name] if password else ["sudo", "systemctl", "restart", service_name]
-        stdin_data = (password + "\n") if password else None
-        result = subprocess.run(cmd, input=stdin_data, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return True, "Service restarting..."
-        return False, f"Restart failed: {result.stderr[:200]}"
+            return False, f"Invalid service name: {service_name!r}"
+
+        # Detach the restart into a background script (mirrors the macOS path).
+        # `systemctl restart` of our own unit tears down this process's cgroup,
+        # so a blocking subprocess.run() here gets SIGTERM'd mid-call and never
+        # returns — dropping the HTTP response the Mini App still owes the
+        # client. A detached script that sleeps a beat first lets the response
+        # land, then restarts the unit out from under us. The password is read
+        # from ~/.sudo_pass inside the script (never on argv or in the script
+        # body), matching how the macOS branch handles credentials.
+        sudo_pass_file = Path.home() / ".sudo_pass"
+        if sudo_pass_file.exists():
+            sudo_cmd = f'cat "{sudo_pass_file}" | sudo -S'
+        else:
+            sudo_cmd = 'sudo -n'
+        restart_script = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.sh', delete=False, prefix='mom_restart_'
+        )
+        restart_script.write(
+            f'#!/bin/bash\n'
+            f'sleep 3\n'
+            f'{sudo_cmd} systemctl restart {service_name}\n'
+            f'rm -f "{restart_script.name}"\n'
+        )
+        restart_script.close()
+        os.chmod(restart_script.name, 0o700)
+        subprocess.Popen(
+            [restart_script.name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True, "Service restarting..."
 
     elif system == "Darwin":
-        daemon_plist = Path("/Library/LaunchDaemons/com.myoldmachine.bot.plist")
-        agent_plist = Path.home() / "Library" / "LaunchAgents" / "com.myoldmachine.bot.plist"
+        plist_name = spec["macos_plist_name"]
+        daemon_plist = Path("/Library/LaunchDaemons") / plist_name
+        agent_plist = Path.home() / "Library" / "LaunchAgents" / plist_name
 
         if daemon_plist.exists():
             import tempfile
@@ -214,7 +267,7 @@ def restart_service() -> tuple[bool, str]:
             )
             return True, "Service restarting (LaunchAgent)..."
 
-        return False, "No LaunchDaemon or LaunchAgent plist found"
+        return False, f"No LaunchDaemon or LaunchAgent plist found for {target}"
 
     return False, f"Unsupported OS: {system}"
 

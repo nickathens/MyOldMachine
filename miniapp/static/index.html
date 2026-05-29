@@ -238,6 +238,45 @@ body{
     color:var(--text-dim);
 }
 
+/* Restart buttons */
+.restart-btn{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:3px;
+    padding:14px 8px;
+    border-radius:10px;
+    border:1px solid rgba(220,140,90,0.10);
+    background:linear-gradient(165deg, rgba(40,22,18,0.45) 0%, rgba(22,12,10,0.3) 100%);
+    color:rgba(230,170,130,0.9);
+    font-family:'Montserrat',sans-serif;
+    font-size:12px;
+    font-weight:500;
+    cursor:pointer;
+    transition:all 0.25s ease;
+    letter-spacing:0.01em;
+    -webkit-tap-highlight-color:transparent;
+    backdrop-filter:blur(12px);
+    -webkit-backdrop-filter:blur(12px);
+}
+.restart-btn:active{transform:scale(0.97)}
+.restart-btn:disabled{opacity:0.5;cursor:default}
+.restart-btn-label{font-size:12px;font-weight:600;letter-spacing:0.01em}
+.restart-btn-sub{font-size:9px;font-weight:500;color:rgba(230,170,130,0.5);text-transform:uppercase;letter-spacing:0.1em}
+.restart-status{
+    margin-top:10px;
+    padding:10px 12px;
+    background:rgba(120,180,200,0.05);
+    border:1px solid rgba(120,180,200,0.12);
+    color:rgba(180,200,210,0.85);
+    border-radius:10px;
+    font-size:11px;
+    text-align:center;
+    letter-spacing:0.02em;
+    display:none;
+}
+
 /* Tab Bar */
 .tab-bar{
     position:fixed;
@@ -1430,6 +1469,21 @@ body{
         <div class="section-label">Effort</div>
         <div id="effort-selector" class="option-grid option-grid-4"></div>
     </section>
+
+    <section id="restart-section" class="section" style="display:none">
+        <div class="section-label">Restart</div>
+        <div class="option-grid option-grid-2">
+            <button id="restart-bot-btn" class="restart-btn" type="button">
+                <span class="restart-btn-label">MyOldMachine</span>
+                <span class="restart-btn-sub">Telegram bot</span>
+            </button>
+            <button id="restart-miniapp-btn" class="restart-btn" type="button">
+                <span class="restart-btn-label">Mini App</span>
+                <span class="restart-btn-sub">This dashboard</span>
+            </button>
+        </div>
+        <div id="restart-status" class="restart-status"></div>
+    </section>
 </div>
 </div>
 
@@ -1722,6 +1776,9 @@ body{
             var effortSection=document.getElementById('effort-section');
             effortSection.style.display=data.provider_supports_effort?'block':'none';
 
+            var restartSection=document.getElementById('restart-section');
+            if(restartSection)restartSection.style.display=userRole==='admin'?'block':'none';
+
             if(userRole!=='admin'){
                 document.getElementById('provider-section').style.display='none';
                 document.getElementById('model-section').style.display='none';
@@ -1788,6 +1845,108 @@ body{
             .then(function(){loadStatus();showRestartHint();if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light')})
             .catch(function(e){showError(e.message)});
     }
+
+    // ── Restart ──
+
+    function confirmRestart(label,cb){
+        var msg='Restart '+label+'? It will be unreachable for a few seconds.';
+        if(tg&&typeof tg.showConfirm==='function'){
+            tg.showConfirm(msg,function(ok){if(ok)cb()});
+        }else if(window.confirm(msg)){
+            cb();
+        }
+    }
+
+    function setRestartStatus(text){
+        var el=document.getElementById('restart-status');
+        if(!el)return;
+        if(text){el.textContent=text;el.style.display='block'}
+        else{el.style.display='none';el.textContent=''}
+    }
+
+    function enableRestartButtons(){
+        var botBtn=document.getElementById('restart-bot-btn');
+        var miniBtn=document.getElementById('restart-miniapp-btn');
+        if(botBtn)botBtn.disabled=false;
+        if(miniBtn)miniBtn.disabled=false;
+    }
+
+    function pollMiniappBack(){
+        // After the Mini App restart script kills uvicorn, /health should
+        // start responding again within ~5s. Reload the page so the user
+        // sees the fresh build instead of a stale cached one.
+        var attempts=0;
+        var maxAttempts=30;  // ~30s total
+        var iv=setInterval(function(){
+            attempts++;
+            fetch('/health',{cache:'no-store'}).then(function(r){
+                if(r.ok){clearInterval(iv);window.location.reload()}
+            }).catch(function(){});
+            if(attempts>=maxAttempts){
+                clearInterval(iv);
+                setRestartStatus('Mini App did not come back. Try refreshing.');
+                enableRestartButtons();
+            }
+        },1000);
+    }
+
+    function pollBotBack(){
+        // The bot restart doesn't kill the Mini App, so we just poll status
+        // until bot.active flips back to true (or timeout).
+        var attempts=0;
+        var maxAttempts=20;  // ~20s total
+        var iv=setInterval(function(){
+            attempts++;
+            api('/api/status').then(function(d){
+                if(d.bot&&d.bot.active){
+                    clearInterval(iv);
+                    setRestartStatus('Bot is back online.');
+                    enableRestartButtons();
+                    loadStatus();
+                    setTimeout(function(){setRestartStatus('')},3000);
+                }
+            }).catch(function(){});
+            if(attempts>=maxAttempts){
+                clearInterval(iv);
+                setRestartStatus('Bot did not come back within 20s. Check the logs.');
+                enableRestartButtons();
+            }
+        },1000);
+    }
+
+    function doRestart(target,label){
+        var botBtn=document.getElementById('restart-bot-btn');
+        var miniBtn=document.getElementById('restart-miniapp-btn');
+        if(botBtn)botBtn.disabled=true;
+        if(miniBtn)miniBtn.disabled=true;
+        setRestartStatus('Restarting '+label+'…');
+        if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('medium');
+        api('/api/restart',{method:'POST',body:JSON.stringify({target:target})})
+            .then(function(){
+                if(target==='miniapp'){
+                    setRestartStatus('Mini App restarting. Page will reload when it is back…');
+                    pollMiniappBack();
+                }else{
+                    pollBotBack();
+                }
+            })
+            .catch(function(e){
+                enableRestartButtons();
+                setRestartStatus('');
+                showError(e.message);
+            });
+    }
+
+    (function wireRestartButtons(){
+        var b=document.getElementById('restart-bot-btn');
+        var m=document.getElementById('restart-miniapp-btn');
+        if(b)b.addEventListener('click',function(){
+            confirmRestart('the MyOldMachine bot',function(){doRestart('bot','the bot')});
+        });
+        if(m)m.addEventListener('click',function(){
+            confirmRestart('the Mini App',function(){doRestart('miniapp','the Mini App')});
+        });
+    })();
 
     // ── Calendar View ──
 
