@@ -69,6 +69,30 @@ class BuildCommandEnvTests(unittest.TestCase):
             self.assertNotIn("VIRTUAL_ENV", env)
 
 
+class BuildCommandEnvUserIdentityTests(unittest.TestCase):
+    """_build_command_env threads per-request user identity from the contextvar (F4)."""
+
+    def test_no_user_context_omits_identity(self):
+        # Outside a dispatch (scheduler/MCP/admin), the contextvar is None and
+        # no per-user identity should be injected.
+        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
+            self.assertIsNone(tools.get_current_user_dir())
+            env = tools._build_command_env()
+            self.assertNotIn("JARVIS_USER_DIR", env)
+            self.assertNotIn("JARVIS_USER_ID", env)
+
+    def test_user_context_sets_identity(self):
+        token = tools.set_current_user_dir(Path("/srv/mom/data/users/12345"))
+        try:
+            with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
+                env = tools._build_command_env()
+                self.assertEqual(env["JARVIS_USER_DIR"], "/srv/mom/data/users/12345")
+                self.assertEqual(env["JARVIS_USER_ID"], "12345")
+        finally:
+            tools.reset_current_user_dir(token)
+        self.assertIsNone(tools.get_current_user_dir())
+
+
 class BuildCliEnvTests(unittest.TestCase):
     """build_cli_env layers provider keys on top of the standard sanitized env."""
 

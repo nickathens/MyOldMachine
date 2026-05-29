@@ -440,7 +440,7 @@ The system adapts to the model running it:
 
 ### Multi-user
 
-Each Telegram user gets their own person model, observations, and memory directory. A family sharing one machine gets individual contexts. Privacy note: all data lives as files on disk, readable by anyone with SSH access.
+Each Telegram user gets their own person model, observations, and memory directory. A family sharing one machine gets individual contexts. Privacy note: this is organizational scoping, not a security boundary. All data lives as files on disk, and any allowlisted user who can run tools (or anyone with SSH access) can read it. See [Trust model](#trust-model).
 
 ### What gets remembered
 
@@ -553,6 +553,20 @@ Built-in suites test: tool-use compliance (structured calls vs code blocks), saf
 Custom tests use YAML with assertion types: `contains`, `not_contains`, `matches`, `not_matches`, `min_length`, `max_length`, `tool_call`, `no_tool_call`. See `tests/eval_config.yaml.example`.
 
 ## Security
+
+### Trust model
+
+Allowlisting a Telegram user grants them the ability to run commands on this machine as the OS user the bot runs as. That includes reading and writing files, installing packages, and using any tool the active provider exposes. Tool-capable providers such as the Claude CLI run without interactive permission prompts. This is what makes the bot useful, and it is also the boundary you are trusting.
+
+Roles are not a capability sandbox. The `admin` role gates global bot configuration (switching provider, model, effort) and cross-user views in the Mini App. It does **not** restrict which shell commands a non-admin allowlisted user can run. Per-user data directories (`data/users/<id>/`) provide organizational and privacy scoping, not an enforced boundary. A user who can run tools can reach another user's directory, the `.env` file, and any secret readable by the bot's OS user.
+
+Practical guidance:
+
+- Only allowlist people you would trust with a shell on this machine.
+- For users who should not trust each other, run a separate install under a separate OS user account (see [Multi-user](#multi-user)) so the operating system enforces isolation.
+- Keep anything the bot must never expose out of the bot's environment and home directory.
+
+The measures below are hardening, not a containment boundary:
 
 - Bot runs as your user (not root)
 - API keys and tokens stripped from the execution environment
