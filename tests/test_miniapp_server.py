@@ -607,5 +607,21 @@ class TestBotStatus(unittest.TestCase):
         self.assertEqual(status["service"], srv.BOT_SERVICE)
 
 
+class TestRestartTargets(unittest.TestCase):
+    """The /api/restart endpoint accepts only the two whitelisted targets
+    and must stay in sync with core.updater's dispatch table."""
+
+    def test_whitelist_matches_updater_table(self) -> None:
+        from core import updater
+        self.assertEqual(
+            set(srv.VALID_RESTART_TARGETS),
+            set(updater._SERVICE_TARGETS.keys()),
+        )
+
+    def test_whitelist_contains_bot_and_miniapp(self) -> None:
+        self.assertIn("bot", srv.VALID_RESTART_TARGETS)
+        self.assertIn("miniapp", srv.VALID_RESTART_TARGETS)
+
+
 if __name__ == "__main__":
     unittest.main()
