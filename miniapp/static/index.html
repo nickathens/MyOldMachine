@@ -1864,6 +1864,13 @@ body{
         else{el.style.display='none';el.textContent=''}
     }
 
+    function enableRestartButtons(){
+        var botBtn=document.getElementById('restart-bot-btn');
+        var miniBtn=document.getElementById('restart-miniapp-btn');
+        if(botBtn)botBtn.disabled=false;
+        if(miniBtn)miniBtn.disabled=false;
+    }
+
     function pollMiniappBack(){
         // After the Mini App restart script kills uvicorn, /health should
         // start responding again within ~5s. Reload the page so the user
@@ -1878,6 +1885,7 @@ body{
             if(attempts>=maxAttempts){
                 clearInterval(iv);
                 setRestartStatus('Mini App did not come back. Try refreshing.');
+                enableRestartButtons();
             }
         },1000);
     }
@@ -1893,6 +1901,7 @@ body{
                 if(d.bot&&d.bot.active){
                     clearInterval(iv);
                     setRestartStatus('Bot is back online.');
+                    enableRestartButtons();
                     loadStatus();
                     setTimeout(function(){setRestartStatus('')},3000);
                 }
@@ -1900,6 +1909,7 @@ body{
             if(attempts>=maxAttempts){
                 clearInterval(iv);
                 setRestartStatus('Bot did not come back within 20s. Check the logs.');
+                enableRestartButtons();
             }
         },1000);
     }
@@ -1921,8 +1931,7 @@ body{
                 }
             })
             .catch(function(e){
-                if(botBtn)botBtn.disabled=false;
-                if(miniBtn)miniBtn.disabled=false;
+                enableRestartButtons();
                 setRestartStatus('');
                 showError(e.message);
             });

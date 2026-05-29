@@ -158,29 +158,58 @@ def restart_service(target: str = "bot") -> tuple[bool, str]:
     target: "bot" (default, the Telegram bot) or "miniapp" (the dashboard server).
     Returns (success, message). Success means the restart was *scheduled*; the
     caller's process may continue running for a few seconds before being killed
-    when the launchd/systemd unload step runs.
+    when the detached launchctl reload / systemctl restart step runs.
     """
     spec = _SERVICE_TARGETS.get(target)
     if spec is None:
         return False, f"Unknown restart target: {target!r}"
 
-    password = get_sudo_password()
     system = platform.system()
 
     if system == "Linux":
         import re as _re
+        import tempfile
         # Allow override via env (used by tests + custom installs). The bot
         # target additionally honors the legacy SERVICE_NAME env var.
         env_key = "MOM_MINIAPP_SERVICE" if target == "miniapp" else "SERVICE_NAME"
         service_name = os.environ.get(env_key, spec["linux_service"])
+        # Validate synchronously, before spawning anything: service_name is
+        # interpolated into the shell script below, so reject anything with
+        # shell-meta characters or whitespace.
         if not _re.fullmatch(r"[a-zA-Z0-9_@.-]+", service_name):
             return False, f"Invalid service name: {service_name!r}"
-        cmd = ["sudo", "-S", "systemctl", "restart", service_name] if password else ["sudo", "systemctl", "restart", service_name]
-        stdin_data = (password + "\n") if password else None
-        result = subprocess.run(cmd, input=stdin_data, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return True, "Service restarting..."
-        return False, f"Restart failed: {result.stderr[:200]}"
+
+        # Detach the restart into a background script (mirrors the macOS path).
+        # `systemctl restart` of our own unit tears down this process's cgroup,
+        # so a blocking subprocess.run() here gets SIGTERM'd mid-call and never
+        # returns — dropping the HTTP response the Mini App still owes the
+        # client. A detached script that sleeps a beat first lets the response
+        # land, then restarts the unit out from under us. The password is read
+        # from ~/.sudo_pass inside the script (never on argv or in the script
+        # body), matching how the macOS branch handles credentials.
+        sudo_pass_file = Path.home() / ".sudo_pass"
+        if sudo_pass_file.exists():
+            sudo_cmd = f'cat "{sudo_pass_file}" | sudo -S'
+        else:
+            sudo_cmd = 'sudo -n'
+        restart_script = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.sh', delete=False, prefix='mom_restart_'
+        )
+        restart_script.write(
+            f'#!/bin/bash\n'
+            f'sleep 3\n'
+            f'{sudo_cmd} systemctl restart {service_name}\n'
+            f'rm -f "{restart_script.name}"\n'
+        )
+        restart_script.close()
+        os.chmod(restart_script.name, 0o700)
+        subprocess.Popen(
+            [restart_script.name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True, "Service restarting..."
 
     elif system == "Darwin":
         plist_name = spec["macos_plist_name"]
