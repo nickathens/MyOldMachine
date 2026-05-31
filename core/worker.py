@@ -28,7 +28,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -118,7 +118,7 @@ print(json.dumps({
 
 
 def _now() -> str:
-    return datetime.now().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -268,12 +268,16 @@ class SSHTransport(Transport):
             return 127, "", str(exc)
 
     def push(self, local_path: Path, remote_path: str) -> None:
-        full = ["scp", *self._scp_opts(), str(local_path), f"{self.target}:{remote_path}"]
+        # scp re-parses the remote half through a shell, so quote it to survive
+        # spaces in the worker's home/job path.
+        remote = f"{self.target}:{shlex.quote(remote_path)}"
+        full = ["scp", *self._scp_opts(), str(local_path), remote]
         subprocess.run(full, capture_output=True, text=True, timeout=300, check=True)
 
     def pull(self, remote_path: str, local_path: Path) -> bool:
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        full = ["scp", *self._scp_opts(), f"{self.target}:{remote_path}", str(local_path)]
+        remote = f"{self.target}:{shlex.quote(remote_path)}"
+        full = ["scp", *self._scp_opts(), remote, str(local_path)]
         proc = subprocess.run(full, capture_output=True, text=True, timeout=300)
         return proc.returncode == 0
 
@@ -605,6 +609,9 @@ def submit_job(user_id: int, argv: list[str] = None, *, worker_name: str = None,
         _put_job(user_id, record_job)
         return False, record_job["error"], record_job
 
+    # NOTE: this blocks up to launch_wait seconds. From any async context (e.g.
+    # a Telegram handler) call submit_job via asyncio.to_thread so the event
+    # loop stays free.
     # Confirm the runner came up by waiting briefly for its status file. A
     # status we can read means the runner ran: the job may already be running,
     # completed, or failed-with-a-returncode — all successful *submissions*.

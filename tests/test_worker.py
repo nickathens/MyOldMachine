@@ -8,13 +8,16 @@ code under test is identical for both.
 """
 from __future__ import annotations
 
+import json
 import os
+import shlex
 import shutil
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -276,6 +279,88 @@ class NotificationTests(_TempPoolStore):
         )
         self.assertIn("local1", text)
         self.assertIn("render", text)
+
+    def test_notified_flag_is_durable_across_restart(self):
+        # The completion notification must survive a bot restart: the notified
+        # flag lives in compute_jobs.json, never in memory. Proof = the flag is
+        # on disk after mark_notified, and a fresh scan (the scheduler's first
+        # tick post-restart) neither loses the job nor re-delivers it.
+        ok, msg, rec = worker.submit_job(
+            USER_A, argv=["python3", "-c", "print('done')"], worker_name="local1",
+        )
+        self.assertTrue(ok, msg)
+        job_id = rec["job_id"]
+        self._await_terminal(USER_A, job_id)
+
+        # Before notifying: the scan picks it up.
+        self.assertIn(job_id,
+                      [r["job_id"] for _uid, r in worker.unnotified_terminal_jobs()])
+
+        worker.mark_notified(USER_A, job_id)
+
+        # The flag is persisted to the on-disk store, not held in memory.
+        jobs_file = self.users_dir / str(USER_A) / "compute_jobs.json"
+        on_disk = json.loads(jobs_file.read_text(encoding="utf-8"))
+        self.assertTrue(on_disk[job_id]["notified"])
+
+        # A fresh scan (always reads from disk) skips the already-notified job.
+        self.assertNotIn(job_id,
+                         [r["job_id"] for _uid, r in worker.unnotified_terminal_jobs()])
+
+
+class SshArgvTests(unittest.TestCase):
+    """Snapshot the exact scp argv so the remote-path quoting cannot regress.
+
+    SSHTransport is exercised without a real remote by capturing the argv handed
+    to subprocess.run. This guards the fix where an unquoted remote half broke
+    transfers on a worker whose home/job dir contained spaces.
+    """
+
+    def _transport(self):
+        return worker.SSHTransport(host="box.local", user="me", port=2222,
+                                   identity_file="/keys/id_ed25519")
+
+    def test_push_quotes_remote_path_with_spaces(self):
+        t = self._transport()
+        remote = "/home/me/Job Folder/in/data.wav"
+        with patch.object(worker.subprocess, "run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+            t.push(Path("/tmp/local.wav"), remote)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[0], "scp")
+        # On a push the remote half is the destination (last token).
+        self.assertEqual(argv[-1], f"me@box.local:{shlex.quote(remote)}")
+        # The unquoted form must never appear as a bare token.
+        self.assertNotIn(f"me@box.local:{remote}", argv)
+
+    def test_pull_quotes_remote_path_with_spaces(self):
+        t = self._transport()
+        remote = "/home/me/Job Folder/out/result.wav"
+        dest_dir = Path(tempfile.mkdtemp(prefix="mom_pull_test_"))
+        try:
+            with patch.object(worker.subprocess, "run") as run:
+                run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+                ok = t.pull(remote, dest_dir / "result.wav")
+            self.assertTrue(ok)
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[0], "scp")
+            # On a pull the remote half is the source (second-to-last token).
+            self.assertEqual(argv[-2], f"me@box.local:{shlex.quote(remote)}")
+            self.assertNotIn(f"me@box.local:{remote}", argv)
+        finally:
+            shutil.rmtree(dest_dir, ignore_errors=True)
+
+    def test_scp_opts_carry_port_identity_and_batchmode(self):
+        t = self._transport()
+        with patch.object(worker.subprocess, "run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+            t.push(Path("/tmp/x"), "/remote/x")
+        argv = run.call_args.args[0]
+        self.assertIn("-P", argv)            # scp uppercases the port flag
+        self.assertIn("2222", argv)
+        self.assertIn("-i", argv)
+        self.assertIn("/keys/id_ed25519", argv)
+        self.assertIn("BatchMode=yes", argv)
 
 
 class JobIdSafetyTests(unittest.TestCase):
