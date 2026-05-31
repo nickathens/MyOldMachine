@@ -552,6 +552,10 @@ Built-in suites test: tool-use compliance (structured calls vs code blocks), saf
 
 Custom tests use YAML with assertion types: `contains`, `not_contains`, `matches`, `not_matches`, `min_length`, `max_length`, `tool_call`, `no_tool_call`. See `tests/eval_config.yaml.example`.
 
+## Compute pool
+
+Offload heavy jobs — stem separation, upscaling, Blender renders, video encodes, ML training — to other machines you own. The bot's host is the orchestrator; any machine reachable over SSH with key auth can be a worker. Jobs run asynchronously: the orchestrator pushes a stdlib-only runner to the worker, launches it detached, polls a status file, pulls results back, and messages you on Telegram when each job finishes. Route by capability (`--needs gpu --min-ram 16`) or name a worker directly. Pairing a worker grants command execution on it as your SSH user — only pair machines you control. Managed from the terminal via `python utils/worker_cli.py`; see [docs/compute-pool.md](docs/compute-pool.md).
+
 ## Security
 
 ### Trust model
