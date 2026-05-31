@@ -755,6 +755,18 @@ def build_orientation_prompt(user_id: int, first_user_message: str = None) -> st
     )
 
 
+def _about_section(profile: dict) -> list[str]:
+    """Prompt lines for the profile's free-text `about` bio, or [] if unset.
+
+    For peer agents registered via core.users.register_peer this carries the
+    person-model of who you're talking to; for humans it's an optional bio.
+    """
+    about = (profile.get("about") or "").strip()
+    if not about:
+        return []
+    return ["### About the person you are talking to:", about, ""]
+
+
 def build_system_prompt(user_id: int) -> str:
     """Build the system prompt with user context, skills, memories, and instructions.
 
@@ -883,6 +895,7 @@ def build_system_prompt(user_id: int) -> str:
     parts.append(f"The user's name is {user_name}. Their role is: {user_role}.")
     parts.append(f"User's Telegram ID: {user_id}")
     parts.append("")
+    parts.extend(_about_section(profile))
 
     # Only show sudo info to Claude CLI (which already has full access via
     # --dangerously-skip-permissions).  API providers — especially weak/free

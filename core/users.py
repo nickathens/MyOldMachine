@@ -26,9 +26,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# A peer ID becomes both a users.json key and a data/users/<id>/ directory
+# name, so it must be a safe slug (no path separators or traversal).
+_PEER_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 _BOT_DIR = Path(__file__).parent.parent
 USERS_JSON = _BOT_DIR / "data" / "users.json"
@@ -189,6 +194,75 @@ def remove_user(telegram_id: int) -> tuple[bool, str]:
     if not _save(data):
         return False, "Failed to write users.json."
     return True, f"Removed {name} ({tid})."
+
+
+def register_peer(
+    peer_id: str, name: str, about: str = "", *, role: str = "user"
+) -> tuple[bool, str]:
+    """Register (or update) a peer agent as a conversational identity.
+
+    A peer is another agent (for example, a bot running on a different
+    machine) that talks to this bot over a side channel instead of through
+    Telegram.
+    It is stored in users.json like a normal user so the standard
+    prompt/session/history pipeline applies unchanged, but its ID MUST be
+    non-numeric. Numeric IDs are the Telegram namespace: get_allowed_users()
+    and get_admin_telegram_ids() int()-parse the keys, so a non-numeric peer
+    ID is automatically excluded from the Telegram allow-list and the admin
+    list. That fencing is the point: the peer can hold a conversation but
+    can never be mistaken for a Telegram user.
+
+    Unlike add_user, this is idempotent: re-registering an existing peer
+    updates its name/about/role in place, so the `about` text can be
+    refreshed without removing the peer and discarding its history.
+
+    Returns (ok, message).
+    """
+    if role not in ("user", "admin"):
+        return False, f"Invalid role: {role!r}. Must be 'user' or 'admin'."
+    name = (name or "").strip()
+    if not name:
+        return False, "Name is required."
+    pid = str(peer_id).strip()
+    if not pid:
+        return False, "Peer ID is required."
+    if not _PEER_ID_RE.fullmatch(pid):
+        return False, (
+            f"Peer ID {pid!r} is invalid. Use only letters, digits, hyphen and "
+            f"underscore (it becomes a users.json key and a directory name)."
+        )
+    # The allow-list and admin list int()-parse user keys, so any int-parseable
+    # ID would land in the Telegram namespace. Reject exactly that set.
+    try:
+        int(pid)
+    except (ValueError, TypeError):
+        pass
+    else:
+        return False, (
+            f"Peer ID {pid!r} is numeric. Peer IDs must be non-numeric so they "
+            f"stay out of the Telegram allow-list and admin list."
+        )
+
+    data = _load()
+    existing = data.get(pid)
+    profile = dict(existing) if isinstance(existing, dict) else dict(_DEFAULT_PROFILE)
+    now = datetime.now().isoformat(timespec="seconds")
+    profile.update({
+        "name": name,
+        "display_name": name,
+        "role": role,
+        "can_install": role == "admin",
+        "can_restart": role == "admin",
+        "is_peer": True,
+        "about": about or "",
+        "updated": now,
+    })
+    profile.setdefault("added", now)
+    data[pid] = profile
+    if not _save(data):
+        return False, "Failed to write users.json."
+    verb = "Updated" if isinstance(existing, dict) else "Registered"
+    return True, f"{verb} peer {name} ({pid}) as {role}."
 
 
 # ─── Filesystem layout ────────────────────────────────────────────────
