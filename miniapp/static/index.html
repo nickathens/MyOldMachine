@@ -2906,8 +2906,8 @@ body{
         var fd=new FormData();
         fd.append('file',file);
         var headers={};
-        if(window._initData)headers['X-Telegram-Init-Data']=window._initData;
-        fetch(API_BASE+'/api/media/upload',{method:'POST',headers:headers,body:fd}).then(function(r){
+        if(initData)headers['X-Telegram-Init-Data']=initData;
+        fetch('/api/media/upload',{method:'POST',headers:headers,body:fd}).then(function(r){
             if(!r.ok)throw new Error('Upload failed ('+r.status+')');
             return r.json();
         }).then(function(data){
