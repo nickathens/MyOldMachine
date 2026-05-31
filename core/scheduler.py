@@ -662,6 +662,7 @@ class Scheduler:
         self._call_claude_fn = None
         self._sync_running = False
         self._sync_task = None
+        self._compute_poll_task = None
 
         ensure_scheduler_dir()
         _init_meta_db()
@@ -1046,6 +1047,36 @@ class Scheduler:
                 logger.error(f"Sync loop error: {e}")
             await asyncio.sleep(60)
 
+    async def _compute_poll_loop(self):
+        """Advance compute-pool jobs running on worker machines and notify the
+        owner when one finishes.
+
+        Cheap no-op for the vast majority of installs that never register a
+        worker: a single file-existence check returns immediately. Blocking
+        SSH calls run in a thread so the event loop is never stalled, and every
+        failure is swallowed -- this loop must never take the scheduler down.
+        """
+        try:
+            from core import worker as worker_module
+        except Exception as e:
+            logger.error(f"Compute pool unavailable; poll loop disabled: {e}")
+            return
+        while self._sync_running:
+            try:
+                if worker_module.WORKERS_FILE.exists():
+                    await asyncio.to_thread(worker_module.poll_all_jobs)
+                    pending = await asyncio.to_thread(
+                        worker_module.unnotified_terminal_jobs)
+                    for uid, record in pending:
+                        sent = await self.send_message(
+                            uid, worker_module.format_completion(record))
+                        if sent:
+                            await asyncio.to_thread(
+                                worker_module.mark_notified, uid, record["job_id"])
+            except Exception as e:
+                logger.error(f"Compute poll loop error: {e}")
+            await asyncio.sleep(120)
+
     def start(self):
         """Start the APScheduler and sync loop."""
         if not self._aps.running:
@@ -1060,6 +1091,7 @@ class Scheduler:
             logger.info(f"APScheduler started with {job_count} jobs")
             self._sync_running = True
             self._sync_task = asyncio.create_task(self._sync_loop())
+            self._compute_poll_task = asyncio.create_task(self._compute_poll_loop())
             asyncio.create_task(self._recover_missed_jobs())
 
     def stop(self):
@@ -1067,6 +1099,8 @@ class Scheduler:
         self._sync_running = False
         if self._sync_task:
             self._sync_task.cancel()
+        if self._compute_poll_task:
+            self._compute_poll_task.cancel()
         if self._aps.running:
             self._aps.shutdown(wait=False)
             logger.info("APScheduler stopped")
