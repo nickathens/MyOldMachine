@@ -876,7 +876,7 @@ class ClaudeCLIProvider(LLMProvider):
                 )
 
             # No "result" message — use last assistant turn if available,
-            # otherwise extract only the last substantive section from partial_text
+            # otherwise fall back to the full partial_text
             last_turn = "\n".join(last_turn_text_blocks).strip()
             if last_turn:
                 logger.warning(f"No final result for user {user_id}, returning last turn ({len(last_turn)} chars)")
@@ -885,9 +885,8 @@ class ClaudeCLIProvider(LLMProvider):
                     provider=self.provider_name, tool_use=True,
                 )
             if partial_text.strip():
-                sections = [s.strip() for s in partial_text.strip().split("\n\n") if len(s.strip()) > 50]
-                fallback_text = sections[-1] if sections else partial_text.strip()[-2000:]
-                logger.warning(f"No final result for user {user_id}, returning last section of partial_text ({len(fallback_text)} chars out of {len(partial_text)} total)")
+                fallback_text = partial_text.strip()
+                logger.warning(f"No final result for user {user_id}, returning full partial_text ({len(fallback_text)} chars)")
                 return LLMResponse(
                     text=fallback_text, model=self.model,
                     provider=self.provider_name, tool_use=True,
@@ -1444,9 +1443,8 @@ class CodexCLIProvider(LLMProvider):
                 )
 
             if partial_text.strip():
-                sections = [s.strip() for s in partial_text.strip().split("\n\n") if len(s.strip()) > 50]
-                fallback_text = sections[-1] if sections else partial_text.strip()[-2000:]
-                logger.warning(f"No agent_message for Codex user {user_id}, returning last section ({len(fallback_text)} chars out of {len(partial_text)} total)")
+                fallback_text = partial_text.strip()
+                logger.warning(f"No agent_message for Codex user {user_id}, returning full partial_text ({len(fallback_text)} chars)")
                 return LLMResponse(
                     text=fallback_text, model=self.model,
                     provider=self.provider_name, tool_use=True,
