@@ -4,7 +4,7 @@ Cross-model workflow for building a character once and keeping them identical ac
 
 ## The build order (Mode 0 to Mode 5)
 
-JOEY's banana-pro-director skill runs the stills pipeline as six modes in a strict order. Each mode hands its output to the next, so a hero character moves from a bare locked face to a finished, dressed, in-scene still without the identity drifting:
+The stills pipeline runs as six modes in a strict order. Each mode hands its output to the next, so a hero character moves from a bare locked face to a finished, dressed, in-scene still without the identity drifting:
 
 - **Mode 0 — Face / identity lock.** Build the face on medium grey using the locked identity spec below. This is the only mode that invents the face; every later mode reuses it verbatim.
 - **Mode 1 — Outfit.** Dress the locked face in a simple garment, identity wording unchanged.
@@ -40,7 +40,7 @@ Ask for a full character sheet in a single generation: one prompt yields a six-p
 
 ## Five universal render rules
 
-JOEY closes most stills with five render rules that push "reads photographed" over "reads generated." State them whenever realism matters:
+Close most stills with five render rules that push "reads photographed" over "reads generated." State them whenever realism matters:
 1. **Real skin.** Pores, fine texture, subsurface warmth; never wax or plastic.
 2. **Hair physics.** Strands with weight and stray flyaways, not a molded helmet.
 3. **Lens character.** A real lens signature: shallow focus with soft falloff, gentle halation, a touch of edge distortion. Behavior, not a brand name.

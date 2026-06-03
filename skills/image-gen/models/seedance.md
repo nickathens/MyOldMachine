@@ -24,7 +24,7 @@ Build in this exact order:
 1. **Camera** — shot size and one movement instruction (e.g., "locked wide, slow tilt down")
 2. **Lighting** — direction + quality (e.g., "warm key from above, cool blue rim from behind")
 3. **Environment** — anchor only what differs from start frame (e.g., "rain holds, fog drifts")
-4. **Subject** — who they are, pointing at reference (e.g., "ARIS fan boy from @image2, seen from behind")
+4. **Subject** — who they are, pointing at reference (e.g., "Harbor City fan boy from @image2, seen from behind")
 5. **Action** — one physical verb in present tense (e.g., "walks slowly down the stairs")
 6. **Style + Mood + Negative** — render style, emotional tone, 4-5 focused negatives
 
@@ -47,7 +47,7 @@ Structure:
 
 ## The Full Cinema Block Order
 
-Mode B is the short name for a discipline JOEY (CTRL) encodes as a fixed ten-block order, run on every complex or multi-character shot with no exceptions. Mode A is the same order collapsed: with one subject and one beat most blocks fold away and you are left with the six-step formula above. The moment a shot carries multiple characters, multiple beats, or needs maximum realism control, write all ten blocks in this exact sequence:
+Mode B is the short name for a discipline encoded as a fixed ten-block order, run on every complex or multi-character shot with no exceptions. Mode A is the same order collapsed: with one subject and one beat most blocks fold away and you are left with the six-step formula above. The moment a shot carries multiple characters, multiple beats, or needs maximum realism control, write all ten blocks in this exact sequence:
 
 1. **Scene & Mood** — one or two lines: location, time, weather, a single emotional register.
 2. **Frame Map** — pin every subject to a screen position, depth layer, and gaze *before* any identity or motion. Detailed below; this is the single biggest multi-character consistency lever.
@@ -64,7 +64,7 @@ Mode B is the short name for a discipline JOEY (CTRL) encodes as a fixed ten-blo
 
 ### Frame Map — the multi-character win
 
-Before you say who anyone is or what they do, place them. Pin each subject to a screen position (left third, center, right third), a depth layer (foreground, midground, background), and a gaze direction. JOEY's finding: the Frame Map did more to stop multiple characters melting into each other than any other single technique. Lock geography first, identity second, motion third.
+Before you say who anyone is or what they do, place them. Pin each subject to a screen position (left third, center, right third), a depth layer (foreground, midground, background), and a gaze direction. In practice, the Frame Map did more to stop multiple characters melting into each other than any other single technique. Lock geography first, identity second, motion third.
 
 ### Subject Lock — one block per character
 
@@ -147,10 +147,10 @@ Proof at 720p, upscale only the selects. Seedance credits scale with resolution,
 
 ### Single-beat (Mode A) — locked wide shot, boy walks down stairs
 
-Camera: locked wide on harbor city from @image1, slow gentle tilt down to find the boy on the stairs.
+Camera: locked wide on the harbor from @image1, slow gentle tilt down to find the boy on the stairs.
 Lighting: cool moonlight, warm tungsten practicals, volumetric haze.
 Environment: background holds from @image1, soft rain and fog continue.
-Subject: ARIS fan boy from @image2, seen only from behind, hood up.
+Subject: Harbor City fan boy from @image2, seen only from behind, hood up.
 Action: walks slowly down the stairs toward the arena, one careful step at a time, never turns.
 Style: high-end Arcane 2D painterly hand-drawn.
 Mood: mythic, melancholic, hopeful.
@@ -165,7 +165,7 @@ References: @image1 start frame, @image2 paper reference, @image3 character shee
 Camera: locked handheld interior, subtle breath, no push-in.
 Lighting: warm golden key from above on face and palms, cool blue rim from sealed doors behind. A brief golden bloom washes his palms each time a paper dissolves.
 Environment: background holds from @image1.
-Subject: ARIS fan boy from @image3, hood already off, gaze held upward to screen right throughout.
+Subject: Harbor City fan boy from @image3, hood already off, gaze held upward to screen right throughout.
 
 [0-3s] Boy slowly extends both arms outward, palms turning up at chest level.
 [3-5s] First small ember-edged paper, sized like @image2, drifts down onto left palm, settles, dissolves into golden embers fading into his skin.
@@ -183,10 +183,10 @@ Negative: no sudden motion, no bursts, no large papers, no front-facing pose, no
 Single continuous shot, 8 seconds, 16:9.
 References: @image1 start frame (arena stands), @image2 older fan, @image3 younger fan.
 
-Scene & Mood: ARIS home stands minutes before tip-off, black and ARIS yellow everywhere, the hush of held breath under arena light.
+Scene & Mood: Harbor City home stands minutes before tip-off, black and Harbor City yellow everywhere, the hush of held breath under arena light.
 Frame Map: two fans. Older fan in the left third, midground, facing the court at screen right. Younger fan in the right third, foreground, turned inward toward the older fan. They never cross the center.
 Subject Lock A: older fan from @image2, weathered face, grey stubble, yellow scarf. Trust the reference for wardrobe; same face, hair, scarf, and silhouette throughout.
-Subject Lock B: younger fan from @image3, late teens, short dark hair, black ARIS jersey. Trust the reference; same face, hair, jersey, and silhouette throughout.
+Subject Lock B: younger fan from @image3, late teens, short dark hair, black Harbor City jersey. Trust the reference; same face, hair, jersey, and silhouette throughout.
 Cross-Frame Rules: no swapping sides, no crossing center, no depth change; the gap between them and their screen-sides hold for the whole clip.
 Movement:
 [0-3s] younger fan looks up from his seat toward the older fan.
