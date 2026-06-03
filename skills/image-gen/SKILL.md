@@ -173,6 +173,8 @@ When a media generation request comes from a structured source (Mini App, script
 | soul-cast | `soul-cast.md` |
 | marketing | `marketing-studio.md` |
 
+**Cross-cutting guide (not a model):** to build a consistent character or brand figure across stills — medium-grey backdrop, the Locked Identity Spec, the six-panel sheet, and model + outfit routing — read `character-consistency.md`. Lock the character there, then animate it in `seedance.md`.
+
 ## Iteration (Image-to-Image / Video-from-Image)
 
 When a user asks to modify, adjust, iterate on, or improve a previously generated image:
