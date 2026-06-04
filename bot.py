@@ -1295,42 +1295,103 @@ def sanitize_role_markers(content: str) -> str:
     return content
 
 
-def sanitize_response(content: str) -> str:
-    """Remove hallucinated conversation continuations."""
-    patterns = [
-        r"\n\s*Human\s*:.*", r"\n\s*USER\s*:.*", r"\n\s*User\s*:.*",
-        r"\n\s*<user>.*", r"\n\s*<human>.*",
-    ]
-    for p in patterns:
-        content = re.sub(p, "", content, flags=re.IGNORECASE | re.DOTALL)
+# Role markers that may signal a hallucinated conversation continuation (the
+# model finishing its answer, then inventing turns to talk to itself). These
+# are TRIP-WIRES ONLY: a hit triggers an LLM review that decides keep-or-cut.
+# We never delete on the marker alone, because the same markers legitimately
+# appear in screenplays, transcripts, example chats and config snippets the
+# user explicitly asked for -- blind deletion silently ate that content.
+_CONTINUATION_TRIGGERS = [
+    re.compile(r"\n\s*Human\s*:", re.IGNORECASE),
+    re.compile(r"\n\s*USER\s*:", re.IGNORECASE),
+    re.compile(r"\n\s*User\s*:", re.IGNORECASE),
+    re.compile(r"\n\s*<user>", re.IGNORECASE),
+    re.compile(r"\n\s*<human>", re.IGNORECASE),
+    re.compile(r"\n\s*Assistant\s*:", re.IGNORECASE),
+    re.compile(r"\n\s*Claude\s*:", re.IGNORECASE),
+    re.compile(r"\n\s*AI\s*:", re.IGNORECASE),
+]
 
-    # Aggressive: strip everything from an explicit Assistant: marker.
-    aggressive_patterns = [
-        r"\n\s*Assistant\s*:.*",
-    ]
-    for p in aggressive_patterns:
-        match = re.search(p, content, flags=re.IGNORECASE)
-        if match and match.start() > 50:
-            content = content[:match.start()]
+_REVIEW_SYSTEM_PROMPT = (
+    "You are a filter detecting ONE defect in an assistant reply: the "
+    "assistant finished its answer, then HALLUCINATED extra dialogue by "
+    'inventing "User:"/"Assistant:" style turns and replying to itself. '
+    "Distinguish that from LEGITIMATE labelled content the user requested: a "
+    "screenplay, chat transcript, example conversation, documentation, or a "
+    "config snippet. If the labelled lines are content the user asked for, "
+    "answer KEEP. If they are the assistant inventing conversation turns "
+    "after its real answer, answer CUT. Reply with exactly one word: KEEP or "
+    "CUT."
+)
 
-    # Conservative: only strip Claude:/AI: when preceded by a blank line
-    # (paragraph break). This avoids nuking legitimate prose that mentions
-    # these words mid-sentence -- relevant on multi-provider runs where the
-    # responding model is not Claude but the output may still cite it.
-    conservative_patterns = [
-        r"\n\s*\n\s*Claude\s*:.*", r"\n\s*\n\s*AI\s*:.*",
-    ]
-    for p in conservative_patterns:
-        match = re.search(p, content, flags=re.IGNORECASE)
-        if match and match.start() > 50:
-            content = content[:match.start()]
 
-    # Neutralize remaining markers
-    content = re.sub(r'\bHuman:', '[Human]:', content)
-    content = re.sub(r'\bUSER:', '[USER]:', content)
-    content = re.sub(r'<user>', '[user-tag]', content, flags=re.IGNORECASE)
-    content = re.sub(r'<human>', '[human-tag]', content, flags=re.IGNORECASE)
+def _find_continuation_marker(content: str) -> int | None:
+    """Earliest index of a role marker that may start a hallucinated
+    continuation, or None if none is present. The >50 floor skips messages
+    that legitimately open with a role label (a real hallucinated turn would
+    instead appear after the model's actual answer)."""
+    earliest = None
+    for pat in _CONTINUATION_TRIGGERS:
+        m = pat.search(content)
+        if m and m.start() > 50:
+            if earliest is None or m.start() < earliest:
+                earliest = m.start()
+    return earliest
 
+
+async def _review_continuation(content: str, marker: int) -> bool:
+    """Ask a fast model whether the text from `marker` onward is a
+    hallucinated self-conversation that should be cut.
+
+    Returns True to CUT, False to KEEP. The decision is strictly keep-or-cut --
+    the text is never rewritten. Defaults to KEEP on any error/timeout, or when
+    the active provider can't run a quick review, because a false deletion is
+    the exact failure this whole guard now exists to prevent.
+    """
+    classify = getattr(_llm_provider, "quick_classify", None)
+    if classify is None:
+        return False
+    before = content[:marker].strip()[-700:]
+    after = content[marker:].strip()[:1800]
+    user_prompt = (
+        "REPLY TEXT BEFORE THE DETECTED LABEL:\n"
+        f'"""\n{before}\n"""\n'
+        "TEXT FROM THE LABEL TO THE END:\n"
+        f'"""\n{after}\n"""\n'
+        "One word, KEEP or CUT:"
+    )
+    try:
+        verdict = await classify(_REVIEW_SYSTEM_PROMPT, user_prompt)
+    except Exception as exc:  # never let the guard break the response path
+        logger.warning(f"Continuation review errored, keeping response: {exc}")
+        return False
+    if not verdict:
+        return False
+    return verdict.strip().upper().startswith("CUT")
+
+
+async def sanitize_response(content: str, user_id: int = None) -> str:
+    """Guard against hallucinated conversation continuations without ever
+    blindly deleting content.
+
+    A cheap regex trip-wire flags role markers; any hit is sent to a fast LLM
+    review (see _review_continuation) that decides keep-or-cut. Legitimate
+    content the user asked for -- scripts, transcripts, example chats, config
+    snippets -- is kept verbatim; only a confirmed hallucinated tail is removed.
+    """
+    marker = _find_continuation_marker(content)
+    if marker is None:
+        return content.strip()
+    if await _review_continuation(content, marker):
+        logger.info(
+            f"Continuation review CUT for user {user_id}: removed "
+            f"{len(content) - marker} chars after role marker at {marker}"
+        )
+        return content[:marker].strip()
+    logger.info(
+        f"Continuation review KEEP for user {user_id}: role marker at "
+        f"{marker} judged legitimate, response kept intact"
+    )
     return content.strip()
 
 
@@ -1507,7 +1568,7 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
     if not response.text:
         return "No response generated. Try again or rephrase your message."
 
-    text = sanitize_response(response.text)
+    text = await sanitize_response(response.text, user_id)
 
     # Detect confabulated references to non-existent prior work.
     # Only triggers on short responses that match specific patterns.

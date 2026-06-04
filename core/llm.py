@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -454,6 +455,63 @@ class ClaudeCLIProvider(LLMProvider):
         except (ProcessLookupError, PermissionError, OSError):
             pass
         return True
+
+    async def quick_classify(self, system_prompt: str, user_prompt: str,
+                             model: str = "claude-haiku-4-5",
+                             timeout: float = 30.0) -> Optional[str]:
+        """Run a fast, tool-free, one-shot classification via the Claude CLI.
+
+        For cheap internal yes/no judgments that must not invoke tools or pull
+        in the full agent context (e.g. deciding whether a role marker in a
+        reply is a hallucinated self-conversation). Runs in an empty temp dir
+        so the bot's own CLAUDE.md is never auto-discovered -- that context
+        both slows the call and skews the verdict (measured: ~10s and a wrong
+        answer with it, ~5s and correct without). Returns the model's stripped
+        text answer, or None on timeout/error so callers can fall back safely.
+        """
+        binary = self._cli_binary
+        if not binary:
+            return None
+        workdir = tempfile.mkdtemp(prefix="review-")
+        cmd = [
+            binary, "-p",
+            "--model", model,
+            "--effort", "low",
+            "--tools", "",  # disable all tool use
+            "--dangerously-skip-permissions",
+            "--no-session-persistence",
+            "--system-prompt", system_prompt,
+            "--output-format", "text",
+            "-",  # read prompt from stdin
+        ]
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=workdir,
+                env=self._get_cli_env(),
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(user_prompt.encode("utf-8")),
+                timeout=timeout,
+            )
+        except (asyncio.TimeoutError, FileNotFoundError, PermissionError,
+                OSError, ValueError) as exc:
+            logger.warning(f"quick_classify failed: {exc}")
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+            return None
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+        if proc.returncode != 0:
+            return None
+        return (stdout or b"").decode("utf-8", errors="replace").strip()
 
     @property
     def provider_name(self) -> str:
