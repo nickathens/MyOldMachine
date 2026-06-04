@@ -36,6 +36,7 @@ from core.tools import (
     execute_tool,
     extract_tool_calls_from_text,
 )
+from core.conversation_format import wrap_turn
 
 logger = logging.getLogger(__name__)
 
@@ -537,7 +538,7 @@ class ClaudeCLIProvider(LLMProvider):
         # Build the full prompt from system prompt + conversation history + new message
         prompt = system_prompt + "\n\n"
         for msg in messages:
-            prompt += f"<{msg.role}>{msg.content}</{msg.role}>\n"
+            prompt += wrap_turn(msg.role, msg.content) + "\n"
         prompt += "\nContinue the conversation naturally, responding to the latest message."
 
         from core.config import get_llm_effort
@@ -1081,7 +1082,7 @@ class CodexCLIProvider(LLMProvider):
                        chat=None, user_id: int = None, original_message: str = "") -> LLMResponse:
         prompt = system_prompt + "\n\n"
         for msg in messages:
-            prompt += f"<{msg.role}>{msg.content}</{msg.role}>\n"
+            prompt += wrap_turn(msg.role, msg.content) + "\n"
         prompt += "\nContinue the conversation naturally, responding to the latest message."
 
         cmd = [
