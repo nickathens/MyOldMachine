@@ -94,7 +94,15 @@ After tests pass, perform at least 3 independent audit passes of all modified co
 - **Pass 2:** Security (env leaks, injection, unsafe subprocess), correctness of external API usage, hardcoded values that should be configurable
 - **Pass 3:** Integration issues (does this break anything else?), dead code, unused imports, consistency with the rest of the codebase
 
-Fix everything found. Re-run lint and tests after fixes.
+**Verification gate (mandatory).** A finding does not exist until you have reproduced it against the current artifact. Before you report a finding, post it to a PR, or act on it:
+
+- Re-read the exact location in the file as it is now. Never cite a line number, function name, or file path from memory or from a prior session.
+- Confirm the issue is actually present at that location. If you cannot point to it in the current file, discard it.
+- State only what you just read.
+
+This gate applies to every finding you surface anywhere: self-audit, review of someone else's code, or bug diagnosis. A fabricated locator is worse than a missed bug, because it makes the reader distrust every other finding in the report even when the content was right.
+
+Fix everything found (once it passes the gate). Re-run lint and tests after fixes.
 
 ### 6. Deliver
 
@@ -179,6 +187,7 @@ Rules:
 - **Audit passes must be >= 3** for any feature, integration, or system change. Writing "1" is an admission of skipping.
 - **Research must cite what was actually checked.** "N/A" is only valid for changes that touch no external services, APIs, or libraries.
 - **"None" is a valid finding** -- but only after genuinely looking. The report makes skipping visible.
+- **Every finding cited must have a verified locator.** Before listing a finding here or in a PR comment, read the exact file and line from the current artifact and confirm it is real. A finding you cannot point to in the present file is a confabulation: discard it, never report it.
 - This block goes at the end of the delivery message, before asking about restart/push.
 
 ---
@@ -237,6 +246,7 @@ The changelog draft goes alongside the Methodology Report at delivery time, not 
 ## Anti-Patterns (things this protocol exists to prevent)
 
 - Asserting system state without reading it first (verification rule violation)
+- Citing a finding's location (line number, function, file) from memory instead of reading it fresh -- fabricated locators destroy trust even when the finding is otherwise correct
 - Hypothesizing without data (skipping Phase 1 and 2 of Diagnose)
 - Fixing before reproducing (jumping to Phase 5 without a feedback loop)
 - Claiming "the work doesn't exist" without checking the filesystem
