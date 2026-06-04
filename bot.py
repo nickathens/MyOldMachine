@@ -37,6 +37,7 @@ from core.config import (
     LOG_DIR,
 )
 from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider, CodexCLIProvider
+from core.conversation_format import strip_hallucinated_turns, TURN_OVERHEAD_CHARS
 
 # Both subprocess CLI providers share progress callbacks, /stop semantics, and
 # graceful shutdown. Anywhere the bot needs to gate CLI-specific behavior,
@@ -1296,36 +1297,21 @@ def sanitize_role_markers(content: str) -> str:
 
 
 def sanitize_response(content: str) -> str:
-    """Remove hallucinated conversation continuations."""
-    patterns = [
-        r"\n\s*Human\s*:.*", r"\n\s*USER\s*:.*", r"\n\s*User\s*:.*",
-        r"\n\s*<user>.*", r"\n\s*<human>.*",
-    ]
-    for p in patterns:
-        content = re.sub(p, "", content, flags=re.IGNORECASE | re.DOTALL)
+    """Trim hallucinated conversation continuations.
 
-    # Aggressive: strip everything from an explicit Assistant: marker.
-    aggressive_patterns = [
-        r"\n\s*Assistant\s*:.*",
-    ]
-    for p in aggressive_patterns:
-        match = re.search(p, content, flags=re.IGNORECASE)
-        if match and match.start() > 50:
-            content = content[:match.start()]
+    History is serialized to the CLI providers with a unique turn sentinel
+    (see core.conversation_format). When the model parrots that sentinel to
+    fabricate a next turn, we cut from it -- an exact match with no false
+    positives. The old approach truncated at readable markers like "User:" or
+    "<user>", which also deleted legitimate content: screenplays, YAML keys,
+    and any prose that happened to contain those words.
+    """
+    content = strip_hallucinated_turns(content)
 
-    # Conservative: only strip Claude:/AI: when preceded by a blank line
-    # (paragraph break). This avoids nuking legitimate prose that mentions
-    # these words mid-sentence -- relevant on multi-provider runs where the
-    # responding model is not Claude but the output may still cite it.
-    conservative_patterns = [
-        r"\n\s*\n\s*Claude\s*:.*", r"\n\s*\n\s*AI\s*:.*",
-    ]
-    for p in conservative_patterns:
-        match = re.search(p, content, flags=re.IGNORECASE)
-        if match and match.start() > 50:
-            content = content[:match.start()]
-
-    # Neutralize remaining markers
+    # Non-destructive insurance: if the model emits a stray *readable* role
+    # marker out of training habit, bracket it so it doesn't read as
+    # conversation structure. This only rewrites the marker; it never deletes
+    # surrounding content, so it can't eat a screenplay.
     content = re.sub(r'\bHuman:', '[Human]:', content)
     content = re.sub(r'\bUSER:', '[USER]:', content)
     content = re.sub(r'<user>', '[user-tag]', content, flags=re.IGNORECASE)
@@ -1389,12 +1375,12 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
     # character budget, trim older conversation messages (not the new user message).
     # This prevents "prompt too long" errors regardless of conversation length.
     system_size = len(system_prompt)
-    new_msg_size = len(message) + 20  # <user>...</user> tags overhead
+    new_msg_size = len(message) + TURN_OVERHEAD_CHARS  # turn sentinel overhead
     remaining_budget = max(PROMPT_CHAR_BUDGET - system_size - new_msg_size, 5000)
 
     # Calculate total conversation size (all messages except the last one, which is the new message)
     conv_messages = messages[:-1]  # History only, exclude new user message
-    conv_size = sum(len(m.content) + 20 for m in conv_messages)  # +20 for XML tag overhead
+    conv_size = sum(len(m.content) + TURN_OVERHEAD_CHARS for m in conv_messages)
 
     if conv_size > remaining_budget and conv_messages:
         session = get_session(user_id)
@@ -1406,11 +1392,11 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
 
         # If still over budget, drop oldest messages (keep at least 6 for continuity)
         min_keep = 6
-        while len(trimmed) > min_keep and sum(len(m.get("content", "")) + 20 for m in trimmed) > remaining_budget:
+        while len(trimmed) > min_keep and sum(len(m.get("content", "")) + TURN_OVERHEAD_CHARS for m in trimmed) > remaining_budget:
             trimmed.pop(0)
 
         original_count = len(conv_messages)
-        trimmed_size = sum(len(m.get("content", "")) + 20 for m in trimmed)
+        trimmed_size = sum(len(m.get("content", "")) + TURN_OVERHEAD_CHARS for m in trimmed)
         messages_dropped = len(trimmed) < original_count
 
         # Rebuild messages if anything changed (count reduced or content trimmed)
