@@ -1,6 +1,6 @@
 # MyOldMachine — Project Context
 
-Last updated: 2026-04-24
+Last updated: 2026-06-04
 
 ## Overview
 
@@ -281,6 +281,26 @@ Each user's palace uses a stable wing name `user_<dir-basename>` for mempalace A
 - `vpn` — ProtonVPN control with proper Linux + macOS branching (DBus per-uid, `osascript` for the Mac GUI, `nmcli` for Linux status, CLI status fallback for Mac)
 
 Skill count: 61 → 63.
+
+## Stream-JSON Structured Turns for the Claude CLI Provider (Jun 4)
+
+Root-cause fix for response truncation, building on the sentinel pass. The sentinel swapped readable role delimiters for a unique per-session token so the model could no longer parrot conversation markers back into its output. Stream-json goes one step further for the Claude CLI provider: it removes the in-band turn format entirely by feeding history at the protocol level, so there is no textual delimiter for the model to imitate.
+
+`core/llm.py` changes:
+
+- New `_build_claude_stream_json(messages)` serializes the conversation to NDJSON, one JSON object per line. Each turn is `{"type": <role>, "message": {"role": <role>, "content": [{"type": "text", "text": <content>}]}}`, dumped with `ensure_ascii=False`, joined by newlines with a trailing newline.
+- `ClaudeCLIProvider.complete()` now passes `--input-format stream-json` and writes the NDJSON to stdin instead of a single flat text blob.
+- The system prompt moved off the command line to a temp file passed via `--append-system-prompt-file`. The file is created with `mkstemp` at mode 0600 and unlinked in a `finally` block. This sidesteps the single-argv length ceiling on large system prompts.
+
+Three CLI behaviors verified against claude 2.1.146 and pinned by tests:
+
+1. stdin must stay open until the terminal `result` event arrives. Closing it early (immediate EOF) makes the CLI exit 0 silently with no output. The provider closes stdin only when it reads `result`, guarded so the close cannot raise.
+2. `content` must be a block array, not a bare string. The CLI calls `.some()` on it and crashes on a string.
+3. Pre-seeded assistant turns are ingested as genuine prior context, so multi-turn history round-trips correctly.
+
+Scope: Claude CLI only. The OpenAI-compatible and Codex paths are unaffected and keep the sentinel. FreeCC inherits the change because it subclasses `ClaudeCLIProvider` and does not override `complete()`. The sentinel stays in place as defense in depth for any provider still receiving flat text.
+
+Tests: new `tests/test_claude_stream_json.py` (11 tests) pins block-array content, the role to `type`/`message.role` mapping, one valid JSON object per line, newline termination, order preservation, embedded-newline framing, JSON character escaping, non-ASCII content, empty content, and the empty conversation case.
 
 ## Known Issues
 
