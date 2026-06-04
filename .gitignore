@@ -29,3 +29,12 @@ session.py.bak
 google_credentials.json
 google_token.json
 gmail_token.json
+
+# TLS certificates and private keys, e.g. Tailscale Funnel (never commit)
+*.crt
+*.key
+*.pem
+
+# Editor / runtime backup files (never commit)
+*.bak
+*.bak.*
