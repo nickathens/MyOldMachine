@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -393,6 +394,32 @@ def _build_claude_messages(messages: list[Message]) -> list[dict]:
     return result
 
 
+def _build_claude_stream_json(messages: list[Message]) -> str:
+    """Serialize a conversation as newline-delimited stream-json turns.
+
+    One JSON object per line, in the shape ``claude -p --input-format
+    stream-json`` consumes on stdin::
+
+        {"type": <role>, "message": {"role": <role>, "content": [blocks]}}
+
+    ``content`` is always a block array, never a bare string: the CLI's input
+    parser calls ``.some()`` on ``message.content`` and raises a TypeError on a
+    plain string. Text-only, matching the prior flat-text behavior of this
+    provider (the CLI path has never forwarded image attachments).
+    """
+    lines = []
+    for m in messages:
+        event = {
+            "type": m.role,
+            "message": {
+                "role": m.role,
+                "content": [{"type": "text", "text": m.content}],
+            },
+        }
+        lines.append(json.dumps(event, ensure_ascii=False))
+    return "".join(line + "\n" for line in lines)
+
+
 class ClaudeCLIProvider(LLMProvider):
     """
     Claude Code CLI provider — the primary provider for MyOldMachine.
@@ -527,19 +554,21 @@ class ClaudeCLIProvider(LLMProvider):
         Call Claude Code CLI with full tool-use.
 
         Unlike API providers, this ignores max_tokens/temperature and uses
-        the CLI's own defaults. The system_prompt + messages are combined
-        into a single prompt passed via stdin.
+        the CLI's own defaults. The conversation is streamed to stdin as
+        structured stream-json turns; the system prompt is appended to the
+        CLI's own via --append-system-prompt-file.
 
         Args:
             chat: Telegram chat object for typing indicators / progress messages
             user_id: For progress tracking
             original_message: The user's original message (for progress recovery)
         """
-        # Build the full prompt from system prompt + conversation history + new message
-        prompt = system_prompt + "\n\n"
-        for msg in messages:
-            prompt += wrap_turn(msg.role, msg.content) + "\n"
-        prompt += "\nContinue the conversation naturally, responding to the latest message."
+        # Serialize the conversation as structured stream-json turns. Each
+        # message becomes one newline-delimited JSON object with role-tagged
+        # content blocks, giving the model genuine protocol-level turn
+        # boundaries. This replaces the old flat text blob whose in-band turn
+        # delimiters the model could parrot to hallucinate a fake next turn.
+        stream_json_input = _build_claude_stream_json(messages)
 
         from core.config import get_llm_effort
         cmd = [
@@ -549,9 +578,9 @@ class ClaudeCLIProvider(LLMProvider):
             "--effort", get_llm_effort(),
             "--dangerously-skip-permissions",
             "--disallowedTools", "Task,EnterPlanMode,AskUserQuestion,Monitor,EnterWorktree,ExitWorktree,ScheduleWakeup,RemoteTrigger,PushNotification,NotebookEdit",
+            "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
-            "-",  # Read from stdin
         ]
 
         typing_task = None
@@ -567,6 +596,8 @@ class ClaudeCLIProvider(LLMProvider):
         last_turn_text_blocks = []
         current_status = "thinking"
         tool_in_progress = None
+        sysprompt_file = None
+        stdin_closed = False
 
         try:
             if chat:
@@ -575,6 +606,16 @@ class ClaudeCLIProvider(LLMProvider):
             cli_env = self._get_cli_env(user_id)
 
             cwd = str(self._bot_dir)
+
+            # Append the app system prompt to Claude Code's own. Via a file
+            # (not --append-system-prompt) so injected user memories can make
+            # the prompt arbitrarily large without hitting the ~128KB
+            # single-argv limit; cleaned up in the finally block.
+            sysprompt_fd, sysprompt_file = tempfile.mkstemp(prefix="mom_sysprompt_", suffix=".txt")
+            with os.fdopen(sysprompt_fd, "w", encoding="utf-8") as f:
+                f.write(system_prompt)
+            cmd = cmd + ["--append-system-prompt-file", sysprompt_file]
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
@@ -592,11 +633,13 @@ class ClaudeCLIProvider(LLMProvider):
                 self._stop_requested.discard(user_id)
                 self._user_processes[user_id] = process
 
-            # Write prompt to stdin
-            process.stdin.write(prompt.encode())
+            # Stream the structured turns to stdin, then KEEP stdin open. The
+            # CLI's stream-json input reader treats an immediate EOF as the
+            # controller hanging up and exits WITHOUT running inference -- a
+            # silent, empty reply. stdin is closed only once the terminal
+            # `result` event arrives (see the read loop below).
+            process.stdin.write(stream_json_input.encode())
             await process.stdin.drain()
-            process.stdin.close()
-            await process.stdin.wait_closed()
 
             # Read output line by line with activity-based timeout
             while True:
@@ -784,9 +827,20 @@ class ClaudeCLIProvider(LLMProvider):
                                 tool_in_progress = None
                                 current_status = "processing result"
 
-                            if msg_type == "result" and "result" in data:
-                                final_result = data["result"]
-                                last_text_output = asyncio.get_running_loop().time()
+                            if msg_type == "result":
+                                if "result" in data:
+                                    final_result = data["result"]
+                                    last_text_output = asyncio.get_running_loop().time()
+                                # stream-json input keeps the CLI session alive
+                                # until stdin closes; the terminal result is the
+                                # cue to close it so the process exits instead of
+                                # blocking for another turn.
+                                if not stdin_closed and process.stdin is not None:
+                                    try:
+                                        process.stdin.close()
+                                    except (OSError, RuntimeError):
+                                        pass
+                                    stdin_closed = True
 
                             # Save progress periodically
                             current_time = asyncio.get_running_loop().time()
@@ -920,6 +974,11 @@ class ClaudeCLIProvider(LLMProvider):
                     await typing_task
                 except asyncio.CancelledError:
                     pass
+            if process is not None and process.stdin is not None and not stdin_closed:
+                try:
+                    process.stdin.close()
+                except (OSError, RuntimeError):
+                    pass
             if process:
                 self._active_processes.discard(process)
                 if process.returncode is None:
@@ -932,6 +991,11 @@ class ClaudeCLIProvider(LLMProvider):
                 if self._user_processes.get(user_id) is process:
                     self._user_processes.pop(user_id, None)
                 self._stop_requested.discard(user_id)
+            if sysprompt_file:
+                try:
+                    os.unlink(sysprompt_file)
+                except OSError:
+                    pass
 
     @property
     def has_active_processes(self) -> bool:
