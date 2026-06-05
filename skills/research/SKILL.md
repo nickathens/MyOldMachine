@@ -1,6 +1,6 @@
 # Research Skill
 
-Data collection, aggregation, and research automation.
+Data collection, aggregation, and research automation. Includes dialectic (bull/bear decision analysis) and premortem (failure-mode analysis) frameworks.
 
 ## Capabilities
 
@@ -10,11 +10,13 @@ Data collection, aggregation, and research automation.
 - **Data storage**: SQLite database for collected data
 - **Export**: JSON, CSV, markdown reports
 - **Dialectical analysis**: Structured bull/bear evaluation framework
+- **Premortem analysis**: Structured failure-mode evaluation framework
 
 ## Script Location
 
 `scripts/research.py` - Research automation engine
 `scripts/dialectic.py` - Dialectical analysis framework (bull/bear evaluation)
+`scripts/premortem.py` - Premortem analysis framework (failure-mode evaluation)
 
 ## Usage
 
@@ -94,6 +96,63 @@ python skills/research/scripts/dialectic.py delete <id>
 
 # Rebuild FTS5 index
 python skills/research/scripts/dialectic.py rebuild
+```
+
+## Premortem Analysis
+
+Structured failure-mode evaluation framework. Assume the plan has already failed, then work backwards: enumerate the failure modes, name the assumption that enabled each, and record the early warning signs you could observe. Splits the most likely failure from the most dangerous one. FTS5-indexed and searchable. Exports to `~/research/<topic>/` for long-term reference.
+
+Where dialectic asks "should I do X" (FOR/AGAINST a proposition), premortem asks "assuming I do X, how does it die".
+
+### JSON Input Format
+
+```json
+{
+  "plan": "Launch the paid tier on Friday",
+  "context": "Brief context for the evaluation",
+  "failure_modes": "Numbered list: each failure + enabling assumption + warning sign (markdown)",
+  "most_likely": "The failure mode most likely to actually occur",
+  "most_dangerous": "The failure mode with the worst blast radius",
+  "hidden_assumption": "The load-bearing assumption nobody is questioning",
+  "revised_plan": "The plan adjusted to defuse the failure modes above",
+  "checklist": "Pre-launch checklist of must-pass items (markdown)",
+  "verdict": "PROCEED | REVISE | RETHINK",
+  "confidence": 70,
+  "tags": "comma,separated,tags"
+}
+```
+
+Required fields: `plan`, `failure_modes`, `most_likely`, `most_dangerous`, `revised_plan`, `verdict`, `confidence`
+
+### Premortem Commands
+
+```bash
+# Store premortem (JSON via stdin or file)
+echo '{"plan": "...", ...}' | python skills/research/scripts/premortem.py store
+python skills/research/scripts/premortem.py store --input premortem.json
+
+# Search past premortems (FTS5: supports boolean, phrase, prefix queries)
+python skills/research/scripts/premortem.py search "launch pricing"
+python skills/research/scripts/premortem.py search "billing AND webhook"
+python skills/research/scripts/premortem.py search "present*"
+
+# List recent premortems
+python skills/research/scripts/premortem.py list
+python skills/research/scripts/premortem.py list --limit 20 --tag launch
+
+# View full premortem
+python skills/research/scripts/premortem.py view <id>
+
+# Export to ~/research/<topic>/
+python skills/research/scripts/premortem.py export <id>                    # topic = first tag or "general"
+python skills/research/scripts/premortem.py export <id> --topic launch     # explicit topic subfolder
+python skills/research/scripts/premortem.py export <id> --dir /other/path  # custom base directory
+
+# Delete
+python skills/research/scripts/premortem.py delete <id>
+
+# Rebuild FTS5 index
+python skills/research/scripts/premortem.py rebuild
 ```
 
 ## Data Storage
