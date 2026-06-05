@@ -483,7 +483,7 @@ if __name__ == '__main__':
                     print(f"   Tags: {r['tags']}")
                 print(f"   Date: {r['created'][:10]}")
                 if r.get('snippet'):
-                    print(f"   ...{r['snippet']}...")
+                    print(f"   {r['snippet']}")
 
     elif args.command == 'list':
         results = list_premortems(args.limit, getattr(args, 'tag', None))
