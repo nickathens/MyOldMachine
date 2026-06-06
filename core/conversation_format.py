@@ -48,12 +48,15 @@ NEXT_TURN_SENTINEL = f"<|MOM-TURN:user:{_SESSION_NONCE}|>"
 # Generic markers without the live nonce are intentionally left untouched.
 _STRAY_MARK_RE = re.compile(rf"<\|MOM-TURN:[^|]*:{re.escape(_SESSION_NONCE)}\|>")
 
-# A turn marker truncated by the token limit, dangling at the end of the reply.
-# Requires the nonce separator (the second colon) so a generic single-colon
-# marker like ``<|MOM-TURN:user|>`` quoted in prose is never grabbed, and matches
-# only an *unclosed* marker (no ``|>``) -- so it catches a truncation regardless
-# of how much of the nonce survived, without touching complete quoted markers.
-_TRAILING_PARTIAL_RE = re.compile(r"<\|MOM-TURN:[^|\n]*:[^|\n]*$")
+# A turn marker truncated by the token limit, left dangling and *unclosed* at the
+# very end of the reply. Matches the ``<|MOM-TURN`` prefix followed by any run of
+# characters that never forms a closing ``|>``, so a *complete* quoted marker
+# (e.g. ``<|MOM-TURN:user|>`` mentioned in prose) is never grabbed, while a real
+# truncation is caught however much of the role/nonce survived -- even if the cut
+# landed before the nonce, mid-nonce, or on the closing ``|`` itself. The nonce
+# can't gate this step (truncation may have eaten it), so it keys off the absence
+# of a close instead.
+_TRAILING_PARTIAL_RE = re.compile(r"<\|MOM-TURN(?:(?!\|>)[^\n])*$")
 
 
 def wrap_turn(role: str, content: str) -> str:
