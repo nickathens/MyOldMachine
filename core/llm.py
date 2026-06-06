@@ -37,6 +37,7 @@ from core.tools import (
     extract_tool_calls_from_text,
 )
 from core.conversation_format import wrap_turn
+from core.prompt_security import wrap_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -1779,6 +1780,7 @@ async def _openai_tool_loop(
                     if len(result) > 30000:
                         result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
 
+                    result = wrap_tool_result(func_name, result)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc_id,
@@ -1817,6 +1819,7 @@ async def _openai_tool_loop(
                         if len(result) > 30000:
                             result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
 
+                        result = wrap_tool_result(tc_name, result)
                         results_text.append(f"[Tool result for {tc_name}]:\n{result}")
 
                     # Add results as a user message (since we can't use tool role
@@ -2093,6 +2096,7 @@ class GeminiProvider(LLMProvider):
                         if len(result) > 30000:
                             result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
 
+                        result = wrap_tool_result(func_name, result)
                         response_parts.append({
                             "functionResponse": {
                                 "name": func_name,
@@ -2141,6 +2145,7 @@ class GeminiProvider(LLMProvider):
                             if len(result) > 30000:
                                 result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
 
+                            result = wrap_tool_result(tc_name, result)
                             results_text.append(f"[Tool result for {tc_name}]:\n{result}")
 
                         combined_results = "\n\n".join(results_text)

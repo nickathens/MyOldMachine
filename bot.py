@@ -38,6 +38,7 @@ from core.config import (
 )
 from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider, CodexCLIProvider
 from core.conversation_format import strip_hallucinated_turns, TURN_OVERHEAD_CHARS
+from core.prompt_security import UNTRUSTED_CONTEXT_POLICY
 
 # Both subprocess CLI providers share progress callbacks, /stop semantics, and
 # graceful shutdown. Anywhere the bot needs to gate CLI-specific behavior,
@@ -801,6 +802,8 @@ def build_system_prompt(user_id: int) -> str:
                 "For long-running commands (apt install, pip install, builds, downloads), "
                 "use run_command with background=true, then poll with check_process."
             )
+            parts.append("")
+            parts.append(UNTRUSTED_CONTEXT_POLICY)
         parts.append("If the user asks for something and you're missing a tool, install it.")
 
         # MCP server tools (if any connected)
