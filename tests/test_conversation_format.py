@@ -1,11 +1,16 @@
 """Unit tests for core.conversation_format.
 
 Covers the sentinel turn delimiter that replaced readable ``<user>`` / ``User:``
-tags in the CLI provider prompts:
+tags in the CLI provider prompts. Each marker carries a per-process random nonce,
+so the fixtures here derive the nonce from the live sentinel rather than
+hardcoding it. Tests cover:
 - wrap_turn() serialization shape
 - strip_hallucinated_turns() trims a fabricated next user turn
 - legitimate content that merely contains "User:" / "<user>" / "user:" survives
   (the regression the sentinel exists to prevent)
+- generic (nonce-free) talk *about* the marker format survives -- the regression
+  the per-process nonce exists to prevent (the bot quoting its own sentinel used
+  to truncate its reply at that point)
 - stray markers the model echoes around its own reply are removed, reply kept
 - a trailing partial marker (token-limit truncation) is dropped
 """
@@ -25,12 +30,26 @@ from core.conversation_format import (  # noqa: E402
     wrap_turn,
 )
 
+# The nonce is random per process; derive it from the public sentinel so the
+# fixtures never hardcode the random value.
+_PREFIX = "<|MOM-TURN:user:"
+_SUFFIX = "|>"
+_NONCE = NEXT_TURN_SENTINEL[len(_PREFIX):-len(_SUFFIX)]
+
+
+def _open(role: str) -> str:
+    return f"<|MOM-TURN:{role}:{_NONCE}|>"
+
+
+def _close(role: str) -> str:
+    return f"<|MOM-TURN:/{role}:{_NONCE}|>"
+
 
 class WrapTurnTests(unittest.TestCase):
     def test_shape(self):
         self.assertEqual(
             wrap_turn("user", "hello"),
-            "<|MOM-TURN:user|>hello<|MOM-TURN:/user|>",
+            _open("user") + "hello" + _close("user"),
         )
 
     def test_user_open_marker_matches_sentinel(self):
@@ -42,7 +61,7 @@ class WrapTurnTests(unittest.TestCase):
         body = "code: a < b and x | y"
         self.assertEqual(
             wrap_turn("assistant", body),
-            f"<|MOM-TURN:assistant|>{body}<|MOM-TURN:/assistant|>",
+            _open("assistant") + body + _close("assistant"),
         )
 
 
@@ -84,14 +103,51 @@ class StripHallucinatedTurnsTests(unittest.TestCase):
         html = "<div><user>name</user></div>\nMore markup follows here."
         self.assertEqual(strip_hallucinated_turns(html), html)
 
+    def test_pasted_transcript_with_user_lines_survives(self):
+        # A user pasting a chat transcript for the assistant to analyze must not
+        # have it silently truncated at the first "User:" line.
+        transcript = (
+            "Please summarize this support chat:\n\n"
+            "User: my order never arrived\n"
+            "Agent: I'm sorry to hear that, let me check\n"
+            "User: it's been two weeks\n"
+            "Agent: I've issued a refund"
+        )
+        self.assertEqual(strip_hallucinated_turns(transcript), transcript)
+
+    def test_generic_token_in_prose_survives(self):
+        # THE regression the per-process nonce fixes: the bot explaining the
+        # marker format must not truncate its own reply. A generic token carries
+        # no live nonce, so it is not a turn boundary.
+        doc = (
+            "I delimit turns with a sentinel like <|MOM-TURN:user|> and close "
+            "it with <|MOM-TURN:/user|> so I can spot fabricated turns."
+        )
+        self.assertEqual(strip_hallucinated_turns(doc), doc)
+
+    def test_generic_token_at_end_of_reply_survives(self):
+        # The trailing-partial path must also ignore a generic (single-colon)
+        # marker that lands at the very end of the message.
+        doc = "For example, a user turn opens with <|MOM-TURN:user|>"
+        self.assertEqual(strip_hallucinated_turns(doc), doc)
+
+    def test_generic_token_with_placeholder_nonce_survives(self):
+        # Documenting the *shape* including a placeholder nonce (not the live
+        # one) must also survive untouched.
+        doc = "Markers look like <|MOM-TURN:user:NONCE|> at runtime."
+        self.assertEqual(strip_hallucinated_turns(doc), doc)
+
     def test_stray_self_wrap_markers_removed_reply_kept(self):
-        # If the model wraps its OWN reply in assistant markers, strip the
-        # markers but keep the reply (don't blank the whole response).
-        wrapped = "<|MOM-TURN:assistant|>My real answer.<|MOM-TURN:/assistant|>"
+        # If the model wraps its OWN reply in (live, parroted) assistant
+        # markers, strip the markers but keep the reply (don't blank the whole
+        # response).
+        wrapped = wrap_turn("assistant", "My real answer.")
         self.assertEqual(strip_hallucinated_turns(wrapped), "My real answer.")
 
     def test_trailing_partial_marker_dropped(self):
-        truncated = "My answer ends here.\n<|MOM-TURN:us"
+        # Token-limit truncation cuts a parroted marker mid-nonce; drop the
+        # dangling fragment.
+        truncated = "My answer ends here.\n" + f"<|MOM-TURN:user:{_NONCE[:4]}"
         self.assertEqual(
             strip_hallucinated_turns(truncated),
             "My answer ends here.\n",
