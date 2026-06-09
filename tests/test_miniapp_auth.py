@@ -73,12 +73,25 @@ class TestValidateInitData(unittest.TestCase):
         self.assertIsNone(validate_init_data(init_data, "wrong-token"))
 
     def test_expired_auth_date_rejected(self) -> None:
-        old = self.now - (86400 + 100)
+        # Default window is 1h; anything older must be rejected.
+        old = self.now - (3600 + 100)
         init_data = _sign(self.TOKEN, {
             "auth_date": old,
             "user": json.dumps(self.user, separators=(",", ":")),
         })
         self.assertIsNone(validate_init_data(init_data, self.TOKEN))
+
+    def test_recent_auth_date_within_default_window_accepted(self) -> None:
+        # 30 minutes old sits inside the 1h default window. Pins the boundary
+        # from below so tightening past 1h is a deliberate choice, not drift.
+        recent = self.now - 1800
+        init_data = _sign(self.TOKEN, {
+            "auth_date": recent,
+            "user": json.dumps(self.user, separators=(",", ":")),
+        })
+        result = validate_init_data(init_data, self.TOKEN)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["id"], 8044898180)
 
     def test_missing_hash_rejected(self) -> None:
         self.assertIsNone(validate_init_data("auth_date=123&user=%7B%7D", self.TOKEN))

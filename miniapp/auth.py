@@ -17,14 +17,17 @@ from urllib.parse import parse_qs, unquote
 def validate_init_data(
     init_data: str,
     bot_token: str,
-    max_age_seconds: int = 86400,
+    max_age_seconds: int = 3600,
 ) -> dict | None:
     """Validate Telegram WebApp initData and return the parsed user dict.
 
     Args:
         init_data: The raw `initData` query string from `window.Telegram.WebApp`.
         bot_token: The bot's Telegram token, used as the HMAC secret seed.
-        max_age_seconds: Reject auth_date older than this (default 24h).
+        max_age_seconds: Reject auth_date older than this (default 1h).
+            Telegram mints fresh initData every time the Mini App opens, so a
+            short window costs nothing in UX and shrinks the replay value of a
+            leaked initData string.
 
     Returns:
         A dict with the user fields (id, first_name, ...) on success.
