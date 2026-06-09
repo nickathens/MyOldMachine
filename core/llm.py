@@ -219,6 +219,28 @@ def _looks_like_binary_load_failure(text: str) -> bool:
     return any(marker in lowered for marker in _CLI_LOAD_FAILURE_MARKERS)
 
 
+def _compose_full_reply(final_result: str, partial_text: str) -> str:
+    """Return the full ordered assistant narration for a finished turn.
+
+    The stream-json "result" field (``final_result``) holds only the LAST
+    assistant turn, the text emitted after the final tool call. Any narration
+    the model wrote BEFORE a tool call survives only in ``partial_text``, where
+    every text block is appended in order. Returning ``final_result`` alone
+    silently drops that pre-tool narration.
+
+    When ``partial_text`` is a strict superset of ``final_result`` (it holds the
+    result plus earlier narration), return the full accumulation so nothing the
+    model told the user is lost. Otherwise return ``final_result`` unchanged.
+    Requiring the superset relation guarantees the returned text always contains
+    ``final_result`` and avoids emitting a stray ``partial_text`` (such as a
+    short confabulated preamble) that does not include the real answer.
+    """
+    full_text = partial_text.strip()
+    if full_text and full_text != final_result and final_result in full_text:
+        return full_text
+    return final_result
+
+
 # --- Helpers shared by CLI subprocess providers ---------------------------
 
 async def _send_typing_periodically(chat):
@@ -669,7 +691,8 @@ class ClaudeCLIProvider(LLMProvider):
                         if self.on_progress_clear and user_id:
                             self.on_progress_clear(user_id)
                         return LLMResponse(
-                            text=final_result + "\n\n[Task incomplete - Claude stopped responding after 1 hour]",
+                            text=_compose_full_reply(final_result, partial_text)
+                            + "\n\n[Task incomplete - Claude stopped responding after 1 hour]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
                     timeout_msg = "Claude stopped responding after 1 hour of inactivity."
@@ -873,7 +896,8 @@ class ClaudeCLIProvider(LLMProvider):
 
             if final_result:
                 return LLMResponse(
-                    text=final_result, model=self.model,
+                    text=_compose_full_reply(final_result, partial_text),
+                    model=self.model,
                     provider=self.provider_name, tool_use=True,
                 )
 
