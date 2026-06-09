@@ -376,7 +376,10 @@ async def run_health_check(send_fn, admin_user_ids: list[int],
 # by cleanly exiting the process so systemd/launchd restarts it.
 
 POLLING_CHECK_INTERVAL = 60      # How often to check (seconds)
-POLLING_STALE_THRESHOLD = 1800   # 30 minutes with zero updates → investigate
+# The watchdog keys on poll-cycle liveness (record_poll_cycle), not inbound-update
+# silence. PTB long-polls, so a healthy loop completes a getUpdates cycle every few
+# seconds even when nobody is texting; no cycle for this long means it is wedged.
+POLLING_POLL_STALE_THRESHOLD = 180   # No getUpdates cycle for this long → poll loop stuck
 POLLING_RECOVERY_COOLDOWN = 300  # 5 min cooldown between recovery attempts
 
 # Internet check targets — lightweight HEAD requests
@@ -393,16 +396,23 @@ class PollingHealthMonitor:
     Monitors Telegram polling liveness and recovers from silent failures.
 
     How it works:
-    - Every incoming Telegram update resets the last_update_time via record_update().
-    - Every 60 seconds the monitor checks elapsed time since last update.
-    - If 30+ minutes pass with no updates:
+    - Every completed getUpdates poll cycle refreshes last_poll_time via
+      record_poll_cycle(). This is the authoritative liveness signal: PTB
+      long-polls, so a healthy loop ticks every few seconds even when no
+      updates arrive. A stale heartbeat means the poll loop itself is wedged,
+      which is the only condition worth recovering from. (record_update() still
+      tracks inbound updates but is informational only; a quiet chat is not a
+      fault, so silence no longer triggers a restart.)
+    - Every 60 seconds the monitor checks elapsed time since the last poll cycle.
+    - If POLLING_POLL_STALE_THRESHOLD passes with no completed poll cycle:
       1. Check internet connectivity (async HTTP HEAD requests).
       2. If internet is down → log it, keep waiting (nothing we can do).
-      3. If internet is up but we still see no updates on the *next* check
-         (two consecutive stale checks = ~32 minutes minimum) → the polling
-         loop is likely stuck. Exit the process cleanly so systemd restarts it.
-    - If a local Bot API is configured, attempt to restart it first before
-      exiting the whole process.
+      3. If internet is up but still no poll cycle on the *next* check
+         (two consecutive stale checks) → the polling loop is stuck.
+         Restart the local Bot API if one is configured; otherwise exit the
+         process cleanly so systemd/launchd restarts it.
+    - Until the first heartbeat lands, the watchdog stays in safe mode (never
+      restarts), so it cannot act on a missing signal during warm-up.
     - All recovery is silent — no messages sent to the user.
     """
 
@@ -413,16 +423,45 @@ class PollingHealthMonitor:
         self.local_api_base = local_api_base
 
         # State
+        # last_poll_time is the authoritative liveness signal: refreshed every
+        # time a getUpdates poll cycle completes (record_poll_cycle). None until
+        # the first cycle lands, so we never act before the poll loop has proven
+        # it is alive.
+        self.last_poll_time: Optional[float] = None
+        # last_update_time is informational only (most recent inbound update).
+        # It no longer drives restarts: legitimate silence is not a fault.
         self.last_update_time: float = time.monotonic()
-        self.last_recovery_time: float = 0.0
+        # -inf (not 0.0) so the first recovery is never gated by the cooldown:
+        # time.monotonic()'s zero point is ~boot, so 0.0 would suppress recovery
+        # for the first POLLING_RECOVERY_COOLDOWN seconds of uptime, exactly the
+        # startup window where a wedged poll loop is most likely.
+        self.last_recovery_time: float = float("-inf")
         self.internet_was_down: bool = False
         self._was_stale: bool = False
+        self._warned_no_heartbeat: bool = False  # One-shot warning if heartbeat never arrives
         self._running: bool = False
         self._task: Optional[asyncio.Task] = None
 
     def record_update(self):
-        """Call on every incoming Telegram update."""
+        """Call on every incoming Telegram update.
+
+        Informational only: tracks the most recent inbound message so the
+        diagnostics read sensibly. It does NOT drive restart decisions; a quiet
+        chat is not a fault. The poll-cycle heartbeat (record_poll_cycle) is the
+        signal that matters.
+        """
         self.last_update_time = time.monotonic()
+
+    def record_poll_cycle(self):
+        """Call every time a getUpdates poll cycle completes successfully.
+
+        This is the watchdog's heartbeat. PTB long-polls Telegram, so a healthy
+        loop completes a cycle every few seconds even when no updates arrive
+        (Telegram returns an empty batch when the long-poll window elapses).
+        A stale last_poll_time therefore means the poll loop itself is wedged,
+        the one condition that actually warrants recovery.
+        """
+        self.last_poll_time = time.monotonic()
 
     def start(self):
         """Start the background monitor."""
@@ -431,8 +470,8 @@ class PollingHealthMonitor:
         self._running = True
         self._task = asyncio.create_task(self._loop())
         logger.info(
-            "Polling health monitor started (check every %ds, stale threshold %ds)",
-            POLLING_CHECK_INTERVAL, POLLING_STALE_THRESHOLD,
+            "Polling health monitor started (check every %ds, poll-stale threshold %ds)",
+            POLLING_CHECK_INTERVAL, POLLING_POLL_STALE_THRESHOLD,
         )
 
     async def stop(self):
@@ -463,17 +502,40 @@ class PollingHealthMonitor:
             await asyncio.sleep(POLLING_CHECK_INTERVAL)
 
     async def _check(self):
-        """Single health check cycle."""
-        elapsed = time.monotonic() - self.last_update_time
+        """Recover only when the poll loop is genuinely wedged.
 
-        if elapsed < POLLING_STALE_THRESHOLD:
-            # Updates arriving normally
+        The authoritative signal is the poll-cycle heartbeat (last_poll_time),
+        refreshed by record_poll_cycle() on every completed getUpdates round-trip.
+        Because PTB long-polls, a healthy loop ticks every few seconds regardless
+        of whether anyone is texting, so a stale heartbeat means the poll loop
+        itself has stopped. This replaces the old "no inbound updates for 30
+        minutes" trigger, which fired during normal quiet periods and churned
+        recovery for no reason.
+        """
+        # Failsafe: if the heartbeat has never landed, the hook may be missing or
+        # the loop is still warming up. Degrade safely to "never recover on
+        # silence" rather than risk a restart loop on a bad signal. Warn once.
+        if self.last_poll_time is None:
+            if not self._warned_no_heartbeat:
+                logger.warning(
+                    "No poll-cycle heartbeat recorded yet. Watchdog is in safe "
+                    "mode (no silence-triggered recovery) until the poll loop "
+                    "reports a completed getUpdates cycle."
+                )
+                self._warned_no_heartbeat = True
+            return
+
+        elapsed = time.monotonic() - self.last_poll_time
+
+        if elapsed < POLLING_POLL_STALE_THRESHOLD:
+            # Poll loop is ticking normally.
             self._was_stale = False
             return
 
         logger.warning(
-            "No Telegram updates for %.0f seconds (threshold: %d). Diagnosing...",
-            elapsed, POLLING_STALE_THRESHOLD,
+            "No getUpdates poll cycle completed for %.0f seconds (threshold: %d). "
+            "Diagnosing...",
+            elapsed, POLLING_POLL_STALE_THRESHOLD,
         )
 
         # Step 1: Internet connectivity
@@ -502,15 +564,15 @@ class PollingHealthMonitor:
         # Step 2: Internet is up. Two-check confirmation to prevent false positives.
         if not self._was_stale:
             logger.info(
-                "Internet OK but no updates. Could be a quiet period — "
-                "will confirm on next check."
+                "Internet OK but no poll cycle completing, will confirm on "
+                "next check before recovering."
             )
             self._was_stale = True
             return
 
-        # Step 3: Second consecutive stale check. Something is wrong.
+        # Step 3: Second consecutive stale check. The poll loop is wedged.
         logger.warning(
-            "No updates for %.0f seconds despite healthy internet "
+            "No poll cycle for %.0f seconds despite healthy internet "
             "(confirmed over 2 checks). Taking recovery action.",
             elapsed,
         )
@@ -526,9 +588,12 @@ class PollingHealthMonitor:
         # If using a local Bot API, restart that service first
         if self.local_api_base:
             restarted = await self._restart_local_api(
-                "Stale polling — internet OK but no updates arriving"
+                "Stale polling: internet OK but no getUpdates cycles completing"
             )
             if restarted:
+                # Give the poll loop a fresh grace window to reconnect through
+                # the restarted API rather than immediately re-triggering.
+                self.last_poll_time = time.monotonic()
                 self._was_stale = False
                 return
 
@@ -536,7 +601,7 @@ class PollingHealthMonitor:
         # Exit cleanly so systemd/launchd restarts the entire bot.
         logger.critical(
             "Polling loop appears stuck. Exiting for automatic restart. "
-            "Reason: %d seconds with no updates, internet OK.",
+            "Reason: %d seconds with no completed poll cycle, internet OK.",
             int(elapsed),
         )
         # os._exit avoids cleanup complications — systemd will restart us

@@ -60,6 +60,8 @@ from utils.safe_json import save_json as _atomic_save_json
 from utils.env_io import atomic_env_write as _atomic_env_write
 
 from telegram import Update
+from telegram.error import BadRequest, NetworkError
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -1572,6 +1574,26 @@ def command_body(text: str) -> str:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
+class HeartbeatRequest(HTTPXRequest):
+    """get_updates_request wrapper that records a poll-loop liveness heartbeat.
+
+    The watchdog must tell "the poll loop is dead" apart from "nobody is
+    texting." PTB routes the getUpdates endpoint exclusively to the
+    get_updates_request object, so every successful round-trip through this
+    request is exactly one completed poll cycle, even when Telegram returns
+    zero updates. do_request returns for any HTTP response and only raises on a
+    transport failure, so the heartbeat stays fresh while polling is reachable
+    and goes stale precisely when the poll loop is stuck.
+    """
+
+    async def do_request(self, *args, **kwargs):
+        result = await super().do_request(*args, **kwargs)
+        monitor = get_polling_monitor()
+        if monitor is not None:
+            monitor.record_poll_cycle()
+        return result
+
+
 def split_message(text: str, max_length: int = 4000) -> list[str]:
     if len(text) <= max_length:
         return [text]
@@ -1588,6 +1610,51 @@ def split_message(text: str, max_length: int = 4000) -> list[str]:
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip()
     return chunks
+
+
+_SEND_MAX_ATTEMPTS = 4
+_SEND_RETRY_DELAY = 3.0
+
+
+async def send_chunks_with_retry(send_fn, text: str, user_id: int) -> None:
+    """Send ``text`` (split into Telegram-sized chunks) via ``send_fn``, retrying
+    transient network failures so a brief local-API restart does not drop the reply.
+
+    ``send_fn`` is an async callable taking a single chunk string, e.g.
+    ``update.message.reply_text`` or ``chat.send_message``. A chunk is retried
+    only on transient connectivity errors (NetworkError, which includes its
+    TimedOut subclass). BadRequest also subclasses NetworkError in PTB but is
+    permanent (message too long, chat not found, ...), so it is caught first and
+    never retried.
+    """
+    for chunk in split_message(text):
+        for attempt in range(_SEND_MAX_ATTEMPTS):
+            try:
+                await send_fn(chunk)
+                break
+            except BadRequest as exc:
+                # Permanent failure, retrying cannot help. This clause MUST
+                # precede NetworkError because BadRequest is a subclass of it.
+                logger.error(
+                    "Dropping response chunk for user %s (bad request): %s",
+                    user_id, exc
+                )
+                break
+            except NetworkError as exc:
+                # Transient (TimedOut is a NetworkError subclass): the local API
+                # is likely mid-restart. Back off and retry.
+                if attempt == _SEND_MAX_ATTEMPTS - 1:
+                    logger.error(
+                        "Failed to send response chunk to user %s after %d attempts: %s",
+                        user_id, _SEND_MAX_ATTEMPTS, exc
+                    )
+                    break
+                await asyncio.sleep(_SEND_RETRY_DELAY)
+            except Exception as exc:
+                logger.error(
+                    "Failed to send response chunk to user %s: %s", user_id, exc
+                )
+                break
 
 
 # --- Telegram handlers ---
@@ -2952,11 +3019,7 @@ async def _process_media_group_inner(updates, user_id, context):
 
         _save_and_send(user_id, user_message, response, session=session, message_id=first_msg_id)
 
-        for chunk in split_message(response):
-            try:
-                await chat.send_message(chunk)
-            except Exception as e:
-                logger.error(f"Failed to send to user {user_id}: {e}")
+        await send_chunks_with_retry(chat.send_message, response, user_id)
     except Exception as e:
         logger.exception(f"Error processing media group for user {user_id}")
         try:
@@ -3186,11 +3249,7 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
         _save_and_send(user_id, user_message, response, session=session,
                        message_id=update.message.message_id)
 
-        for chunk in split_message(response):
-            try:
-                await update.message.reply_text(chunk)
-            except Exception as e:
-                logger.error(f"Failed to send reply to {user_id}: {e}")
+        await send_chunks_with_retry(update.message.reply_text, response, user_id)
 
         logger.info(f"Responded to {user_id}: {len(response)} chars")
 
@@ -4191,7 +4250,6 @@ def main():
     api_base = get_telegram_api_base()
     builder = Application.builder().token(token)
     if api_base:
-        from telegram.request import HTTPXRequest
         request = HTTPXRequest(
             connect_timeout=30.0,
             read_timeout=300.0,
@@ -4200,8 +4258,11 @@ def main():
         builder = (builder
                    .base_url(f"{api_base}/bot")
                    .base_file_url(f"{api_base}/file/bot")
-                   .request(request)
-                   .get_updates_request(HTTPXRequest(read_timeout=30.0)))
+                   .request(request))
+    # Heartbeat-instrumented get_updates_request in BOTH modes (local Bot API or
+    # direct to Telegram), so the watchdog observes real poll cycles regardless
+    # of topology. record_poll_cycle() fires on every completed getUpdates call.
+    builder = builder.get_updates_request(HeartbeatRequest(read_timeout=30.0))
     builder = builder.concurrent_updates(True)
     app = builder.build()
 
