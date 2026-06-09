@@ -386,10 +386,11 @@ DEFAULT_MODELS = {
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
-# Last updated: May 29, 2026 — verified against official API docs/pricing pages
+# Last updated: June 10, 2026 — verified against official API docs/pricing pages
 PROVIDER_MODELS = {
     "claude": [
         ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning, 1M ctx (recommended)"),
+        ("claude-fable-5", "Claude Fable 5 — next-gen flagship, hardest coding + agentic work, uses plan quota fast"),
         ("claude-opus-4-8", "Claude Opus 4.8 — most capable, best agentic coding, 1M ctx"),
         ("claude-opus-4-7", "Claude Opus 4.7 — previous flagship, 1M ctx"),
         ("claude-opus-4-6", "Claude Opus 4.6 — legacy flagship, 1M ctx"),
@@ -403,6 +404,7 @@ PROVIDER_MODELS = {
     ],
     "claude-api": [
         ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, 1M ctx, $3/$15 per MTok (recommended)"),
+        ("claude-fable-5", "Claude Fable 5 — next-gen flagship, hardest coding + agentic work, $10/$50 per MTok"),
         ("claude-opus-4-8", "Claude Opus 4.8 — most capable, best agentic coding, 1M ctx, $5/$25 per MTok"),
         ("claude-opus-4-7", "Claude Opus 4.7 — previous flagship, 1M ctx, $5/$25 per MTok"),
         ("claude-opus-4-6", "Claude Opus 4.6 — legacy flagship, 1M ctx, $5/$25 per MTok"),
