@@ -431,7 +431,11 @@ class PollingHealthMonitor:
         # last_update_time is informational only (most recent inbound update).
         # It no longer drives restarts: legitimate silence is not a fault.
         self.last_update_time: float = time.monotonic()
-        self.last_recovery_time: float = 0.0
+        # -inf (not 0.0) so the first recovery is never gated by the cooldown:
+        # time.monotonic()'s zero point is ~boot, so 0.0 would suppress recovery
+        # for the first POLLING_RECOVERY_COOLDOWN seconds of uptime, exactly the
+        # startup window where a wedged poll loop is most likely.
+        self.last_recovery_time: float = float("-inf")
         self.internet_was_down: bool = False
         self._was_stale: bool = False
         self._warned_no_heartbeat: bool = False  # One-shot warning if heartbeat never arrives
