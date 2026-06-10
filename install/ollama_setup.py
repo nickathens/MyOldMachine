@@ -13,7 +13,7 @@ Usage:
     python install/ollama_setup.py                    # Interactive
     python install/ollama_setup.py --auto             # Auto-detect and install best model
     python install/ollama_setup.py --benchmark-only   # Just show specs and recommendation
-    python install/ollama_setup.py --model qwen2.5:3b # Install specific model
+    python install/ollama_setup.py --model qwen3.5:4b # Install specific model
 """
 
 import argparse
@@ -205,19 +205,20 @@ def run_benchmark() -> dict:
 # --- Model Recommendation ---
 
 # Model catalog: name, size on disk (GB), RAM needed (GB), quality tier, tool-use reliability
+# Refreshed June 10, 2026: qwen3.5 disk sizes verified against ollama.com library tags;
+# RAM estimates follow the same disk+headroom slope as the prior calibration.
+# Must stay sorted ascending by resource needs: recommend_model() picks the LAST row that fits.
 MODEL_CATALOG = [
     # (model_tag, disk_gb, ram_gb, quality, tool_use_reliable, description)
     ("qwen2.5:0.5b",    0.4,  1.0,  1, False, "Qwen 2.5 0.5B — barely functional, extremely fast"),
-    ("qwen2.5:1.5b",    1.0,  2.0,  2, False, "Qwen 2.5 1.5B — basic tasks, fast"),
+    ("qwen3.5:0.8b",    1.0,  2.0,  2, False, "Qwen 3.5 0.8B — tiny and fast, basic chat"),
     ("gemma2:2b",        1.6,  3.0,  3, False, "Gemma 2 2B — light, decent for chat"),
-    ("qwen2.5:3b",       2.0,  3.5,  3, False, "Qwen 2.5 3B — good chat, weak tool-use"),
-    ("llama3.2:3b",      2.0,  3.5,  3, False, "Llama 3.2 3B — good instruction following"),
-    ("phi3:3.8b",        2.3,  4.0,  4, False, "Phi-3 3.8B — Microsoft, strong for size"),
-    ("mistral:7b",       4.1,  5.5,  5, True,  "Mistral 7B — reliable all-rounder"),
-    ("llama3.1:8b",      4.7,  6.0,  6, True,  "Llama 3.1 8B — strong tool-use, recommended minimum"),
-    ("gemma2:9b",        5.4,  7.0,  6, True,  "Gemma 2 9B — Google, strong reasoning"),
-    ("qwen2.5:14b",      9.0,  10.0, 7, True,  "Qwen 2.5 14B — excellent quality"),
-    ("llama3.1:70b-q4",  40.0, 48.0, 9, True,  "Llama 3.1 70B Q4 — near-frontier quality"),
+    ("qwen3.5:2b",       2.7,  4.0,  4, False, "Qwen 3.5 2B — good chat, weak tool-use"),
+    ("qwen3.5:4b",       3.4,  5.0,  5, True,  "Qwen 3.5 4B — lightest reliable tool-use"),
+    ("llama3.1:8b",      4.7,  6.0,  6, True,  "Llama 3.1 8B — battle-tested tool-use"),
+    ("qwen3.5:9b",       6.6,  8.0,  7, True,  "Qwen 3.5 9B — strong tool-use, recommended"),
+    ("qwen3.5:27b",      17.0, 20.0, 8, True,  "Qwen 3.5 27B — excellent quality"),
+    ("qwen3.5:35b",      24.0, 28.0, 9, True,  "Qwen 3.5 35B MoE — near-frontier quality"),
 ]
 
 
@@ -257,7 +258,7 @@ def recommend_model(specs: dict) -> tuple[str, str]:
         explanation += (
             f"\n  {YELLOW}Warning: This model is below the recommended minimum for tool-use.{NC}\n"
             f"  It may fail to format tool calls correctly. For reliable machine control,\n"
-            f"  you need at least 8GB RAM for Llama 3.1 8B or Mistral 7B.\n"
+            f"  you need at least ~7GB total RAM for Qwen 3.5 4B (or 8GB for Llama 3.1 8B).\n"
             f"  Consider using OpenRouter (free) for better tool-use quality."
         )
 

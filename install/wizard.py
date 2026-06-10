@@ -351,7 +351,7 @@ _ALL_LLM_PROVIDERS = [
     ("deepseek", "DeepSeek — extremely cheap ($0.14/$0.28 per MTok), 1M context, machine control"),
     ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
     ("kimi", "Moonshot Kimi — K2.6 long-horizon coding, 256K context, $0.95/$4.00 per MTok, machine control"),
-    ("minimax", "MiniMax — M2.7 reasoning, 205K context, $0.30/$1.20 per MTok, machine control"),
+    ("minimax", "MiniMax — M3 frontier coding, 1M context, $0.30/$1.20 per MTok, machine control"),
     ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
     ("ollama-cloud", "Ollama Cloud — cloud-hosted models (free tier available), no local GPU needed"),
@@ -376,8 +376,8 @@ DEFAULT_MODELS = {
     "deepseek": "deepseek-v4-flash",
     "grok": "grok-4.3",
     "kimi": "kimi-k2.6",
-    "minimax": "MiniMax-M2.7",
-    "gemini": "gemini-3-flash-preview",
+    "minimax": "MiniMax-M3",
+    "gemini": "gemini-3.5-flash",
     "ollama": "llama3.1:8b",
     "ollama-cloud": "qwen3.5:cloud",
     "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
@@ -397,10 +397,9 @@ PROVIDER_MODELS = {
     ],
     "codex": [
         ("gpt-5.5", "GPT-5.5 — Codex CLI default, vision + tools, 1M ctx (recommended)"),
-        ("gpt-5.5-pro", "GPT-5.5 Pro — max intelligence, slower, 1M ctx"),
         ("gpt-5.4", "GPT-5.4 — prior frontier, vision + tools, 1.1M ctx"),
-        ("gpt-5.4-mini", "GPT-5.4 Mini — fast, vision + tools"),
-        ("gpt-5.3-codex", "GPT-5.3 Codex — current coding-tuned agentic variant"),
+        ("gpt-5.4-mini", "GPT-5.4 Mini — fast, lower-cost, good for lighter tasks and subagents"),
+        ("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark — near-instant coding iteration (ChatGPT Pro plans only)"),
     ],
     "claude-api": [
         ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, 1M ctx, $3/$15 per MTok (recommended)"),
@@ -414,29 +413,26 @@ PROVIDER_MODELS = {
     "openai": [
         ("gpt-5.5", "GPT-5.5 — latest frontier, vision + tools, 1M ctx, $5/$30 per MTok (recommended)"),
         ("gpt-5.5-pro", "GPT-5.5 Pro — max intelligence, 1M ctx, $30/$180 per MTok"),
-        ("gpt-5.4-pro", "GPT-5.4 Pro — high-stakes reasoning, $30/$180 per MTok"),
         ("gpt-5.4", "GPT-5.4 — prior frontier, vision + tools, 1.1M ctx, $2.50/$15 per MTok"),
         ("gpt-5.4-mini", "GPT-5.4 Mini — fast, vision + tools, $0.75/$4.50 per MTok"),
         ("gpt-5.4-nano", "GPT-5.4 Nano — cheapest 5.4-class, $0.20/$1.25 per MTok"),
-        ("gpt-5.3-codex", "GPT-5.3 Codex — most capable agentic coding model, $1.75/$14 per MTok"),
         ("gpt-5", "GPT-5 — prior reasoning model, succeeded by GPT-5.5"),
-        ("gpt-5-nano", "GPT-5 Nano — fastest, cheapest 5-class, 400K ctx"),
         ("gpt-4.1", "GPT-4.1 — smartest non-reasoning model, 1M context, $2/$8 per MTok"),
         ("gpt-4.1-mini", "GPT-4.1 Mini — good balance, 1M ctx, $0.40/$1.60 per MTok"),
-        ("o3", "o3 — reasoning model for complex tasks, succeeded by GPT-5"),
-        ("o3-pro", "o3-pro — extended-compute reasoning variant"),
     ],
     "grok": [
         ("grok-4.3", "Grok 4.3 — newest flagship, 1M ctx, $1.25/$2.50 per MTok (recommended)"),
+        ("grok-build-0.1", "Grok Build 0.1 — dedicated software-engineering model, 256K ctx, $1/$2 per MTok"),
         ("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast — cheapest, 2M ctx, $0.20/$0.50 per MTok"),
         ("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning — chain-of-thought, 2M ctx, $0.20/$0.50"),
-        ("grok-4.20-0309-non-reasoning", "Grok 4.20 — flagship, 2M ctx, vision + tools, $1.25/$2.50 per MTok"),
-        ("grok-4.20-0309-reasoning", "Grok 4.20 Reasoning — flagship w/ reasoning, 2M ctx, $1.25/$2.50 per MTok"),
-        ("grok-4.20-multi-agent-0309", "Grok 4.20 Multi-Agent — orchestrated agents, 2M ctx, $1.25/$2.50 per MTok"),
+        ("grok-4.20-0309-non-reasoning", "Grok 4.20 — prior flagship, 1M ctx, vision + tools, $1.25/$2.50 per MTok"),
+        ("grok-4.20-0309-reasoning", "Grok 4.20 Reasoning — prior flagship w/ reasoning, 1M ctx, $1.25/$2.50 per MTok"),
+        ("grok-4.20-multi-agent-0309", "Grok 4.20 Multi-Agent — orchestrated agents, 1M ctx, $1.25/$2.50 per MTok"),
     ],
     "gemini": [
-        ("gemini-3-flash-preview", "Gemini 3 Flash Preview — frontier, free tier, $0.50/$3 per MTok (recommended)"),
-        ("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite — GA, cheapest next-gen, free tier, $0.25/$1.50"),
+        ("gemini-3.5-flash", "Gemini 3.5 Flash — new frontier (May 2026), free tier, $1.50/$9 per MTok (recommended)"),
+        ("gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite — GA, cheapest next-gen, free tier, $0.25/$1.50"),
+        ("gemini-3-flash-preview", "Gemini 3 Flash Preview — prior frontier, free tier, $0.50/$3 per MTok"),
         ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview — most capable, paid only, $2/$12 per MTok (≤200K)"),
         ("gemini-2.5-flash", "Gemini 2.5 Flash — legacy, free tier, $0.30/$2.50 per MTok"),
         ("gemini-2.5-pro", "Gemini 2.5 Pro — legacy, free tier, $1.25/$10 per MTok"),
@@ -444,22 +440,22 @@ PROVIDER_MODELS = {
     ],
     "deepseek": [
         ("deepseek-v4-flash", "DeepSeek V4 Flash — 1M ctx, 384K output, $0.14/$0.28 per MTok (recommended)"),
-        ("deepseek-v4-pro", "DeepSeek V4 Pro — flagship, 1M ctx, 384K output, $1.74/$3.48 per MTok (75% off promo through May 31 2026)"),
+        ("deepseek-v4-pro", "DeepSeek V4 Pro — flagship, 1M ctx, 384K output, $1.74/$3.48 per MTok"),
         ("deepseek-chat", "DeepSeek Chat — alias to V4 Flash non-thinking, deprecates 2026-07-24"),
         ("deepseek-reasoner", "DeepSeek Reasoner — alias to V4 Flash thinking, deprecates 2026-07-24"),
     ],
     "kimi": [
         ("kimi-k2.6", "Kimi K2.6 — latest, long-horizon coding, 256K ctx, $0.95/$4.00 per MTok (recommended)"),
-        ("kimi-k2-thinking", "Kimi K2 Thinking — advanced reasoning, 256K ctx, $0.60/$2.50 per MTok (retires 2026-05-25)"),
-        ("kimi-k2-0905-preview", "Kimi K2 — text + code, 256K ctx, $0.60/$2.50 per MTok (retires 2026-05-25)"),
     ],
     "minimax": [
-        ("MiniMax-M2.7", "MiniMax M2.7 — self-evolving reasoning, 205K ctx, $0.30/$1.20 per MTok (recommended)"),
+        ("MiniMax-M3", "MiniMax M3 — frontier coding + native multimodal, 1M ctx, $0.30/$1.20 per MTok (recommended)"),
+        ("MiniMax-M2.7", "MiniMax M2.7 — prior flagship, 205K ctx, $0.30/$1.20 per MTok"),
         ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed — faster variant, $0.60/$2.40 per MTok"),
-        ("MiniMax-M2.5", "MiniMax M2.5 — multimodal (vision + tools), 205K ctx, $0.30/$1.20 per MTok"),
     ],
     "ollama-cloud": [
         ("qwen3.5:cloud", "Qwen 3.5 Cloud — multimodal, strong reasoning (recommended)"),
+        ("minimax-m3:cloud", "MiniMax M3 — frontier coding, 1M ctx, native multimodal"),
+        ("nemotron-3-ultra:cloud", "Nemotron 3 Ultra — NVIDIA, high-throughput reasoning, long-running agents"),
         ("glm-5.1:cloud", "GLM 5.1 — Zhipu AI, SOTA on SWE-Bench Pro, agentic engineering"),
         ("kimi-k2.6:cloud", "Kimi K2.6 — Moonshot, long-horizon coding agent"),
         ("deepseek-v4-flash:cloud", "DeepSeek V4 Flash — 284B MoE, 1M ctx, efficient reasoning"),
@@ -473,26 +469,31 @@ PROVIDER_MODELS = {
 }
 
 # Free models available on OpenRouter (no billing required)
-# Updated May 14, 2026 — verified against openrouter.ai and provider docs.
+# Updated June 10, 2026: verified live against openrouter.ai/api/v1/models
+# (filtered: prompt+completion price 0 AND "tools" in supported_parameters).
 # IMPORTANT: Only models with tool-use/function-calling support are listed.
 # MyOldMachine needs tool-use to control the machine.
 # Rate limits: 20 requests/minute, 200 requests/day (1000/day with 10+ paid credits on file).
 OPENROUTER_FREE_MODELS = [
-    ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron Super 120B — NVIDIA, tools + reasoning, 262K ctx (recommended)"),
-    ("inclusionai/ring-2.6-1t:free", "Ring 2.6 1T — InclusionAI flagship (formerly Ling), tools, 262K ctx"),
+    ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron 3 Super 120B — NVIDIA, tools + reasoning, 1M ctx (recommended)"),
+    ("moonshotai/kimi-k2.6:free", "Kimi K2.6 — Moonshot flagship, long-horizon coding, tools, 262K ctx"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "Nemotron 3 Ultra 550B — NVIDIA largest, tools + reasoning, 1M ctx"),
+    ("qwen/qwen3-coder:free", "Qwen3 Coder 480B — Alibaba, coding + tool-use, 1M ctx"),
+    ("poolside/laguna-m.1:free", "Poolside Laguna M.1 — coding agents, tools, 262K ctx"),
+    ("poolside/laguna-xs.2:free", "Poolside Laguna XS.2 — small fast coding model, tools, 262K ctx"),
     ("google/gemma-4-31b-it:free", "Gemma 4 31B — Google, vision + tools, 262K ctx"),
     ("google/gemma-4-26b-a4b-it:free", "Gemma 4 26B — Google, vision + tools, 262K ctx"),
-    ("qwen/qwen3-coder:free", "Qwen3 Coder — Alibaba, coding + tool-use, 262K ctx"),
     ("qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3 Next 80B — large MoE, tool-use, 262K ctx"),
-    ("nvidia/nemotron-3-nano-30b-a3b:free", "Nemotron Nano 30B — NVIDIA, tool-use, 256K ctx"),
+    ("nvidia/nemotron-3-nano-30b-a3b:free", "Nemotron 3 Nano 30B — NVIDIA, tool-use, 256K ctx"),
+    ("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "Nemotron 3 Nano Omni — multimodal reasoning, tools, 256K ctx"),
     ("openrouter/free", "OpenRouter Free Router — auto-routes free models, vision + tools, 200K ctx"),
-    ("minimax/minimax-m2.5:free", "MiniMax M2.5 — tool-use, 197K ctx"),
+    ("openrouter/owl-alpha", "Owl Alpha — cloaked agentic preview, tools, 1M ctx (free during alpha)"),
+    ("nex-agi/nex-n2-pro:free", "Nex N2 Pro — agentic, tool-use, 262K ctx"),
     ("openai/gpt-oss-120b:free", "GPT-OSS 120B — OpenAI open-source, strong tool-use, 131K ctx"),
     ("openai/gpt-oss-20b:free", "GPT-OSS 20B — OpenAI open-source, fast, tool-use, 131K ctx"),
-    ("z-ai/glm-4.5-air:free", "GLM 4.5 Air — Zhipu AI, tool-use, 131K ctx"),
     ("nvidia/nemotron-nano-12b-v2-vl:free", "Nemotron Nano 12B VL — NVIDIA, vision + tool-use, 128K ctx"),
     ("nvidia/nemotron-nano-9b-v2:free", "Nemotron Nano 9B — NVIDIA, tool-use, 128K ctx"),
-    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — Meta, solid all-rounder, tool-use, 66K ctx"),
+    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — Meta, solid all-rounder, tool-use, 131K ctx"),
 ]
 
 # Providers that need an API key
