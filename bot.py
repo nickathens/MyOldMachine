@@ -1515,6 +1515,21 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
     return text
 
 
+async def _locked_call_llm(user_id: int, message: str, chat=None, images: list = None) -> str:
+    """call_llm behind the same per-user lock the Telegram handlers hold.
+
+    Telegram traffic serializes per user via _get_user_lock (_process_single,
+    _process_media_group), but scheduled agent jobs used to call call_llm
+    bare. A job firing while the user was mid-conversation ran concurrently
+    with their live turn: two LLM calls interleaving on the same session
+    history, and an ambiguous target for the "stop" command. Scheduled jobs
+    now wait for the live turn to finish (and vice versa), exactly as a
+    second Telegram message would.
+    """
+    async with _get_user_lock(user_id):
+        return await call_llm(user_id, message, chat=chat, images=images)
+
+
 def _save_and_send(user_id: int, user_message: str, response: str,
                    session=None, message_id: int = None, **_kwargs):
     """Save conversation turn and trigger compaction if needed.
@@ -4334,7 +4349,10 @@ def main():
     # Startup: initialize scheduler, recover pending messages, health monitor, send first boot
     async def post_init(application):
         scheduler = init_scheduler(token, api_base)
-        scheduler.set_claude_handler(call_llm)
+        # _locked_call_llm, not bare call_llm: scheduled agent jobs must take
+        # the same per-user lock as live Telegram handlers or the two race on
+        # one session.
+        scheduler.set_claude_handler(_locked_call_llm)
         scheduler.start()
         logger.info("Scheduler started with Claude handler")
         await recover_pending_messages(application.bot)

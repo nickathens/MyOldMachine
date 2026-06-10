@@ -6,6 +6,7 @@ No hardcoded user-specific paths.
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -40,9 +41,20 @@ SCHEDULER_DIR = DATA_DIR / "scheduler"
 IDENTITY_DIR = DATA_DIR / "identities"
 LOG_DIR = DATA_DIR / "logs"
 
-# Ensure directories exist
+# Ensure directories exist, private to the bot's OS account. Conversations,
+# memory, identities, and logs all live under data/; 0700 keeps other local
+# accounts out. Re-applied on every import so a loosened tree self-heals on
+# the next boot (same pattern as ensure_scheduler_dir in core/scheduler.py).
+# chmod failures are non-fatal: a warning beats refusing to boot on a
+# filesystem that does not support POSIX permissions.
 for d in [DATA_DIR, USERS_DIR, MEMORY_DIR, SCHEDULER_DIR, IDENTITY_DIR, LOG_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(d, 0o700)
+    except OSError as _chmod_exc:
+        logging.getLogger(__name__).warning(
+            "Could not chmod %s to 0700: %s", d, _chmod_exc
+        )
 
 
 def get_telegram_token() -> str:
