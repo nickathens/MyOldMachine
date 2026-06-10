@@ -1021,7 +1021,6 @@ class CodexCLIProvider(LLMProvider):
     """
 
     IDLE_TIMEOUT = 1800
-    NO_TEXT_TIMEOUT = 180
     ABSOLUTE_TIMEOUT = 3600
     PROGRESS_INTERVAL = 600
 
@@ -1135,7 +1134,6 @@ class CodexCLIProvider(LLMProvider):
         process = None
         start_time = asyncio.get_running_loop().time()
         last_activity = start_time
-        last_text_output = start_time
         last_progress_message = start_time
         last_progress_content = ""
         last_progress_save = start_time
@@ -1264,31 +1262,13 @@ class CodexCLIProvider(LLMProvider):
                         timeout_msg += " The task may have been too complex. Try breaking it into smaller steps."
                     return LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name)
 
-                time_since_text = current_time - last_text_output
-                time_since_start = current_time - start_time
-                if time_since_text > self.NO_TEXT_TIMEOUT and tool_in_progress and time_since_start > 120:
-                    logger.warning(
-                        f"Codex no-text timeout for user {user_id}: {int(time_since_text)}s "
-                        f"without user-facing text. Tool: {tool_in_progress}, status: {current_status}"
-                    )
-                    if self.on_progress_save and user_id:
-                        self.on_progress_save(user_id, original_message, partial_text,
-                                              f"no-text timeout after {int(time_since_text)}s", tool_in_progress)
-                    process.kill()
-                    await process.wait()
-                    fallback = "\n\n".join(agent_message_blocks).strip() or partial_text.strip()
-                    if fallback:
-                        if self.on_progress_clear and user_id:
-                            self.on_progress_clear(user_id)
-                        return LLMResponse(
-                            text=fallback + f"\n\n[Stopped: ran {tool_in_progress} for {int(time_since_text)}s with no response text.]",
-                            model=self.model, provider=self.provider_name, tool_use=True,
-                        )
-                    return LLMResponse(
-                        text=f"Codex was running {tool_in_progress} for {int(time_since_text // 60)} minutes "
-                             f"without producing any response. The task may need to be broken into smaller steps.",
-                        model=self.model, provider=self.provider_name,
-                    )
+                # No-text kill removed deliberately (same reasoning as the Claude
+                # provider): long tool runs (stem separation, transcription,
+                # builds, large downloads) routinely produce no user-facing text
+                # for many minutes on modest hardware, so a short no-text timeout
+                # kills healthy work, not stalls. Genuine stalls are covered by
+                # the idle timeout, the absolute cap, and tool-named progress
+                # reports.
 
                 if time_since_activity > self.IDLE_TIMEOUT * 0.8 and time_since_activity <= self.IDLE_TIMEOUT * 0.8 + 30:
                     logger.warning(f"Codex approaching idle timeout for user {user_id}: {int(time_since_activity)}s idle. Status: {current_status}")
@@ -1357,7 +1337,6 @@ class CodexCLIProvider(LLMProvider):
                                         text = item.get("text") or ""
                                         if text:
                                             agent_message_blocks.append(text)
-                                            last_text_output = asyncio.get_running_loop().time()
                                             partial_text += text + "\n"
                                             if len(partial_text) > 102400:
                                                 partial_text = partial_text[-102400:]
@@ -1390,7 +1369,7 @@ class CodexCLIProvider(LLMProvider):
                                         q = item.get("query") or ""
                                         current_status = f"web_search: {q[:80]}"
                                 elif item_type == "reasoning":
-                                    # Reasoning items aren't user-visible; don't reset last_text_output
+                                    # Reasoning items aren't user-visible
                                     if evt_type == "item.completed":
                                         current_status = "thinking"
 
