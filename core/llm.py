@@ -219,26 +219,36 @@ def _looks_like_binary_load_failure(text: str) -> bool:
     return any(marker in lowered for marker in _CLI_LOAD_FAILURE_MARKERS)
 
 
-def _compose_full_reply(final_result: str, partial_text: str) -> str:
-    """Return the full ordered assistant narration for a finished turn.
+# Pre-tool text blocks shorter than this are working narration ("Reading the
+# file...", "Tests green. Committing:") and are dropped from the user-facing
+# reply. Blocks at or above it are treated as deliverables (a scope document,
+# a report section) that must not be lost just because a tool call followed.
+_DELIVERABLE_MIN_CHARS = 500
 
-    The stream-json "result" field (``final_result``) holds only the LAST
-    assistant turn, the text emitted after the final tool call. Any narration
-    the model wrote BEFORE a tool call survives only in ``partial_text``, where
-    every text block is appended in order. Returning ``final_result`` alone
-    silently drops that pre-tool narration.
 
-    When ``partial_text`` is a strict superset of ``final_result`` (it holds the
-    result plus earlier narration), return the full accumulation so nothing the
-    model told the user is lost. Otherwise return ``final_result`` unchanged.
-    Requiring the superset relation guarantees the returned text always contains
-    ``final_result`` and avoids emitting a stray ``partial_text`` (such as a
-    short confabulated preamble) that does not include the real answer.
+def _compose_full_reply(final_result: str, text_blocks: list[str]) -> str:
+    """Compose the user-facing reply for a successful turn.
+
+    stream-json's "result" field (``final_result``) only contains the LAST
+    assistant turn, i.e. the text emitted after the final tool call, so
+    substantive content written before a tool call would be silently dropped
+    if we returned it alone (the original truncation bug). But returning every
+    accumulated block drowns the answer in play-by-play narration (the
+    overcorrection). Middle ground: return the clean result, prepending only
+    pre-tool blocks long enough to be deliverables rather than narration,
+    skipping anything already contained in the result.
+
+    The returned text always ends with ``final_result``, preserving the prior
+    invariant that the real answer is never lost or replaced.
     """
-    full_text = partial_text.strip()
-    if full_text and full_text != final_result and final_result in full_text:
-        return full_text
-    return final_result
+    kept = []
+    for block in text_blocks:
+        block = block.strip()
+        if len(block) >= _DELIVERABLE_MIN_CHARS and block not in final_result:
+            kept.append(block)
+    if not kept:
+        return final_result
+    return "\n\n".join(kept + [final_result])
 
 
 def _extract_tool_activity(data: dict) -> tuple[list[str], bool]:
@@ -615,6 +625,7 @@ class ClaudeCLIProvider(LLMProvider):
         last_progress_save = start_time
         final_result = None
         partial_text = ""
+        all_text_blocks = []  # Every text block in order, for reply composition
         last_turn_text_blocks = []
         current_status = "thinking"
         tool_in_progress = None
@@ -719,7 +730,7 @@ class ClaudeCLIProvider(LLMProvider):
                         if self.on_progress_clear and user_id:
                             self.on_progress_clear(user_id)
                         return LLMResponse(
-                            text=_compose_full_reply(final_result, partial_text)
+                            text=_compose_full_reply(final_result, all_text_blocks)
                             + "\n\n[Task incomplete - Claude stopped responding after 1 hour]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
@@ -799,6 +810,16 @@ class ClaudeCLIProvider(LLMProvider):
                                         text = block.get("text", "")
                                         if text:
                                             last_turn_text_blocks.append(text)
+                                            all_text_blocks.append(text)
+                                            # Same 100KB cap as partial_text below,
+                                            # dropping oldest blocks first
+                                            while (
+                                                sum(len(b) for b in all_text_blocks) > 102400
+                                                and len(all_text_blocks) > 1
+                                            ):
+                                                all_text_blocks.pop(0)
+                                            # partial_text stays append-only for
+                                            # progress saving and recovery context
                                             partial_text += text + "\n"
                                             # Cap at 100KB to prevent unbounded memory growth
                                             if len(partial_text) > 102400:
@@ -906,7 +927,7 @@ class ClaudeCLIProvider(LLMProvider):
 
             if final_result:
                 return LLMResponse(
-                    text=_compose_full_reply(final_result, partial_text),
+                    text=_compose_full_reply(final_result, all_text_blocks),
                     model=self.model,
                     provider=self.provider_name, tool_use=True,
                 )

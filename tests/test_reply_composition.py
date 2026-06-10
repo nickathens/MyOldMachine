@@ -3,16 +3,18 @@
 Run: python3 -m unittest tests.test_reply_composition  (from repo root)
   or: python3 tests/test_reply_composition.py
 
-Regression coverage for the message-truncation bug: the stream-json "result"
-field contains ONLY the last assistant turn (text after the final tool call),
-so any narration the model wrote BEFORE a tool call was silently dropped from
-what the user received. _compose_full_reply returns the full ordered narration
-(accumulated in partial_text) whenever it is a strict superset of the result
-field, otherwise it returns the result field unchanged.
-
-Requiring the superset relation gives a strong invariant: the returned text
-always contains final_result. A partial_text that does not contain the result
-(for example a short confabulated preamble) is never emitted in its place.
+History of the behavior under test:
+1. Original bug: stream-json's "result" field contains ONLY the last assistant
+   turn (text after the final tool call), so anything written BEFORE a tool
+   call was silently dropped (a full deliverable was lost to a trailing
+   tool call).
+2. First fix overcorrected: returning EVERY accumulated text block glued all
+   working narration ("Reading the file...", "Tests green. Committing:") onto
+   the final answer, producing unreadable walls of text.
+3. Middle ground (current): keep the clean result, prepend only pre-tool
+   blocks long enough to be deliverables (>= _DELIVERABLE_MIN_CHARS), skip
+   blocks already contained in the result. The composed reply always ends
+   with the result, so the real answer is never lost or replaced.
 """
 from __future__ import annotations
 
@@ -25,59 +27,96 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.llm import _compose_full_reply  # noqa: E402
+from core.llm import _DELIVERABLE_MIN_CHARS, _compose_full_reply  # noqa: E402
+
+# A realistic deliverable-sized block (scope document, report section).
+DELIVERABLE = (
+    "## Migration plan\n\n"
+    "Step one inventories every call site and records its current behavior. "
+    "Step two introduces the new interface behind a feature flag so both "
+    "paths stay comparable. Step three flips the default and watches logs. "
+) * 4
+assert len(DELIVERABLE) >= _DELIVERABLE_MIN_CHARS
 
 
 class ComposeFullReplyTests(unittest.TestCase):
-    def test_pre_tool_narration_preserved(self):
-        # The bug: model narrated, called a tool, then wrote a final line.
-        # result field = post-tool text only; partial_text has the full order.
-        final_result = "TAILZZZ"
-        partial_text = "BODYAAA\nTAILZZZ\n"
-        out = _compose_full_reply(final_result, partial_text)
-        self.assertIn("BODYAAA", out, "pre-tool narration must survive")
-        self.assertIn("TAILZZZ", out, "post-tool text must survive")
-        self.assertEqual(out, "BODYAAA\nTAILZZZ")
+    def test_long_pre_tool_deliverable_preserved(self):
+        # The original truncation bug: deliverable -> tool call -> short
+        # sign-off. The deliverable must survive.
+        final_result = "Plan delivered above, your call on step one."
+        blocks = [DELIVERABLE, final_result]
+        out = _compose_full_reply(final_result, blocks)
+        self.assertIn("feature flag", out, "deliverable must survive")
+        self.assertTrue(out.endswith(final_result))
 
-    def test_multiple_tool_roundtrips_preserve_all_text(self):
-        # text1 -> tool -> text2 -> tool -> text3 : result = text3 only.
-        final_result = "text3"
-        partial_text = "text1\ntext2\ntext3\n"
-        out = _compose_full_reply(final_result, partial_text)
-        self.assertEqual(out, "text1\ntext2\ntext3")
-
-    def test_no_pre_tool_text_returns_result_unchanged(self):
-        # Common case: single turn, no tool calls. partial == result.
-        final_result = "HELLO"
-        partial_text = "HELLO\n"
-        self.assertEqual(_compose_full_reply(final_result, partial_text), "HELLO")
-
-    def test_empty_partial_falls_back_to_result(self):
-        final_result = "HELLO"
-        partial_text = ""
-        self.assertEqual(_compose_full_reply(final_result, partial_text), "HELLO")
-
-    def test_non_superset_partial_falls_back_to_clean_result(self):
-        # If the accumulation does not contain the result field (e.g. a short
-        # confabulated preamble that was later superseded), prefer the clean
-        # result rather than emitting text that omits the real answer.
-        final_result = "Here is the real answer to your question."
-        partial_text = "already handled\n"
-        self.assertEqual(
-            _compose_full_reply(final_result, partial_text), final_result
-        )
-
-    def test_returned_text_always_contains_result(self):
-        # Core invariant: whatever path is taken, the result is never lost.
-        cases = [
-            ("TAIL", "BODY\nTAIL\n"),       # superset -> full text
-            ("ONLY", "ONLY\n"),             # equal -> result
-            ("X", ""),                      # empty partial -> result
-            ("REAL", "stale preamble\n"),   # non-superset -> result
+    def test_short_narration_dropped(self):
+        # The overcorrection: working notes must NOT reach the user.
+        final_result = "All done. The fix is committed and tests pass."
+        blocks = [
+            "Reading the stream parser before editing.",
+            "Edits in. Running the tests now.",
+            "9/9 green. Committing:",
+            final_result,
         ]
-        for final_result, partial_text in cases:
-            out = _compose_full_reply(final_result, partial_text)
+        out = _compose_full_reply(final_result, blocks)
+        self.assertEqual(out, final_result)
+
+    def test_mixed_narration_and_deliverable(self):
+        # Narration dropped, deliverable kept, result last.
+        final_result = "That is the full plan. Want me to start?"
+        blocks = [
+            "Checking the docs first.",
+            DELIVERABLE,
+            "Saving a note about this.",
+            final_result,
+        ]
+        out = _compose_full_reply(final_result, blocks)
+        self.assertNotIn("Checking the docs", out)
+        self.assertNotIn("Saving a note", out)
+        self.assertIn("feature flag", out)
+        self.assertTrue(out.endswith(final_result))
+        self.assertEqual(out, DELIVERABLE.strip() + "\n\n" + final_result)
+
+    def test_no_tool_calls_returns_result_unchanged(self):
+        # Common case: single turn, the only block IS the result.
+        final_result = "HELLO"
+        self.assertEqual(_compose_full_reply(final_result, ["HELLO"]), "HELLO")
+
+    def test_empty_blocks_falls_back_to_result(self):
+        self.assertEqual(_compose_full_reply("HELLO", []), "HELLO")
+
+    def test_final_turn_block_not_duplicated(self):
+        # A long block that is PART of the result (the final turn itself)
+        # must not be prepended again.
+        final_result = "Intro paragraph.\n\n" + DELIVERABLE
+        blocks = ["Short narration.", DELIVERABLE, final_result]
+        out = _compose_full_reply(final_result, blocks)
+        self.assertEqual(out.count("feature flag"), final_result.count("feature flag"))
+
+    def test_result_always_contained(self):
+        # Whatever path is taken, the returned text must contain the result.
+        # This preserves the invariant the prior superset check guaranteed: a
+        # stray pre-tool block is never emitted IN PLACE of the real answer.
+        for final_result, blocks in [
+            ("TAIL", [DELIVERABLE, "TAIL"]),
+            ("ONLY", ["ONLY"]),
+            ("X", []),
+            ("end", ["note one.", "note two.", "end"]),
+        ]:
+            out = _compose_full_reply(final_result, blocks)
             self.assertIn(final_result, out)
+            self.assertTrue(out.endswith(final_result))
+
+    def test_threshold_boundary(self):
+        final_result = "done"
+        just_under = "a" * (_DELIVERABLE_MIN_CHARS - 1)
+        just_over = "b" * _DELIVERABLE_MIN_CHARS
+        self.assertEqual(
+            _compose_full_reply(final_result, [just_under, final_result]), final_result
+        )
+        out = _compose_full_reply(final_result, [just_over, final_result])
+        self.assertIn(just_over, out)
+        self.assertTrue(out.endswith(final_result))
 
 
 if __name__ == "__main__":
