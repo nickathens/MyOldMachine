@@ -241,6 +241,36 @@ def _compose_full_reply(final_result: str, partial_text: str) -> str:
     return final_result
 
 
+def _extract_tool_activity(data: dict) -> tuple[list[str], bool]:
+    """Tool activity carried by one claude stream-json event.
+
+    Returns (started, finished): the names of tool_use content blocks when the
+    event is an "assistant" message, and whether a "user" message carries a
+    tool_result block. The claude CLI never emits top-level tool_use or
+    tool_result event types; tools ride inside assistant/user messages as
+    content blocks (verified live against claude CLI v2.1.169).
+    """
+    msg = data.get("message")
+    blocks = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(blocks, list):
+        return [], False
+    msg_type = data.get("type")
+    if msg_type == "assistant":
+        names = [
+            block.get("name") or "tool"
+            for block in blocks
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        ]
+        return names, False
+    if msg_type == "user":
+        finished = any(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in blocks
+        )
+        return [], finished
+    return [], False
+
+
 # --- Helpers shared by CLI subprocess providers ---------------------------
 
 async def _send_typing_periodically(chat):
@@ -429,7 +459,6 @@ class ClaudeCLIProvider(LLMProvider):
     """
 
     IDLE_TIMEOUT = 1800  # 30 min of no output = stuck
-    NO_TEXT_TIMEOUT = 180  # 3 min of tool activity with zero user-facing text = stuck
     ABSOLUTE_TIMEOUT = 3600  # 1 hour hard ceiling per request, even with continuous activity
     PROGRESS_INTERVAL = 600  # Send progress report every 10 minutes
 
@@ -581,7 +610,6 @@ class ClaudeCLIProvider(LLMProvider):
         process = None
         start_time = asyncio.get_running_loop().time()
         last_activity = start_time
-        last_text_output = start_time
         last_progress_message = start_time
         last_progress_content = ""
         last_progress_save = start_time
@@ -704,37 +732,14 @@ class ClaudeCLIProvider(LLMProvider):
                         timeout_msg += " The task may have been too complex. Try breaking it into smaller steps."
                     return LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name)
 
-                # No-text timeout: Claude is running tools but hasn't produced
-                # any user-facing text in NO_TEXT_TIMEOUT seconds.  This catches
-                # the case where tool JSON events keep last_activity alive but
-                # the user sees nothing.  Skips the first 120s to allow for
-                # initial thinking/planning before any output.
-                time_since_text = current_time - last_text_output
-                time_since_start = current_time - start_time
-                if time_since_text > self.NO_TEXT_TIMEOUT and tool_in_progress and time_since_start > 120:
-                    logger.warning(
-                        f"Claude no-text timeout for user {user_id}: {int(time_since_text)}s "
-                        f"without user-facing text. Tool: {tool_in_progress}, status: {current_status}"
-                    )
-                    if self.on_progress_save and user_id:
-                        self.on_progress_save(user_id, original_message, partial_text,
-                                              f"no-text timeout after {int(time_since_text)}s", tool_in_progress)
-                    process.kill()
-                    await process.wait()
-                    last_turn = "\n".join(last_turn_text_blocks).strip()
-                    fallback = last_turn or partial_text.strip()
-                    if fallback:
-                        if self.on_progress_clear and user_id:
-                            self.on_progress_clear(user_id)
-                        return LLMResponse(
-                            text=fallback + f"\n\n[Stopped: ran {tool_in_progress} for {int(time_since_text)}s with no response text.]",
-                            model=self.model, provider=self.provider_name, tool_use=True,
-                        )
-                    return LLMResponse(
-                        text=f"Claude was running {tool_in_progress} for {int(time_since_text // 60)} minutes "
-                             f"without producing any response. The task may need to be broken into smaller steps.",
-                        model=self.model, provider=self.provider_name,
-                    )
+                # Deliberately no separate "no text while a tool runs" kill
+                # here. A single long tool call (stem separation, ffmpeg,
+                # renders) legitimately produces no text and no stream events
+                # for many minutes, especially on old hardware, so any short
+                # no-text threshold would kill real work. IDLE_TIMEOUT and
+                # ABSOLUTE_TIMEOUT above are the safety nets, and the progress
+                # report below names the running tool so a stuck one is
+                # visible to the user.
 
                 # Log warning when approaching idle timeout
                 if time_since_activity > self.IDLE_TIMEOUT * 0.8 and time_since_activity <= self.IDLE_TIMEOUT * 0.8 + 30:
@@ -794,23 +799,28 @@ class ClaudeCLIProvider(LLMProvider):
                                         text = block.get("text", "")
                                         if text:
                                             last_turn_text_blocks.append(text)
-                                            last_text_output = asyncio.get_running_loop().time()
                                             partial_text += text + "\n"
                                             # Cap at 100KB to prevent unbounded memory growth
                                             if len(partial_text) > 102400:
                                                 partial_text = partial_text[-102400:]
-                            elif msg_type == "tool_use":
-                                tool_name = data.get("name", "tool")
-                                tool_in_progress = tool_name
-                                current_status = f"using {tool_name}"
-                                logger.debug(f"Claude using tool: {tool_name}")
-                            elif msg_type == "tool_result":
-                                tool_in_progress = None
-                                current_status = "processing result"
+                                # Tool calls ride inside "assistant" events as
+                                # tool_use content blocks, never as a top-level
+                                # event type (verified live against the CLI)
+                                tool_names, _ = _extract_tool_activity(data)
+                                if tool_names:
+                                    tool_in_progress = ", ".join(tool_names)
+                                    current_status = f"using {tool_in_progress}"
+                                    logger.debug(f"Claude using tool(s): {tool_in_progress}")
+                            elif msg_type == "user":
+                                # Tool results ride inside "user" events as
+                                # tool_result content blocks
+                                _, tool_finished = _extract_tool_activity(data)
+                                if tool_finished:
+                                    tool_in_progress = None
+                                    current_status = "processing result"
 
                             if msg_type == "result" and "result" in data:
                                 final_result = data["result"]
-                                last_text_output = asyncio.get_running_loop().time()
 
                             # Save progress periodically
                             current_time = asyncio.get_running_loop().time()
