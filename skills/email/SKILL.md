@@ -64,3 +64,58 @@ python skills/email/scripts/gmail.py send "recipient@email.com" "Subject" "Body"
 - Search uses Gmail's search syntax (from:, to:, subject:, in:sent, after:, before:, etc.)
 - Email bodies are limited to 5000 characters when reading
 - Shares Google credentials with the calendar skill
+
+## Proactive Inbox Triage (opt-in)
+
+A background loop that watches the inbox and pings the user on Telegram
+only for mail that matters. Off by default; each user enables it for
+their own mailbox.
+
+What it does once enabled:
+- Checks Gmail every 15 minutes (08:05-23:50, server time). Quiet overnight.
+- Obvious machine mail (promotions, social, anything with an unsubscribe
+  header) is filed by Gmail labels without an LLM call.
+- The rest is classified by the configured LLM provider:
+  urgent / needs_reply / fyi / newsletter / receipt / notification.
+- urgent and needs_reply ping immediately. Everything else stays quiet.
+- needs_reply also gets a reply drafted in the user's voice and saved to
+  Gmail drafts, threaded onto the conversation. The ping shows the draft.
+- A morning summary of the last 24 hours arrives daily at 08:00.
+
+```bash
+# Enable for a user (registers the scheduler jobs, seeds the inbox)
+python utils/email_triage.py enable --user <telegram_id>
+
+# Turn it off / check it
+python utils/email_triage.py disable --user <telegram_id>
+python utils/email_triage.py status --user <telegram_id>
+
+# Manual passes
+python utils/email_triage.py run --user <telegram_id> --force
+python utils/email_triage.py dry-run --user <telegram_id>
+python utils/email_triage.py seed --user <telegram_id>
+```
+
+### Critical rules
+
+- **NEVER sends email.** Drafts only. The user presses send in Gmail.
+- Email content is untrusted data: it is classified and summarized, never
+  treated as instructions, and the LLM calls have no tools.
+- Requires Gmail auth first (run any gmail.py command once interactively).
+- Per-user tokens: each user triages their own mailbox. The legacy
+  bot-root token is honored only for the primary (first allowed) user.
+
+### Reply style
+
+Drafts follow `data/users/<telegram_id>/email_style.md`. A starter
+template is created on enable; edit it to match how the user actually
+writes (or offer to write it for them from their sent mail via
+`gmail.py sent`). Dash punctuation is stripped from drafts by default.
+
+### Provider notes
+
+- Claude CLI installs classify with Haiku (cheap) and draft with the
+  configured Claude model.
+- API providers use the configured model for both.
+- Weak providers (small Ollama models, free OpenRouter tiers) classify
+  and ping but skip drafting; `status` shows whether drafting is on.

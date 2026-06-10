@@ -707,6 +707,19 @@ class Scheduler:
         if not repeat:
             return DateTrigger(run_date=run_at)
 
+        if repeat.startswith("cron:"):
+            # Generic intra-day cron repeat: "cron:<minute>" or "cron:<minute>:<hour>".
+            # Example: "cron:5-59/15:8-23" fires every 15 minutes from 08:05 to
+            # 23:50. Used by system jobs that need sub-daily cadence (email triage).
+            parts = repeat.split(":")
+            minute = parts[1] if len(parts) > 1 and parts[1] else "*"
+            hour = parts[2] if len(parts) > 2 and parts[2] else "*"
+            try:
+                return CronTrigger(minute=minute, hour=hour, second=0, end_date=end_date)
+            except ValueError as e:
+                logger.error(f"Invalid cron repeat {repeat!r}: {e} -- falling back to one-shot")
+                return DateTrigger(run_date=run_at)
+
         day_map = {0: 'mon', 1: 'tue', 2: 'wed', 3: 'thu',
                    4: 'fri', 5: 'sat', 6: 'sun'}
 
