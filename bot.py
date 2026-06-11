@@ -33,7 +33,7 @@ from core.config import (
     BOT_DIR, DATA_DIR, USERS_DIR, SKILLS_DIR,
     get_telegram_token, get_telegram_api_base, get_allowed_users,
     get_bot_name, get_llm_provider, get_llm_model, get_llm_api_key,
-    get_ollama_base_url, get_user_profile, is_admin,
+    get_background_model, get_ollama_base_url, get_user_profile, is_admin,
     LOG_DIR,
 )
 from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider, CodexCLIProvider
@@ -220,7 +220,7 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
                 )
                 return
             proc = await asyncio.create_subprocess_exec(
-                "claude", "-p", "-",
+                "claude", "-p", "--model", get_background_model(), "-",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -358,11 +358,19 @@ def _ocr_pdf(file_path: str, num_pages: int, max_pages: int, max_chars: int) -> 
         text_parts = []
         total_chars = 0
 
+        # Throttle hard. The unthrottled burst (pdftoppm then tesseract with
+        # OpenMP threads and AVX on every core, from idle) is a power
+        # transient that can hard-reset old machines with marginal PSUs,
+        # which is exactly the hardware this project targets. nice 19 plus a
+        # single OCR thread plus 150 DPI keeps the load curve shallow.
+        # Latency does not matter here; this is background pre-extraction.
+        ocr_env = {**os.environ, "OMP_THREAD_LIMIT": "1"}
         with tempfile.TemporaryDirectory() as tmpdir:
             result = subprocess.run(
-                ["pdftoppm", "-png", "-r", "200", "-l", str(pages_to_ocr),
+                ["nice", "-n", "19", "pdftoppm", "-png", "-r", "150",
+                 "-l", str(pages_to_ocr),
                  file_path, os.path.join(tmpdir, "page")],
-                capture_output=True, timeout=60
+                capture_output=True, timeout=120
             )
             if result.returncode != 0:
                 return ""
@@ -370,8 +378,8 @@ def _ocr_pdf(file_path: str, num_pages: int, max_pages: int, max_chars: int) -> 
             page_images = sorted(_glob_mod.glob(os.path.join(tmpdir, "page-*.png")))
             for i, img_path in enumerate(page_images):
                 ocr_result = subprocess.run(
-                    ["tesseract", img_path, "-"],
-                    capture_output=True, text=True, timeout=30
+                    ["nice", "-n", "19", "tesseract", img_path, "-"],
+                    capture_output=True, text=True, timeout=60, env=ocr_env
                 )
                 page_text = ocr_result.stdout.strip() if ocr_result.returncode == 0 else ""
                 if total_chars + len(page_text) > max_chars:
@@ -4336,13 +4344,20 @@ def main():
             await _process_single(update, context)
         # If not an alias, silently ignore (don't spam "unknown command")
 
-    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    # UpdateType.MESSAGE on both registrations excludes edited messages:
+    # unknown_command and handle_message both read update.message, which is
+    # None on an edit (AttributeError crashes the handler), and re-processing
+    # an edit would be blocked by the dedup cache anyway.
+    app.add_handler(MessageHandler(
+        filters.COMMAND & filters.UpdateType.MESSAGE, unknown_command,
+    ))
 
     # Message handler (text, photos, documents, audio, video, voice, stickers)
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO | filters.Document.ALL |
          filters.AUDIO | filters.VIDEO | filters.VOICE |
-         filters.VIDEO_NOTE | filters.Sticker.ALL) & ~filters.COMMAND,
+         filters.VIDEO_NOTE | filters.Sticker.ALL) & ~filters.COMMAND
+        & filters.UpdateType.MESSAGE,
         handle_message,
     ))
 
