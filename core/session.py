@@ -513,8 +513,9 @@ class SessionManager:
 
         def run_compaction_background():
             try:
+                from core.config import get_background_model
                 result = subprocess.run(
-                    ["claude", "-p", prompt],
+                    ["claude", "-p", "--model", get_background_model(), prompt],
                     capture_output=True, text=True, timeout=120
                 )
                 if result.returncode == 0 and result.stdout.strip():

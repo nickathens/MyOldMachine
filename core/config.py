@@ -140,6 +140,20 @@ def get_llm_effort() -> str:
     return "max"
 
 
+DEFAULT_BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
+
+
+def get_background_model() -> str:
+    """Model for non-interactive background Claude CLI work (compaction).
+
+    Background `claude -p` spawns previously passed no --model flag and
+    silently billed at the CLI's default (premium) model. Summarization does
+    not need a frontier model, so these default to Haiku. Override with
+    BACKGROUND_MODEL in .env. Interactive chat keeps LLM_MODEL.
+    """
+    return _env("BACKGROUND_MODEL", DEFAULT_BACKGROUND_MODEL)
+
+
 def get_ollama_base_url() -> str:
     return _env("OLLAMA_BASE_URL", "http://localhost:11434")
 
