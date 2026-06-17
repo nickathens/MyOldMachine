@@ -38,3 +38,12 @@ gmail_token.json
 # Editor / runtime backup files (never commit)
 *.bak
 *.bak.*
+
+# MCP server config: may hold a GitHub PAT (only mcp_servers.json.example is committed)
+mcp_servers.json
+
+# Any OAuth / API token JSON (broader than the named google/gmail tokens above)
+*token*.json
+
+# Atomic-write scratch files: may briefly contain secrets mid-write
+*.tmp

@@ -12,3 +12,14 @@ __pycache__
 .idea
 README.md
 install/
+
+# Secrets: mirror .gitignore so `COPY . .` never bakes them into an image layer
+mcp_servers.json
+google_credentials.json
+google_token.json
+gmail_token.json
+*token*.json
+*.pem
+*.key
+*.crt
+*.tmp

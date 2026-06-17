@@ -39,6 +39,7 @@ if str(BOT_DIR) not in sys.path:
     sys.path.insert(0, str(BOT_DIR))
 
 from miniapp.auth import validate_init_data  # noqa: E402
+from utils.env_io import atomic_env_write  # noqa: E402
 
 # Optional: pull provider/model catalog from the wizard so the Mini App stays
 # in sync with the install flow. Falls back to a minimal hardcoded set if the
@@ -205,12 +206,10 @@ def _write_env_var(key: str, value: str) -> None:
         new_lines.append(f"{key}={value}")
 
     content = "\n".join(new_lines) + ("\n" if not new_lines or new_lines[-1] != "" else "")
-    tmp = ENV_FILE.with_suffix(ENV_FILE.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())
-    tmp.replace(ENV_FILE)
+    # Reuse the shared atomic writer so .env keeps mode 0600. The previous
+    # inline open()+replace() used the default umask and silently downgraded
+    # the secret file to world-readable 0644 on every provider/model change.
+    atomic_env_write(ENV_FILE, content)
 
 
 async def _get_user(request: Request) -> dict:
