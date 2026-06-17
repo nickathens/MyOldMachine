@@ -2363,9 +2363,9 @@ class KimiProvider(LLMProvider):
     """Moonshot Kimi API — OpenAI-compatible with tool-use support.
 
     Uses api.moonshot.ai/v1 endpoint (redirects to api.kimi.ai).
-    K2.6 is latest (long-horizon coding agent), K2.5 multimodal (vision + tools),
-    K2 Thinking for reasoning.
-    256K context. K2.6: $0.95/$4.00, K2.5: $0.60/$3.00, K2: $0.60/$2.50 per MTok.
+    K2.7-Code is latest (token-efficient agentic coding), K2.6 prior long-horizon
+    coding agent, K2.5 multimodal (vision + tools), K2 Thinking for reasoning.
+    256K context. K2.7-Code/K2.6: $0.95/$4.00, K2.5: $0.60/$3.00, K2: $0.60/$2.50 per MTok.
     Temperature clamped to [0, 1].
     Note: kimi-latest was discontinued January 28, 2026.
     """
@@ -2467,6 +2467,67 @@ class MiniMaxProvider(LLMProvider):
             "model": self.model,
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "messages": body_messages,
+        }
+        return await _openai_tool_loop(
+            url=f"{self.BASE_URL}/chat/completions",
+            headers=headers,
+            body=body,
+            model=self.model,
+            provider_name=self.provider_name,
+        )
+
+
+class ZaiProvider(LLMProvider):
+    """Z.ai (Zhipu) GLM API — OpenAI-compatible with tool-use support.
+
+    Uses api.z.ai/api/paas/v4 endpoint. GLM-5.2 is the flagship: open-weights,
+    long-horizon coding/agentic, usable 1M context, two thinking-effort levels.
+    GLM-5.2: $1.40/$4.40 per MTok (cached input $0.26 per MTok).
+    Temperature must be within [0.0, 1.0] (per docs.z.ai) — clamped here.
+    GLM-5.2 and the other text models are text-only; z.ai vision models
+    (GLM-5V-Turbo, GLM-4.6V, GLM-4.5V) carry a 'V' marker.
+    """
+
+    BASE_URL = "https://api.z.ai/api/paas/v4"
+
+    def __init__(self, model: str, api_key: str = ""):
+        super().__init__(model, api_key)
+
+    @property
+    def provider_name(self) -> str:
+        return "zai"
+
+    @property
+    def supports_vision(self) -> bool:
+        # z.ai vision models carry a 'V' marker (glm-5v-turbo, glm-4.6v, glm-4.5v).
+        m = self.model.lower()
+        return "v-turbo" in m or m.endswith("v")
+
+    async def health_check(self) -> tuple[bool, str]:
+        if not self.api_key:
+            return False, "zai: ZAI_API_KEY (LLM_API_KEY) is empty"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        return await _http_get_health(f"{self.BASE_URL}/models", headers, "zai")
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7, **kwargs):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        # z.ai GLM API requires temperature within [0.0, 1.0]
+        clamped_temp = max(0.0, min(1.0, temperature))
+        if _has_images(messages) and self.supports_vision:
+            body_messages = _build_openai_messages(system_prompt, messages)
+        else:
+            body_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ]
+        body = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": clamped_temp,
             "messages": body_messages,
         }
         return await _openai_tool_loop(
@@ -2663,6 +2724,9 @@ def create_provider(
         "kimi": lambda: KimiProvider(model, api_key),
         "moonshot": lambda: KimiProvider(model, api_key),
         "minimax": lambda: MiniMaxProvider(model, api_key),
+        "zai": lambda: ZaiProvider(model, api_key),
+        "glm": lambda: ZaiProvider(model, api_key),
+        "zhipu": lambda: ZaiProvider(model, api_key),
         "fcc": lambda: FreeCCProvider(model, api_key),
     }
     factory = providers.get(provider.lower())

@@ -261,6 +261,7 @@ def _available_providers() -> list[dict]:
         ("deepseek", "DeepSeek"),
         ("kimi", "Kimi"),
         ("minimax", "MiniMax"),
+        ("zai", "Z.ai GLM"),
         ("openrouter", "OpenRouter"),
         ("ollama", "Ollama (local)"),
         ("ollama-cloud", "Ollama Cloud"),

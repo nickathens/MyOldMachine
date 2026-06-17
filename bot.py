@@ -1110,7 +1110,7 @@ def build_system_prompt(user_id: int) -> str:
     if _memory_manager:
         # Determine if we're in full mode (strong model) or lite mode
         provider = get_llm_provider()
-        full_mode = provider in ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "gemini", "google")
+        full_mode = provider in ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "zai", "gemini", "google")
         # Ollama: full mode only if running a large model
         if provider == "ollama":
             model_name = get_llm_model().lower()
@@ -2445,7 +2445,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = command_body(update.message.text)
 
     # Default models per provider — keep in sync with install/wizard.py DEFAULT_MODELS
-    # Last updated: June 10, 2026
+    # Last updated: June 17, 2026
     default_models = {
         "claude": "claude-sonnet-4-6",
         "claude-cli": "claude-sonnet-4-6",
@@ -2453,8 +2453,9 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "openai": "gpt-5.5",
         "deepseek": "deepseek-v4-flash",
         "grok": "grok-4.3",
-        "kimi": "kimi-k2.6",
+        "kimi": "kimi-k2.7-code",
         "minimax": "MiniMax-M3",
+        "zai": "glm-5.2",
         "gemini": "gemini-3.5-flash",
         "ollama": "llama3.1:8b",
         "ollama-cloud": "qwen3.5:cloud",
@@ -2499,6 +2500,12 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_provider = parts[0].lower()
     new_model = parts[1].strip() if len(parts) > 1 else None
 
+    # Resolve provider aliases to their canonical name so /provider glm and
+    # /provider zhipu both reach the registered 'zai' provider (mirrors the
+    # aliases in core/llm.py create_provider).
+    _PROVIDER_ALIASES = {"glm": "zai", "zhipu": "zai"}
+    new_provider = _PROVIDER_ALIASES.get(new_provider, new_provider)
+
     # Validate provider
     valid_providers = set(default_models.keys())
     if new_provider not in valid_providers:
@@ -2518,7 +2525,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Check if API key is needed but missing
-    needs_key = new_provider in ("openai", "deepseek", "grok", "kimi", "minimax", "gemini", "openrouter", "claude-api")
+    needs_key = new_provider in ("openai", "deepseek", "grok", "kimi", "minimax", "zai", "gemini", "openrouter", "claude-api")
     current_key = get_llm_api_key()
     if needs_key and not current_key:
         await update.message.reply_text(
@@ -3425,7 +3432,7 @@ def _setup_reflection_job(scheduler):
     model = get_llm_model().lower()
 
     # Strong enough for reflection?
-    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "gemini", "google", "ollama-cloud")
+    capable_providers = ("claude", "claude-cli", "claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "zai", "gemini", "google", "ollama-cloud")
     is_capable = provider in capable_providers
 
     # Ollama: only large models
