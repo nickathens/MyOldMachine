@@ -3,3 +3,9 @@ python-dotenv>=1.0
 httpx>=0.27
 apscheduler>=3.10,<4.0
 sqlalchemy>=2.0
+
+# Telegram Mini App (miniapp/server.py). Without these the documented Mini App
+# service cannot start in a fresh Docker image / clean install.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9

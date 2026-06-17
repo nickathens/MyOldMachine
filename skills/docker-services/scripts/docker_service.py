@@ -12,6 +12,9 @@ Usage:
 """
 
 import argparse
+import copy
+import re
+import secrets
 import subprocess
 import sys
 
@@ -100,24 +103,58 @@ def list_containers() -> None:
         print(f"Error: {stderr}")
 
 
+def _redact_password(connection: str | None) -> str | None:
+    """Mask the ``:password@`` portion of a URL-style connection string."""
+    if not connection:
+        return connection
+    return re.sub(r"://([^:/@]+):[^@]+@", r"://\1:****@", connection)
+
+
 def start_service(service_name: str) -> dict:
     """Start a pre-configured service."""
     if service_name not in SERVICES:
         return {"error": f"Unknown service: {service_name}. Available: {', '.join(SERVICES.keys())}"}
 
-    config = SERVICES[service_name]
+    # Work on a copy so a fresh random password can be injected without mutating
+    # the module-level template. Every service ships the same "claude123"
+    # placeholder; replace it everywhere it appears (env values + connection).
+    config = copy.deepcopy(SERVICES[service_name])
+    password = secrets.token_urlsafe(18)
+    config["env"] = {
+        k: (password if v == "claude123" else v)
+        for k, v in config.get("env", {}).items()
+    }
+    if config.get("connection"):
+        config["connection"] = config["connection"].replace("claude123", password)
+    has_password = password in config.get("env", {}).values()
+
+    def _started(out: str) -> dict:
+        result = {
+            "status": "started",
+            "name": config["name"],
+            "container_id": out.strip()[:12],
+            "connection": config.get("connection"),
+        }
+        if has_password:
+            result["username"] = "claude"
+            result["password"] = password
+        return result
 
     # Check if already running
     code, stdout, _ = run_docker(["ps", "-q", "-f", f"name={config['name']}"])
     if stdout.strip():
-        return {"status": "already_running", "name": config['name'], "connection": config.get('connection')}
+        # We don't know the password the running container was started with, so
+        # mask it rather than show the freshly-generated (and wrong) one.
+        return {"status": "already_running", "name": config['name'],
+                "connection": _redact_password(SERVICES[service_name].get('connection'))}
 
     # Build docker run command
     cmd = ["run", "-d", "--name", config["name"]]
 
-    # Add ports
+    # Add ports: bind to loopback only so the service and its credentials are
+    # never exposed to the LAN (e.g. on untrusted Wi-Fi).
     for host_port, container_port in config.get("ports", {}).items():
-        cmd.extend(["-p", f"{host_port}:{container_port}"])
+        cmd.extend(["-p", f"127.0.0.1:{host_port}:{container_port}"])
 
     # Add environment variables
     for key, value in config.get("env", {}).items():
@@ -137,23 +174,13 @@ def start_service(service_name: str) -> dict:
     code, stdout, stderr = run_docker(cmd)
 
     if code == 0:
-        return {
-            "status": "started",
-            "name": config["name"],
-            "container_id": stdout.strip()[:12],
-            "connection": config.get("connection")
-        }
+        return _started(stdout)
     else:
         # Try to remove existing stopped container and retry
         run_docker(["rm", config["name"]])
         code, stdout, stderr = run_docker(cmd)
         if code == 0:
-            return {
-                "status": "started",
-                "name": config["name"],
-                "container_id": stdout.strip()[:12],
-                "connection": config.get("connection")
-            }
+            return _started(stdout)
         return {"error": stderr}
 
 
@@ -214,6 +241,11 @@ def main():
         print(f"Status: {result['status']}")
         if result.get('connection'):
             print(f"Connection: {result['connection']}")
+        if result.get('password'):
+            print(f"Username: {result.get('username', 'claude')}")
+            print(f"Password: {result['password']}")
+            print("(Random password generated for this container. Save it now; "
+                  "it is not stored anywhere.)")
 
     elif args.command == "stop":
         result = stop_service(args.container)

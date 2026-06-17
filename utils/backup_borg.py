@@ -33,6 +33,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from utils.env_io import atomic_secret_write
+
 logger = logging.getLogger(__name__)
 
 ARCHIVE_PREFIX_DEFAULT = "mom"
@@ -99,16 +101,14 @@ def write_passphrase(path: Path, passphrase: str,
     try:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic-ish: write tmp then rename.
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(passphrase + "\n", encoding="utf-8")
-        tmp.chmod(0o600)
+        # Atomic 0600 write (temp created 0600 up front -- the previous
+        # write_text()+chmod() left the passphrase world-readable in between).
+        atomic_secret_write(path, passphrase + "\n")
         if owner_uid is not None and owner_gid is not None:
             try:
-                os.chown(str(tmp), owner_uid, owner_gid)
+                os.chown(str(path), owner_uid, owner_gid)
             except (PermissionError, OSError) as e:
                 logger.warning(f"Could not chown passphrase file: {e}")
-        os.replace(tmp, path)
         return True
     except (OSError, PermissionError) as e:
         logger.error(f"Failed to write passphrase to {path}: {e}")

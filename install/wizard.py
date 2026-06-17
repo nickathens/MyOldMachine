@@ -16,7 +16,6 @@ import json
 import os
 import platform
 import re
-import stat
 import subprocess
 import sys
 from datetime import datetime
@@ -47,6 +46,7 @@ def checkpoint_set(name: str):
 
 
 from utils.env_io import atomic_env_write as _atomic_env_write  # noqa: E402
+from utils.env_io import atomic_secret_write as _atomic_secret_write  # noqa: E402
 
 
 # --- Terminal UI helpers ---
@@ -832,8 +832,9 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
 def store_sudo_password(password: str):
     """Store sudo password securely."""
     sudo_file = Path.home() / ".sudo_pass"
-    sudo_file.write_text(password + "\n", encoding="utf-8")
-    sudo_file.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
+    # Atomic 0600 write: the previous write_text()+chmod() left the sudo
+    # password (root access) world-readable in the window before the chmod.
+    _atomic_secret_write(sudo_file, password + "\n")
     ok("Sudo password stored")
 
 

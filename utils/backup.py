@@ -206,6 +206,13 @@ def _create_tarball_backup(target_dir: str, notify_fn=None) -> str:
 
     file_count = 0
     try:
+        # Create the archive 0600 before writing anything into it: it bundles
+        # .env (the bot token + every provider API key) in cleartext, and the
+        # default umask would otherwise leave it world-readable (0644) on a
+        # shared or removable backup target for the whole write. os.chmod covers
+        # the rare case of reusing a stale archive name from the same minute.
+        os.close(os.open(str(archive_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+        os.chmod(str(archive_path), 0o600)
         with tarfile.open(str(archive_path), "w:gz", compresslevel=6, dereference=True) as tar:
             for source in BACKUP_SOURCES:
                 full_path = BOT_DIR / source

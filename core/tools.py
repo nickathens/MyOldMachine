@@ -370,14 +370,28 @@ BLOCKED_ENV_VARS = {
     "REDIS_URL", "REDIS_PASSWORD",
     # SSH
     "SSH_AUTH_SOCK",  # Don't let commands access SSH agent
+    # Common secret names that don't fit the suffix patterns below
+    "PGPASSWORD", "MYSQL_PWD", "DB_PASS",
+    "AWS_ACCESS_KEY_ID", "GITHUB_PAT", "SECRET_KEY_BASE",
 }
 
-# Patterns in env var names that indicate secrets
+# Patterns in env var names that indicate secrets. Checked case-insensitively
+# with re.match (anchored at start). SAFE_ENV_VARS is consulted first, so these
+# can be broad without stripping known-good vars. Broadened to catch infix forms
+# (PGPASSWORD, *PASSWD*, *SECRET*) and non-suffix shapes (*_PWD, *_PASS, *_PAT,
+# *ACCESS_KEY*, *APIKEY*) that the original anchored *_X$ patterns missed.
 BLOCKED_ENV_PATTERNS = [
-    r".*_SECRET.*",
+    r".*SECRET.*",
     r".*_TOKEN$",
-    r".*_PASSWORD$",
+    r".*PASSWORD.*",
+    r".*PASSWD.*",
+    r".*_PWD$",
+    r".*_PASS$",
     r".*_KEY$",
+    r".*ACCESS_KEY.*",
+    r".*PRIVATE_KEY.*",
+    r".*_PAT$",
+    r".*APIKEY.*",
     r".*_CREDENTIALS.*",
 ]
 
@@ -670,6 +684,10 @@ def _is_command_blocked(command: str) -> str | None:
     if bot_venv_block:
         return bot_venv_block
 
+    secret_read_block = _check_secret_file_read(command)
+    if secret_read_block:
+        return secret_read_block
+
     return None
 
 
@@ -742,6 +760,129 @@ def _check_bot_self_modification(command: str) -> str | None:
                     "Bot internals are protected from tool-use modification."
                 )
 
+    return None
+
+
+# Files that hold live credentials: .env (bot token + every provider API key),
+# the sudo password, OAuth token caches, and mcp_servers.json (a GitHub PAT).
+# The bot's own code reads/writes these via Python (utils.env_io, install.sudo,
+# the OAuth helpers) and NEVER through the shell tool, so the tool layer has no
+# legitimate reason to read or copy them. Unlike bot core code (write-protected
+# above), these must also be unreadable: an indirect prompt injection could
+# otherwise `cat .env` and exfiltrate the bot token + provider keys.
+_SECRET_FILE_BASENAMES = (
+    ".env",
+    ".sudo_pass",
+    "mcp_servers.json",
+    "google_credentials.json",
+    "google_token.json",
+    "gmail_token.json",
+)
+
+# Leading commands that read, transform, copy, or transmit a file's contents.
+# (Pure-metadata commands like `ls`/`stat` are intentionally omitted; they
+# don't disclose secrets.)
+_SECRET_LEAK_COMMANDS = frozenset({
+    "cat", "tac", "head", "tail", "less", "more", "nl", "rev",
+    "grep", "egrep", "fgrep", "rg", "ag",
+    "strings", "od", "xxd", "hexdump", "base64", "base32", "uuencode",
+    "cut", "awk", "sed", "tr", "sort", "uniq", "paste",
+    "cp", "mv", "scp", "rsync", "install", "tee", "dd", "ln",
+    "curl", "wget", "ftp", "sftp", "nc", "ncat", "socat",
+    "md5sum", "sha1sum", "sha256sum", "sha512sum", "cksum", "openssl",
+    "cmp", "diff",
+    "python", "python3", "perl", "ruby", "node", "php", "bash", "sh", "zsh", "xargs",
+})
+
+# Wrapper prefixes to peel so `sudo cat .env` is still recognised.
+_WRAPPER_PREFIX_RE = re.compile(
+    r"^(?:sudo|nohup|env|nice|stdbuf|timeout|ionice|setsid)\b"
+    r"(?:\s+-{1,2}[^\s]+|\s+\d[^\s]*)*\s+"
+)
+
+# A leading `VAR=value` environment-assignment prefix (one or more), e.g.
+# `FOO=1 cat .env`. Bash runs the trailing words as a normal command, so the
+# real verb sits after these and they must be peeled before reading it.
+_ENV_ASSIGN_PREFIX_RE = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s]*)\s+)+"
+)
+
+# Split a command into per-verb segments. We re-check the leading verb of every
+# segment, so a benign first verb (`echo x; cat .env`) or a command
+# substitution (`echo "$(cat .env)"`) cannot shield a later read. We split on
+# `$(`, backtick, and the control operators `; & | newline` -- but NOT on
+# redirects (`< >`) or bare parens, so `base64 < .env` and
+# `python -c "open('.env')"` stay intact within one segment.
+_COMMAND_SEGMENT_RE = re.compile(r"\$\(|[;&|`\n]")
+
+
+def _leading_verb(segment: str) -> str | None:
+    """Return the basename of a segment's leading command verb, or None.
+
+    Peels, in order: a wrapper prefix (sudo/env/...), any ``VAR=value``
+    assignment prefix, and a single leading backslash (``\\cat`` defeats shell
+    aliasing but still runs ``cat``). Returns None when the segment has no
+    command word (e.g. a bare ``'.env'`` left by splitting).
+    """
+    peeled = segment.strip()
+    for _ in range(4):  # bounded: peel stacked wrapper/assignment/backslash prefixes
+        stripped = _WRAPPER_PREFIX_RE.sub("", peeled, count=1)
+        stripped = _ENV_ASSIGN_PREFIX_RE.sub("", stripped)
+        stripped = stripped.lstrip("\\").strip()
+        if stripped == peeled:
+            break
+        peeled = stripped
+    verb_match = re.match(r"([A-Za-z0-9_./-]+)", peeled)
+    if not verb_match:
+        return None
+    return verb_match.group(1).rsplit("/", 1)[-1]
+
+
+def _check_secret_file_read(command: str) -> str | None:
+    """Block tool-layer reads/copies of credential files.
+
+    Defense-in-depth against indirect prompt injection exfiltrating the bot
+    token, provider API keys, sudo password, or OAuth tokens. It raises the bar
+    against naive and literal read attempts; like every blocklist here it is
+    hardening, NOT a containment boundary. A determined caller can still defeat
+    it (base64/variable-indirection/here-strings always escape a `bash -c`
+    matcher), and the trust model already documents that an allowlisted user has
+    shell. The real protection for the secrets is their 0600 file permissions.
+    Returns a reason string or None.
+    """
+    reason = (
+        "Blocked: reading or copying credential files (.env, .sudo_pass, "
+        "OAuth tokens, mcp_servers.json) is not permitted through the "
+        "tool layer."
+    )
+
+    # 1) Read-redirect / upload idioms are unambiguous regardless of the verb:
+    #    `<.env` (stdin redirect, incl. `$(<.env)` substitution) and `@.env` /
+    #    `=@.env` (curl form-file upload). A secret in these positions is never
+    #    innocent, so this fires even when no reader verb is present.
+    for name in _SECRET_FILE_BASENAMES:
+        if re.search(
+            rf"[<@]\s*{re.escape(name)}(?:$|[\s'\")>;|&]|\.tmp)", command
+        ):
+            return reason
+
+    # 2) Reader-verb idioms, checked per command segment so a benign leading
+    #    verb cannot shield a later read. Match the secret name as a standalone
+    #    path token: preceded by start, whitespace, a quote/paren/=/:/slash;
+    #    followed by end, whitespace, a quote/redirect/separator, or a ".tmp"
+    #    scratch suffix. This blocks `cat .env`, `grep X ~/.sudo_pass`,
+    #    `cp ./.env /tmp` and `python -c "open('.env')"` while leaving
+    #    `.env.example` and `.environment` alone.
+    for segment in _COMMAND_SEGMENT_RE.split(command):
+        verb = _leading_verb(segment)
+        if verb is None or verb not in _SECRET_LEAK_COMMANDS:
+            continue
+        for name in _SECRET_FILE_BASENAMES:
+            if re.search(
+                rf"(?:^|[\s=:'\"(/]){re.escape(name)}(?:$|[\s'\")>;|&]|\.tmp)",
+                segment,
+            ):
+                return reason
     return None
 
 
