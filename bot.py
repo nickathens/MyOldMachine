@@ -1356,6 +1356,62 @@ def _is_confabulated_response(text: str) -> bool:
     return any(p.search(text) for p in _CONFABULATION_PATTERNS)
 
 
+# --- Operational alerting (make failures loud) -------------------------------
+# A failed turn returns an error string to the *triggering* user inline, but in
+# multi-user deployments the operator never learns about failures hitting other
+# users. _alert_turn_failure pings every admin EXCEPT the user who triggered it
+# (they already saw the inline error -- this also means single-admin installs get
+# no redundant self-ping), throttled by (provider, error) signature so a
+# misconfigured provider cannot spam the admin. Admins are resolved generically
+# from the allowlist, never a hardcoded id, so this is correct for any deployment.
+_LAST_TURN_ALERT: dict[str, float] = {}  # signature -> monotonic ts of last alert
+_TURN_ALERT_COOLDOWN = 600  # seconds; suppress identical alerts within this window
+
+
+async def _alert_admin(text: str, exclude_user_id: int | None = None) -> None:
+    """Best-effort: send an operational alert to every configured admin.
+
+    Resolves admins from the allowlist (never a hardcoded id). Optionally skips
+    ``exclude_user_id`` (the user who already saw the failure inline). Never
+    raises into the caller -- alerting must not break the response path.
+    """
+    try:
+        admin_ids = [
+            uid for uid in get_allowed_users()
+            if is_admin(uid) and uid != exclude_user_id
+        ]
+        if not admin_ids:
+            return
+        scheduler = get_scheduler()
+        if scheduler is None:
+            return
+        for uid in admin_ids:
+            try:
+                await scheduler.send_message(uid, text)
+            except Exception as e:
+                logger.error(f"Failed to alert admin {uid}: {e}")
+    except Exception as e:
+        logger.error(f"_alert_admin failed: {e}")
+
+
+async def _alert_turn_failure(user_id: int, provider: str, error: str) -> None:
+    """Alert admins that an LLM turn failed, throttled by (provider, error)
+    signature so a persistently-broken provider cannot spam the admin."""
+    signature = f"{provider}:{(error or '')[:80]}"
+    now = time.monotonic()
+    last = _LAST_TURN_ALERT.get(signature)
+    if last is not None and (now - last) < _TURN_ALERT_COOLDOWN:
+        return
+    _LAST_TURN_ALERT[signature] = now
+    # Opportunistic cleanup so the dict cannot grow unbounded across distinct errors.
+    for stale in [k for k, t in _LAST_TURN_ALERT.items() if now - t > _TURN_ALERT_COOLDOWN]:
+        _LAST_TURN_ALERT.pop(stale, None)
+    await _alert_admin(
+        f"⚠️ LLM turn failed for user {user_id} ({provider}): {error}",
+        exclude_user_id=user_id,
+    )
+
+
 async def call_llm(user_id: int, message: str, chat=None, images: list = None) -> str:
     """Call the configured LLM provider and return the response text.
 
@@ -1499,9 +1555,16 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
     finally:
         reset_current_user_dir(_user_ctx_token)
 
-    if response.error and not response.text:
-        logger.error(f"LLM error for user {user_id}: {response.error}")
-        return f"Error from {response.provider}: {response.error}"
+    if response.error:
+        # Any provider error is a failed turn. The CLI providers (Claude, Codex)
+        # return failures WITH user-facing text (OOM, exit-code, no-output), so
+        # gating the alert on "no text" silently missed exactly those cases --
+        # the default providers. Alert on any error, then preserve the original
+        # return behaviour (error string only when there is no usable text).
+        logger.error(f"LLM error for user {user_id} ({response.provider}): {response.error}")
+        await _alert_turn_failure(user_id, response.provider, response.error)
+        if not response.text:
+            return f"Error from {response.provider}: {response.error}"
 
     if not response.text:
         return "No response generated. Try again or rephrase your message."

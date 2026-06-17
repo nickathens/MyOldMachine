@@ -122,6 +122,23 @@ class LLMResponse:
     tool_use: bool = False  # Whether the response involved tool use
 
 
+def _error_excerpt(text: Optional[str], limit: int = 600) -> str:
+    """Return the TAIL of an error string (its last ``limit`` chars).
+
+    The subprocess CLIs (Claude, Codex) spew deprecation/startup warnings to
+    stderr that fill the HEAD of the buffer, so head-truncation (``text[:limit]``)
+    hides the actual error -- which lands at the END. Keeping the tail surfaces
+    it. Short strings pass through unchanged; a truncated tail is marked with a
+    leading ellipsis.
+    """
+    if not text:
+        return ""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return "..." + text[-limit:]
+
+
 class LLMProvider(ABC):
     """Base class for LLM providers."""
 
@@ -893,7 +910,7 @@ class ClaudeCLIProvider(LLMProvider):
                     )
                 if self.on_progress_save and user_id:
                     self.on_progress_save(user_id, original_message, partial_text,
-                                          f"error: {stderr_text[:100]}", tool_in_progress)
+                                          f"error: {_error_excerpt(stderr_text, 100)}", tool_in_progress)
                 if is_oom:
                     elapsed = int(asyncio.get_running_loop().time() - start_time)
                     oom_msg = (
@@ -916,9 +933,9 @@ class ClaudeCLIProvider(LLMProvider):
                         error="OOM killed",
                     )
                 return LLMResponse(
-                    text=f"Error (exit code {process.returncode}): {stderr_text[:500]}",
+                    text=f"Error (exit code {process.returncode}): {_error_excerpt(stderr_text, 500)}",
                     model=self.model, provider=self.provider_name,
-                    error=stderr_text[:200],
+                    error=_error_excerpt(stderr_text, 200),
                 )
 
             # Success
@@ -955,7 +972,7 @@ class ClaudeCLIProvider(LLMProvider):
                 f"elapsed={elapsed:.1f}s, exit={process.returncode}, "
                 f"last_status={current_status}, last_tool={tool_in_progress}, "
                 f"partial_text_len={len(partial_text)}, "
-                f"stderr={stderr_text[:200] if stderr_text else 'none'}"
+                f"stderr={_error_excerpt(stderr_text, 200) if stderr_text else 'none'}"
             )
             return LLMResponse(
                 text="Claude produced no response. This can happen when the context is too large. Try /clear to reset, or send a shorter message.",
@@ -1439,7 +1456,7 @@ class CodexCLIProvider(LLMProvider):
                     )
                 if self.on_progress_save and user_id:
                     self.on_progress_save(user_id, original_message, partial_text,
-                                          f"error: {stderr_text[:100]}", tool_in_progress)
+                                          f"error: {_error_excerpt(stderr_text, 100)}", tool_in_progress)
                 if is_oom:
                     elapsed = int(asyncio.get_running_loop().time() - start_time)
                     oom_msg = (
@@ -1457,14 +1474,14 @@ class CodexCLIProvider(LLMProvider):
                         text=oom_msg, model=self.model, provider=self.provider_name,
                         error="OOM killed",
                     )
-                err_detail = turn_failed_message or stderr_text[:500] or f"exit {process.returncode}"
+                err_detail = turn_failed_message or _error_excerpt(stderr_text, 500) or f"exit {process.returncode}"
                 hint = ""
                 if "auth" in err_detail.lower() or "login" in err_detail.lower() or "unauthor" in err_detail.lower():
                     hint = "\n\nRun `codex login` to authenticate with your ChatGPT plan, or set OPENAI_API_KEY."
                 return LLMResponse(
                     text=f"Codex error: {err_detail}{hint}",
                     model=self.model, provider=self.provider_name,
-                    error=err_detail[:200],
+                    error=_error_excerpt(err_detail, 200),
                 )
 
             if self.on_progress_clear and user_id:
@@ -1491,7 +1508,7 @@ class CodexCLIProvider(LLMProvider):
                 return LLMResponse(
                     text=f"Codex failed: {turn_failed_message}",
                     model=self.model, provider=self.provider_name,
-                    error=turn_failed_message[:200],
+                    error=_error_excerpt(turn_failed_message, 200),
                 )
             elapsed = time.monotonic() - start_time
             logger.warning(
@@ -1499,7 +1516,7 @@ class CodexCLIProvider(LLMProvider):
                 f"elapsed={elapsed:.1f}s, exit={process.returncode}, "
                 f"last_status={current_status}, last_tool={tool_in_progress}, "
                 f"partial_text_len={len(partial_text)}, "
-                f"stderr={stderr_text[:200] if stderr_text else 'none'}"
+                f"stderr={_error_excerpt(stderr_text, 200) if stderr_text else 'none'}"
             )
             return LLMResponse(
                 text="Codex produced no response. This can happen when the context is too large. Try /clear to reset, or send a shorter message.",
