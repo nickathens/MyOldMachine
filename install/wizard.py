@@ -350,8 +350,9 @@ _ALL_LLM_PROVIDERS = [
     ("openai", "OpenAI — requires API key ($), machine control via function calling"),
     ("deepseek", "DeepSeek — extremely cheap ($0.14/$0.28 per MTok), 1M context, machine control"),
     ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
-    ("kimi", "Moonshot Kimi — K2.6 long-horizon coding, 256K context, $0.95/$4.00 per MTok, machine control"),
+    ("kimi", "Moonshot Kimi — K2.7-Code token-efficient agentic coding, 256K context, $0.95/$4.00 per MTok, machine control"),
     ("minimax", "MiniMax — M3 frontier coding, 1M context, $0.30/$1.20 per MTok, machine control"),
+    ("zai", "Z.ai GLM — GLM-5.2 open-weights, long-horizon coding/agentic, 1M context, $1.40/$4.40 per MTok, machine control"),
     ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
     ("ollama-cloud", "Ollama Cloud — cloud-hosted models (free tier available), no local GPU needed"),
@@ -375,8 +376,9 @@ DEFAULT_MODELS = {
     "openai": "gpt-5.5",
     "deepseek": "deepseek-v4-flash",
     "grok": "grok-4.3",
-    "kimi": "kimi-k2.6",
+    "kimi": "kimi-k2.7-code",
     "minimax": "MiniMax-M3",
+    "zai": "glm-5.2",
     "gemini": "gemini-3.5-flash",
     "ollama": "llama3.1:8b",
     "ollama-cloud": "qwen3.5:cloud",
@@ -445,17 +447,22 @@ PROVIDER_MODELS = {
         ("deepseek-reasoner", "DeepSeek Reasoner — alias to V4 Flash thinking, deprecates 2026-07-24"),
     ],
     "kimi": [
-        ("kimi-k2.6", "Kimi K2.6 — latest, long-horizon coding, 256K ctx, $0.95/$4.00 per MTok (recommended)"),
+        ("kimi-k2.7-code", "Kimi K2.7-Code — token-efficient agentic coding, 256K ctx, $0.95/$4.00 per MTok (recommended)"),
+        ("kimi-k2.6", "Kimi K2.6 — prior long-horizon coding model, 256K ctx, $0.95/$4.00 per MTok"),
     ],
     "minimax": [
         ("MiniMax-M3", "MiniMax M3 — frontier coding + native multimodal, 1M ctx, $0.30/$1.20 per MTok (recommended)"),
         ("MiniMax-M2.7", "MiniMax M2.7 — prior flagship, 205K ctx, $0.30/$1.20 per MTok"),
         ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed — faster variant, $0.60/$2.40 per MTok"),
     ],
+    "zai": [
+        ("glm-5.2", "GLM-5.2 — Z.ai flagship, open-weights, long-horizon coding/agentic, 1M ctx, $1.40/$4.40 per MTok (recommended)"),
+    ],
     "ollama-cloud": [
         ("qwen3.5:cloud", "Qwen 3.5 Cloud — multimodal, strong reasoning (recommended)"),
         ("minimax-m3:cloud", "MiniMax M3 — frontier coding, 1M ctx, native multimodal"),
         ("nemotron-3-ultra:cloud", "Nemotron 3 Ultra — NVIDIA, high-throughput reasoning, long-running agents"),
+        ("glm-5.2:cloud", "GLM 5.2 — Zhipu AI, open-weights flagship, usable 1M ctx, long-horizon coding"),
         ("glm-5.1:cloud", "GLM 5.1 — Zhipu AI, SOTA on SWE-Bench Pro, agentic engineering"),
         ("kimi-k2.6:cloud", "Kimi K2.6 — Moonshot, long-horizon coding agent"),
         ("deepseek-v4-flash:cloud", "DeepSeek V4 Flash — 284B MoE, 1M ctx, efficient reasoning"),
@@ -497,7 +504,7 @@ OPENROUTER_FREE_MODELS = [
 ]
 
 # Providers that need an API key
-API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "gemini", "ollama-cloud", "openrouter"}
+API_KEY_PROVIDERS = {"claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "gemini", "ollama-cloud", "openrouter", "zai"}
 
 # Step-by-step API key guides for each provider.
 # Shown during setup when the user picks a provider.
@@ -609,6 +616,20 @@ API_KEY_GUIDES = {
             "OpenAI-compatible API. Very competitive pricing.",
             "M2.7: strong reasoning, 205K context, $0.30/$1.20 per MTok.",
             "M2.5: multimodal (vision + tools).",
+        ],
+    },
+    "zai": {
+        "name": "Z.ai (GLM)",
+        "url": "https://z.ai/manage-apikey/apikey-list",
+        "steps": [
+            "Go to z.ai/model-api and sign up or log in",
+            "Open z.ai/manage-apikey/apikey-list",
+            "Click 'Create an API Key', name it, and copy it immediately",
+            "Add funds on z.ai/manage-apikey/billing if your balance is empty",
+        ],
+        "notes": [
+            "OpenAI-compatible API — same format, different base URL.",
+            "GLM-5.2: open-weights flagship, 1M context, $1.40/$4.40 per MTok ($0.26 cached).",
         ],
     },
     "gemini": {
