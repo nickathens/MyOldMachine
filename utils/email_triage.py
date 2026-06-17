@@ -74,7 +74,7 @@ CLI_DRAFT_FALLBACK_MODEL = "claude-sonnet-4-6"
 # Drafting writes outbound text in the owner's name, so the quality bar is
 # higher than classification. Weak providers still classify and ping; they
 # just skip the draft. Mirrors the capability split in utils/reflect.py.
-DRAFT_CAPABLE_API = {"claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "gemini", "google"}
+DRAFT_CAPABLE_API = {"claude-api", "openai", "deepseek", "grok", "kimi", "minimax", "zai", "gemini", "google"}
 DRAFT_CAPABLE_OLLAMA_SIZES = {"32b", "34b", "70b", "72b", "235b", "405b"}
 
 MIN_RUN_GAP_SECONDS = 600       # self-throttle: never two real passes within 10 min
@@ -465,6 +465,7 @@ def _call_api(prompt: str, model: str, timeout: int) -> str:
         "grok": "https://api.x.ai/v1/chat/completions",
         "kimi": "https://api.moonshot.ai/v1/chat/completions",
         "minimax": "https://api.minimax.io/v1/chat/completions",
+        "zai": "https://api.z.ai/api/paas/v4/chat/completions",
         "openrouter": "https://openrouter.ai/api/v1/chat/completions",
     }
     if provider not in api_urls:
