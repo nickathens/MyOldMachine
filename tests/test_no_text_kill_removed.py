@@ -44,8 +44,13 @@ class TestNoTextKillRemoved(unittest.TestCase):
 
     def test_codex_surviving_safety_nets(self):
         self.assertEqual(CodexCLIProvider.IDLE_TIMEOUT, 1800)
-        self.assertEqual(CodexCLIProvider.ABSOLUTE_TIMEOUT, 3600)
+        self.assertEqual(CodexCLIProvider.ABSOLUTE_TIMEOUT, 7200)
         self.assertEqual(CodexCLIProvider.PROGRESS_INTERVAL, 600)
+
+    def test_claude_surviving_safety_nets(self):
+        self.assertEqual(ClaudeCLIProvider.IDLE_TIMEOUT, 1800)
+        self.assertEqual(ClaudeCLIProvider.ABSOLUTE_TIMEOUT, 7200)
+        self.assertEqual(ClaudeCLIProvider.PROGRESS_INTERVAL, 600)
 
 
 if __name__ == "__main__":
