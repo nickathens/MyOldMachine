@@ -25,8 +25,8 @@ texture_notes:
   - thin rules and hairline borders
 ---
 
-Synedark is the aesthetic of the SyneSynth environment: a dark, luminous, cold workspace where sound is visualised as light moving through structure. The palette is near-black cold blue, lit by an internal signal colour that never behaves as a brand accent — it behaves as evidence of processing.
+Synedark is a dark, luminous, cold workspace aesthetic where sound is visualised as light moving through structure. The palette is near-black cold blue, lit by an internal signal colour that never behaves as a brand accent: it behaves as evidence of processing.
 
-Type is the Space Grotesk / Outfit / Playfair family, the same triple Nick uses for treatments, but rendered cooler. Glass, crystal, and light are the implied materials; anything warm reads as an intruder.
+Type is the Space Grotesk / Outfit / Playfair family, the same triple used for treatments, but rendered cooler. Glass, crystal, and light are the implied materials; anything warm reads as an intruder.
 
 A treatment leaning on Synedark should avoid sunlight metaphors. Favour interior light sources. The accent is a signal, not a product colour — use it at the moment of a revelation, never as a button.
