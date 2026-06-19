@@ -486,7 +486,7 @@ class ClaudeCLIProvider(LLMProvider):
     """
 
     IDLE_TIMEOUT = 1800  # 30 min of no output = stuck
-    ABSOLUTE_TIMEOUT = 3600  # 1 hour hard ceiling per request, even with continuous activity
+    ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling per request, even with continuous activity
     PROGRESS_INTERVAL = 600  # Send progress report every 10 minutes
 
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
@@ -728,11 +728,11 @@ class ClaudeCLIProvider(LLMProvider):
                         self.on_progress_clear(user_id)
                     if fallback:
                         return LLMResponse(
-                            text=fallback + "\n\n[Hit 1-hour time limit. Break into smaller steps.]",
+                            text=fallback + f"\n\n[Hit {self.ABSOLUTE_TIMEOUT // 3600}-hour time limit. Break into smaller steps.]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
                     return LLMResponse(
-                        text="Claude hit the 1-hour time limit. Try breaking the task into smaller steps.",
+                        text=f"Claude hit the {self.ABSOLUTE_TIMEOUT // 3600}-hour time limit. Try breaking the task into smaller steps.",
                         model=self.model, provider=self.provider_name,
                     )
 
@@ -748,10 +748,10 @@ class ClaudeCLIProvider(LLMProvider):
                             self.on_progress_clear(user_id)
                         return LLMResponse(
                             text=_compose_full_reply(final_result, all_text_blocks)
-                            + "\n\n[Task incomplete - Claude stopped responding after 1 hour]",
+                            + f"\n\n[Task incomplete - Claude stopped responding after {self.IDLE_TIMEOUT // 60} minutes]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
-                    timeout_msg = "Claude stopped responding after 1 hour of inactivity."
+                    timeout_msg = f"Claude stopped responding after {self.IDLE_TIMEOUT // 60} minutes of inactivity."
                     if tool_in_progress:
                         timeout_msg += f" Was running: {tool_in_progress}"
                     if partial_text:
@@ -1059,7 +1059,7 @@ class CodexCLIProvider(LLMProvider):
     """
 
     IDLE_TIMEOUT = 1800
-    ABSOLUTE_TIMEOUT = 3600
+    ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling per request, even with continuous activity
     PROGRESS_INTERVAL = 600
 
     def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
@@ -1268,11 +1268,11 @@ class CodexCLIProvider(LLMProvider):
                         self.on_progress_clear(user_id)
                     if fallback:
                         return LLMResponse(
-                            text=fallback + "\n\n[Hit 1-hour time limit. Break into smaller steps.]",
+                            text=fallback + f"\n\n[Hit {self.ABSOLUTE_TIMEOUT // 3600}-hour time limit. Break into smaller steps.]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
                     return LLMResponse(
-                        text="Codex hit the 1-hour time limit. Try breaking the task into smaller steps.",
+                        text=f"Codex hit the {self.ABSOLUTE_TIMEOUT // 3600}-hour time limit. Try breaking the task into smaller steps.",
                         model=self.model, provider=self.provider_name,
                     )
 
@@ -1288,10 +1288,10 @@ class CodexCLIProvider(LLMProvider):
                         if self.on_progress_clear and user_id:
                             self.on_progress_clear(user_id)
                         return LLMResponse(
-                            text=fallback + "\n\n[Task incomplete - Codex stopped responding after 1 hour]",
+                            text=fallback + f"\n\n[Task incomplete - Codex stopped responding after {self.IDLE_TIMEOUT // 60} minutes]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
-                    timeout_msg = "Codex stopped responding after 1 hour of inactivity."
+                    timeout_msg = f"Codex stopped responding after {self.IDLE_TIMEOUT // 60} minutes of inactivity."
                     if tool_in_progress:
                         timeout_msg += f" Was running: {tool_in_progress}"
                     if partial_text:
