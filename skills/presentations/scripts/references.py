@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -177,12 +179,118 @@ def apply_reference(treatment: dict[str, Any], ref: dict[str, Any]) -> dict[str,
     return out
 
 
+# ─────────────────────────────────────────────
+#  Bounded discovery of past work
+# ─────────────────────────────────────────────
+#
+# Past presentations are NOT stored in this directory; they live under the
+# projects root. This gives the agent a SAFE, bounded way to find them so it
+# never improvises an unbounded `find ~`, which can leave an orphaned
+# `find | head` pipeline that wedges the whole turn for hours.
+
+_WORK_SUFFIXES = (".html", ".pdf")
+_SKIP_DIRS = {"node_modules", "__pycache__", ".git", ".cache", "venv", ".venv"}
+_DEFAULT_MAX_DEPTH = 4
+_DEFAULT_TIME_BUDGET = 10.0  # seconds
+_DEFAULT_RESULT_CAP = 200
+
+
+def resolve_projects_root() -> Path:
+    """Return the root under which past presentation work lives.
+
+    `$MOM_PROJECTS_DIR` overrides; otherwise default to the install's
+    data/memory/projects (mirrors utils/project_manager.PROJECTS_DIR).
+    """
+    env = os.environ.get("MOM_PROJECTS_DIR")
+    if env:
+        return Path(env).expanduser()
+    install_root = Path(__file__).resolve().parents[3]
+    return install_root / "data" / "memory" / "projects"
+
+
+def find_work(
+    query: str = "",
+    root: Path | None = None,
+    *,
+    max_depth: int = _DEFAULT_MAX_DEPTH,
+    time_budget: float = _DEFAULT_TIME_BUDGET,
+    result_cap: int = _DEFAULT_RESULT_CAP,
+) -> dict[str, Any]:
+    """Bounded search for past presentation artifacts under the projects root.
+
+    Confined to `root` (symlinks are not followed, so it cannot escape into the
+    home directory), pruned to `max_depth` levels below the root, and stopped
+    after `time_budget` seconds or `result_cap` matches, whichever comes first.
+
+    Returns {"root", "matches" (sorted relative paths), "truncated", "reason"}.
+    A missing root yields an empty result; it never falls back to a wider scan.
+    """
+    base = (root or resolve_projects_root()).expanduser()
+    result: dict[str, Any] = {
+        "root": str(base),
+        "matches": [],
+        "truncated": False,
+        "reason": "",
+    }
+    if not base.is_dir():
+        result["reason"] = "projects root does not exist"
+        return result
+
+    needle = query.strip().lower()
+    deadline = time.monotonic() + max(0.0, time_budget)
+    base_depth = len(base.parts)
+    matches: list[str] = []
+    truncated = False
+    reason = ""
+
+    for dirpath, dirnames, filenames in os.walk(base):  # followlinks=False
+        if time.monotonic() > deadline:
+            truncated, reason = True, "time budget exceeded"
+            break
+        # prune hidden + heavy dirs in place, then enforce the depth ceiling
+        dirnames[:] = [
+            d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+        ]
+        depth = len(Path(dirpath).parts) - base_depth
+        if depth >= max_depth:
+            dirnames[:] = []
+        for name in filenames:
+            if not name.lower().endswith(_WORK_SUFFIXES):
+                continue
+            rel = str((Path(dirpath) / name).relative_to(base))
+            if needle and needle not in rel.lower():
+                continue
+            matches.append(rel)
+            if len(matches) >= result_cap:
+                truncated, reason = True, "result cap reached"
+                break
+        if truncated:
+            break
+
+    result["matches"] = sorted(matches)
+    result["truncated"] = truncated
+    result["reason"] = reason
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="List or print aesthetic references.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list", help="List reference names")
     show = sub.add_parser("show", help="Print a parsed reference as JSON")
     show.add_argument("name", help="Reference name (e.g. a24, aesop)")
+    work = sub.add_parser(
+        "work", help="Bounded search for past presentation work under the projects root"
+    )
+    work.add_argument("query", nargs="?", default="", help="Substring to filter matches")
+    work.add_argument("--root", default=None, help="Override the projects root to search")
+    work.add_argument(
+        "--max-depth",
+        type=int,
+        default=_DEFAULT_MAX_DEPTH,
+        help="Max directory depth below the root",
+    )
+    work.add_argument("--json", action="store_true", help="Emit raw JSON")
     args = ap.parse_args()
 
     if args.cmd == "list":
@@ -197,6 +305,26 @@ def main() -> int:
             print(f"references: {e}", file=sys.stderr)
             return 2
         print(json.dumps(ref, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "work":
+        res = find_work(
+            args.query,
+            Path(args.root) if args.root else None,
+            max_depth=args.max_depth,
+        )
+        if args.json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            return 0
+        if not res["matches"]:
+            note = f" ({res['reason']})" if res["reason"] else ""
+            print(f"No past work found under {res['root']}{note}")
+            return 0
+        print(f"# past work under {res['root']}")
+        for match in res["matches"]:
+            print(match)
+        if res["truncated"]:
+            print(f"# (truncated: {res['reason']})")
         return 0
 
     return 1

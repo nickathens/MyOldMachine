@@ -6,7 +6,7 @@ This skill generates presentation deliverables in many shapes. Treatments (comme
 
 **This skill is large. It has many capabilities and many ways to assemble them. Ask first. Do not default.**
 
-The bundled scroll-section grammar is one tool among several. Choosing the wrong shape wastes a day. Before generating anything, walk Nick through these questions one branch at a time. Provide your recommendation alongside each question. Stop and confirm before reaching for `create_presentation.py`.
+The bundled scroll-section grammar is one tool among several. Choosing the wrong shape wastes a day. Before generating anything, walk the user through these questions one branch at a time. Provide your recommendation alongside each question. Stop and confirm before reaching for `create_presentation.py`.
 
 1. **Subcategory.** Which shape from the **Subcategories** map below: treatment, lookbook, mood reel (cross-skill), film/TV pitch deck, strategic proposal, public bid microsite, sponsorship deck, capabilities deck, brand strategy deck, playbook, status report, editorial long-form, portal constellation, personal site, brand or artist landing, itinerary, or fully custom?
 2. **Form.** Continuous scroll, pinned sections, single screen with state, interactive surface, or multi-page?
@@ -18,20 +18,34 @@ The bundled scroll-section grammar is one tool among several. Choosing the wrong
 
 The default scroll-section pipeline fits cleanly when the answer set is roughly "treatment, continuous scroll, cinematic, producer audience, long scroll, HTML plus video, in-house aesthetic". Most other configurations either need significant deviation from the JSON schema or a hand-built one-off. Be honest about this. If the right deliverable is fundamentally not a scrolling document, build it custom.
 
-**Skip the protocol** when Nick has already specified the shape ("make me a treatment", "build a portal constellation like the CooCoo deck"). The protocol prevents building the wrong shape. It does not slow down clear briefs.
+**Skip the protocol** when the user has already specified the shape ("make me a treatment", "build a portal constellation"). The protocol prevents building the wrong shape. It does not slow down clear briefs.
+
+## Finding past work (bounded search only)
+
+Past presentations built with this skill are **not** stored inside this skill directory. They live under the projects root: the path in `$MOM_PROJECTS_DIR` if that variable is set, otherwise the `data/memory/projects/` directory under the install root (the same root the bot's `project_manager` uses).
+
+To locate prior work, use the bounded helper instead of an ad hoc filesystem search:
+
+```bash
+python skills/presentations/scripts/references.py work "treatment"
+```
+
+It searches only the projects root, prunes to a few levels deep, stops at a time budget and a result cap, and returns `.html` and `.pdf` artifacts. If the root does not exist it returns nothing and never falls back to scanning the home directory.
+
+**Hard rule: never run an unbounded search.** Do not run `find ~`, `find $HOME`, `find /`, or any home-wide scan to find past work, brand files, or `surge`. On some machines an orphaned `find | head` pipeline can wedge the whole turn for hours. If you must use `find` at all, confine it to a known directory and bound it, for example `timeout 20 find PROJECTS_DIR -maxdepth 4 -iname '*treatment*'`.
 
 ## Subcategories
 
-Each shape below is grounded in two sources: the industry-standard form as it is actually practiced (sources cited inline, all consulted via web research not just memory) and the in-house artifacts shipped from this directory tree (file paths included for verification). The two are listed separately so you can tell *industry convention* from *Nick's particular take on it*.
+Each shape below is grounded in two sources: the industry-standard form as it is actually practiced (sources cited inline, all consulted via web research not just memory) and notes from in-house work built with this skill. The two are listed separately so you can tell *industry convention* from *one practitioner's take on it*. Past work is not shipped inside this skill directory; see *Finding past work* for how to locate it.
 
 ### Treatment (Director's Treatment for Commercial)
 
 **Industry form.** A multi-page prose document a director sends to an agency creative director and the client to win a TVC pitch. Tells the story in present-tense action, layers in director's vision (tone, style, approach), and pairs reference frames or stills with paragraphs of intent. Standard sections in commercial work include cover, director's note (the "why me / why now"), concept, beats or scenes, visual approach with reference images, cinematography, casting/talent, locations, wardrobe, music, post, packshot, and closing. The technical-execution sections are unusually heavy compared to feature treatments because the agency needs to know *how* the director will hit the shoot dates and budget. Treatments are typically delivered as a designed PDF or a Readymag scrolling page; in 2026 the scrolling page is increasingly the default for ambitious directors. Often paired with a budget document where the director justifies any over-spec spend.
 *References: [Assemble — How to Write a Winning Director's Treatment](https://www.onassemble.com/blog/how-to-write-a-winning-directors-treatment), [The Collective Pitch — Treatment for Commercial step-by-step](https://thecollectivepitch.com/portfolio/treatment-for-commercial/), [The Gate Films — What to Look for in a Director's Treatment](https://www.thegatefilms.com/blog/film-craft-101-what-to-look-for-in-a-directors-treatment).*
 
-**In-house references.** Greek industry PDFs at `~/projects/shared/presentations/treatments/*.pdf` (Topcut Modiano, Loumidis Maroudis, PARRANO Papaioannou, AKTOR, fresh_pedro_abreu). Topcut DEH Vasilis Kekatos as a Readymag-exported HTML treatment. Methodology at `~/projects/shared/presentations/TREATMENT_METHODOLOGY.md`.
+**In-house references.** The bundled `arrena` and `synedark` aesthetics distill a house treatment look (near-black ground, gold or signal accent, a three-typeface system). Prior treatments built with this skill live under your projects root; locate them with the bounded helper (see *Finding past work*), never by scanning `$HOME`.
 
-- **Past work:** Arrena water TVC at `~/projects/shared/presentations/treatments/arrena/`. Built with this skill.
+- **Past work:** Prior TVC treatments built with this skill live under your projects root (see *Finding past work*).
 - **Tooling:** `create_presentation.py` with full scroll-section JSON, `--aesthetic arrena` or `synedark` for in-house mood, `blur` or `smooth` animation, `nav: none`, video export for sending the file as motion.
 - **Distinguishing test:** "Am I a director communicating creative vision to a creative director, with a script already in hand?" If yes → treatment. If the script doesn't exist yet, it's probably a lookbook or pitch deck.
 
@@ -40,7 +54,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 **Industry form.** Visual-only document — no prose, no beats. Compiled film stills, photography, palettes, fabrics, location references, grouped by tone or location or costume or lighting. Used (a) by the director as an internal alignment document with cinematographer / production designer / wardrobe before the shoot, and (b) as a pitching aid earlier in the funnel than a treatment, to get mood approval before script development. Distinct from a *pitch deck* (which is the financiers' document with logline + budget) and from a *mood reel* (which is the video version, sometimes called a ripomatic or sizzle-style cut).
 *References: [Filmmaker Magazine — Mood Reels and Lookbooks: The Image Comes First](https://filmmakermagazine.com/66393-the-image-comes-first/), [Sarah Cogan — The Difference Between Your Film's Lookbook and Pitch Deck](https://www.sarahcogan.com/blog/the-difference-between-your-films-lookbook-and-a-pitch-deck), [Get It Made — Look Book, Pitch Deck & Pitch Bible](https://www.getitmade.la/resource-center/p/pitch-deck).*
 
-**In-house references.** None shipped standalone. The visual-reference sections inside the Arrena treatment serve this function in-document.
+**In-house references.** None shipped standalone. The visual-reference sections inside a treatment can serve this function in-document.
 
 - **Tooling:** `create_presentation.py` with heavy `image_grid`, `full_bleed`, and `image` sections, sparse `divider`, `nav: none`, animation `blur` or `smooth`. Sits inside the existing skill grammar.
 - **Distinguishing test:** "Would adding a paragraph of prose dilute this?" If yes → lookbook. If you need to articulate the *why* in language → treatment.
@@ -58,7 +72,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 **Industry form.** Distinct from a treatment. The pitch deck is the *financiers' document* — used to pitch a feature or series to studios, financiers, or platforms; the treatment is the *production document* — used after a director attaches to a project. Standard pitch deck contents: logline (one sentence), synopsis, character cards, comparable titles ("comps"), pilot outline, season-one episode breakdown, future-season outlines (for series), packaging info (attached talent), budget top-sheet or range, financial projections. Almost always paired with a longer lookbook for visual style. Length varies widely — 10 pages for a tight feature pitch, 30+ for a full series bible.
 *References: [Sarah Cogan — Lookbook vs Pitch Deck](https://www.sarahcogan.com/blog/the-difference-between-your-films-lookbook-and-a-pitch-deck), [Vicious & Co — Perfect TV and Film Pitch Deck Examples](https://viciousandco.com/film-and-tv-pitch-deck-examples/), [LA Film School — Ultimate Guide to Creating Your Pitch Deck](https://www.lafilm.edu/blog/the-ultimate-guide-to-creating-your-films-pitch-deck/), [Guerrilla Rep Media — 12 Slides You Need in Your IndieFilm Investment Deck](https://www.theguerrillarep.com/blog/the-12-slides-you-need-in-your-indiefilm-investment-deck-with-template).*
 
-**In-house references.** None shipped. Adjacent: the Valve Application directory contains drafts but is a job application, not a project pitch.
+**In-house references.** None shipped.
 
 - **Tooling:** `create_presentation.py` with `nav: topbar`, mixed `concept` + `cards` + `image_grid` + `stats` (for budget/projections) + `closing`. Lookbook-quality images do most of the work; treatment-style prose stays sparse.
 - **Distinguishing test:** "Does this document end with 'how much money do we need'?" If yes → pitch deck. If it ends with 'here is how I will direct it' → treatment.
@@ -68,7 +82,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 **Industry form.** Privately delivered persuasion document for a discrete partnership decision (joint venture, real-estate development partnership, exclusive supplier agreement, multi-year sponsorship outside the standard tier ladder). Industry conventions: 4–7 pages for B2B with multiple services, 2–3 for simpler asks; structured as opportunity → counterparty value → terms → confidentiality. Always includes confidentiality / NDA framing because the document references unannounced strategy. Tone: more architecture than advertising, clean rather than cinematic, often with section numbers because legal will reference them.
 *References: [StoryDoc — Writing a Partnership Proposal](https://www.storydoc.com/blog/how-to-write-a-partnership-proposal), [Qwilr — How to Write a Partnership Proposal to Stand Out](https://qwilr.com/blog/how-to-write-partnership-proposal/), [Ignitec — Strategic Partnership Proposal Template](https://www.ignitec.com/insights/a-strategic-partnership-proposal-template-to-foster-innovation-and-boost-business-growth/).*
 
-**In-house references.** Alexandrio 2.0 (ΚΑΕ Άρης × ΔΕΘ-HELEXPO) at `~/projects/clients/aris-bc/alexandrio-2-0/site/`. Sections: Hero, Proposal, Concept, Space Request, Why ΔΕΘ Wins, Revenue, Traffic, Brand, Benefits, Closing.
+**Typical section flow.** Hero, Proposal, Concept, Space Request, Why-Us, Revenue, Traffic, Brand, Benefits, Closing.
 
 - **Tooling:** `create_presentation.py` with `nav: topbar`, `mode: dark`, client brand color, hero with video or full-bleed, stats sections, benefit tables, formal closing. Surge with non-public URL.
 - **Distinguishing test:** "Is this a one-shot persuasion artifact for a counterparty board, with confidentiality implications?" Then strategic proposal, not sponsorship deck (which sells from a tier menu) and not bid microsite (which is public-facing).
@@ -78,7 +92,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 **Industry form.** Public-facing pitch hosted on its own URL, responding to an open call (host city bid, open RFP, public tender, festival programming pitch). Modern Olympic-style bid books are submitted in three IOC stages — Vision/Concept/Strategy → Governance/Legal/Funding → Delivery/Experience/Legacy — where the first two are textual and detailed and the third is more inspirational. The same shape transfers to phygital sports bids, festival hosting, civic competitions, and large-format RFPs. Verified data carries the argument; numbers must be auditable. Hero video, animated counters tied to real sources, anchored sections, single-page CTA.
 *References: [IOC Candidature Process Olympic Games 2024 (PDF)](https://stillmed.olympic.org/Documents/Host_city_elections/Candidature_Process_Olympic_Games_2024.pdf), [Olympics Watch — All the LA 2024/2028 Bid Books](https://olympicswatch.org/2021/01/21/all-the-la-2024-2028-bid-books-in-one-place/), [Maurizio La Cava — How to Create a Winning Olympic Bid Presentation](https://www.mauriziolacava.com/en/how-to-create-a-winning-presentation-for-the-olympic-bid/).*
 
-**In-house references.** Games of the Future host city bid at `~/projects/clients/gotf-bid-site/`, live at `host-the-future.surge.sh`. Sections: Hero, Momentum (Ipsos data), Experience, Value, Closing. Animated counters tied to audited audience numbers.
+**Typical section flow.** Hero, Momentum (third-party data), Experience, Value, Closing. Animated counters tied to audited audience numbers.
 
 - **Tooling:** `create_presentation.py` with `mode: dark`, `nav: dots` or none, hero looping video, `stats` sections with `data-count` for animated counters, surge deployment.
 - **Distinguishing test:** "Is the URL itself part of the deliverable, sent to multiple stakeholders or a committee?" Then bid microsite. If the document is private and individually addressed → strategic proposal.
@@ -88,7 +102,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 **Industry form.** Sales deck used by sports rights holders, festivals, properties, and creators to sell sponsorship to brand partners. Five-section structure is the industry default: (1) overview / opportunity, (2) brand description with history + values + future goals, (3) value to sponsor with target audience demographics + activation plans, (4) tier/package menu with pricing, (5) appendix. Length: ~35 slides max with a heavier appendix for asset-by-asset breakdowns. Image-to-text ratio runs ~60/40 graphics. Audience customization matters: C-suite sees brand alignment + KPIs, marketing experts see asset variety + cost, creative marketers see how the property supports campaigns. Distinct from strategic proposal because the offer is structured rights from a tier menu, not a one-off partnership.
 *References: [PandoPartner — Building the Best Sponsorship Sales Deck](https://pandopartner.com/blog/building-the-best-sponsorship-sales-deck), [Power Sponsorship — Best Layout of a Sponsorship Deck](https://powersponsorship.com/best-layout-sponsorship-deck/), [The DigiDeck — How to Make a Sponsorship Pitch Deck](https://www.thedigideck.com/sponsorship-pitch-deck/), [Visme — 15 Strategic Sports Sponsorship Deck Templates](https://visme.co/blog/sponsorship-deck-templates/).*
 
-**In-house references.** None shipped standalone. ARIS BC has a content playbook (different shape) but not a sponsorship deck.
+**In-house references.** None shipped standalone.
 
 - **Tooling:** `create_presentation.py` with `nav: topbar`, `mode: light` or `dark` matching the property, repeated `cards` and `table` sections for tier breakdowns, `stats` for audience numbers, `image_grid` for activation examples.
 - **Distinguishing test:** "Is the ask 'commit to a tier from this menu'?" Then sponsorship deck. If the ask is bespoke → strategic proposal.
@@ -98,17 +112,17 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 **Industry form.** Identity-and-services document a production company, agency, studio, or freelance shop sends to a prospective client to introduce capabilities and win RFPs or first meetings. Standard structure: (1) intro and value proposition framed around the client's problem, (2) services overview written as mini-stories not bullet lists, (3) process / approach in digestible steps, (4) case studies and social proof with at least one micro-case-study per claim, (5) measurable results with logos, (6) support and next steps. Length is typically 15–25 slides; "one-pager" is a separate cover surface used to open a longer deck or as a leave-behind. Tone is minimalist on copy, persuasive on outcomes. *"Mini-stories that show transformation, not just task delivery"* is the most-cited single principle.
 *References: [InkNarrates — How to Make a Capabilities Deck](https://www.inknarrates.com/post/capabilities-deck), [HubSpot — 7 Secrets of a Winning Capabilities Presentation](https://blog.hubspot.com/sales/capabilities-presentation), [Stryve — Why Your Firm Needs a Capabilities Deck](https://www.stryvemarketing.com/blog/why-professional-services-firm-needs-capabilities-deck/), [Catapult — How to Craft a Winning Agency Capabilities Deck](https://catapultnewbusiness.com/how-to-craft-a-winning-agency-capabilities-deck/).*
 
-**In-house references.** None shipped standalone for CooCoo AI as a full capabilities deck. The CooCoo Workflows portal-constellation deck is *one half* of a capabilities deck — the work-and-process half — without the value-prop, services, or commercial sections.
+**In-house references.** None shipped standalone. A portal-constellation deck (see Portal / Constellation) can serve as the work-and-process half of a capabilities deck, without the value-prop, services, or commercial sections.
 
 - **Tooling:** `create_presentation.py` with `nav: topbar`, `mode: dark`, opening `concept` + `note` for value prop, `cards` for services, `beats`-style or `stats` for case studies, `closing` with contact + reel CTA. The Quick Start treatment scaffold can be re-cut for this shape.
-- **Distinguishing test:** "Is this introducing a company to potential clients in general, not pitching a specific project?" Then capabilities deck. The CooCoo Workflows deck is *not* this — it's a sub-section of one.
+- **Distinguishing test:** "Is this introducing a company to potential clients in general, not pitching a specific project?" Then capabilities deck. A portal-constellation deck is *not* this; it's a sub-section of one.
 
 ### Brand Strategy Deck
 
 **Industry form.** Agency / consultancy deliverable that lays out positioning, messaging, and visual identity for a client brand. Standard frameworks include brand archetypes, positioning matrices, brand pyramids, and StoryBrand. Sections typically cover: (1) audience / problem space, (2) competitive landscape map, (3) positioning recommendation, (4) messaging architecture (purpose, mission, values, voice principles), (5) visual identity exploration, (6) activation rollout. Tone is consultative, evidence-based, framework-driven — not cinematic. Often delivered as a designed PDF or Figma deck rather than scrolling HTML, but a scrolling presentation can carry it well when the agency wants to *demonstrate* taste, not just describe it.
 *References: [Insight to Action — 4 Types of Brand Strategy Consulting](https://itoaction.com/4-types-of-brand-strategy-consulting-which-is-best-for-you/), [Vivaldi — Brand Strategy Consulting Services](https://vivaldigroup.com/service/brand-strategy/), [NMS Consulting — Brand Strategy Guide](https://nmsconsulting.com/brand-strategy-consulting-guide-2025/).*
 
-**In-house references.** None shipped standalone. Adjacent: ARIS BC playbook contains the *output* of brand strategy (Tone of Voice, Messaging Pillars) but not the *recommendation arc*.
+**In-house references.** None shipped standalone. A playbook contains the *output* of brand strategy (tone of voice, messaging pillars) but not the *recommendation arc*.
 
 - **Tooling:** `create_presentation.py` with `nav: sidebar` or `topbar`, mixed `concept` + `cards` + `table` (positioning matrix) + `two_col` (before/after positioning) + `image_grid` (visual identity exploration). The `--design-md` library (Linear, Stripe, etc.) becomes high-leverage here as a *reference* of well-executed brand systems to point at.
 - **Distinguishing test:** "Is the deliverable a *recommendation about how the brand should show up*, with a framework backing the recommendation?" Then brand strategy deck. If it's a reference for already-decided rules → playbook.
@@ -117,7 +131,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 
 **Industry form.** Long-form internal-and-partner reference document used over time, not for a single decision. Sections cover stable rules (brand DNA, tone of voice, content tiers, platform roles, do/don't). Sidebar navigation with section tracking, density-over-narrative, restrained animation. Closer to a Figma documentation site or a Notion-style internal wiki than to a deck. Read repeatedly across teams, often the source of truth that a content marketer or social manager opens weekly.
 
-**In-house references.** ARIS BC Social Media Playbook at `~/projects/clients/aris-bc/aris-playbook/site/`. 16 sections covering Brand DNA, Core Narrative, Messaging Pillars, Tone of Voice, Visual Philosophy, Content Types, Platform Roles, Follow Policy, Interaction Rules, DM Policy, External Interaction, Moderation, Hashtags, Practical Do/Don't, Quick Reference.
+**Typical section flow.** A social-media playbook runs ~16 sections: Brand DNA, Core Narrative, Messaging Pillars, Tone of Voice, Visual Philosophy, Content Types, Platform Roles, Follow Policy, Interaction Rules, DM Policy, External Interaction, Moderation, Hashtags, Practical Do/Don't, Quick Reference.
 
 - **Tooling:** `create_presentation.py` with `nav: sidebar`, narrow content max-width (~920px), `mode: dark` or `editorial`, table-heavy sections, restrained animation.
 - **Distinguishing test:** "Will this be referenced repeatedly over the next year?" Then playbook. If it's a one-shot persuasion artifact → strategic proposal or capabilities deck.
@@ -126,7 +140,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 
 **Industry form.** Hybrid of a financial report and a capabilities update. Sent to owners, partners, board, or close collaborators as a snapshot of the entity's state — income, projects shipped, team additions, runway. Tone is operational, dense, factual; cinematic register would feel evasive. Often bilingual when the audience spans markets.
 
-**In-house references.** CooCoo AI status at `~/projects/coocoo-ai/coocoo-status/` (English plus Greek versions). Income line by line, hairline borders, large light-weight type, six-column max width.
+**Typical treatment.** Income line by line, hairline borders, large light-weight type, six-column max width; often bilingual.
 
 - **Tooling:** Custom HTML closer to a finance report than a deck. The default skill grammar fights this register. A `minimal` plus `editorial` blend or hand-built HTML works better.
 - **Distinguishing test:** "Is the audience an internal stakeholder who needs a numbers-first snapshot of state?" Then status report, not capabilities deck (which sells outward) and not playbook (which prescribes rules).
@@ -145,16 +159,16 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 
 **Industry form.** This shape doesn't have a single canonical name in the industry. It's adjacent to interactive case-study microsites (think award-show feature pages on [Awwwards](https://www.awwwards.com/) or [The FWA](https://thefwa.com/)), interactive hub navigations on agency portfolio sites, and interactive annual reports. The defining property: items presented as gestural objects (circles, tiles, video cutouts, character portraits) that morph or expand into modal content on click. The macro gesture *is* the message. Deep-linking and shareability of individual portals usually matter.
 
-**In-house references.** CooCoo Workflows at `~/projects/coocoo-ai/coocoopresentation/`, live at `coocoo-workflows.surge.sh`. Four circular portals in one row, each with a silent video loop, click expands into a fullscreen modal with video, caption, and specs.
+**Typical treatment.** Four circular portals in one row, each with a silent video loop; click expands into a fullscreen modal with video, caption, and specs.
 
 - **Tooling:** Custom HTML build. The skill's section vocabulary cannot carry this. Lenis for smooth scroll, GSAP for portal morph and modal expansion, hand-written pointer-event hierarchies for the layered modal stage.
 - **Distinguishing test:** "Is the navigation the experience itself?" Then portal/constellation, custom build only.
 
 ### Personal Site / Portfolio
 
-**Industry form.** Long-running portfolio site for an individual creator. Sections like Hero, Reel/Selected Work, About, Contact. Persistent rather than pitch-specific. Visual identity drives the design more than copy. Standard for film directors (Karolos Berahas pattern), composers, photographers, designers, architects.
+**Industry form.** Long-running portfolio site for an individual creator. Sections like Hero, Reel/Selected Work, About, Contact. Persistent rather than pitch-specific. Visual identity drives the design more than copy. Standard for film directors, composers, photographers, designers, architects.
 
-**In-house references.** Nick Athens composer site at `~/projects/archive/nick-athens-site/`. Karolos Berahas director site at `~/projects/archive/karolos-berahas-site/`.
+**In-house references.** None shipped.
 
 - **Tooling:** Hand-built HTML and CSS, sometimes Hugo. The skill grammar is too pitch-shaped — a portfolio is identity-shaped, not narrative-shaped.
 - **Distinguishing test:** "Does this live indefinitely on a custom domain and represent the person, not a single project?" Then portfolio.
@@ -163,7 +177,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 
 **Industry form.** Single-page landing site for a band, brand, product, or service. Hero, About, Music or Product, Shows or Use Cases, Contact. Brand presence at the entity level. Sometimes commerce-attached.
 
-**In-house references.** Durydava band site at `~/projects/archive/durydava-site/`. CooCoo AI website at `~/projects/coocoo-ai/coocoo-ai-website/`, live at `coocooai.com`.
+**In-house references.** None shipped.
 
 - **Tooling:** Hand-built or Hugo. The skill grammar can scaffold the dark cinematic shell but the core identity work is custom.
 - **Distinguishing test:** "Public brand presence at the entity level, not a pitch *about* the entity?" Then brand landing.
@@ -172,7 +186,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 
 **Industry form.** Dense, table-driven utility document. Schedule, addresses, distances, links. No animation, no cinematic register. Notebook feel. Read on phone in motion.
 
-**In-house references.** London Plan at `~/projects/personal/london-plan/`, live at `london-plan-nick.surge.sh`. Day-by-day schedule, area cards, restaurant lists, friend recommendations color-coded, embedded tube map.
+**Typical treatment.** Day-by-day schedule, area cards, lists, color-coded recommendations, embedded map.
 
 - **Tooling:** Hand-built single-file HTML, dark with one accent color, tables and small type. The skill grammar overcomplicates this.
 - **Distinguishing test:** "Read on phone in motion, structure beats narrative, small text fine?" Then itinerary.
@@ -181,12 +195,12 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 
 When a brief calls for a gesture the skill cannot carry — horizontal scrolling, before-after sliders, dashboard surfaces, OO-portal mechanics, page-turn interfaces, mapped story-driven scrollytelling, anything with its own interaction model — abandon the JSON pipeline and write the file by hand. Industry references for custom shapes are case-by-case lookups: [Awwwards](https://www.awwwards.com/), [Site Inspire](https://www.siteinspire.com/), [The FWA](https://thefwa.com/), [Httpster](https://httpster.net/).
 
-- **Past work:** The CooCoo Workflows deck started here before adopting some skill conventions for type and color.
+- **Past work:** A portal-constellation deck is a typical custom build, started by hand before adopting some skill conventions for type and color.
 - **Distinguishing test:** "Did the conversation about shape keep returning to 'but what if we...'?" Then custom.
 
 ---
 
-The shipped column is orientation, not constraint. Industry conventions are anchors, not rules. The right shape for new content is whatever serves new content — but knowing the conventions means *deviation is a choice*, not an accident. Confusing a treatment with a pitch deck, or a sponsorship deck with a strategic proposal, or a playbook with a brand strategy deck, is what produces the wrong deliverable.
+The in-house column is orientation, not constraint. Industry conventions are anchors, not rules. The right shape for new content is whatever serves new content, but knowing the conventions means *deviation is a choice*, not an accident. Confusing a treatment with a pitch deck, or a sponsorship deck with a strategic proposal, or a playbook with a brand strategy deck, is what produces the wrong deliverable.
 
 ## Quick Start
 
@@ -341,7 +355,7 @@ Numbered section header with accent line. Animates in on scroll.
 {
     "type": "note",
     "paragraphs": ["First paragraph...", "Second paragraph..."],
-    "signature": "— Nick Athens"
+    "signature": "Director Name"
 }
 ```
 Serif italic paragraphs, each animating in. Optional signature in accent color.
@@ -503,11 +517,11 @@ YouTube and Vimeo URLs auto-convert to embed format.
 {
     "type": "closing",
     "role": "Director",
-    "name": "Nick Athens",
-    "links": "nickathens.com | IMDB",
+    "name": "Director Name",
+    "links": "yoursite.com | IMDB",
     "brand_logo": "/path/to/logo.png",
-    "company": "CooCoo AI",
-    "company_url": "https://coocoo.com"
+    "company": "Your Company",
+    "company_url": "https://example.com"
 }
 ```
 
