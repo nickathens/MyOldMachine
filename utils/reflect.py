@@ -99,6 +99,7 @@ def parse_observation(line: str) -> dict:
         "type": "",
         "importance": 5,  # default for old-format observations
         "project": None,
+        "seen": 1,  # corroboration count: how many times this pattern was observed
         "content": "",
     }
 
@@ -135,6 +136,11 @@ def parse_observation(line: str) -> dict:
                 pass
         elif key == "project":
             record["project"] = value
+        elif key == "seen":
+            try:
+                record["seen"] = int(value)
+            except ValueError:
+                pass
         after_type = after_type[tag_match.end():].strip()
 
     record["content"] = after_type
@@ -649,7 +655,11 @@ def _build_strict_prompt(current_model: str, observations_text: str,
         f"## Recent Behavioral Observations (last 7 days)\n"
         f"These are the observations that should inform the model update. Project-specific "
         f"corrections and lessons have already been routed to their project files — they are "
-        f"NOT included here.\n{observations_text}\n"
+        f"NOT included here.\n"
+        f"Some observations carry a [seen:N] tag with N>=2: the same pattern was independently "
+        f"observed N times (corroborated). Treat a higher N as a stronger, more stable signal "
+        f"and prefer to retain well-corroborated patterns; a single uncorroborated observation "
+        f"should stay tentative.\n{observations_text}\n"
         f"{routing_note}"
         f"{questions_section}\n"
         f"## Your Task\n\n"
@@ -711,7 +721,9 @@ def _build_simple_prompt(current_model: str, observations_text: str,
     return (
         "You are analyzing behavioral observations about a person to update their working model.\n\n"
         f"## Current Model\n{current_model}\n\n"
-        f"## Recent Observations (last 7 days)\n{observations_text}\n"
+        f"## Recent Observations (last 7 days)\n"
+        f"A [seen:N] tag with N>=2 means the pattern recurred N times; treat higher N as a "
+        f"stronger, more stable signal.\n{observations_text}\n"
         f"{routing_note}\n"
         "## Task\n"
         "Write a COMPLETE updated model.md file based on the observations.\n\n"
@@ -855,6 +867,11 @@ def run_reflection(mm: MemoryManager, user_id: int, dry_run: bool = False,
     # ── Threshold check ──
     importance_sum = compute_importance_sum(remaining)
     log(f"  Importance sum: {importance_sum} (threshold: {threshold})")
+
+    corroborated = [r for r in remaining if r.get("seen", 1) >= 2]
+    if corroborated:
+        log(f"  {len(corroborated)} corroborated observation(s) (seen>=2) "
+            f"weighted as higher-confidence")
 
     if importance_sum < threshold:
         log(f"  Below threshold ({importance_sum} < {threshold}), skipping model reflection")

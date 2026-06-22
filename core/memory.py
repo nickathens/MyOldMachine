@@ -25,8 +25,11 @@ try:
     import fcntl
 except ImportError:
     fcntl = None  # Windows — file locking unavailable
+import json
 import logging
 import os
+import re
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -64,6 +67,148 @@ Last updated: {date}
 - Trust level: New user
 - Expectations: Being established
 """
+
+# ── Dedup / corroboration tuning ──────────────────────────────────
+# Lexical Jaccard drives SUPPRESSION (a near-verbatim restatement folds into the
+# existing line). Semantic cosine drives CORROBORATION only (it records that a
+# pattern recurred but keeps both observations), because calibration showed that
+# semantic magnitude alone cannot prove a duplicate.
+RECENT_WINDOW = 20  # how many recent observations the dedup/corroboration pass scans
+LEXICAL_THRESHOLD = 0.6
+SEMANTIC_THRESHOLD = float(os.environ.get("MEMORY_SEMANTIC_THRESHOLD", "0.80"))
+SEMANTIC_MIN_LEN = 25  # observations shorter than this are too terse to embed reliably
+SEMANTIC_ENABLED_DEFAULT = os.environ.get("MEMORY_SEMANTIC_DEDUP", "1") != "0"
+SEMANTIC_SCRIPT = Path(__file__).resolve().parent.parent / "utils" / "semantic.py"
+
+# Stopwords excluded from deduplication keyword extraction
+_DEDUP_STOPWORDS = frozenset({
+    "the", "is", "it", "a", "an", "and", "or", "to", "for", "of", "in", "on",
+    "at", "by", "with", "from", "as", "not", "but", "if", "how", "what",
+    "when", "where", "who", "why", "this", "that", "all", "are", "was",
+    "were", "been", "has", "have", "had", "do", "does", "did", "will",
+    "can", "could", "should", "would", "may", "might", "you", "your",
+    "he", "she", "they", "them", "his", "her", "its", "our", "we",
+    "bot", "also", "just", "about", "being",
+    "into", "more", "than", "very", "same", "other", "which",
+    "user", "person", "people",
+})
+
+
+def _extract_keywords(text: str) -> set:
+    """Extract meaningful keywords from text for deduplication."""
+    words = re.findall(r'[a-zA-Z]{3,}', text.lower())
+    return {w for w in words if w not in _DEDUP_STOPWORDS}
+
+
+def _observation_content(line: str) -> str:
+    """Extract the observation content after the [ts] (type) [tags...] prefix."""
+    m = re.search(r'\)\s+(?:\[[^\]]*\]\s*)*(.+)$', line)
+    return m.group(1).strip() if m else ""
+
+
+def _observation_timestamp(line: str) -> str:
+    """Extract the 'YYYY-MM-DD HH:MM' timestamp from an observation line, or ''."""
+    m = re.match(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]', line)
+    return m.group(1) if m else ""
+
+
+def _get_int_tag(line: str, key: str, default: int) -> int:
+    """Read an integer [key:N] tag from a line, or default if absent/malformed."""
+    m = re.search(r'\[' + re.escape(key) + r':(\d+)\]', line)
+    if not m:
+        return default
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return default
+
+
+def _set_tag(line: str, key: str, value) -> str:
+    """Set or replace a [key:value] tag on an observation line.
+
+    Replaces an existing tag in place; otherwise inserts it right after the
+    (type) marker so the content-extraction regex still skips it cleanly.
+    """
+    tag = f"[{key}:{value}]"
+    pat = re.compile(r'\[' + re.escape(key) + r':[^\]]*\]')
+    if pat.search(line):
+        return pat.sub(tag, line, count=1)
+    m = re.search(r'\([\w-]+\)', line)
+    if m:
+        return line[:m.end()] + " " + tag + line[m.end():]
+    return line + " " + tag
+
+
+def _find_lexical_match(new_content: str, existing_lines: list,
+                        threshold: float = LEXICAL_THRESHOLD):
+    """Return the most recent observation line whose keyword set is >= threshold
+    Jaccard-similar to new_content, or None.
+
+    This is the SUPPRESSION signal: high lexical overlap means a near-verbatim
+    restatement that is safe to fold into the existing observation.
+    """
+    new_kws = _extract_keywords(new_content)
+    if len(new_kws) < 2:
+        return None
+    recent = existing_lines[-RECENT_WINDOW:] if len(existing_lines) > RECENT_WINDOW else existing_lines
+    for line in reversed(recent):
+        existing_kws = _extract_keywords(_observation_content(line))
+        if len(existing_kws) < 2:
+            continue
+        union = new_kws | existing_kws
+        if not union:
+            continue
+        if len(new_kws & existing_kws) / len(union) >= threshold:
+            return line
+    return None
+
+
+# ── Anchors: ground-truth facts immune to the nightly model rewrite ───────────
+# The person model (model.md) is fully rewritten by an LLM every reflection. Over
+# many rewrites a true, load-bearing fact can quietly soften or vanish (a
+# telephone game). Anchors fix that: they live in the user's anchors.md and are
+# injected VERBATIM into the memory context at read time (build_memory_context),
+# so a pinned fact can never drift, be softened, merged away, or dropped no
+# matter what the LLM does. They are promoted deliberately (via anchors.py),
+# never auto-inferred, because a wrong permanent anchor is worse than drift.
+
+_ANCHOR_RE = re.compile(r'^- \[id:([\w-]+)\]\s*(?:\(([\w-]+)\)\s*)?(.+)$')
+
+ANCHORS_HEADER = (
+    "# Anchored Facts\n\n"
+    "Ground-truth facts. Reproduced verbatim in the memory context every turn and "
+    "never rewritten, softened, merged, or dropped by the nightly reflection. "
+    "Managed deliberately via anchors.py.\n\n"
+    "Format: - [id:slug] (category) fact text\n\n---\n\n"
+)
+
+
+def parse_anchor_line(line: str):
+    """Parse one anchor line into {id, category, text}, or None if not an anchor."""
+    m = _ANCHOR_RE.match(line.rstrip())
+    if not m:
+        return None
+    return {"id": m.group(1), "category": m.group(2) or "", "text": m.group(3).strip()}
+
+
+def render_anchors_section(anchors: list) -> str:
+    """Render anchors as the protected, authoritative block for the memory context.
+
+    Returns "" when there are no anchors so no empty section is ever inserted.
+    The id is intentionally omitted here (it is a management handle, not context).
+    """
+    if not anchors:
+        return ""
+    lines = ["### Anchored Facts (ground truth, never auto-rewritten)", ""]
+    for a in anchors:
+        prefix = f"({a['category']}) " if a["category"] else ""
+        lines.append(f"- {prefix}{a['text']}")
+    return "\n".join(lines)
+
+
+def _slugify(text: str) -> str:
+    s = re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
+    return s[:40] or "anchor"
 
 
 class MemoryManager:
@@ -133,6 +278,96 @@ class MemoryManager:
         )
         self.set_model(user_id, content)
 
+    # --- Anchors (ground-truth facts, drift-proof) ---
+
+    def _anchors_file(self, user_id: int) -> Path:
+        return self._user_dir(user_id) / "anchors.md"
+
+    def load_anchors(self, user_id: int) -> list:
+        """Return the user's anchors as a list of {id, category, text} (empty if none)."""
+        f = self._anchors_file(user_id)
+        if not f.exists():
+            return []
+        anchors = []
+        for line in f.read_text(encoding="utf-8").split("\n"):
+            a = parse_anchor_line(line)
+            if a:
+                anchors.append(a)
+        return anchors
+
+    def _write_anchors(self, user_id: int, anchors: list):
+        f = self._anchors_file(user_id)
+        body = ANCHORS_HEADER
+        for a in anchors:
+            cat = f"({a['category']}) " if a["category"] else ""
+            body += f"- [id:{a['id']}] {cat}{a['text']}\n"
+        with open(f, "w", encoding="utf-8") as fh:
+            if fcntl:
+                fcntl.flock(fh, fcntl.LOCK_EX)
+            fh.write(body)
+            if fcntl:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    def add_anchor(self, user_id: int, text: str, anchor_id: str = None,
+                   category: str = "") -> dict:
+        """Add or update (idempotent by id) a ground-truth anchor.
+
+        Returns {"status": "added"|"updated"|"error", "id": slug, "total": N}.
+        """
+        # Collapse all whitespace (including embedded newlines) so an anchor is
+        # always one line; the storage format and the parse regex both depend on
+        # single-line anchors.
+        text = " ".join(text.split())
+        if not text:
+            return {"status": "error", "reason": "empty"}
+        anchors = self.load_anchors(user_id)
+        if not anchor_id:
+            base = _slugify(text)
+            anchor_id = base
+            existing_ids = {a["id"] for a in anchors}
+            n = 2
+            while anchor_id in existing_ids:
+                anchor_id = f"{base}-{n}"
+                n += 1
+        replaced = False
+        for a in anchors:
+            if a["id"] == anchor_id:
+                a["text"], a["category"], replaced = text, category, True
+                break
+        if not replaced:
+            anchors.append({"id": anchor_id, "category": category, "text": text})
+        self._write_anchors(user_id, anchors)
+        return {"status": "updated" if replaced else "added", "id": anchor_id,
+                "total": len(anchors)}
+
+    def remove_anchor(self, user_id: int, anchor_id: str) -> dict:
+        """Remove an anchor by id. Returns {"status": "removed"|"not_found", ...}."""
+        anchors = self.load_anchors(user_id)
+        kept = [a for a in anchors if a["id"] != anchor_id]
+        if len(kept) == len(anchors):
+            return {"status": "not_found", "id": anchor_id}
+        self._write_anchors(user_id, kept)
+        return {"status": "removed", "id": anchor_id, "total": len(kept)}
+
+    def promote_observation(self, user_id: int, needle: str, anchor_id: str = None,
+                            category: str = "") -> dict:
+        """Promote the content of a matching observation into a verbatim anchor."""
+        obs_file = self._observations_file(user_id)
+        if not obs_file.exists():
+            return {"status": "error", "reason": "no_observations"}
+        needle_low = needle.lower()
+        matches = []
+        for line in obs_file.read_text(encoding="utf-8").split("\n"):
+            if line.startswith("[") and needle_low in line.lower():
+                content = _observation_content(line)
+                if content:
+                    matches.append(content)
+        if not matches:
+            return {"status": "error", "reason": "no_match"}
+        result = self.add_anchor(user_id, matches[-1], anchor_id=anchor_id, category=category)
+        result["matched"] = len(matches)
+        return result
+
     # --- Intro flow state ---
     #
     # Two markers track the per-user intro lifecycle:
@@ -158,9 +393,10 @@ class MemoryManager:
         return self._user_dir(user_id) / "observations.md"
 
     def add_observation(self, user_id: int, obs_type: str, content: str,
-                        importance: int = 5, project: str = None) -> bool:
+                        importance: int = 5, project: str = None,
+                        use_semantic: bool = True) -> dict:
         """
-        Append an observation to the user's log.
+        Append an observation to the user's log, with two-tier dedup/corroboration.
 
         Args:
             user_id: Telegram user ID
@@ -168,12 +404,26 @@ class MemoryManager:
             content: The observation text
             importance: 1-10 score (default 5). Higher = more impactful.
             project: Optional project slug to scope this observation to.
+            use_semantic: Run the semantic corroboration pass (lexical always runs).
 
-        Returns True on success, False if invalid type.
+        Tiers:
+          - Lexical near-restatement (Jaccard >= LEXICAL_THRESHOLD): SUPPRESS the
+            new line and strengthen the existing one (seen += 1, lastseen,
+            importance kept at max).
+          - Semantic near-duplicate (cosine >= SEMANTIC_THRESHOLD, no lexical
+            match): KEEP the new line but carry the corroboration count forward
+            and link it to the matched observation, because semantic similarity
+            proves recurrence, not identity.
+
+        Returns a status dict:
+          {"status": "invalid_type"}
+          {"status": "corroborated_lexical", "seen": N}
+          {"status": "corroborated_semantic", "seen": N, "score": float}
+          {"status": "saved"}
         """
         if obs_type not in VALID_OBSERVATION_TYPES:
             logger.warning(f"Invalid observation type '{obs_type}' for user {user_id}")
-            return False
+            return {"status": "invalid_type"}
 
         obs_file = self._observations_file(user_id)
 
@@ -186,16 +436,47 @@ class MemoryManager:
                 encoding="utf-8",
             )
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        existing_content = obs_file.read_text(encoding="utf-8")
+        existing_lines = [ln for ln in existing_content.split("\n") if ln.startswith("[")]
+        recent = existing_lines[-RECENT_WINDOW:]
 
-        # Build metadata tags
+        # ── Tier 1: lexical near-restatement, suppress new and corroborate existing ──
+        lex = _find_lexical_match(content, existing_lines)
+        if lex is not None:
+            seen = _get_int_tag(lex, "seen", 1) + 1
+            updated = _set_tag(lex, "seen", seen)
+            updated = _set_tag(updated, "lastseen", datetime.now().strftime("%Y-%m-%d"))
+            if importance > _get_int_tag(lex, "importance", 5):
+                updated = _set_tag(updated, "importance", importance)
+            self._rewrite_observation_line(obs_file, lex, updated)
+            logger.info(f"Corroborated (lexical) observation for user {user_id}, seen={seen}")
+            return {"status": "corroborated_lexical", "seen": seen}
+
+        # ── Tier 2: semantic near-duplicate, keep new and carry corroboration forward ──
+        corrob_ts = None
+        seen_for_new = 1
+        score = 0.0
+        if use_semantic and SEMANTIC_ENABLED_DEFAULT:
+            sem = self._semantic_best_match(content, recent, obs_file.parent / ".embcache.json")
+            if sem is not None:
+                matched_line, score = sem
+                ts = _observation_timestamp(matched_line)
+                if ts:  # only link to a well-formed observation; never bump on a parse miss
+                    corrob_ts = ts
+                    seen_for_new = _get_int_tag(matched_line, "seen", 1) + 1
+
+        # Build and append the new entry.
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         metadata_parts = [f"[importance:{importance}]"]
         if project:
             metadata_parts.append(f"[project:{project}]")
-        metadata_str = " ".join(metadata_parts)
+        if seen_for_new > 1:
+            metadata_parts.append(f"[seen:{seen_for_new}]")
+            metadata_parts.append(f"[lastseen:{datetime.now().strftime('%Y-%m-%d')}]")
+        if corrob_ts:
+            metadata_parts.append(f"[corrob:{corrob_ts}]")
 
-        entry = f"[{timestamp}] ({obs_type}) {metadata_str} {content}\n"
-
+        entry = f"[{timestamp}] ({obs_type}) {' '.join(metadata_parts)} {content}\n"
         with open(obs_file, "a", encoding="utf-8") as f:
             if fcntl:
                 fcntl.flock(f, fcntl.LOCK_EX)
@@ -203,8 +484,82 @@ class MemoryManager:
             if fcntl:
                 fcntl.flock(f, fcntl.LOCK_UN)
 
+        if corrob_ts:
+            logger.info(f"Linked (semantic cos={score:.2f}) observation for user {user_id}, seen={seen_for_new}")
+            return {"status": "corroborated_semantic", "seen": seen_for_new, "score": score}
+
         logger.info(f"Saved {obs_type} observation for user {user_id} (importance={importance})")
-        return True
+        return {"status": "saved"}
+
+    def _rewrite_observation_line(self, obs_file: Path, old_line: str, new_line: str):
+        """Replace the first observation line that exactly equals old_line, atomically.
+
+        Matching is on the whole line, not a substring: a substring replace could
+        corrupt a different, longer observation that old_line happens to be a
+        prefix of. The lock is held across BOTH the read and the write so a
+        concurrent append to the same file cannot be lost.
+        """
+        with open(obs_file, "r+", encoding="utf-8") as f:
+            if fcntl:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                lines = f.read().split("\n")
+                for i, ln in enumerate(lines):
+                    if ln == old_line:
+                        lines[i] = new_line
+                        break
+                else:
+                    return  # line no longer present (concurrent change); nothing to do
+                f.seek(0)
+                f.write("\n".join(lines))
+                f.truncate()
+            finally:
+                if fcntl:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+
+    def _semantic_python(self) -> Path:
+        """Path to the mempalace venv python that hosts the offline embedding model."""
+        override = os.environ.get("MEMPALACE_PY")
+        if override:
+            return Path(override)
+        return self.memory_dir.parent / "mempalace" / "venv" / "bin" / "python"
+
+    def _semantic_best_match(self, new_content: str, candidate_lines: list, cache_path: Path):
+        """Return (matched_line, score) for the best semantic near-duplicate, or None.
+
+        Embedding is delegated to utils/semantic.py under the mempalace venv (the
+        only venv with the offline ONNX model). Any failure (missing venv,
+        timeout, bad output) degrades silently to None, so a memory write never
+        breaks or hangs on the semantic pass. This is a CORROBORATION signal only.
+        """
+        if not candidate_lines or len(new_content) < SEMANTIC_MIN_LEN:
+            return None
+        mempalace_py = self._semantic_python()
+        if not mempalace_py.exists() or not SEMANTIC_SCRIPT.exists():
+            return None
+        payload = json.dumps({
+            "new": new_content,
+            "candidates": [_observation_content(line) for line in candidate_lines],
+            "threshold": SEMANTIC_THRESHOLD,
+            "cache": str(cache_path),
+        })
+        try:
+            r = subprocess.run(
+                [str(mempalace_py), str(SEMANTIC_SCRIPT)],
+                input=payload, capture_output=True, text=True, timeout=45,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        try:
+            res = json.loads(r.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        idx = res.get("match_index")
+        if not isinstance(idx, int) or idx < 0 or idx >= len(candidate_lines):
+            return None
+        return candidate_lines[idx], float(res.get("score", 0.0))
 
     def get_recent_observations(self, user_id: int, days: int = 7) -> str:
         """Get observations from the last N days."""
@@ -320,8 +675,18 @@ class MemoryManager:
 
         In full mode: includes the person model.
         In lite mode: includes raw recent observations as bullet points.
+
+        Anchored ground-truth facts are injected verbatim at the top in BOTH
+        modes, never truncated, so a pinned fact survives every nightly rewrite
+        and is never lost to the model size cap.
         """
         parts = []
+
+        # Anchors first: authoritative, unmissable, and exempt from truncation.
+        anchor_section = render_anchors_section(self.load_anchors(user_id))
+        if anchor_section:
+            parts.append(anchor_section)
+            parts.append("")
 
         model = self.get_model(user_id)
         if model:
@@ -379,7 +744,8 @@ class MemoryManager:
             "Self-eval: After completing a non-trivial task, evaluate your own performance.\n"
             "Note what approach worked, what didn't, and why. Only for complex tasks, not trivial ones.\n\n"
             "Do NOT ask permission. If it's useful for future conversations, save it.\n"
-            "Duplicates are automatically detected and skipped.\n"
+            "Duplicates are auto-detected: a near-restatement strengthens the existing "
+            "note (a recurrence count) instead of piling up.\n"
         )
 
     # --- Reflection ---

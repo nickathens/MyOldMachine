@@ -5,6 +5,13 @@ Observation CLI — Save behavioral observations about users.
 Called by the bot mid-conversation when it notices something worth recording:
 a correction, a preference, a behavioral pattern, a state change, etc.
 
+Dedup/corroboration is handled by MemoryManager.add_observation (two tiers):
+  - Lexical near-restatement (Jaccard): the new line is suppressed and the
+    existing one is strengthened (a recurrence count), so duplicates don't pile up.
+  - Semantic near-duplicate (cosine, optional, needs the mempalace venv): the new
+    line is kept but linked as a corroboration, because semantic similarity
+    proves recurrence, not identity. Disable with --no-semantic.
+
 Usage:
     python observe.py --user 12345 --type behavioral --content "Prefers short answers"
     python observe.py --user 12345 --type correction --content "Bot got X wrong" --importance 8
@@ -26,6 +33,7 @@ Types:
 Optional flags:
     --project SLUG   — scope observation to a project (routes to project state during reflection)
     --importance N   — importance score 1-10 (default: 5). Higher = more impactful.
+    --no-semantic    — skip the semantic corroboration pass (lexical dedup only)
 """
 
 import argparse
@@ -39,63 +47,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.memory import MemoryManager, VALID_OBSERVATION_TYPES
 from core.config import DATA_DIR
 
-# Stopwords excluded from deduplication keyword extraction
-_DEDUP_STOPWORDS = frozenset({
-    "the", "is", "it", "a", "an", "and", "or", "to", "for", "of", "in", "on",
-    "at", "by", "with", "from", "as", "not", "but", "if", "how", "what",
-    "when", "where", "who", "why", "this", "that", "all", "are", "was",
-    "were", "been", "has", "have", "had", "do", "does", "did", "will",
-    "can", "could", "should", "would", "may", "might", "you", "your",
-    "he", "she", "they", "them", "his", "her", "its", "our", "we",
-    "bot", "also", "just", "about", "being",
-    "into", "more", "than", "very", "same", "other", "which",
-    "user", "person", "people",
-})
-
-
-def _extract_keywords(text: str) -> set:
-    """Extract meaningful keywords from text for deduplication."""
-    words = re.findall(r'[a-zA-Z]{3,}', text.lower())
-    return {w for w in words if w not in _DEDUP_STOPWORDS}
-
-
-def _is_duplicate(new_content: str, existing_lines: list, threshold: float = 0.6) -> bool:
-    """Check if new_content is semantically similar to any recent observation.
-
-    Uses Jaccard similarity on keyword sets. Returns True if any recent
-    observation (last 20) shares >= threshold proportion of keywords.
-    """
-    new_kws = _extract_keywords(new_content)
-    if len(new_kws) < 2:
-        return False  # Too short to meaningfully deduplicate
-
-    # Only check the last 20 observations
-    recent = existing_lines[-20:] if len(existing_lines) > 20 else existing_lines
-
-    for line in recent:
-        # Extract the content part after the metadata prefix
-        # Format: [YYYY-MM-DD HH:MM] (type) [metadata] content
-        content_match = re.search(r'\)\s+(?:\[.*?\]\s*)*(.+)$', line)
-        if not content_match:
-            continue
-        existing_content = content_match.group(1)
-        existing_kws = _extract_keywords(existing_content)
-
-        if len(existing_kws) < 2:
-            continue
-
-        # Jaccard similarity
-        intersection = new_kws & existing_kws
-        union = new_kws | existing_kws
-        if len(union) == 0:
-            continue
-        similarity = len(intersection) / len(union)
-
-        if similarity >= threshold:
-            return True
-
-    return False
-
 
 def main():
     parser = argparse.ArgumentParser(description="Observation CLI for the memory system")
@@ -105,6 +56,8 @@ def main():
     parser.add_argument("--project", help="Project slug to scope this observation to")
     parser.add_argument("--importance", type=int, default=5,
                         help="Importance score 1-10 (default: 5). Corrections=8, behavioral=5, state=4")
+    parser.add_argument("--no-semantic", action="store_true",
+                        help="Skip the semantic corroboration pass (lexical dedup only)")
     parser.add_argument("--list", "-l", action="store_true", help="List recent observations")
     parser.add_argument("--search", "-s", help="Search observations for a keyword")
     parser.add_argument("--limit", type=int, default=20, help="Number of entries to show (default: 20)")
@@ -148,16 +101,22 @@ def main():
             print(f"ERROR: Invalid project slug '{args.project}'. Use alphanumeric, hyphens, underscores only.")
             sys.exit(1)
 
-        # Deduplication check
-        existing = mm.get_all_observations(args.user, limit=50)
-        if _is_duplicate(args.content, existing):
-            print(f"DEDUP: Similar observation already exists for user {args.user}, skipping")
-            return
+        # Add observation (dedup/corroboration is handled inside MemoryManager)
+        result = mm.add_observation(args.user, args.type, args.content,
+                                    importance=args.importance, project=args.project,
+                                    use_semantic=not args.no_semantic)
+        status = result.get("status")
 
-        # Add observation
-        success = mm.add_observation(args.user, args.type, args.content,
-                                     importance=args.importance, project=args.project)
-        if success:
+        if status == "invalid_type":
+            print(f"ERROR: Invalid type '{args.type}'. Must be one of: {', '.join(VALID_OBSERVATION_TYPES)}")
+            sys.exit(1)
+        elif status == "corroborated_lexical":
+            print(f"CORROBORATED (lexical): existing observation strengthened to "
+                  f"seen={result['seen']}, new one suppressed for user {args.user}")
+        elif status == "corroborated_semantic":
+            print(f"LINKED (semantic cos={result.get('score', 0.0):.2f}): kept as a "
+                  f"corroborating observation for user {args.user}, seen={result['seen']}")
+        else:  # saved
             extras = []
             if args.project:
                 extras.append(f"project={args.project}")
@@ -165,9 +124,6 @@ def main():
                 extras.append(f"importance={args.importance}")
             extra_str = f" ({', '.join(extras)})" if extras else ""
             print(f"OK: Saved {args.type} observation for user {args.user}{extra_str}")
-        else:
-            print(f"ERROR: Invalid type '{args.type}'. Must be one of: {', '.join(VALID_OBSERVATION_TYPES)}")
-            sys.exit(1)
 
     else:
         parser.print_help()
