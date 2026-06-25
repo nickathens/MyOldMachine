@@ -6,8 +6,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-
-const FONT = "Montserrat";
+import { FONT } from "./font";
 
 export const titleCardDefaults = {
   title: "REMOTION",

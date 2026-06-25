@@ -36,6 +36,8 @@ export const RemotionRoot: React.FC = () => {
         height={1080}
         defaultProps={cardFanDefaults}
       />
+      {/* CardFan3D is the same CardFan component; cardFan3DDefaults only sets
+          dimensional: true to switch it into the real-3D render branch. */}
       <Composition
         id="CardFan3D"
         component={CardFan}

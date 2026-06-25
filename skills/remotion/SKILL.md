@@ -26,6 +26,8 @@ npm install --prefix "$SKILL_DIR/render-engine"
 
 `deps.json` runs this automatically when the skill's dependencies are checked, so in most cases it is already installed. The first render downloads a Chrome Headless Shell (about 90 MB) into the npm/puppeteer cache and reuses it after. Requires Node.js (node + npm on PATH).
 
+If `npm install` reports success but the first render fails to bundle with a missing-binary error, your npm has install scripts disabled (`ignore-scripts=true`). `@remotion/bundler` depends on esbuild, which fetches its native binary in a postinstall step; reinstall with install scripts enabled.
+
 ---
 
 ## Render a video
@@ -48,7 +50,7 @@ node "$ENGINE/render.mjs" --comp BarChartBuild --props ./data.json --out /tmp/ch
 
 `render.mjs` flags: `--comp` (required, the composition id), `--props` (inline JSON object or path to a .json file), `--out` (output path, defaults to `render-engine/out/<comp>.mp4`), `--codec` (default `h264`), `--concurrency` (e.g. `50%` or a bare integer; defaults to letting Remotion pick). On success the absolute output path is printed to stdout; progress and logs go to stderr.
 
-Unicode renders correctly when the glyphs exist in the font. The default font is Montserrat; install it (or set a different system font in the component) if non-Latin scripts come out as boxes.
+The default font, Montserrat, is bundled into the render via `@remotion/google-fonts` (see `src/font.ts`), so output is the intended geometric sans on any machine with no system font install. Montserrat covers Latin, Latin-ext, Cyrillic and Vietnamese but has **no Greek glyphs**, so Greek (and any other unsupported script) falls back to the platform sans-serif rather than rendering in Montserrat. To render those cleanly, point `src/font.ts` at a font that covers the script, e.g. swap the import to `@remotion/google-fonts/NotoSans`.
 
 ---
 
@@ -124,6 +126,6 @@ Animation rule of thumb: drive everything off `frame`. `spring({frame: frame - d
 
 - Render time scales with cores and resolution: a 5s to 6s 1080p clip renders in well under a minute on a 4-core machine. The bundle step runs once per invocation; for batch renders of the same project this is the main fixed cost.
 - 1080p30 is the default. For social verticals set `width`/`height` to 1080x1920 on the `<Composition>`. For a quick preview, drop to 1280x720.
-- Always look at a rendered frame before sending. Headless Chromium uses system fonts; if a font is missing it silently substitutes.
+- Always look at a rendered frame before sending. A font must be loaded into the bundle (the built-ins do this in `src/font.ts`), not just named in CSS, or headless Chromium silently substitutes a serif fallback. A new composition that introduces a different typeface must load it the same way.
 - `node_modules`, `out/`, and the `.remotion/` browser cache are gitignored. The source (`src/`, `render.mjs`, `still.mjs`, `package.json`, `package-lock.json`) is the skill; reinstall with the setup command after a fresh checkout.
 - Versions are pinned to Remotion 4.0.482 and React 18.3.1. Keep all `remotion` and `@remotion/*` packages on the same version when upgrading.

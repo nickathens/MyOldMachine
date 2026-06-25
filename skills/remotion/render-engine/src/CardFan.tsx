@@ -6,8 +6,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-
-const FONT = "Montserrat";
+import { FONT } from "./font";
 
 // One reward card. Colours and copy are data so the whole fan is re-themeable
 // from props without touching the animation.

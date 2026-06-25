@@ -40,10 +40,17 @@ if (!values.comp) {
 function resolveProps(p) {
   if (!p) return {};
   const trimmed = p.trim();
-  if (!trimmed.startsWith("{") && fs.existsSync(p)) {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
+  // Inline JSON object or array.
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return JSON.parse(trimmed);
   }
-  return JSON.parse(trimmed);
+  // Otherwise it's a file path. Fail clearly when it's missing instead of
+  // falling through to JSON.parse and reporting a confusing syntax error for
+  // what is really a typo'd path.
+  if (!fs.existsSync(p)) {
+    throw new Error(`props file not found: ${p}`);
+  }
+  return JSON.parse(fs.readFileSync(p, "utf8"));
 }
 
 // Remotion's concurrency is number | percent-string | null. parseArgs hands us
@@ -58,7 +65,7 @@ let inputProps;
 try {
   inputProps = resolveProps(values.props);
 } catch (e) {
-  console.error(`[remotion] could not parse --props: ${e.message}`);
+  console.error(`[remotion] invalid --props: ${e.message}`);
   process.exit(1);
 }
 
