@@ -47,3 +47,8 @@ mcp_servers.json
 
 # Atomic-write scratch files: may briefly contain secrets mid-write
 *.tmp
+
+# Node dependencies and Remotion render artifacts (reinstall via npm; never commit)
+node_modules/
+.remotion/
+skills/remotion/render-engine/out/

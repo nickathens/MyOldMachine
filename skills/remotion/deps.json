@@ -1,0 +1,13 @@
+{
+  "check": {
+    "node": "node --version",
+    "remotion-engine": "test -d skills/remotion/render-engine/node_modules/remotion"
+  },
+  "post_install": [
+    "npm install --prefix skills/remotion/render-engine"
+  ],
+  "weight": "medium",
+  "min_ram_gb": 1,
+  "min_disk_gb": 2,
+  "install_note": "Node.js (node + npm on PATH) is required. Installs the Remotion render engine (react + @remotion/* pinned to 4.0.482) into skills/remotion/render-engine/node_modules via npm (~500 MB). The first render also downloads a Chrome Headless Shell (~90 MB) into the npm/puppeteer cache. CPU-only H.264 encoding, no GPU."
+}
