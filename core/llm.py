@@ -321,9 +321,9 @@ async def _send_typing_periodically(chat):
 def _format_elapsed(seconds: float) -> str:
     """Human-friendly elapsed string: '25s' under a minute, else 'N min'.
 
-    Progress updates fire within seconds now, so a bare "0 min elapsed" header
-    read as broken; show seconds until the first minute is up. Used by both CLI
-    providers' progress reports.
+    Progress updates currently fire on a flat 10-minute cadence, so in practice
+    this always renders minutes; the sub-minute branch is kept for safety and for
+    any caller reporting a shorter elapsed. Used by both CLI providers' reports.
     """
     seconds = int(seconds)
     if seconds < 60:
@@ -334,9 +334,9 @@ def _format_elapsed(seconds: float) -> str:
 def _next_progress_delay(provider, count: int) -> float:
     """Seconds to wait before the next progress update.
 
-    Walks PROGRESS_SCHEDULE for the first few updates (quick feedback so a
-    working turn never looks frozen), then holds at PROGRESS_INTERVAL so long
-    jobs settle into a calm cadence instead of spamming the chat.
+    Walks PROGRESS_SCHEDULE for any front-loaded updates, then holds at
+    PROGRESS_INTERVAL. PROGRESS_SCHEDULE is currently empty, so every update —
+    including the first (count=0) — waits the full PROGRESS_INTERVAL.
     """
     schedule = provider.PROGRESS_SCHEDULE
     if count < len(schedule):
@@ -513,13 +513,14 @@ class ClaudeCLIProvider(LLMProvider):
 
     IDLE_TIMEOUT = 1800  # 30 min of no output = stuck
     ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling per request, even with continuous activity
-    # Progress cadence. Between updates the user sees only a "typing" indicator,
-    # so a flat 10-minute gap made every multi-minute turn look frozen. Send the
-    # first few updates quickly so a working turn shows life within seconds, then
-    # settle to a calm steady-state interval so a long job doesn't spam the chat.
-    # Values are seconds since the previous update.
-    PROGRESS_SCHEDULE = (25, 60, 150)
-    PROGRESS_INTERVAL = 300  # steady-state cadence once PROGRESS_SCHEDULE is spent
+    # Progress cadence. Between updates the user sees only a "typing" indicator.
+    # A flat 10-minute gap is intentional: the user finds early/frequent heartbeats
+    # more annoying than silence, so there is no front-loaded burst. PROGRESS_SCHEDULE
+    # is the (now empty) front-load hook; empty means the first update also waits the
+    # full PROGRESS_INTERVAL, so a short turn finishes before any heartbeat and stays
+    # silent. Values are seconds since the previous update.
+    PROGRESS_SCHEDULE = ()
+    PROGRESS_INTERVAL = 600  # flat 10-minute cadence, first update included
 
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
         super().__init__(model, api_key)
@@ -806,10 +807,10 @@ class ClaudeCLIProvider(LLMProvider):
                 if time_since_activity > self.IDLE_TIMEOUT * 0.8 and time_since_activity <= self.IDLE_TIMEOUT * 0.8 + 30:
                     logger.warning(f"Claude approaching idle timeout for user {user_id}: {int(time_since_activity)}s idle. Status: {current_status}")
 
-                # Send progress updates on a front-loaded schedule so a working
-                # turn shows life within seconds, then settles to a calm cadence.
-                # Between updates the user sees only a "typing" indicator, so the
-                # first gap must be short or every multi-minute turn looks frozen.
+                # Send progress updates on a flat cadence (PROGRESS_INTERVAL, with
+                # PROGRESS_SCHEDULE empty). Between updates the user sees only a
+                # "typing" indicator; a short turn finishes before the first update
+                # and stays silent, which is what the user asked for.
                 next_delay = _next_progress_delay(self, progress_count)
                 time_since_progress = current_time - last_progress_message
                 if time_since_progress >= next_delay and chat:
@@ -841,8 +842,8 @@ class ClaudeCLIProvider(LLMProvider):
                 # Cap the read timeout so the loop wakes regularly for /stop
                 # checks, the absolute-timeout check, and the next scheduled
                 # progress update. Without the progress cap the loop could sleep
-                # up to 30s and fire an early update late, reintroducing the
-                # frozen-looking gap. Only apply that cap when a chat is present;
+                # up to 30s and fire the scheduled 10-minute update late. Only
+                # apply that cap when a chat is present;
                 # headless callers send no updates and should not busy-wake. Floor
                 # at 1s so we never pass a non-positive value to wait_for.
                 idle_remaining = self.IDLE_TIMEOUT - time_since_activity
@@ -1104,12 +1105,10 @@ class CodexCLIProvider(LLMProvider):
 
     IDLE_TIMEOUT = 1800
     ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling per request, even with continuous activity
-    # Front-loaded progress cadence: first few updates fire quickly so a working
-    # turn shows life within seconds, then settle to a steady interval so a long
-    # job doesn't spam the chat. See ClaudeCLIProvider for the rationale; values
-    # are seconds since the previous update.
-    PROGRESS_SCHEDULE = (25, 60, 150)
-    PROGRESS_INTERVAL = 300  # steady-state cadence once PROGRESS_SCHEDULE is spent
+    # Flat 10-minute progress cadence, no front-loaded burst. See ClaudeCLIProvider
+    # for the rationale; the two providers run parallel loops and must stay in sync.
+    PROGRESS_SCHEDULE = ()
+    PROGRESS_INTERVAL = 600  # flat 10-minute cadence, first update included
 
     def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
         super().__init__(model, api_key)
@@ -1361,9 +1360,9 @@ class CodexCLIProvider(LLMProvider):
                 if time_since_activity > self.IDLE_TIMEOUT * 0.8 and time_since_activity <= self.IDLE_TIMEOUT * 0.8 + 30:
                     logger.warning(f"Codex approaching idle timeout for user {user_id}: {int(time_since_activity)}s idle. Status: {current_status}")
 
-                # Front-loaded progress cadence (see ClaudeCLIProvider.complete
-                # for the rationale): the first updates fire quickly so a working
-                # turn shows life within seconds, then settle to a calm interval.
+                # Flat progress cadence (see ClaudeCLIProvider.complete for the
+                # rationale): PROGRESS_SCHEDULE is empty, so every update waits the
+                # full PROGRESS_INTERVAL and a short turn stays silent.
                 next_delay = _next_progress_delay(self, progress_count)
                 time_since_progress = current_time - last_progress_message
                 if time_since_progress >= next_delay and chat:
