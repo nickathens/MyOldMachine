@@ -53,13 +53,13 @@ Interpretation, applied in this order and named when used: γραμματική,
 
 ## Grounding: fetched sources before memory
 
-Prefer primary sources over recollection, and always fetch for anything that may have changed. Dedicated grounding scripts arrive under `scripts/` in a later stage; until then, fetch the same sources with web fetch or the browser skill. The free, authoritative Greek stack:
+Prefer primary sources over recollection, and always fetch for anything that may have changed. The grounding scripts live under `scripts/`. Run `python $SKILL_DIR/scripts/legal_search.py` for the full source map and the status of each. The verified direct fetchers:
 
-- **et.gr** (Εθνικό Τυπογραφείο): the ΦΕΚ, authoritative text of every law and decree.
-- **diavgeia.gov.gr** (Διαύγεια): every government administrative act, through an open REST API.
-- **areiospagos.gr**: Άρειος Πάγος civil and criminal decisions from 2006 onward.
-- **kodiko.gr, lawspot.gr, e-nomothesia.gr**: consolidated, current code text.
-- **EUR-Lex**: EU law.
+- **Διαύγεια**: `python $SKILL_DIR/scripts/diavgeia.py search "QUERY"` and `... get ADA`. Keyword search and fetch by ΑΔΑ of every government administrative act, through the open REST API.
+- **EUR-Lex**: `python $SKILL_DIR/scripts/eurlex.py CELEX`. An EU act in Greek by CELEX number, for instance 32016R0679 for the GDPR.
+- **Document pages**: `python $SKILL_DIR/scripts/fetch_source.py URL`. Fetch and extract the static text of a known document URL. Verified on e-nomothesia.gr (consolidated law text) and Άρειος Πάγος decision pages (pass `--encoding windows-1253`).
+
+Some sources render their text with JavaScript and expose no open API, so reach them through the browser skill: **et.gr** (the authoritative ΦΕΚ), **kodiko.gr** and **lawspot.gr** (consolidated text), and any keyword search on **areiospagos.gr** or **et.gr**. The registry marks these `browser-required`, so do not trust a plain fetch to return their statute text.
 
 Currency rule: the codes are stable, but consolidations lag, and recent amendments and very recent case law are the usual blind spots. State the date of your source. Warn when a point may have been amended since.
 
@@ -118,7 +118,8 @@ The free stack above is the default and ships with the skill. For a professional
 
 ## Build roadmap (this skill is built in stages)
 
-- Stage 1 (this commit): the foundation. `SKILL.md` (method, citation discipline, ethics, dual audience, area taxonomy) and `DISCLAIMER.md`.
-- Stage 2: grounding scripts under `scripts/` (et.gr, Διαύγεια API, Άρειος Πάγος, EUR-Lex) with tests, plus an offline corpus of the core codes.
+- Stage 1: the foundation. `SKILL.md` (method, citation discipline, ethics, dual audience, area taxonomy) and `DISCLAIMER.md`.
+- Stage 2a (shipped): grounding scripts under `scripts/` with offline tests. Verified direct fetchers for Διαύγεια (open API), EUR-Lex (by CELEX), and static document pages on e-nomothesia.gr and Άρειος Πάγος. `legal_search.py` holds the honest source map; et.gr, kodiko.gr and keyword search route to the browser skill.
+- Stage 2b (next): an offline corpus of the core codes, cached from the verified sources, so the timeless code text is available without a fetch.
 - Stage 3: per area depth modules under `practice/`, starting with the highest value (Ενοχικό and Εμπράγματο, Πολιτική Δικονομία with the αοριστία engine, Εμπορικό and εταιρικό, Εργατικό, ΓΚΠΔ).
 - Stage 4: the professional engines (deadline calculator, contract review with redlines, document templates) and the layperson guides.
