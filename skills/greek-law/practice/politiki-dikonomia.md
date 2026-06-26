@@ -66,7 +66,9 @@ Two layers, and being honest about which does which is what earns a litigator's 
 2. Substantive analysis, by the model, guided by this module: does every προϋπόθεση of
    the invoked rule have a pleaded fact (ποιοτική), and is each element pleaded with
    operable specificity (ποσοτική). This needs the υπαγωγή method and the governing
-   rule. The script never claims to do it.
+   rule. The elements of the common claim bases are in `scripts/vasi_agogis.py`, with the
+   doctrine in `practice/enochiko.md` and `practice/empragmato.md`. The script never
+   claims to do this substantive half.
 
 Always state both layers' findings. Never let a passed structural check be read as
 "this αγωγή is ορισμένη". A clean structural report means only that the skeleton is

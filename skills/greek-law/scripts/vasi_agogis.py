@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""βάσεις αγωγής: a claim-basis reference for Greek substantive private law.
+
+A curated registry of the most common claim bases (βάσεις αγωγής) in Ενοχικό and
+Εμπράγματο δίκαιο. Each basis is broken into its προϋποθέσεις, the elements that must
+each be matched by a pleaded fact under υπαγωγή, plus its έννομη συνέπεια.
+
+This is the substantive companion to aoristia_check.py. That script verifies the
+structural skeleton of a δικόγραφο (ΚΠολΔ 118 and 216). This reference supplies the
+elements of the invoked rule, so the model and the lawyer can test ποιοτική αοριστία:
+does every προϋπόθεση of the βάση have a pleaded fact behind it. One missing element
+defeats the claim.
+
+It is a DRAFTING SCAFFOLD, not an authority and not exhaustive. It does not judge
+whether a fact is pleaded; it names which elements need one. The absence of a claim
+from this registry never means the claim does not exist. Always verify the elements
+and the exact article wording against current law (the citation discipline in
+SKILL.md), because a precondition can shift with amendment or νομολογία.
+
+Usage:
+  python vasi_agogis.py list
+  python vasi_agogis.py adikopraxia
+  python vasi_agogis.py search "πλουτισμ"
+  python vasi_agogis.py adikopraxia --json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import unicodedata
+
+
+def normalize(text):
+    """Accent and case fold Greek text, so a search matches regardless of tonos."""
+    nfd = unicodedata.normalize("NFD", text)
+    stripped = "".join(ch for ch in nfd if not unicodedata.combining(ch))
+    return stripped.upper()
+
+
+# Each entry: slug, title, area, code (the principal article), related articles,
+# the ordered elements (name + the fact that must be pleaded), the legal
+# consequence, and a Greek note on the αοριστία exposure specific to the basis.
+REGISTRY = [
+    {
+        "slug": "adikopraxia",
+        "title": "Αποζημίωση από αδικοπραξία",
+        "area": "Ενοχικό",
+        "code": "ΑΚ 914",
+        "related": ["ΑΚ 297", "ΑΚ 298", "ΑΚ 330", "ΑΚ 932"],
+        "elements": [
+            {"name": "Παράνομη συμπεριφορά",
+             "needs": "πράξη ή παράλειψη που αντιβαίνει σε κανόνα δικαίου ο οποίος "
+                      "προστατεύει τον ζημιωθέντα."},
+            {"name": "Υπαιτιότητα (δόλος ή αμέλεια)",
+             "needs": "πταίσμα του δράστη κατά ΑΚ 330· αντικειμενική ευθύνη μόνο όπου "
+                      "ο νόμος ρητά την ορίζει."},
+            {"name": "Ζημία",
+             "needs": "θετική ζημία ή διαφυγόν κέρδος (ΑΚ 298), προσδιορισμένη."},
+            {"name": "Αιτιώδης σύνδεσμος",
+             "needs": "η παράνομη και υπαίτια συμπεριφορά να είναι πρόσφορη αιτία της "
+                      "ζημίας (θεωρία της πρόσφορης αιτιότητας)."},
+        ],
+        "consequence": "Υποχρέωση αποζημίωσης κατά την έκταση των ΑΚ 297 και 298· "
+                       "δυνατή σώρευση χρηματικής ικανοποίησης ηθικής βλάβης (ΑΚ 932).",
+        "aoristia": "Συχνότερη ποιοτική αοριστία: ιστορικό που εκθέτει ζημία και "
+                    "συμπεριφορά αλλά παραλείπει την υπαιτιότητα ή τον αιτιώδη σύνδεσμο.",
+    },
+    {
+        "slug": "ithiki-vlavi",
+        "title": "Χρηματική ικανοποίηση λόγω ηθικής βλάβης ή ψυχικής οδύνης",
+        "area": "Ενοχικό",
+        "code": "ΑΚ 932",
+        "related": ["ΑΚ 914", "ΑΚ 299"],
+        "elements": [
+            {"name": "Τέλεση αδικοπραξίας",
+             "needs": "πλήρεις οι προϋποθέσεις της ΑΚ 914."},
+            {"name": "Ηθική βλάβη ή ψυχική οδύνη",
+             "needs": "ηθική βλάβη του παθόντος, ή ψυχική οδύνη της οικογένειας σε "
+                      "περίπτωση θανάτωσης."},
+        ],
+        "consequence": "Χρηματική ικανοποίηση κατ' εύλογη κρίση του δικαστηρίου "
+                       "(διακριτική ευχέρεια), αυτοτελές κονδύλιο που σωρεύεται με την "
+                       "αποζημίωση περιουσιακής ζημίας.",
+        "aoristia": "Πρέπει να εκτίθενται τα περιστατικά που στοιχειοθετούν την ηθική "
+                    "βλάβη, όχι μόνο η τέλεση της αδικοπραξίας.",
+    },
+    {
+        "slug": "endosymvatiki-yperimeria",
+        "title": "Αποζημίωση από υπερημερία οφειλέτη (ενδοσυμβατική ευθύνη)",
+        "area": "Ενοχικό",
+        "code": "ΑΚ 340",
+        "related": ["ΑΚ 341", "ΑΚ 342", "ΑΚ 343", "ΑΚ 345"],
+        "elements": [
+            {"name": "Έγκυρη και ληξιπρόθεσμη ενοχή",
+             "needs": "υφιστάμενη απαίτηση και χρόνος κατά τον οποίο η παροχή κατέστη "
+                      "απαιτητή."},
+            {"name": "Όχληση του οφειλέτη",
+             "needs": "όχληση κατά ΑΚ 340, εκτός αν υπάρχει δήλη ημέρα (ΑΚ 341), οπότε "
+                      "η υπερημερία επέρχεται χωρίς όχληση."},
+            {"name": "Υπαιτιότητα του οφειλέτη",
+             "needs": "τεκμαίρεται· ο οφειλέτης φέρει το βάρος να αποδείξει ότι η "
+                      "καθυστέρηση δεν του καταλογίζεται (ΑΚ 342)."},
+            {"name": "Ζημία του δανειστή",
+             "needs": "ζημία από την καθυστέρηση της εκπλήρωσης."},
+        ],
+        "consequence": "Αποζημίωση για τη ζημία από την υπερημερία (ΑΚ 343)· σε "
+                       "χρηματική οφειλή, τόκοι υπερημερίας (ΑΚ 345).",
+        "aoristia": "Πρέπει να εκτίθεται ο χρόνος που η παροχή κατέστη ληξιπρόθεσμη και "
+                    "το γεγονός της όχλησης ή η δήλη ημέρα.",
+    },
+    {
+        "slug": "adikaiologitos-ploutismos",
+        "title": "Αδικαιολόγητος πλουτισμός",
+        "area": "Ενοχικό",
+        "code": "ΑΚ 904",
+        "related": ["ΑΚ 908"],
+        "elements": [
+            {"name": "Πλουτισμός του εναγομένου",
+             "needs": "αύξηση της περιουσίας του ή αποφυγή δαπάνης."},
+            {"name": "Σε βάρος του ενάγοντος",
+             "needs": "ο πλουτισμός να προέρχεται από την περιουσία ή με ζημία του "
+                      "ενάγοντος."},
+            {"name": "Αιτιώδης συνάφεια",
+             "needs": "σύνδεσμος μεταξύ του πλουτισμού και της ζημίας."},
+            {"name": "Χωρίς νόμιμη αιτία",
+             "needs": "αιτία ανύπαρκτη, που δεν επακολούθησε, που έληξε, ή παράνομη ή "
+                      "ανήθικη."},
+        ],
+        "consequence": "Απόδοση της ωφέλειας (ΑΚ 908 κ.ε.).",
+        "aoristia": "Επικουρικός χαρακτήρας: η αξίωση υποχωρεί όταν υπάρχει άλλη βάση "
+                    "(συμβατική ή αδικοπρακτική) για την ίδια μετακίνηση περιουσίας.",
+    },
+    {
+        "slug": "diekdikitiki",
+        "title": "Διεκδικητική αγωγή (απόδοση πράγματος στον κύριο)",
+        "area": "Εμπράγματο",
+        "code": "ΑΚ 1094",
+        "related": ["ΑΚ 1095", "ΑΚ 1033", "ΑΚ 1045"],
+        "elements": [
+            {"name": "Κυριότητα του ενάγοντος",
+             "needs": "η κυριότητα επί του πράγματος και ο τρόπος κτήσης της "
+                      "(παράγωγη ή πρωτότυπη)."},
+            {"name": "Νομή ή κατοχή από τον εναγόμενο",
+             "needs": "ο εναγόμενος να νέμεται ή να κατέχει το πράγμα κατά τον χρόνο "
+                      "της αγωγής."},
+            {"name": "Ταυτότητα του πράγματος",
+             "needs": "ακριβής περιγραφή, ιδίως ακινήτου (θέση, όρια, έκταση), ώστε να "
+                      "μην υπάρχει αμφιβολία ταυτότητας."},
+        ],
+        "consequence": "Απόδοση του πράγματος στον κύριο.",
+        "aoristia": "Υψηλή έκθεση σε αοριστία: το ακίνητο πρέπει να περιγράφεται με "
+                    "πληρότητα και να εκτίθεται η αλυσίδα κτήσης της κυριότητας.",
+    },
+    {
+        "slug": "arnitiki",
+        "title": "Αρνητική αγωγή (άρση προσβολής της κυριότητας)",
+        "area": "Εμπράγματο",
+        "code": "ΑΚ 1108",
+        "related": ["ΑΚ 1094"],
+        "elements": [
+            {"name": "Κυριότητα του ενάγοντος",
+             "needs": "η κυριότητα επί του πράγματος."},
+            {"name": "Προσβολή πλην αφαίρεσης ή κατακράτησης",
+             "needs": "μερική, παράνομη διατάραξη της κυριότητας, όχι αποβολή από τη "
+                      "νομή (που καλύπτει η διεκδικητική)."},
+        ],
+        "consequence": "Άρση της προσβολής και παράλειψή της στο μέλλον.",
+        "aoristia": "Πρέπει να εξειδικεύεται η συγκεκριμένη πράξη προσβολής, όχι "
+                    "γενικόλογη αναφορά σε ενόχληση.",
+    },
+    {
+        "slug": "agogi-nomis",
+        "title": "Αγωγές προστασίας της νομής (αποβολή ή διατάραξη)",
+        "area": "Εμπράγματο",
+        "code": "ΑΚ 987",
+        "related": ["ΑΚ 984", "ΑΚ 989", "ΑΚ 992"],
+        "elements": [
+            {"name": "Νομή του ενάγοντος",
+             "needs": "νομή επί του πράγματος κατά τον χρόνο της προσβολής "
+                      "(ανεξάρτητα από κυριότητα)."},
+            {"name": "Παράνομη προσβολή της νομής",
+             "needs": "αποβολή (ΑΚ 987) ή διατάραξη (ΑΚ 989) από τον εναγόμενο, χωρίς "
+                      "τη βούληση του νομέα."},
+        ],
+        "consequence": "Απόδοση της νομής (αποβολή) ή άρση και παράλειψη της "
+                       "διατάραξης.",
+        "aoristia": "Σύντομη αποσβεστική προθεσμία, περίπου ενός έτους από την "
+                    "προσβολή (επιβεβαιώστε το άρθρο, ΑΚ 992). Εκθέστε τον χρόνο και "
+                    "τον τρόπο της προσβολής.",
+    },
+]
+
+_BY_SLUG = {e["slug"]: e for e in REGISTRY}
+
+
+def get(slug):
+    return _BY_SLUG.get(slug)
+
+
+def search(term):
+    """Return entries whose title, area, code or any element name matches the term."""
+    q = normalize(term)
+    hits = []
+    for e in REGISTRY:
+        haystack = " ".join([
+            e["title"], e["area"], e["code"],
+            " ".join(el["name"] for el in e["elements"]),
+            " ".join(e.get("related", [])),
+        ])
+        if q in normalize(haystack):
+            hits.append(e)
+    return hits
+
+
+def render_entry(e):
+    lines = [
+        f"{e['code']}  ({e['area']})  {e['title']}",
+        f"slug: {e['slug']}",
+        "",
+        "Προϋποθέσεις (κάθε μία χρειάζεται θεμελιωτικό πραγματικό περιστατικό):",
+    ]
+    for i, el in enumerate(e["elements"], 1):
+        lines.append(f"  {i}. {el['name']}")
+        lines.append(f"     {el['needs']}")
+    lines += ["", f"Έννομη συνέπεια: {e['consequence']}"]
+    if e.get("related"):
+        lines.append(f"Συναφή άρθρα: {', '.join(e['related'])}")
+    if e.get("aoristia"):
+        lines += ["", f"Αοριστία: {e['aoristia']}"]
+    lines += [
+        "",
+        "Σκαλωσιά σύνταξης, όχι αυθεντία. Επιβεβαιώστε στοιχεία και ακριβή διατύπωση "
+        "άρθρων στο ισχύον δίκαιο πριν τη χρήση.",
+    ]
+    return "\n".join(lines)
+
+
+def render_list(entries):
+    lines = ["Βάσεις αγωγής (curated registry):", ""]
+    for e in entries:
+        lines.append(f"  {e['slug']:<26} {e['code']:<10} {e['area']:<11} {e['title']}")
+    lines += ["", "Δείτε μία: python vasi_agogis.py <slug>"]
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(
+        description="Claim-basis (βάση αγωγής) reference for Greek private law")
+    p.add_argument("command", help="list | search <term> | <slug>")
+    p.add_argument("term", nargs="?", default=None,
+                   help="the search term, when command is search")
+    p.add_argument("--json", action="store_true")
+    args = p.parse_args(argv)
+
+    if args.command == "list":
+        if args.json:
+            print(json.dumps(REGISTRY, ensure_ascii=False, indent=2))
+        else:
+            print(render_list(REGISTRY))
+        return 0
+
+    if args.command == "search":
+        if not args.term:
+            p.error("search needs a term: vasi_agogis.py search <term>")
+        hits = search(args.term)
+        if args.json:
+            print(json.dumps(hits, ensure_ascii=False, indent=2))
+        elif hits:
+            print(render_list(hits))
+        else:
+            print(f"Καμία βάση δεν ταιριάζει με '{args.term}'. "
+                  f"Δοκιμάστε: python vasi_agogis.py list")
+        return 0
+
+    entry = get(args.command)
+    if entry is None:
+        sys.stderr.write(
+            f"Άγνωστη βάση: '{args.command}'. "
+            f"Δείτε τη λίστα: python vasi_agogis.py list\n")
+        return 2
+    if args.json:
+        print(json.dumps(entry, ensure_ascii=False, indent=2))
+    else:
+        print(render_entry(entry))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
