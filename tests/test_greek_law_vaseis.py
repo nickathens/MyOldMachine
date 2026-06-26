@@ -133,5 +133,33 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(json.loads(out)), len(va.REGISTRY))
 
 
+class Stage3cBasesTests(unittest.TestCase):
+    """The Εμπορικό, Εργατικό and Προσωπικά Δεδομένα bases added in Stage 3c."""
+
+    NEW = ("epitagi-akalypti", "efthyni-ds", "dedoulevmenes-apodoches",
+           "apozimiosi-apolysis", "apozimiosi-gkpd")
+
+    def test_new_bases_present(self):
+        for slug in self.NEW:
+            self.assertIsNotNone(va.get(slug), f"missing base {slug}")
+
+    def test_areas_now_span_beyond_civil(self):
+        areas = {e["area"] for e in va.REGISTRY}
+        for area in ("Εμπορικό", "Εργατικό", "Προσωπικά Δεδομένα"):
+            self.assertIn(area, areas)
+
+    def test_gkpd_base_cites_article_82(self):
+        self.assertEqual(va.get("apozimiosi-gkpd")["code"], "ΓΚΠΔ άρθρο 82")
+
+    def test_cheque_base_carries_tort_companion(self):
+        # Issuing an uncovered cheque also grounds ΑΚ 914 per settled νομολογία.
+        self.assertIn("ΑΚ 914", va.get("epitagi-akalypti")["related"])
+
+    def test_new_bases_render_without_error(self):
+        for slug in self.NEW:
+            out = va.render_entry(va.get(slug))
+            self.assertIn(va.get(slug)["code"], out)
+
+
 if __name__ == "__main__":
     unittest.main()
