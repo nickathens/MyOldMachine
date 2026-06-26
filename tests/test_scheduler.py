@@ -138,5 +138,53 @@ class ParseNaturalTimeTests(unittest.TestCase):
         self.assertIsNone(scheduler.parse_natural_time("not a real time"))
 
 
+class SendMessageTimeoutDedupTests(unittest.TestCase):
+    """send_message must treat a post-send ReadTimeout as delivered (return True,
+    no retry), while still reporting genuine non-delivery as failure (return
+    False). This is what stops duplicate notifications when a slow ack times out
+    after the request was already sent."""
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    @staticmethod
+    def _client_raising(exc):
+        """Return a fake httpx.AsyncClient factory whose .post() raises `exc`."""
+        class _FakeAsyncClient:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *_a):
+                return False
+
+            async def post(self_inner, *_a, **_k):
+                raise exc
+
+        return lambda *_a, **_k: _FakeAsyncClient()
+
+    def test_read_timeout_treated_as_delivered(self):
+        sched = scheduler.Scheduler("fake-token")
+        factory = self._client_raising(scheduler.httpx.ReadTimeout("slow ack"))
+        with patch.object(scheduler.httpx, "AsyncClient", factory):
+            result = self._run(sched.send_message(123, "hi"))
+        self.assertTrue(result)
+
+    def test_connect_error_reported_as_failure(self):
+        sched = scheduler.Scheduler("fake-token")
+        factory = self._client_raising(scheduler.httpx.ConnectError("refused"))
+        with patch.object(scheduler.httpx, "AsyncClient", factory):
+            result = self._run(sched.send_message(123, "hi"))
+        self.assertFalse(result)
+
+    def test_retry_loop_does_not_resend_when_delivered(self):
+        # End-to-end contract: when send_message reports delivered (as it now
+        # does on a post-send ReadTimeout), _send_with_retry must not re-send.
+        sched = MagicMock()
+        sched.send_message = AsyncMock(return_value=True)
+        result = self._run(scheduler._send_with_retry(sched, 123, "hi"))
+        self.assertTrue(result)
+        sched.send_message.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

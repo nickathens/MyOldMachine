@@ -72,13 +72,39 @@ def _borg_env(passphrase: str) -> dict:
     return env
 
 
+def _nice_prefix() -> list:
+    """Lowest-priority launcher prefix so a long backup can't starve the bot's
+    event loop or freeze a low-spec machine.
+
+    ``nice`` (CPU priority) is POSIX and present on both Linux and macOS, and is
+    the load-bearing lever: zstd compression is CPU-bound, and on the weak
+    machines this project targets a flat-out backup can delay the bot enough to
+    time out Telegram acks (which then duplicate the completion notification).
+    ``ionice`` (idle I/O class) is Linux-only and is appended only when present;
+    it de-prioritises disk I/O, which matters on the slow spinning/SATA disks
+    common to old laptops. Both are best-effort: a missing binary is simply
+    omitted so borg still runs at normal priority.
+    """
+    prefix = []
+    nice = shutil.which("nice")
+    if nice:
+        prefix += [nice, "-n", "19"]
+    ionice = shutil.which("ionice")
+    if ionice:
+        prefix += [ionice, "-c", "3"]
+    return prefix
+
+
 def _run_borg(args, passphrase: str, timeout: int = 3600,
               capture: bool = True) -> subprocess.CompletedProcess:
     """Run a borg command with passphrase env, never echoed.
 
     Returns CompletedProcess. Caller checks returncode/stderr.
     """
-    cmd = ["borg"] + list(args)
+    # Run borg at idle priority so the nightly backup can't starve the bot.
+    # An exec chain (nice -> ionice -> borg) keeps borg on the same PID, so the
+    # subprocess timeout below still targets borg directly.
+    cmd = _nice_prefix() + ["borg"] + list(args)
     env = _borg_env(passphrase)
     return subprocess.run(
         cmd, env=env, capture_output=capture, text=True, timeout=timeout

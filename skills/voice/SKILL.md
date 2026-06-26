@@ -37,6 +37,8 @@ python skills/voice/scripts/transcribe.py /path/to/audio.wav
 
 **Supported formats:** mp3, wav, ogg, m4a, flac, webm
 
-**Model:** Whisper medium (multilingual, runs on CPU). Auto-detects language. Supports English, Greek, and 90+ other languages.
+**Model:** Whisper medium (multilingual, runs on CPU). Auto-detects language. Supports English, Greek, and 90+ other languages. Override with `--model tiny|base|small|medium`.
 
-**Note:** First run downloads the model (~1.5GB). Transcription takes 10-30 seconds per audio clip depending on length.
+**Note:** First run downloads the model (~1.5GB). On CPU the model loads in fp32 and peaks around 4.8GB resident. Transcription takes 10-30 seconds per audio clip depending on length.
+
+**Memory safety (load-bearing):** The whisper run is placed inside a memory-capped systemd user scope (`systemd-run --user --scope`, ceiling set by `WHISPER_MEM_MAX`, default 6G) whose cgroup lives outside the bot service, so a heavy model that balloons is killed alone and can never exhaust system RAM and OOM the machine. Where `systemd-run` is unavailable (macOS, non-systemd Linux), models heavier than `medium` are refused rather than risking the box. This complements the skill_hooks RAM gate (`min_ram_gb` in deps.json), which blocks the skill before launch but cannot bound a process that grows after it starts.

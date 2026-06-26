@@ -35,6 +35,24 @@ OPENAI_MODEL = "whisper-1"
 LOCAL_DEFAULT_MODEL = "base"
 LOCAL_DEFAULT_DEVICE = "cpu"
 
+# Memory isolation for the local CPU whisper CLI (see _transcribe_local). The
+# CLI loads fp32 weights on CPU; a large model can exhaust system RAM and trip
+# the kernel OOM-killer, which on the low-spec machines this project targets can
+# freeze the box or kill the bot. The CLI is run inside a memory-capped systemd
+# *user scope* whose cgroup lives outside the service, so a runaway model dies
+# alone. WHISPER_MEM_MAX (the same knob the voice skill honours) sets the
+# ceiling: 'medium' peaks ~4.8GB fp32 on CPU, so 6G clears it with headroom
+# while still killing anything heavier inside its own scope.
+WHISPER_MEM_MAX = os.environ.get("WHISPER_MEM_MAX", "6G")
+
+# Models safe to run unisolated on a machine that passed the skill_hooks RAM
+# gate. Anything outside this set is refused (on CPU) when scope isolation is
+# unavailable, rather than risking a system-wide OOM.
+SAFE_MODELS = {
+    "tiny", "base", "small", "medium",
+    "tiny.en", "base.en", "small.en", "medium.en",
+}
+
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
     """Return (backend, credential). Prefers Groq → OpenAI → local CLI.
@@ -133,6 +151,64 @@ def extract_audio(
     return out_path
 
 
+def _scope_prefix(mem_max: str) -> list[str] | None:
+    """``systemd-run`` argv prefix that runs a command in a memory-capped user
+    scope, or None if ``systemd-run`` is not installed (e.g. macOS, non-systemd
+    Linux). Mirrors the voice skill's transcribe.py. The prefix ends in ``--``
+    so the payload appends directly. ``MemorySwapMax=0`` makes the scope OOM at
+    the RSS cap instead of thrashing swap; ``--collect`` reaps the transient
+    unit even on failure.
+    """
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        return None
+    return [
+        systemd_run, "--user", "--scope", "--quiet", "--collect",
+        "-p", f"MemoryMax={mem_max}", "-p", "MemorySwapMax=0", "--",
+    ]
+
+
+def _isolation_works(prefix: list[str]) -> bool:
+    """Probe whether a capped user scope can actually be created here (needs a
+    reachable user systemd manager). Cheap relative to whisper's runtime."""
+    try:
+        probe = subprocess.run(
+            prefix + ["true"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+        )
+        return probe.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _isolate_or_refuse(cmd: list[str], model: str, device: str) -> list[str]:
+    """Wrap the local whisper CLI command in a memory-capped scope when one is
+    available, so a heavy model can never exhaust system RAM and OOM the
+    machine. If no scope can be created and the model is too heavy to run safely
+    unisolated, raise SystemExit instead of gambling the machine. GPU runs are
+    exempt: their weights live in VRAM, not system RAM.
+    """
+    if device != "cpu":
+        return cmd
+    prefix = _scope_prefix(WHISPER_MEM_MAX)
+    if prefix and _isolation_works(prefix):
+        return prefix + cmd
+    if model not in SAFE_MODELS:
+        raise SystemExit(
+            f"local whisper: REFUSING model {model!r} without memory isolation "
+            "(it could exhaust system RAM and OOM the machine). Install "
+            "systemd-run with a user manager, set WATCH_LOCAL_WHISPER_MODEL to "
+            "'medium' or smaller, or use an API backend (GROQ_API_KEY / "
+            "OPENAI_API_KEY)."
+        )
+    print(
+        f"[watch] WARNING: scope isolation unavailable; running {model!r} "
+        "in-process (safe size, but unprotected).",
+        file=sys.stderr,
+    )
+    return cmd
+
+
 def _transcribe_local(audio_path: Path) -> dict:
     """Run the local `whisper` CLI on the audio file, return verbose-JSON-shape dict.
 
@@ -161,6 +237,8 @@ def _transcribe_local(audio_path: Path) -> dict:
         "--verbose", "False",
         "--fp16", "True" if device != "cpu" else "False",
     ]
+    # Memory isolation (load-bearing): never let a heavy CPU model OOM the machine.
+    cmd = _isolate_or_refuse(cmd, model, device)
     print(
         f"[watch] local whisper: model={model} device={device} (this can take several minutes on CPU)…",
         file=sys.stderr,
