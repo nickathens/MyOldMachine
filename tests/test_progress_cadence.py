@@ -1,19 +1,19 @@
-"""Pin the front-loaded progress cadence that keeps a working turn from looking frozen.
+"""Pin the flat 10-minute progress cadence.
 
 Run: python3 -m unittest tests.test_progress_cadence  (from repo root)
   or: python3 tests/test_progress_cadence.py
 
 Between progress updates the user sees only a Telegram "typing" indicator.
-The old cadence sent the first update after a flat 10-minute gap, so every
-multi-minute turn looked frozen even while Claude/Codex worked normally —
-the recurring "you hang on every reply" complaint.
+An earlier change front-loaded the first few updates (25s/60s/150s) so a working
+turn showed life quickly, but the user found those early heartbeats more
+annoying than a quiet gap ("why are you giving me reports every minute"). The
+cadence is now flat: no front-loaded burst, one update every PROGRESS_INTERVAL
+(10 minutes), so a short turn finishes before the first update and stays silent.
 
-The fix front-loads PROGRESS_SCHEDULE (seconds before each of the first few
-updates) so a healthy turn shows life within seconds, then holds at
-PROGRESS_INTERVAL so a long job settles into a calm cadence. These tests pin
-that shape: the first update must stay well under a minute, the schedule must
-be non-decreasing, and the steady-state interval must stay tight. A regression
-back toward a multi-minute first gap should fail here, deliberately.
+These tests pin that shape: an empty PROGRESS_SCHEDULE, a 10-minute interval,
+both providers in sync, and _next_progress_delay returning the interval for
+every update including the first. A regression back toward front-loading or a
+sub-10-minute interval should fail here, deliberately.
 """
 from __future__ import annotations
 
@@ -38,7 +38,8 @@ PROVIDERS = (ClaudeCLIProvider, CodexCLIProvider)
 
 class TestFormatElapsed(unittest.TestCase):
     def test_seconds_under_a_minute(self):
-        # A bare "0 min elapsed" header read as broken; show seconds instead.
+        # The sub-minute branch is unreached at a 10-minute cadence but kept for
+        # safety; pin it so the helper stays correct.
         self.assertEqual(_format_elapsed(0), "0s")
         self.assertEqual(_format_elapsed(25), "25s")
         self.assertEqual(_format_elapsed(59.9), "59s")
@@ -46,9 +47,11 @@ class TestFormatElapsed(unittest.TestCase):
     def test_minutes_at_and_above_one(self):
         self.assertEqual(_format_elapsed(60), "1 min")
         self.assertEqual(_format_elapsed(125), "2 min")
+        # The first update a user actually sees lands here, at the 10-minute mark.
+        self.assertEqual(_format_elapsed(600), "10 min")
 
 
-class TestProgressSchedule(unittest.TestCase):
+class TestProgressCadence(unittest.TestCase):
     def test_both_providers_share_the_cadence(self):
         # The two providers run parallel loops; their cadence must not drift.
         self.assertEqual(
@@ -58,50 +61,31 @@ class TestProgressSchedule(unittest.TestCase):
             ClaudeCLIProvider.PROGRESS_INTERVAL, CodexCLIProvider.PROGRESS_INTERVAL
         )
 
-    def test_first_update_is_well_under_a_minute(self):
-        # The core fix: the first heartbeat must arrive fast, not after minutes.
+    def test_no_front_loaded_schedule(self):
+        # The core ask: no early burst of heartbeats. Empty schedule => the first
+        # update waits the full interval like every other update.
         for provider in PROVIDERS:
             with self.subTest(provider=provider.__name__):
-                self.assertTrue(provider.PROGRESS_SCHEDULE, "schedule must be non-empty")
-                self.assertLessEqual(provider.PROGRESS_SCHEDULE[0], 30)
+                self.assertEqual(provider.PROGRESS_SCHEDULE, ())
 
-    def test_schedule_is_non_decreasing(self):
-        # Updates should space out over time, never tighten.
+    def test_interval_is_ten_minutes(self):
+        # Flat 10-minute cadence. Guard against re-tightening to a chatty gap.
         for provider in PROVIDERS:
             with self.subTest(provider=provider.__name__):
-                schedule = provider.PROGRESS_SCHEDULE
-                for earlier, later in zip(schedule, schedule[1:]):
-                    self.assertLessEqual(earlier, later)
-
-    def test_steady_state_interval_stays_tight(self):
-        # Guard against regressing to the old 10-minute gap that looked frozen.
-        for provider in PROVIDERS:
-            with self.subTest(provider=provider.__name__):
-                self.assertLessEqual(provider.PROGRESS_INTERVAL, 300)
-                self.assertGreaterEqual(provider.PROGRESS_INTERVAL, schedule_tail(provider))
+                self.assertEqual(provider.PROGRESS_INTERVAL, 600)
 
 
 class TestNextProgressDelay(unittest.TestCase):
-    def test_walks_schedule_then_holds_interval(self):
+    def test_every_update_holds_the_interval(self):
+        # With an empty schedule, every update — including the first (count=0) —
+        # waits the full interval, so a short turn finishes before any heartbeat.
         for provider in PROVIDERS:
             with self.subTest(provider=provider.__name__):
-                schedule = provider.PROGRESS_SCHEDULE
-                for count, expected in enumerate(schedule):
-                    self.assertEqual(_next_progress_delay(provider, count), expected)
-                # Once the schedule is spent, every later update holds at the interval.
-                self.assertEqual(
-                    _next_progress_delay(provider, len(schedule)),
-                    provider.PROGRESS_INTERVAL,
-                )
-                self.assertEqual(
-                    _next_progress_delay(provider, len(schedule) + 50),
-                    provider.PROGRESS_INTERVAL,
-                )
-
-
-def schedule_tail(provider) -> float:
-    """Last scheduled delay — the interval should be >= this so cadence never tightens."""
-    return provider.PROGRESS_SCHEDULE[-1] if provider.PROGRESS_SCHEDULE else 0
+                for count in (0, 1, 2, 5, 50):
+                    self.assertEqual(
+                        _next_progress_delay(provider, count),
+                        provider.PROGRESS_INTERVAL,
+                    )
 
 
 if __name__ == "__main__":
