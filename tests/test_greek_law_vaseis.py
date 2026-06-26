@@ -161,5 +161,38 @@ class Stage3cBasesTests(unittest.TestCase):
             self.assertIn(va.get(slug)["code"], out)
 
 
+class Stage3dBasesTests(unittest.TestCase):
+    """The Οικογενειακό and Κληρονομικό bases added in Stage 3d."""
+
+    NEW = ("agogi-diatrofis-teknou", "diazygio-klonismos",
+           "agogi-peri-klirou", "nomimi-moira")
+
+    def test_new_bases_present(self):
+        for slug in self.NEW:
+            self.assertIsNotNone(va.get(slug), f"missing base {slug}")
+
+    def test_areas_now_span_family_and_succession(self):
+        areas = {e["area"] for e in va.REGISTRY}
+        for area in ("Οικογενειακό", "Κληρονομικό"):
+            self.assertIn(area, areas)
+
+    def test_child_maintenance_cites_article_1486(self):
+        self.assertEqual(va.get("agogi-diatrofis-teknou")["code"], "ΑΚ 1486")
+
+    def test_forced_share_carries_clawback_companion(self):
+        # The νόμιμη μοίρα is enforced against impairing gifts via μέμψη άστοργης
+        # δωρεάς, ΑΚ 1835, which must travel with the basis.
+        self.assertIn("ΑΚ 1835", va.get("nomimi-moira")["related"])
+
+    def test_new_bases_render_without_error(self):
+        for slug in self.NEW:
+            out = va.render_entry(va.get(slug))
+            self.assertIn(va.get(slug)["code"], out)
+
+    def test_search_finds_family_base_accent_insensitive(self):
+        hits = va.search("διατροφ")
+        self.assertIn("agogi-diatrofis-teknou", [h["slug"] for h in hits])
+
+
 if __name__ == "__main__":
     unittest.main()
