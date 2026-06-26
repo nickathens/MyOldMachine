@@ -74,7 +74,7 @@ Currency rule: the codes are stable, but consolidations lag, and recent amendmen
 The layer meant to earn a lawyer's trust.
 
 - **Drafting**: αγωγή, εξώδικη δήλωση, προτάσεις, αίτηση ασφαλιστικών μέτρων, ανακοπή, έφεση, προσφυγή, and contracts (σύμβαση). Every δικόγραφο grounded in ΚΠολΔ 118 and 216.
-- **The αοριστία check (signature feature)**: after drafting any δικόγραφο, audit it against the codified anatomy. ΚΠολΔ 118 requires the court, the kind of document, the parties with ΑΦΜ, a subject stated clearly and specifically and concisely, the date, and the signature. ΚΠολΔ 216, for an αγωγή, requires a clear statement of the facts that found the claim, an accurate description of the object of the dispute, and a specific αίτημα. Flag any element a court could strike as αόριστο, and name it. This is the failure a litigator most fears, and catching it is the demonstration that lands.
+- **The αοριστία check (signature feature)**: after drafting any δικόγραφο, audit it against the codified anatomy. ΚΠολΔ 118 requires the court, the kind of document, the parties with ΑΦΜ, a subject stated clearly and specifically and concisely, the date, and the signature. ΚΠολΔ 216, for an αγωγή, requires a clear statement of the facts that found the claim, an accurate description of the object of the dispute, and a specific αίτημα. Flag any element a court could strike as αόριστο, and name it. This is the failure a litigator most fears, and catching it is the demonstration that lands. Run the deterministic structural preflight with `python $SKILL_DIR/scripts/aoristia_check.py DRAFT.txt` (it checks the mechanical elements: court, type, parties, ΑΦΜ, αίτημα, date, signature, money quantification), then apply `practice/politiki-dikonomia.md` for the legal sufficiency the script cannot judge (whether every προϋπόθεση of the rule has a pleaded fact). A passed structural check never means the αγωγή is ορισμένη; it means the skeleton is present.
 - **Research and case law analysis**: grounded answers with the authority cited and its date.
 - **Contract review**: flag clauses GREEN, YELLOW, RED against Greek law (ΑΚ 281 abuse of right, ΑΚ 178 and 179 on immoral terms, consumer protection limits), and propose redlines.
 - **Deadlines**: compute procedural deadlines for ένδικα μέσα, with the governing article, and warn that they are strict and unforgiving. Note the 2022 civil procedure reform (Ν.4842/2021).
@@ -103,7 +103,7 @@ The skill covers the whole of Greek law. Reason from the foundation above plus g
 - Δίκαιο της Ευρωπαϊκής Ένωσης.
 - Προστασία Προσωπικών Δεδομένων (ΓΚΠΔ, Ν.4624/2019), Δίκαιο Καταναλωτή, Πνευματική Ιδιοκτησία, Δίκαιο Ακινήτων και Κτηματολόγιο.
 
-Deeper per area modules live under `practice/` and are added progressively. A missing module is not missing coverage; it means reason from primary sources with extra citation care.
+Deeper per area modules live under `practice/` and are added progressively. The first shipped module is `practice/politiki-dikonomia.md` (το δικόγραφο και ο έλεγχος αοριστίας). A missing module is not missing coverage; it means reason from primary sources with extra citation care.
 
 ## Paid databases (professional upgrade)
 
@@ -121,5 +121,6 @@ The free stack above is the default and ships with the skill. For a professional
 - Stage 1: the foundation. `SKILL.md` (method, citation discipline, ethics, dual audience, area taxonomy) and `DISCLAIMER.md`.
 - Stage 2a (shipped): grounding scripts under `scripts/` with offline tests. Verified direct fetchers for Διαύγεια (open API), EUR-Lex (by CELEX), and static document pages on e-nomothesia.gr and Άρειος Πάγος. `legal_search.py` holds the honest source map; et.gr, kodiko.gr and keyword search route to the browser skill.
 - Stage 2b (next): an offline corpus of the core codes, cached from the verified sources, so the timeless code text is available without a fetch.
-- Stage 3: per area depth modules under `practice/`, starting with the highest value (Ενοχικό and Εμπράγματο, Πολιτική Δικονομία with the αοριστία engine, Εμπορικό and εταιρικό, Εργατικό, ΓΚΠΔ).
+- Stage 3a (shipped): Πολιτική Δικονομία depth, `practice/politiki-dikonomia.md`, with the deterministic αοριστία engine `scripts/aoristia_check.py` (the signature feature) and offline tests.
+- Stage 3b (next): the substantive area modules, starting with Ενοχικό and Εμπράγματο, then Εμπορικό and εταιρικό, Εργατικό, ΓΚΠΔ.
 - Stage 4: the professional engines (deadline calculator, contract review with redlines, document templates) and the layperson guides.
