@@ -318,6 +318,32 @@ async def _send_typing_periodically(chat):
             await asyncio.sleep(3)
 
 
+def _format_elapsed(seconds: float) -> str:
+    """Human-friendly elapsed string: '25s' under a minute, else 'N min'.
+
+    Progress updates fire within seconds now, so a bare "0 min elapsed" header
+    read as broken; show seconds until the first minute is up. Used by both CLI
+    providers' progress reports.
+    """
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    return f"{seconds // 60} min"
+
+
+def _next_progress_delay(provider, count: int) -> float:
+    """Seconds to wait before the next progress update.
+
+    Walks PROGRESS_SCHEDULE for the first few updates (quick feedback so a
+    working turn never looks frozen), then holds at PROGRESS_INTERVAL so long
+    jobs settle into a calm cadence instead of spamming the chat.
+    """
+    schedule = provider.PROGRESS_SCHEDULE
+    if count < len(schedule):
+        return schedule[count]
+    return provider.PROGRESS_INTERVAL
+
+
 async def _read_line_with_timeout(stream, timeout: float):
     """Read one line from an asyncio stream, with a per-line timeout.
 
@@ -487,7 +513,13 @@ class ClaudeCLIProvider(LLMProvider):
 
     IDLE_TIMEOUT = 1800  # 30 min of no output = stuck
     ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling per request, even with continuous activity
-    PROGRESS_INTERVAL = 600  # Send progress report every 10 minutes
+    # Progress cadence. Between updates the user sees only a "typing" indicator,
+    # so a flat 10-minute gap made every multi-minute turn look frozen. Send the
+    # first few updates quickly so a working turn shows life within seconds, then
+    # settle to a calm steady-state interval so a long job doesn't spam the chat.
+    # Values are seconds since the previous update.
+    PROGRESS_SCHEDULE = (25, 60, 150)
+    PROGRESS_INTERVAL = 300  # steady-state cadence once PROGRESS_SCHEDULE is spent
 
     def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
         super().__init__(model, api_key)
@@ -640,6 +672,7 @@ class ClaudeCLIProvider(LLMProvider):
         last_progress_message = start_time
         last_progress_content = ""
         last_progress_save = start_time
+        progress_count = 0
         final_result = None
         partial_text = ""
         all_text_blocks = []  # Every text block in order, for reply composition
@@ -773,13 +806,15 @@ class ClaudeCLIProvider(LLMProvider):
                 if time_since_activity > self.IDLE_TIMEOUT * 0.8 and time_since_activity <= self.IDLE_TIMEOUT * 0.8 + 30:
                     logger.warning(f"Claude approaching idle timeout for user {user_id}: {int(time_since_activity)}s idle. Status: {current_status}")
 
-                # Send progress message periodically
+                # Send progress updates on a front-loaded schedule so a working
+                # turn shows life within seconds, then settles to a calm cadence.
+                # Between updates the user sees only a "typing" indicator, so the
+                # first gap must be short or every multi-minute turn looks frozen.
+                next_delay = _next_progress_delay(self, progress_count)
                 time_since_progress = current_time - last_progress_message
-                if time_since_progress >= self.PROGRESS_INTERVAL and chat:
+                if time_since_progress >= next_delay and chat:
                     try:
-                        elapsed_min = int(elapsed // 60)
-                        remaining_min = max(0, int((self.ABSOLUTE_TIMEOUT - elapsed) // 60))
-                        header = f"Progress report ({elapsed_min} min elapsed, {remaining_min} min remaining):"
+                        elapsed_str = _format_elapsed(elapsed)
                         if tool_in_progress:
                             status_line = f"Currently running: {tool_in_progress}"
                         else:
@@ -792,21 +827,30 @@ class ClaudeCLIProvider(LLMProvider):
                         snippet_line = f"Latest output: {snippet}" if snippet else ""
                         content_fingerprint = "\n".join(p for p in [status_line, snippet_line] if p)
                         if content_fingerprint == last_progress_content:
-                            msg = f"Still working... ({elapsed_min} min elapsed, {remaining_min} min remaining)"
+                            msg = f"Still working... ({elapsed_str} elapsed)"
                         else:
                             last_progress_content = content_fingerprint
+                            header = f"Still working ({elapsed_str} elapsed):"
                             msg = "\n".join(p for p in [header, status_line, snippet_line] if p)
                         await chat.send_message(msg)
                         last_progress_message = current_time
+                        progress_count += 1
                     except Exception:
                         pass
 
-                # Cap the read timeout at 30s so the loop wakes up regularly
-                # for /stop checks, absolute-timeout checks, and progress reports.
-                # Floor at 1s so we never pass a non-positive value to wait_for.
+                # Cap the read timeout so the loop wakes regularly for /stop
+                # checks, the absolute-timeout check, and the next scheduled
+                # progress update. Without the progress cap the loop could sleep
+                # up to 30s and fire an early update late, reintroducing the
+                # frozen-looking gap. Only apply that cap when a chat is present;
+                # headless callers send no updates and should not busy-wake. Floor
+                # at 1s so we never pass a non-positive value to wait_for.
                 idle_remaining = self.IDLE_TIMEOUT - time_since_activity
                 absolute_remaining = self.ABSOLUTE_TIMEOUT - elapsed
-                read_timeout = max(1.0, min(30.0, idle_remaining, absolute_remaining))
+                read_timeout = min(30.0, idle_remaining, absolute_remaining)
+                if chat:
+                    read_timeout = min(read_timeout, next_delay - time_since_progress)
+                read_timeout = max(1.0, read_timeout)
                 line = await _read_line_with_timeout(process.stdout, timeout=read_timeout)
 
                 if line:
@@ -1060,7 +1104,12 @@ class CodexCLIProvider(LLMProvider):
 
     IDLE_TIMEOUT = 1800
     ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling per request, even with continuous activity
-    PROGRESS_INTERVAL = 600
+    # Front-loaded progress cadence: first few updates fire quickly so a working
+    # turn shows life within seconds, then settle to a steady interval so a long
+    # job doesn't spam the chat. See ClaudeCLIProvider for the rationale; values
+    # are seconds since the previous update.
+    PROGRESS_SCHEDULE = (25, 60, 150)
+    PROGRESS_INTERVAL = 300  # steady-state cadence once PROGRESS_SCHEDULE is spent
 
     def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
         super().__init__(model, api_key)
@@ -1175,6 +1224,7 @@ class CodexCLIProvider(LLMProvider):
         last_progress_message = start_time
         last_progress_content = ""
         last_progress_save = start_time
+        progress_count = 0
         agent_message_blocks: list = []
         partial_text = ""
         total_input = 0
@@ -1311,12 +1361,14 @@ class CodexCLIProvider(LLMProvider):
                 if time_since_activity > self.IDLE_TIMEOUT * 0.8 and time_since_activity <= self.IDLE_TIMEOUT * 0.8 + 30:
                     logger.warning(f"Codex approaching idle timeout for user {user_id}: {int(time_since_activity)}s idle. Status: {current_status}")
 
+                # Front-loaded progress cadence (see ClaudeCLIProvider.complete
+                # for the rationale): the first updates fire quickly so a working
+                # turn shows life within seconds, then settle to a calm interval.
+                next_delay = _next_progress_delay(self, progress_count)
                 time_since_progress = current_time - last_progress_message
-                if time_since_progress >= self.PROGRESS_INTERVAL and chat:
+                if time_since_progress >= next_delay and chat:
                     try:
-                        elapsed_min = int(elapsed // 60)
-                        remaining_min = max(0, int((self.ABSOLUTE_TIMEOUT - elapsed) // 60))
-                        header = f"Progress report ({elapsed_min} min elapsed, {remaining_min} min remaining):"
+                        elapsed_str = _format_elapsed(elapsed)
                         if tool_in_progress:
                             status_line = f"Currently running: {tool_in_progress}"
                         else:
@@ -1329,18 +1381,27 @@ class CodexCLIProvider(LLMProvider):
                         snippet_line = f"Latest output: {snippet}" if snippet else ""
                         content_fingerprint = "\n".join(p for p in [status_line, snippet_line] if p)
                         if content_fingerprint == last_progress_content:
-                            msg = f"Still working... ({elapsed_min} min elapsed, {remaining_min} min remaining)"
+                            msg = f"Still working... ({elapsed_str} elapsed)"
                         else:
                             last_progress_content = content_fingerprint
+                            header = f"Still working ({elapsed_str} elapsed):"
                             msg = "\n".join(p for p in [header, status_line, snippet_line] if p)
                         await chat.send_message(msg)
                         last_progress_message = current_time
+                        progress_count += 1
                     except Exception:
                         pass
 
+                # Cap the read timeout so the loop wakes in time for the next
+                # scheduled progress update (only when a chat is attached;
+                # headless callers send none and must not busy-wake), plus the
+                # /stop and absolute-timeout checks. Floor at 1s.
                 idle_remaining = self.IDLE_TIMEOUT - time_since_activity
                 absolute_remaining = self.ABSOLUTE_TIMEOUT - elapsed
-                read_timeout = max(1.0, min(30.0, idle_remaining, absolute_remaining))
+                read_timeout = min(30.0, idle_remaining, absolute_remaining)
+                if chat:
+                    read_timeout = min(read_timeout, next_delay - time_since_progress)
+                read_timeout = max(1.0, read_timeout)
                 line = await _read_line_with_timeout(process.stdout, timeout=read_timeout)
 
                 if line:
