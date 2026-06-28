@@ -1,0 +1,3 @@
+{
+  "pip": ["pillow", "numpy", "playwright"]
+}
