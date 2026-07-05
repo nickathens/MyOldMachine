@@ -189,7 +189,6 @@ PROPRIETARY_FONT_MAP: dict[str, str] = {
     "notion-sans": "Inter",
     # Runway
     "abcnormal": "Inter",
-    "abc normal": "Inter",
     # Lineto / Commercial Type / GT Foundry
     "söhne": "Inter",
     "soehne": "Inter",
