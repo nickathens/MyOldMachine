@@ -115,6 +115,16 @@ def get_webhook_port() -> int:
     return _env_int("WEBHOOK_PORT", 0)
 
 
+def get_heartbeat_url() -> str:
+    """Ping URL for the opt-in external heartbeat. Empty string means disabled."""
+    return _env("HEARTBEAT_URL", "").strip()
+
+
+def get_heartbeat_interval_minutes() -> int:
+    """Heartbeat ping interval in minutes (default 2, minimum 1)."""
+    return max(1, _env_int("HEARTBEAT_INTERVAL_MIN", 2))
+
+
 # LLM settings
 def get_llm_provider() -> str:
     return _env("LLM_PROVIDER", "claude")
