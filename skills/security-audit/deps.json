@@ -1,0 +1,5 @@
+{
+  "pip": [],
+  "weight": "light",
+  "install_note": "Pure Python, standard library only. The findings validator (scripts/validate_findings.py) has zero third-party dependencies. This skill ships a methodology and a schema validator, not scanners: it reads source code you already have."
+}

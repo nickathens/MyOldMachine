@@ -1,0 +1,42 @@
+[
+  {
+    "verdict": "confirmed",
+    "title": "SQL injection in user search endpoint",
+    "description": "The /api/search endpoint concatenates the untrusted q parameter directly into a raw SQL string, allowing an authenticated user to inject arbitrary SQL. Proof of concept: GET /api/search?q=' OR '1'='1 returns the full users table.",
+    "root_cause": "search_users in api/search.py does not parameterize the q parameter before passing it to run_raw, allowing SQL injection.",
+    "intended_behavior": "The developer intended to filter the users table by a case-insensitive substring of the display name.",
+    "trace": [
+      {"kind": "entrypoint", "file": "api/search.py", "line": 12, "scope": "search_users", "description": "reads the request query parameter q with no validation"},
+      {"kind": "propagation", "file": "api/search.py", "line": 18, "scope": "search_users", "description": "interpolates q into a SQL string via f-string"},
+      {"kind": "sink", "file": "db/exec.py", "line": 5, "scope": "run_raw", "description": "executes the concatenated SQL against the primary database"}
+    ],
+    "conditions": [
+      {"kind": "authentication_level", "description": "Any authenticated user; no elevated role required."}
+    ],
+    "execution": {
+      "attacker_perspective": "An authenticated low-privilege user with a normal account.",
+      "payloads": ["q=' OR '1'='1"],
+      "instructions": [
+        "Log in with any valid account",
+        "Send GET /api/search?q=' OR '1'='1 with the session cookie"
+      ],
+      "expected_result": "The response contains every row of the users table rather than the caller's own matches."
+    },
+    "remediation": {
+      "strategy": "Use parameterized queries so user input is never part of the SQL string.",
+      "code_changes": [
+        {"file_name": "api/search.py", "fixed_code": "cursor.execute('SELECT id, name FROM users WHERE name LIKE ?', (f'%{q}%',))"}
+      ]
+    },
+    "severity": {
+      "likelihood": {"score": "high", "reason": "Trivial to exploit; needs only a valid low-privilege session and a single request."},
+      "impact": {"score": "high", "reason": "Full read of the users table, including columns above the caller's access level."},
+      "overall_severity": "high"
+    },
+    "confidence": {"score": "high", "reason": "Complete data flow verified from entrypoint to sink; no intervening mitigation found."}
+  },
+  {
+    "verdict": "rejected",
+    "reason": "The /api/export endpoint flagged by the hunt pass was investigated and rejected: export_csv in api/export.py routes through the same require_role('admin') decorator as the UI (api/export.py:9), so a low-privilege user cannot trigger it. The claimed trace omitted that decorator."
+  }
+]
