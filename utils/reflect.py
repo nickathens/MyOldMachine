@@ -311,6 +311,33 @@ def _mark_observations_reflected(user_id: int, mm: MemoryManager, records: list)
 
 # ─── LLM Calls ────────────────────────────────────────────────────
 
+# Cap detection: a capped Claude CLI prints a short usage/spend-limit notice to
+# stdout and exits 0, so a naive "exit 0 + non-empty stdout" check would return
+# that notice as if it were reflection output. That poisons the person model and
+# burns the retry budget on a CLI that cannot answer. Ported from the production
+# bot's account_pool.is_cap_message: require the "hit your ... limit" anchor AND
+# one corroborating clause (reset time, reset duration, or spend marker), bounded
+# by length, so a long response that merely mentions the phrase never trips it.
+_CAP_ANCHOR = re.compile(r"you'?ve\s+hit\s+your\s+(?:\S+\s+){0,3}limit", re.IGNORECASE)
+_CAP_RESET = re.compile(r"resets?(?:\s+at)?\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?", re.IGNORECASE)
+_CAP_RESET_DURATION = re.compile(r"resets?\s+in\s+\d", re.IGNORECASE)
+_CAP_SPEND = re.compile(r"settings/usage|raise it at|spend limit", re.IGNORECASE)
+_MAX_CAP_MESSAGE_LEN = 400
+
+
+def _is_cap_message(text: str) -> bool:
+    """True if `text` is a Claude CLI usage/spend-cap notice, not real output."""
+    if not text or not isinstance(text, str) or len(text) > _MAX_CAP_MESSAGE_LEN:
+        return False
+    if not _CAP_ANCHOR.search(text):
+        return False
+    return bool(
+        _CAP_RESET.search(text)
+        or _CAP_RESET_DURATION.search(text)
+        or _CAP_SPEND.search(text)
+    )
+
+
 def _call_claude_cli(prompt: str) -> str:
     """Call Claude CLI for reflection. Returns output text or empty string."""
     if not which("claude"):
@@ -327,7 +354,12 @@ def _call_claude_cli(prompt: str) -> str:
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+            out = result.stdout.strip()
+            if _is_cap_message(out):
+                log("Claude CLI is capped (usage or spend limit); treating as "
+                    "unavailable so reflection fails over to the API provider")
+                return ""
+            return out
         log(f"Claude CLI failed: exit={result.returncode}, stderr={result.stderr[:200]}")
     except subprocess.TimeoutExpired:
         log("Claude CLI timed out (120s)")
