@@ -1,8 +1,8 @@
-# Media Generation (Image + Video)
+# Media Generation (Image + Video + 3D + Audio)
 
-Generate images and videos using Higgsfield CLI (primary) with Pollinations.ai as a free fallback for images.
+Generate images, videos, 3D meshes, and audio using Higgsfield CLI (primary) with Pollinations.ai as a free fallback for images.
 
-**Higgsfield:** 20+ image models, 16 video models, up to 4K, requires CLI auth.
+**Higgsfield:** a broad catalog of image and video models plus 3D (text/image to mesh) and audio (music/speech), up to 4K, requires CLI auth. The wrapper wires the prompt-driven generators; run `higgsfield model list` to see the full catalog available on your CLI version, including editing ops (upscale, outpaint, background removal) that overlap the dedicated `upscale` / `background-removal` skills.
 **Pollinations:** Free tier, 768x768 max, sana model, no auth needed (images only).
 
 ## Setup
@@ -60,6 +60,35 @@ python skills/image-gen/scripts/generate.py "camera slowly pans across the scene
 python skills/image-gen/scripts/generate.py "a sunset timelapse" --video --cost -m veo3
 ```
 
+## 3D Generation (`--threed`)
+
+Generates a 3D mesh. Default model `text-to-3d` (Tripo). Output defaults to `.glb`.
+
+```bash
+# Text to 3D mesh
+python skills/image-gen/scripts/generate.py "a low-poly treasure chest, game asset" -o /tmp/chest.glb --threed
+
+# Higher geometry + texture detail
+python skills/image-gen/scripts/generate.py "a stylized sword" -o /tmp/sword.glb --threed --extra '{"geometry_quality":"detailed","texture_quality":"detailed"}'
+
+# Image to 3D (needs a reference image)
+python skills/image-gen/scripts/generate.py "turn this into a 3D model" -o /tmp/model.glb --threed -m image-to-3d -r /path/to/photo.jpg
+```
+
+## Audio Generation (`--audio`)
+
+Generates music or speech. Default model `music` (Sonilo, needs a duration; defaults to 10s). Output defaults to `.mp3`.
+
+```bash
+# Text to music (duration required, defaults to 10s)
+python skills/image-gen/scripts/generate.py "warm cinematic piano, slow, melancholic" -o /tmp/theme.mp3 --audio -m music --duration 30
+
+# Text to speech / audio (Seed Audio)
+python skills/image-gen/scripts/generate.py "welcome to the show" -o /tmp/vo.mp3 --audio -m speech
+```
+
+For neural TTS with local voices, prefer the dedicated `text-to-speech` skill; use `--audio -m music` here for generative music, which that skill does not cover.
+
 ## Utility Commands
 
 ```bash
@@ -82,9 +111,11 @@ python skills/image-gen/scripts/generate.py --balance
 | `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21 |
 | `-r`, `--ref-image` | Reference image for image-to-image or image-to-video |
 | `--video` | Generate video instead of image |
+| `--threed` | Generate a 3D mesh (default output `.glb`) |
+| `--audio` | Generate audio: music or speech (default output `.mp3`) |
 | `--backend` | Backend: auto (default, tries Higgsfield then Pollinations), higgsfield, pollinations |
 | `--resolution` | Resolution: 1k, 2k, 4k (default: 2k, images only) |
-| `--duration` | Video duration in seconds (model-dependent) |
+| `--duration` | Duration in seconds (video and music; model-dependent) |
 | `--extra` | JSON string of extra model params (e.g. `'{"quality":"high"}'`) |
 | `--list-models` | List all model aliases and exit |
 | `--cost` | Estimate credits cost without generating |
@@ -108,6 +139,9 @@ python skills/image-gen/scripts/generate.py --balance
 | `seedream-lite` | Seedream V5 Lite | Fast, lightweight |
 | `hazel` | OpenAI Hazel | OpenAI's latest |
 | `kling` | Kling O1 Image | Detailed scenes |
+| `recraft` | Recraft V4.1 | Design, logos, vector (`--extra '{"model_type":"vector"}'`) |
+| `nano-lite` | Nano Banana 2 Lite | Cheapest Nano Pro tier (`thinking` MINIMAL/HIGH) |
+| `soul-cinema` | Soul Cinema Studio | Cinematic character frames |
 | `auto` | Image Auto | Let Higgsfield pick |
 
 ## Video Model Aliases
@@ -115,13 +149,17 @@ python skills/image-gen/scripts/generate.py --balance
 | Alias | Model | Notes |
 |-------|-------|-------|
 | `kling` | Kling 3.0 | Default video model, high quality |
+| `kling-turbo` | Kling 3.0 Turbo | Faster, cheaper Kling 3.0 |
 | `kling2.6` | Kling 2.6 | Previous gen |
 | `veo3` | Google Veo 3 | Cinematic, photorealistic |
 | `veo3.1` | Google Veo 3.1 | Latest, highest quality |
 | `veo3-lite` | Google Veo 3.1 Lite | Faster, lower cost |
+| `gemini` | Gemini Omni Flash | Google multimodal video |
 | `seedance` | Seedance 2.0 | Precise motion control |
+| `seedance-mini` | Seedance 2.0 Mini | Cheaper Seedance |
 | `seedance1.5` | Seedance 1.5 Pro | Previous gen |
 | `cinematic3` | Cinematic Studio 3.0 | Film-grade output |
+| `cinematic3.5` | Cinematic Studio Video 3.5 | Newest cinematic (forces English) |
 | `cinematic-video` | Cinematic Studio Video V2 | Stylized video |
 | `grok-video` | Grok Video | Creative, distinctive |
 | `hailuo` | Minimax Hailuo | Fast, reliable |
@@ -130,17 +168,28 @@ python skills/image-gen/scripts/generate.py --balance
 | `soul-cast` | Soul Cast | Character-consistent video |
 | `marketing` | Marketing Studio Video | Product/marketing content |
 
+## 3D + Audio Model Aliases
+
+| Alias | Model | Kind | Notes |
+|-------|-------|------|-------|
+| `text-to-3d`, `3d` | Tripo 3D | `--threed` | Text to mesh (`.glb`) |
+| `image-to-3d` | Image to 3D | `--threed` | Needs `-r` reference image |
+| `music` | Sonilo Music | `--audio` | Generative music (needs `--duration`) |
+| `speech` | Seed Audio | `--audio` | Text to speech / audio |
+
 ## Credit Costs (approximate)
 
 | Tier | Credits | Models |
 |------|---------|--------|
-| Image cheap | 1-1.5 | nano, nano2 |
+| Image cheap | 1-1.5 | nano, nano2, recraft, nano-lite, soul-cinema |
 | Image mid | 2 | nano-pro, cinematic, flux, seedream, kling |
 | Image expensive | 7 | gpt, hazel |
 | Image free | 0 | Pollinations (`--backend pollinations`) |
-| Video | 10-25 | kling (10), seedance (22), veo3.1 (22), cinematic3 (25) |
+| Video | 7-25 | kling-turbo (7), kling (10), seedance-mini (12), seedance (22), veo3.1 (22), gemini (24), cinematic3 (25), cinematic3.5 (25) |
+| 3D | 5 | text-to-3d, image-to-3d |
+| Audio | 1 | music, speech |
 
-Every Higgsfield generation auto-reports credits used and remaining balance.
+Figures are approximate and vary by CLI version and account. Always run `--cost` before generating. Every Higgsfield generation auto-reports credits used and remaining balance.
 
 ## Prompt Refinement (MANDATORY for Mini App / structured flows)
 
