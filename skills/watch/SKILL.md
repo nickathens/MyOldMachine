@@ -69,7 +69,7 @@ Auto-detected priority: **captions → Groq → OpenAI → local CLI**.
 2. **Whisper API fallback.** If no captions and a key is set, the script extracts mono 16kHz mp3 (~480 kB/min) and uploads to whichever API has a key:
    - **Groq** (`whisper-large-v3`) — fastest, cheapest. Key at https://console.groq.com/keys
    - **OpenAI** (`whisper-1`) — fallback. Key at https://platform.openai.com/api-keys
-3. **Local CLI fallback (offline, free).** If no API key is set but the `whisper` binary is on PATH, transcription runs locally. Defaults: model `base`, device `cpu`. Override with `WATCH_LOCAL_WHISPER_MODEL` and `WATCH_LOCAL_WHISPER_DEVICE` env vars.
+3. **Local CLI fallback (offline, free).** If no API key is set but the `whisper` binary is on PATH, transcription runs locally. Defaults: model `base`, device `cpu`. Override with `WATCH_LOCAL_WHISPER_MODEL` and `WATCH_LOCAL_WHISPER_DEVICE` env vars. On CPU the run is placed inside a memory-capped systemd scope (`WHISPER_MEM_MAX`, default 6G) so a heavy model can't exhaust system RAM and OOM the machine.
 
 Keys live in `~/.config/watch/.env` (mode 0600). The local CLI is installed automatically as part of this skill's pip deps (`openai-whisper`), so transcription works out of the box even with no API keys.
 
@@ -92,7 +92,7 @@ If you already watched a video this session and the user asks a follow-up, **do 
 - **Long video warning printed** → acknowledge it; offer to re-run focused on a specific section via `--start`/`--end`
 - **Download fails** → yt-dlp's error goes to stderr. If it's login-required or region-locked, tell the user plainly; do not retry
 - **Whisper request fails** → invalid key, rate limit, or 25 MB upload limit. Try `--whisper openai` if Groq failed, or `--whisper local`
-- **Local whisper hangs/OOMs** → drop to a smaller model: `WATCH_LOCAL_WHISPER_MODEL=tiny python …/watch.py …`
+- **Local whisper hangs/OOMs** → the CPU run is memory-capped in a systemd scope (default 6G via `WHISPER_MEM_MAX`), so a heavy model dies alone instead of taking down the bot. If a model gets killed at the cap, drop to a smaller one: `WATCH_LOCAL_WHISPER_MODEL=tiny python …/watch.py …`. Where `systemd-run` is unavailable (macOS, non-systemd Linux), models heavier than `medium` are refused on CPU, so use a smaller model or set an API key.
 
 ## What this skill does
 

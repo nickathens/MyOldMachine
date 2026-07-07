@@ -920,6 +920,20 @@ class Scheduler:
                     "text": text
                 })
                 return response.status_code == 200
+        except httpx.ReadTimeout:
+            # The request was fully sent; we only timed out waiting for the ack.
+            # The message is almost always already delivered, so reporting failure
+            # makes the caller (_send_with_retry) re-send and the user gets
+            # duplicates -- e.g. a heavy nightly backup that saturated the CPU
+            # delayed the ack and produced 3x "Backup completed" notifications.
+            # Treat a post-send read timeout as delivered: do not retry. Genuine
+            # non-delivery (connection refused, DNS, pool exhaustion) raises a
+            # different exception, is caught below, and is still retried.
+            logger.warning(
+                f"sendMessage to {user_id} timed out awaiting ack after the request "
+                "was sent; treating as delivered (not retrying to avoid duplicate)."
+            )
+            return True
         except Exception as e:
             logger.error(f"Failed to send message to {user_id}: {e}")
             return False

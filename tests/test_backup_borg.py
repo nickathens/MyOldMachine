@@ -193,6 +193,75 @@ class BorgEnvTests(unittest.TestCase):
         self.assertIn("BORG_PASSPHRASE", env)
 
 
+# ---- _nice_prefix (CPU/IO throttle) ----
+
+class NicePrefixTests(unittest.TestCase):
+    """Borg runs at idle priority so the nightly backup can't starve the bot or
+    freeze a low-spec machine. nice is cross-platform; ionice is Linux-only and
+    appended only when present."""
+
+    def test_both_present_linux(self):
+        def which(name):
+            return {"nice": "/usr/bin/nice", "ionice": "/usr/bin/ionice"}.get(name)
+        with mock.patch.object(backup_borg.shutil, "which", side_effect=which):
+            prefix = backup_borg._nice_prefix()
+        self.assertEqual(
+            prefix, ["/usr/bin/nice", "-n", "19", "/usr/bin/ionice", "-c", "3"]
+        )
+
+    def test_nice_only_when_ionice_absent(self):
+        # macOS and minimal Linux: nice exists, ionice does not.
+        def which(name):
+            return "/usr/bin/nice" if name == "nice" else None
+        with mock.patch.object(backup_borg.shutil, "which", side_effect=which):
+            prefix = backup_borg._nice_prefix()
+        self.assertEqual(prefix, ["/usr/bin/nice", "-n", "19"])
+        self.assertNotIn("ionice", " ".join(prefix))
+
+    def test_empty_when_neither_present(self):
+        with mock.patch.object(backup_borg.shutil, "which", return_value=None):
+            self.assertEqual(backup_borg._nice_prefix(), [])
+
+    def test_nice_precedes_ionice(self):
+        def which(name):
+            return {"nice": "/n", "ionice": "/io"}.get(name)
+        with mock.patch.object(backup_borg.shutil, "which", side_effect=which):
+            prefix = backup_borg._nice_prefix()
+        self.assertLess(prefix.index("/n"), prefix.index("/io"))
+
+
+class RunBorgThrottleTests(unittest.TestCase):
+    """_run_borg prepends the throttle prefix before 'borg' and keeps the
+    passphrase in env, never argv."""
+
+    def _ok(self):
+        return subprocess.CompletedProcess(args="", returncode=0, stdout="", stderr="")
+
+    def test_prefix_precedes_borg(self):
+        def which(name):
+            return {"nice": "/usr/bin/nice", "ionice": "/usr/bin/ionice"}.get(name)
+        with mock.patch.object(backup_borg.shutil, "which", side_effect=which), \
+             mock.patch.object(backup_borg.subprocess, "run") as run:
+            run.return_value = self._ok()
+            backup_borg._run_borg(["list", "/repo"], passphrase="secret")
+            cmd = run.call_args[0][0]
+            self.assertEqual(
+                cmd[:6],
+                ["/usr/bin/nice", "-n", "19", "/usr/bin/ionice", "-c", "3"],
+            )
+            self.assertLess(cmd.index("/usr/bin/nice"), cmd.index("borg"))
+            self.assertNotIn("secret", " ".join(cmd))
+            self.assertEqual(run.call_args[1]["env"]["BORG_PASSPHRASE"], "secret")
+
+    def test_runs_borg_directly_when_no_throttle(self):
+        with mock.patch.object(backup_borg.shutil, "which", return_value=None), \
+             mock.patch.object(backup_borg.subprocess, "run") as run:
+            run.return_value = self._ok()
+            backup_borg._run_borg(["list", "/repo"], passphrase="x")
+            cmd = run.call_args[0][0]
+            self.assertEqual(cmd[0], "borg")
+
+
 # ---- subprocess argv shape (mocked) ----
 
 class CreateBackupArgvTests(unittest.TestCase):
@@ -233,9 +302,10 @@ class CreateBackupArgvTests(unittest.TestCase):
             self.assertTrue(ok, msg=msg)
             args, kwargs = run.call_args
             cmd = args[0]
-            # Must start with 'borg create'
-            self.assertEqual(cmd[0], "borg")
-            self.assertEqual(cmd[1], "create")
+            # 'borg create' may be preceded by a nice/ionice throttle prefix,
+            # so locate borg by index rather than asserting position 0.
+            bi = cmd.index("borg")
+            self.assertEqual(cmd[bi + 1], "create")
             # Must have stats + compression flags
             self.assertIn("--stats", cmd)
             self.assertIn("--compression", cmd)
@@ -363,7 +433,8 @@ class InitRepoTests(unittest.TestCase):
             ok, msg = backup_borg.init_repo(str(self.repo), "secret")
             self.assertTrue(ok)
             cmd = run.call_args[0][0]
-            self.assertEqual(cmd[:2], ["borg", "init"])
+            bi = cmd.index("borg")  # may be preceded by a nice/ionice prefix
+            self.assertEqual(cmd[bi:bi + 2], ["borg", "init"])
             self.assertIn("--encryption", cmd)
             self.assertEqual(cmd[cmd.index("--encryption") + 1], "repokey-blake2")
             self.assertIn("--make-parent-dirs", cmd)
@@ -454,7 +525,8 @@ class RestoreBackupTests(unittest.TestCase):
             self.assertTrue(ok)
             self.assertIn("3 entries", msg)
             cmd, kwargs = run.call_args[0][0], run.call_args[1]
-            self.assertEqual(cmd[:2], ["borg", "extract"])
+            bi = cmd.index("borg")  # may be preceded by a nice/ionice prefix
+            self.assertEqual(cmd[bi:bi + 2], ["borg", "extract"])
             self.assertIn("--list", cmd)
             archive = next(c for c in cmd if "::" in c)
             self.assertEqual(archive, f"{self.repo}::mom-host-x")
