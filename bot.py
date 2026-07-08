@@ -432,6 +432,9 @@ _MEDIA_GROUP_WAIT = 1.5
 
 # Globals initialized in main()
 _llm_provider = None
+# (provider, model, api_key) the live _llm_provider was built from, recorded
+# by _build_llm_provider() so call_llm() can detect .env drift and rebuild.
+_llm_provider_spec = None
 _skill_manager = None
 _memory_manager = None
 
@@ -1412,12 +1415,68 @@ async def _alert_turn_failure(user_id: int, provider: str, error: str) -> None:
     )
 
 
+def _build_llm_provider(provider_name: str, model: str, api_key: str):
+    """Create an LLM provider with the CLI progress callbacks wired, and
+    record the spec it was built from so _refresh_provider_if_env_changed()
+    can detect drift. All provider (re)creation goes through here; the
+    caller assigns the returned object to the _llm_provider global."""
+    global _llm_provider_spec
+    kwargs = {}
+    if provider_name == "ollama":
+        kwargs["base_url"] = get_ollama_base_url()
+    provider = create_provider(provider_name, model, api_key, **kwargs)
+    if isinstance(provider, _CLI_PROVIDERS):
+        provider.on_progress_save = save_task_progress
+        provider.on_progress_clear = clear_task_progress
+    _llm_provider_spec = (provider_name, model, api_key)
+    return provider
+
+
+def _refresh_provider_if_env_changed() -> None:
+    """Rebuild the LLM provider when the .env LLM settings no longer match
+    the object in memory.
+
+    /provider, /model and /apikey rebuild inline, but they are not the only
+    writers: the Mini App edits .env from a separate uvicorn process, and a
+    direct edit of the file (ssh, an editor, a wizard re-run) bypasses the
+    bot entirely. core.config re-reads .env when its mtime changes, so the
+    getters here return the file's current state; comparing that against the
+    spec the live provider was built from closes the loop. Runs at the top
+    of call_llm(), so a switch applies on the next message, no restart.
+    """
+    global _llm_provider
+    if _llm_provider is None:  # pre-startup: main() builds the first one
+        return
+    if _llm_provider_spec is None:
+        # Provider was injected directly (tests, bespoke wiring) without
+        # going through _build_llm_provider: not ours to manage.
+        return
+    spec = (get_llm_provider(), get_llm_model(), get_llm_api_key())
+    if spec == _llm_provider_spec:
+        return
+    try:
+        _llm_provider = _build_llm_provider(*spec)
+        logger.info(
+            f"LLM provider rebuilt after .env change: {spec[0]} / {spec[1]}"
+        )
+    except Exception as e:
+        # Keep serving on the old provider; the spec stays unchanged so the
+        # next turn retries (and logs) until the bad edit is corrected.
+        logger.error(f"LLM provider rebuild after .env change failed: {e}")
+
+
 async def call_llm(user_id: int, message: str, chat=None, images: list = None) -> str:
     """Call the configured LLM provider and return the response text.
 
     Args:
         images: Optional list of file paths to images for multimodal vision.
     """
+    # Apply any .env edit made since the last turn (Mini App, ssh, editor):
+    # rebuild the provider if the file's LLM settings drifted from the live
+    # object. Must run before the health gate so a config fix can clear a
+    # broken provider without a restart.
+    _refresh_provider_if_env_changed()
+
     # Fast-fail guard: if the most recent health-check (run at startup or
     # after /provider, /model, /apikey) reported the provider as broken,
     # skip the LLM call and return an actionable error instead of crashing
@@ -2565,15 +2624,8 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.environ["LLM_MODEL"] = new_model
 
     # Reload provider in memory
-    api_key = get_llm_api_key()
-    kwargs = {}
-    if new_provider == "ollama":
-        kwargs["base_url"] = get_ollama_base_url()
     try:
-        _llm_provider = create_provider(new_provider, new_model, api_key, **kwargs)
-        if isinstance(_llm_provider, _CLI_PROVIDERS):
-            _llm_provider.on_progress_save = save_task_progress
-            _llm_provider.on_progress_clear = clear_task_progress
+        _llm_provider = _build_llm_provider(new_provider, new_model, get_llm_api_key())
         logger.info(f"Provider switched to {new_provider}/{new_model} by user {user_id}")
         tool_use = "Yes" if _llm_provider.supports_tool_use else "No"
         warning = ""
@@ -2653,15 +2705,8 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.environ["LLM_MODEL"] = new_model
 
     # Reload provider
-    api_key = get_llm_api_key()
-    kwargs = {}
-    if current_provider == "ollama":
-        kwargs["base_url"] = get_ollama_base_url()
     try:
-        _llm_provider = create_provider(current_provider, new_model, api_key, **kwargs)
-        if isinstance(_llm_provider, _CLI_PROVIDERS):
-            _llm_provider.on_progress_save = save_task_progress
-            _llm_provider.on_progress_clear = clear_task_progress
+        _llm_provider = _build_llm_provider(current_provider, new_model, get_llm_api_key())
         logger.info(f"Model switched to {new_model} by user {user_id}")
         healthy, reason = await _refresh_provider_health(_llm_provider)
         if healthy:
@@ -2731,14 +2776,8 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Reload provider with new key
     current_provider = get_llm_provider()
     current_model = get_llm_model()
-    kwargs = {}
-    if current_provider == "ollama":
-        kwargs["base_url"] = get_ollama_base_url()
     try:
-        _llm_provider = create_provider(current_provider, current_model, new_key, **kwargs)
-        if isinstance(_llm_provider, _CLI_PROVIDERS):
-            _llm_provider.on_progress_save = save_task_progress
-            _llm_provider.on_progress_clear = clear_task_progress
+        _llm_provider = _build_llm_provider(current_provider, current_model, new_key)
         logger.info(f"API key updated for {current_provider} by user {user_id}")
         healthy, reason = await _refresh_provider_health(_llm_provider)
         if healthy:
@@ -4244,11 +4283,7 @@ def main():
     # Initialize LLM provider
     provider_name = get_llm_provider()
     model = get_llm_model()
-    api_key = get_llm_api_key()
-    kwargs = {}
-    if provider_name == "ollama":
-        kwargs["base_url"] = get_ollama_base_url()
-    _llm_provider = create_provider(provider_name, model, api_key, **kwargs)
+    _llm_provider = _build_llm_provider(provider_name, model, get_llm_api_key())
     logger.info(f"LLM provider: {_llm_provider.provider_name} / {model} "
                 f"(tool-use: {_llm_provider.supports_tool_use})")
 
@@ -4271,12 +4306,9 @@ def main():
             f"switch to a working provider before messages can be answered."
         )
 
-    # Wire up progress callbacks for both CLI providers (Claude, Codex)
-    if isinstance(_llm_provider, _CLI_PROVIDERS):
-        _llm_provider.on_progress_save = save_task_progress
-        _llm_provider.on_progress_clear = clear_task_progress
     # ~/.claude/settings.json hooks are Claude-CLI-specific. Codex CLI uses
-    # ~/.codex/ and does not honor these hooks.
+    # ~/.codex/ and does not honor these hooks. (Progress callbacks for the
+    # CLI providers are wired inside _build_llm_provider.)
     if isinstance(_llm_provider, ClaudeCLIProvider):
         _configure_claude_hooks()
 
