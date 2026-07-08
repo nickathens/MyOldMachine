@@ -221,6 +221,14 @@ When a media generation request comes from a structured source (Mini App, script
 | wan, wan2.6 | `wan.md` |
 | soul-cast | `soul-cast.md` |
 | marketing | `marketing-studio.md` |
+| recraft, nano-lite | `nano-banana.md` |
+| soul-cinema | `soul.md` |
+| seedance-mini | `seedance.md` |
+| kling-turbo | `kling-video.md` |
+| gemini (video) | `veo.md` |
+| cinematic3.5 | `cinematic-video.md` |
+
+**3D and audio models** (`tripo`, `text-to-3d`, `image-to-3d`, `music`, `speech`) have no prompt-refinement guide yet. Use the model's own `--cost` output and parameter list until one is written.
 
 **Cross-cutting guide (not a model):** to build a consistent character or brand figure across stills — medium-grey backdrop, the Locked Identity Spec, the six-panel sheet, and model + outfit routing — read `character-consistency.md`. Lock the character there, then animate it in `seedance.md`.
 
