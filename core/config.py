@@ -8,15 +8,69 @@ No hardcoded user-specific paths.
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
+# .env hot-reload. bot.py loads .env into os.environ exactly once at boot
+# (load_dotenv), so a later edit of the file was invisible to the running
+# process until restart: the Mini App writes LLM_MODEL from a separate
+# uvicorn process, and a direct edit (ssh, editor, wizard re-run) never
+# landed at all. _reload_env_if_changed() stats the file on every config
+# read and applies only the keys whose *file* value changed since the last
+# parse. A key that boot-time load_dotenv(override=False) left shadowed by
+# a pre-set process environment value stays shadowed until its file entry
+# is actually edited, so startup precedence is preserved.
+ENV_FILE = Path(__file__).parent.parent / ".env"
+_env_lock = threading.Lock()
+_env_file_mtime: Optional[float] = None
+_env_file_values: dict[str, str] = {}
+
+
+def _reload_env_if_changed() -> None:
+    global _env_file_mtime, _env_file_values
+    try:
+        mtime = ENV_FILE.stat().st_mtime
+    except OSError:
+        return  # no .env (fresh install, tests): nothing to watch
+    if mtime == _env_file_mtime:
+        return
+    with _env_lock:
+        if mtime == _env_file_mtime:  # another thread already reloaded
+            return
+        try:
+            from dotenv import dotenv_values
+        except ImportError:
+            return  # deps not installed yet (install-time imports)
+        new_values = {
+            k: v for k, v in dotenv_values(ENV_FILE).items() if v is not None
+        }
+        first_sight = _env_file_mtime is None
+        old_values = _env_file_values
+        _env_file_values = new_values
+        _env_file_mtime = mtime
+        if first_sight:
+            # Baseline only: the boot-time load_dotenv already applied this
+            # state without overriding pre-set process env; re-applying here
+            # would flip that precedence.
+            return
+        for key, old in old_values.items():
+            # A key removed from the file falls back to the default, but
+            # only when the live env value is the one the file put there.
+            if key not in new_values and os.environ.get(key) == old:
+                os.environ.pop(key, None)
+        for key, value in new_values.items():
+            if value != old_values.get(key):
+                os.environ[key] = value
+
 
 def _env(key: str, default: str = "") -> str:
+    _reload_env_if_changed()
     return os.environ.get(key, default)
 
 
 def _env_int(key: str, default: int = 0) -> int:
+    _reload_env_if_changed()
     val = os.environ.get(key, "").strip()
     if val.lstrip('-').isdigit() and val.count('-') <= 1 and val:
         return int(val)
@@ -25,10 +79,17 @@ def _env_int(key: str, default: int = 0) -> int:
 
 def _env_list(key: str) -> list[int]:
     """Parse comma-separated integers from env var."""
+    _reload_env_if_changed()
     raw = os.environ.get(key, "").strip()
     if not raw:
         return []
     return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+
+
+# Capture the boot-time baseline immediately: bot.py runs load_dotenv before
+# importing this module, so the file state seen here is the state already in
+# os.environ. Everything after this point is a live edit.
+_reload_env_if_changed()
 
 
 # Base directories (relative to project root)
