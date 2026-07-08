@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -129,6 +130,96 @@ class TestCostEstimation(unittest.TestCase):
     def test_cost_handles_missing_cli(self, mock_run):
         result = generate.estimate_cost("nano_banana_flash", "test prompt")
         self.assertIn("error", result)
+
+
+class TestCostKindRefactor(unittest.TestCase):
+    """estimate_cost keys on `kind` and no longer force-sends 2k resolution to video."""
+
+    @patch("generate.get_account_status", return_value={"credits": 100})
+    @patch("subprocess.run")
+    def test_video_cost_omits_default_2k_resolution(self, mock_run, mock_acct):
+        # Latent bug: default 2k was force-sent to video models that reject it.
+        mock_run.return_value = _proc(0, json.dumps({"credits": 22}))
+        generate.estimate_cost("seedance", "a wave", resolution="2k", duration=5, kind="video")
+        cmd = mock_run.call_args[0][0]
+        self.assertNotIn("--resolution", cmd)
+        self.assertIn("--duration", cmd)
+        self.assertIn("seedance_2_0", cmd)
+
+    @patch("generate.get_account_status", return_value={"credits": 100})
+    @patch("subprocess.run")
+    def test_image_cost_sends_nondefault_resolution(self, mock_run, mock_acct):
+        mock_run.return_value = _proc(0, json.dumps({"credits": 2}))
+        generate.estimate_cost("nano2", "a cat", resolution="4k", kind="image")
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--resolution", cmd)
+        self.assertIn("4k", cmd)
+
+    @patch("generate.get_account_status", return_value={"credits": 100})
+    @patch("subprocess.run")
+    def test_music_cost_sends_duration(self, mock_run, mock_acct):
+        mock_run.return_value = _proc(0, json.dumps({"credits": 1}))
+        generate.estimate_cost("music", "warm piano", duration=30, kind="audio")
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--duration", cmd)
+        self.assertIn("sonilo_music", cmd)
+
+
+class TestNewModalities(unittest.TestCase):
+    """New image/video aliases and the 3D + audio modalities are wired."""
+
+    def test_new_image_aliases(self):
+        for alias, jst in (("recraft", "recraft_v4_1"), ("nano-lite", "nano_banana_2_lite"), ("soul-cinema", "soul_cinema_studio")):
+            self.assertEqual(generate.resolve_model(alias, "image"), jst)
+
+    def test_new_video_aliases(self):
+        for alias, jst in (("seedance-mini", "seedance_2_0_mini"), ("kling-turbo", "kling3_0_turbo"), ("gemini", "gemini_omni"), ("cinematic3.5", "cinematic_studio_video_3_5")):
+            self.assertEqual(generate.resolve_model(alias, "video"), jst)
+
+    def test_threed_aliases_resolve(self):
+        self.assertEqual(generate.resolve_model("3d", "3d"), "tripo_3d")
+        self.assertEqual(generate.resolve_model("image-to-3d", "3d"), "image_to_3d")
+        self.assertEqual(generate.DEFAULT_3D_MODEL, "text-to-3d")
+
+    def test_audio_aliases_resolve(self):
+        self.assertEqual(generate.resolve_model("music", "audio"), "sonilo_music")
+        self.assertEqual(generate.resolve_model("speech", "audio"), "seed_audio")
+        self.assertEqual(generate.DEFAULT_AUDIO_MODEL, "music")
+
+    def test_unknown_kind_falls_back_to_image_map(self):
+        self.assertEqual(generate.resolve_model("recraft", "bogus"), "recraft_v4_1")
+
+    def test_generate_job_signature(self):
+        self.assertTrue(hasattr(generate, "generate_job"))
+        import inspect
+        params = inspect.signature(generate.generate_job).parameters
+        for p in ("prompt", "output_path", "resolved_model", "duration", "ref_media", "extra_params"):
+            self.assertIn(p, params)
+
+
+class TestGenerateJob(unittest.TestCase):
+    """generate_job (3D/audio) create -> wait -> download path, fully mocked."""
+
+    @patch("generate.get_account_status", return_value={"credits": 5})
+    @patch("generate.httpx.Client")
+    @patch("subprocess.run")
+    def test_job_success_downloads(self, mock_run, mock_client, mock_acct):
+        mock_run.return_value = _proc(0, json.dumps({"result_url": "https://x/a.glb", "credits_used": 5}))
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = b"GLB-BYTES"
+        mock_client.return_value.__enter__.return_value.get.return_value = resp
+        out = str(Path(tempfile.mkdtemp()) / "a.glb")
+        result = generate.generate_job("a chest", out, "tripo_3d")
+        self.assertTrue(result["success"])
+        self.assertEqual(Path(out).read_bytes(), b"GLB-BYTES")
+
+    @patch("subprocess.run")
+    def test_job_auth_error(self, mock_run):
+        mock_run.return_value = _proc(1, "", "please authenticate your token")
+        result = generate.generate_job("x", "/tmp/none.glb", "tripo_3d")
+        self.assertFalse(result["success"])
+        self.assertIn("auth", result["error"].lower())
 
 
 if __name__ == "__main__":

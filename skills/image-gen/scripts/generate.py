@@ -53,6 +53,10 @@ MODEL_ALIASES = {
     "ms": "ms_image",
     "ms-studio": "marketing_studio_image",
     "z": "z_image",
+    # --- new image models from the live catalog ---
+    "recraft": "recraft_v4_1",
+    "nano-lite": "nano_banana_2_lite",
+    "soul-cinema": "soul_cinema_studio",
 }
 
 DEFAULT_MODEL = "nano_banana_flash"
@@ -74,7 +78,41 @@ VIDEO_MODEL_ALIASES = {
     "wan2.6": "wan2_6",
     "soul-cast": "soul_cast",
     "marketing": "marketing_studio_video",
+    # --- new video models from the live catalog ---
+    "seedance-mini": "seedance_2_0_mini",
+    "kling-turbo": "kling3_0_turbo",
+    "gemini": "gemini_omni",
+    "cinematic3.5": "cinematic_studio_video_3_5",
 }
+
+# --- new modalities: output is a mesh / an audio file, not jpg/mp4 ---
+THREED_MODEL_ALIASES = {
+    "text-to-3d": "tripo_3d",
+    "3d": "tripo_3d",
+    "image-to-3d": "image_to_3d",
+}
+
+AUDIO_MODEL_ALIASES = {
+    "music": "sonilo_music",
+    "speech": "seed_audio",
+    "audio": "seed_audio",
+}
+
+DEFAULT_3D_MODEL = "text-to-3d"
+DEFAULT_AUDIO_MODEL = "music"
+
+KIND_ALIASES = {
+    "image": MODEL_ALIASES,
+    "video": VIDEO_MODEL_ALIASES,
+    "3d": THREED_MODEL_ALIASES,
+    "audio": AUDIO_MODEL_ALIASES,
+}
+
+
+def resolve_model(model: str, kind: str = "image") -> str:
+    """Resolve a friendly alias to a Higgsfield job_set_type for the given kind."""
+    return KIND_ALIASES.get(kind, MODEL_ALIASES).get(model, model)
+
 
 VIDEO_DURATIONS = {
     "kling3_0": {"type": "slider", "default": 5, "min": 3, "max": 15},
@@ -93,6 +131,12 @@ VIDEO_DURATIONS = {
     "cinematic_studio_video": {"type": "preset", "default": 5, "options": [5, 10]},
     "cinematic_studio_video_v2": {"type": "slider", "default": 5, "min": 3, "max": 10},
     "marketing_studio_video": {"type": "slider", "default": 15, "min": 5, "max": 60},
+    # --- new video/audio models ---
+    "seedance_2_0_mini": {"type": "slider", "default": 5, "min": 5, "max": 30},
+    "kling3_0_turbo": {"type": "slider", "default": 5, "min": 3, "max": 15},
+    "gemini_omni": {"type": "preset", "default": 8, "options": [4, 6, 8]},
+    "cinematic_studio_video_3_5": {"type": "slider", "default": 15, "min": 5, "max": 20},
+    "sonilo_music": {"type": "slider", "default": 10, "min": 5, "max": 60},
 }
 
 MODEL_PARAMS = {
@@ -144,6 +188,37 @@ MODEL_PARAMS = {
     "ms_image": {
         "quality": {"options": ["low", "medium", "high"], "default": "low"},
     },
+    # --- new models from the live catalog ---
+    "recraft_v4_1": {
+        "model_type": {"options": ["standard", "vector", "utility", "utility_vector"], "default": "standard"},
+        "resolution": {"options": ["1k", "2k"], "default": "2k"},
+    },
+    "nano_banana_2_lite": {
+        "thinking": {"options": ["MINIMAL", "HIGH"], "default": "HIGH"},
+    },
+    "soul_cinema_studio": {
+        "quality": {"options": ["1.5k", "2k"], "default": "2k"},
+    },
+    "seedance_2_0_mini": {
+        "genre": {"options": ["auto", "action", "horror", "comedy", "noir", "drama", "epic"], "default": "auto"},
+        "resolution": {"options": ["480p", "720p"], "default": "720p"},
+        "bitrate_mode": {"options": ["standard", "high"], "default": "high"},
+        "generate_audio": {"type": "bool", "default": True},
+    },
+    "kling3_0_turbo": {"resolution": {"options": ["720p", "1080p"], "default": "720p"}},
+    "cinematic_studio_video_3_5": {
+        "prompt_language": {"options": ["en", "zh"], "default": "en"},
+        "genre": {"options": ["auto", "action", "horror", "comedy", "noir", "drama", "epic"], "default": "auto"},
+        "resolution": {"options": ["480p", "720p", "1080p"], "default": "720p"},
+        "multi_shot_mode": {"options": ["auto", "custom"], "default": "custom"},
+    },
+    "tripo_3d": {
+        "geometry_quality": {"options": ["standard", "detailed"], "default": "standard"},
+        "texture_quality": {"options": ["standard", "detailed"], "default": "standard"},
+        "pbr": {"type": "bool", "default": True},
+        "texture": {"type": "bool", "default": True},
+    },
+    "seed_audio": {"format": {"options": ["wav", "mp3", "pcm", "ogg_opus"], "default": "mp3"}},
 }
 
 DEFAULT_VIDEO_MODEL = "kling3_0"
@@ -178,14 +253,14 @@ def get_account_status() -> dict:
 
 def estimate_cost(model: str, prompt: str = "test", aspect_ratio: str | None = None,
                    resolution: str | None = None, duration: int | None = None,
-                   is_video: bool = False, extra_params: dict | None = None) -> dict:
-    resolved = (VIDEO_MODEL_ALIASES if is_video else MODEL_ALIASES).get(model, model)
+                   kind: str = "image", extra_params: dict | None = None) -> dict:
+    resolved = resolve_model(model, kind)
     cmd = ["higgsfield", "generate", "cost", resolved, "--prompt", prompt, "--json"]
     if aspect_ratio:
         cmd.extend(["--aspect_ratio", aspect_ratio])
-    if resolution:
+    if resolution and resolution != "2k":
         cmd.extend(["--resolution", resolution])
-    if duration is not None and is_video:
+    if duration is not None and (kind == "video" or resolved == "sonilo_music"):
         cmd.extend(["--duration", str(duration)])
     if extra_params:
         for k, v in extra_params.items():
@@ -387,6 +462,92 @@ def generate_video(
         return {"success": False, "path": "", "error": str(e)}
 
 
+def generate_job(
+    prompt: str,
+    output_path: str,
+    resolved_model: str,
+    duration: int | None = None,
+    ref_media: str | None = None,
+    extra_params: dict | None = None,
+    timeout: int = 660,
+) -> dict:
+    """Generic create -> wait -> download for kinds beyond image/video (3D meshes, audio).
+
+    Note: image (generate_higgsfield) and video (generate_video) keep their own
+    proven functions to avoid regressions on the live pipeline; this generic path
+    serves the new 3D/audio kinds. A later cleanup could fold all three into this one.
+    """
+    cmd = [
+        "higgsfield", "generate", "create", resolved_model,
+        "--prompt", prompt,
+        "--wait",
+        "--wait-timeout", "10m",
+        "--wait-interval", "5s",
+        "--json",
+    ]
+
+    if duration is not None:
+        cmd.extend(["--duration", str(duration)])
+
+    if ref_media:
+        cmd.extend(["--image", ref_media])
+
+    if extra_params:
+        for k, v in extra_params.items():
+            if v is not None and v != "":
+                if isinstance(v, bool):
+                    cmd.extend([f"--{k}", str(v).lower()])
+                else:
+                    cmd.extend([f"--{k}", str(v)])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "authenticate" in stderr.lower() or "token" in stderr.lower():
+                return {"success": False, "path": "", "error": "Higgsfield not authenticated. Run: higgsfield auth login"}
+            return {"success": False, "path": "", "error": f"Higgsfield error: {stderr[:500]}"}
+
+        data = json.loads(result.stdout)
+
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if isinstance(data, str):
+            data = {"result_url": data}
+
+        url = data.get("result_url", "")
+        if not url:
+            return {"success": False, "path": "", "error": f"No result URL in response: {result.stdout[:300]}"}
+
+        with httpx.Client(timeout=180, follow_redirects=True) as client:
+            resp = client.get(url)
+        if resp.status_code != 200:
+            return {"success": False, "path": "", "error": f"Failed to download result: HTTP {resp.status_code}"}
+
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(resp.content)
+
+        acct = get_account_status()
+        return {
+            "success": True,
+            "path": str(output_path),
+            "model": data.get("display_name", resolved_model),
+            "url": url,
+            "credits_used": data.get("credits_used", ""),
+            "credits_remaining": acct.get("credits", ""),
+            "error": "",
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"success": False, "path": "", "error": f"Generation timed out ({timeout}s)"}
+    except json.JSONDecodeError:
+        return {"success": False, "path": "", "error": f"Invalid JSON from CLI: {result.stdout[:300]}"}
+    except Exception as e:
+        return {"success": False, "path": "", "error": str(e)}
+
+
 def generate_pollinations(
     prompt: str,
     output_path: str,
@@ -449,7 +610,9 @@ def main():
     parser.add_argument("--resolution", default="2k", choices=["1k", "2k", "4k"], help="Resolution (default: 2k)")
     parser.add_argument("--backend", default="auto", choices=["higgsfield", "pollinations", "auto"], help="Backend (default: auto, tries Higgsfield then Pollinations)")
     parser.add_argument("--video", action="store_true", help="Generate video instead of image")
-    parser.add_argument("--duration", type=int, default=None, help="Video duration in seconds (model-dependent)")
+    parser.add_argument("--threed", "--3d", action="store_true", dest="threed", help="Generate a 3D asset (mesh) instead of an image")
+    parser.add_argument("--audio", action="store_true", help="Generate audio (music or speech) instead of an image")
+    parser.add_argument("--duration", type=int, default=None, help="Duration in seconds (video/music; model-dependent)")
     parser.add_argument("--list-models", action="store_true", help="List available models and exit")
     parser.add_argument("--cost", action="store_true", help="Estimate credits cost without generating")
     parser.add_argument("--balance", action="store_true", help="Show account credits balance and exit")
@@ -477,6 +640,8 @@ def main():
             "video_durations": VIDEO_DURATIONS,
             "image_aliases": MODEL_ALIASES,
             "video_aliases": VIDEO_MODEL_ALIASES,
+            "threed_aliases": THREED_MODEL_ALIASES,
+            "audio_aliases": AUDIO_MODEL_ALIASES,
         }, indent=2))
         return
 
@@ -486,6 +651,12 @@ def main():
             print(f"  {alias:16s} -> {model}")
         print("\nVideo aliases:")
         for alias, model in sorted(VIDEO_MODEL_ALIASES.items()):
+            print(f"  {alias:16s} -> {model}")
+        print("\n3D aliases (use --threed):")
+        for alias, model in sorted(THREED_MODEL_ALIASES.items()):
+            print(f"  {alias:16s} -> {model}")
+        print("\nAudio aliases (use --audio):")
+        for alias, model in sorted(AUDIO_MODEL_ALIASES.items()):
             print(f"  {alias:16s} -> {model}")
         print("\nRun 'higgsfield model list' for the full model catalog.")
         return
@@ -498,35 +669,69 @@ def main():
             print(json.dumps({"error": "Invalid JSON in --extra"}), file=sys.stderr)
             sys.exit(1)
 
+    # Resolve the generation kind (image is the default). video > 3d > audio priority.
+    if args.video:
+        kind = "video"
+    elif args.threed:
+        kind = "3d"
+    elif args.audio:
+        kind = "audio"
+    else:
+        kind = "image"
+
     if args.output is None:
-        args.output = "/tmp/generated_video.mp4" if args.video else "/tmp/generated_image.jpg"
+        args.output = {
+            "video": "/tmp/generated_video.mp4",
+            "3d": "/tmp/generated_asset.glb",
+            "audio": "/tmp/generated_audio.mp3",
+            "image": "/tmp/generated_image.jpg",
+        }[kind]
 
     if args.model is None:
-        args.model = DEFAULT_VIDEO_MODEL if args.video else DEFAULT_MODEL
+        args.model = {
+            "video": DEFAULT_VIDEO_MODEL,
+            "3d": DEFAULT_3D_MODEL,
+            "audio": DEFAULT_AUDIO_MODEL,
+            "image": DEFAULT_MODEL,
+        }[kind]
 
-    if args.aspect_ratio is None:
-        args.aspect_ratio = "16:9" if args.video else "1:1"
+    if args.aspect_ratio is None and kind in ("image", "video"):
+        args.aspect_ratio = "16:9" if kind == "video" else "1:1"
+
+    # Music (sonilo_music) requires a duration; default to 10s if the user did not set one.
+    if kind == "audio" and resolve_model(args.model, "audio") == "sonilo_music" and args.duration is None:
+        args.duration = 10
 
     if args.cost:
         if not args.prompt:
             print(json.dumps({"error": "Prompt required for cost estimation"}, indent=2))
             sys.exit(1)
-        if args.backend == "pollinations" and not args.video:
+        if args.backend == "pollinations" and kind == "image":
             print(json.dumps({"credits": 0, "credits_exact": 0, "credits_remaining": "N/A (free tier)", "note": "Pollinations is free"}, indent=2))
             return
-        model_to_check = VIDEO_MODEL_ALIASES.get(args.model, args.model) if args.video else args.model
-        cost = estimate_cost(model_to_check, args.prompt, args.aspect_ratio, args.resolution,
-                             duration=args.duration, is_video=args.video, extra_params=extra_params or None)
+        cost = estimate_cost(
+            args.model, args.prompt,
+            aspect_ratio=args.aspect_ratio if kind in ("image", "video") else None,
+            resolution=args.resolution if kind == "image" else None,
+            duration=args.duration, kind=kind, extra_params=extra_params or None,
+        )
         print(json.dumps(cost, indent=2))
         return
 
     if not args.prompt:
         parser.error("prompt is required for generation")
 
-    if args.video:
+    if kind == "video":
         print(f"Generating video with {args.model}...", file=sys.stderr)
         result = generate_video(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
                                 duration=args.duration, ref_image=args.ref_image, extra_params=extra_params or None)
+    elif kind in ("3d", "audio"):
+        resolved = resolve_model(args.model, kind)
+        label = "3D asset" if kind == "3d" else "audio"
+        print(f"Generating {label} with {resolved}...", file=sys.stderr)
+        job_duration = args.duration if resolved == "sonilo_music" else None
+        result = generate_job(args.prompt, args.output, resolved,
+                              duration=job_duration, ref_media=args.ref_image, extra_params=extra_params or None)
     else:
         print(f"Generating image with {args.backend}...", file=sys.stderr)
         if args.backend == "pollinations":
@@ -548,8 +753,7 @@ def main():
 
     print(json.dumps(result, indent=2))
     if result["success"]:
-        media_type = "video" if args.video else "image"
-        _save_last_generation(args.output, media_type, args.model, args.prompt, user_id=args.user)
+        _save_last_generation(args.output, kind, args.model, args.prompt, user_id=args.user)
     else:
         sys.exit(1)
 

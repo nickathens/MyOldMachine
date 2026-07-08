@@ -3238,6 +3238,10 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                 "soul-cast": "soul-cast.md", "marketing": "marketing-studio.md",
                 "ms": "nano-banana.md", "ms-studio": "nano-banana.md",
                 "z": "nano-banana.md", "auto": "nano-banana.md",
+                # newer Higgsfield models: route each to its closest guide family
+                "recraft": "nano-banana.md", "nano-lite": "nano-banana.md", "soul-cinema": "soul.md",
+                "seedance-mini": "seedance.md", "kling-turbo": "kling-video.md",
+                "gemini": "veo.md", "cinematic3.5": "cinematic-video.md",
             }
             guide_file = _MODEL_GUIDES.get(mg_model, "nano-banana.md")
             guide_path = f"skills/image-gen/models/{guide_file}"
