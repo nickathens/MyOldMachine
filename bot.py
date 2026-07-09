@@ -3632,6 +3632,31 @@ def _setup_maintenance_jobs(scheduler):
         )
         logger.info("Scheduled nightly system probe job at 4:30 AM")
 
+    # --- Machine sanity check job: 4:40 AM (after the probe writes system_caps.json) ---
+    # Report only: diffs the fresh probe snapshot against a per-machine baseline and
+    # pings the admin the moment a tool, module, or skill regresses. Never mutates the
+    # machine. --notify makes it exit 0 on drift so the scheduler's own failure-notify
+    # does not double-fire on top of its drift ping.
+    if "nightly-machine-check" not in existing_names:
+        check_script = str(BOT_DIR / "utils" / "machine_check.py")
+        run_at = datetime.now().replace(hour=4, minute=40, second=0, microsecond=0)
+        if run_at <= datetime.now():
+            run_at += timedelta(days=1)
+
+        notify_args = f" --user-id {admin_id}" if admin_id else ""
+
+        scheduler.add_job(
+            user_id=admin_id,
+            message="Nightly machine sanity check",
+            run_at=run_at,
+            repeat="daily",
+            job_type="command",
+            name="nightly-machine-check",
+            notify=False,
+            command=f"{venv_python} {check_script} --notify{notify_args}",
+        )
+        logger.info("Scheduled nightly machine sanity check job at 4:40 AM")
+
 
 @requires_auth
 async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
