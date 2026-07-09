@@ -3643,7 +3643,11 @@ def _setup_maintenance_jobs(scheduler):
         if run_at <= datetime.now():
             run_at += timedelta(days=1)
 
-        notify_args = f" --user-id {admin_id}" if admin_id else ""
+        # shlex.quote the paths (like the probe job above): the scheduler runs
+        # this as a shell string, so an install dir with a space would break it.
+        check_cmd = " ".join([shlex.quote(venv_python), shlex.quote(check_script), "--notify"])
+        if admin_id:
+            check_cmd += f" --user-id {admin_id}"
 
         scheduler.add_job(
             user_id=admin_id,
@@ -3653,7 +3657,7 @@ def _setup_maintenance_jobs(scheduler):
             job_type="command",
             name="nightly-machine-check",
             notify=False,
-            command=f"{venv_python} {check_script} --notify{notify_args}",
+            command=check_cmd,
         )
         logger.info("Scheduled nightly machine sanity check job at 4:40 AM")
 
