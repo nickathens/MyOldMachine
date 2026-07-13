@@ -56,6 +56,12 @@ python skills/image-gen/scripts/generate.py "a person walking in rain" -o /tmp/r
 # Image-to-video (animate a still image)
 python skills/image-gen/scripts/generate.py "camera slowly pans across the scene" -o /tmp/animated.mp4 --video -r /path/to/image.jpg
 
+# Keyframing: first frame to last frame (cinematic control)
+python skills/image-gen/scripts/generate.py "smooth transition" -o /tmp/kf.mp4 --video --start-image first.jpg --end-image last.jpg
+
+# Motion/style from a source clip (video-to-video reference)
+python skills/image-gen/scripts/generate.py "same motion, new subject" -o /tmp/mv.mp4 --video --video-references source.mp4
+
 # Cost check before video generation
 python skills/image-gen/scripts/generate.py "a sunset timelapse" --video --cost -m veo3
 ```
@@ -89,6 +95,98 @@ python skills/image-gen/scripts/generate.py "welcome to the show" -o /tmp/vo.mp3
 
 For neural TTS with local voices, prefer the dedicated `text-to-speech` skill; use `--audio -m music` here for generative music, which that skill does not cover.
 
+### Voiced Speech (named/cloned voices)
+
+Seed Audio can speak in a specific voice from a roster of preset voices (or a cloned one).
+Requires a Higgsfield CLI new enough to expose `voices` and voiced `seed_audio` params.
+
+```bash
+# List the voice catalog (id, name, type)
+python skills/image-gen/scripts/generate.py --list-voices
+
+# Speak in a named preset voice, with optional pitch/speed
+python skills/image-gen/scripts/generate.py "Welcome to the show." -o /tmp/vo.mp3 \
+  --audio -m speech --voice-id <voice_id> --voice-type preset --pitch 0 --speed 0
+```
+
+`--voice-type` is `preset` (built-in) or `element` (a cloned voice). Cost is ~0.2 credits.
+The result is a WAV even when written to a .mp3 path (the bytes are valid audio; pass
+`--extra '{"format":"mp3"}'` for true mp3).
+
+## Post-Production Workflows (`--workflow`)
+
+Transform an existing video (or image). These run through Higgsfield's workflow/create
+pipeline, not the plain generators. Always `--cost` first: video workflows regenerate
+frames and are priced accordingly (a 2s reframe is ~15 credits).
+
+```bash
+# Reframe: re-aspect a finished clip to another ratio (no reshoot)
+python skills/image-gen/scripts/generate.py --workflow reframe \
+  --video-input clip.mp4 -a 9:16 --extra '{"resolution":"720p"}' -o /tmp/vertical.mp4
+
+# Dubbing: dub a video into another language (Greek NOT supported; eng/spa/fra/deu/ita/... )
+python skills/image-gen/scripts/generate.py --workflow dubbing \
+  --video-input clip.mp4 --target-language spa -o /tmp/dubbed.mp4
+
+# Voice change: swap the speaking voice (voice id from --list-voices)
+python skills/image-gen/scripts/generate.py --workflow voice_change \
+  --video-input clip.mp4 --voice-id <voice_id> --voice-type preset -o /tmp/revoiced.mp4
+
+# Draw-to-video: sketch-guided edit of a frame
+python skills/image-gen/scripts/generate.py --workflow draw_to_video \
+  --video-input clip.mp4 --sketch frame.png --extra '{"timestamp":3.2}' --prompt "make the jacket red" -o /tmp/edited.mp4
+
+# Image decompose: split an image into layers (image + mode)
+python skills/image-gen/scripts/generate.py --workflow image_decompose \
+  -r photo.jpg --extra '{"mode":"granular"}' -o /tmp/layer.png
+```
+
+Workflow notes:
+- **reframe / dubbing / voice_change / draw_to_video** dispatch via `generate workflow`; **image_decompose / kling3_0_motion_control** are prompt-less `generate create` models. `--workflow` routes both correctly.
+- The source clip goes to `--video-input`; a reference image to `-r`; a sketch to `--sketch`.
+- `--cost` requires `--duration` (the segment length to price); the actual run derives duration from the input, so do not pass `--duration` to the run. Workflow resolution/mode/timestamp go via `--extra`.
+- `kling3_0_motion_control` (motion transfer from an image + a source clip) is wired but needs both an image and a video reference; drive it with `-r image.jpg --video-input source.mp4 --extra '{"mode":"std"}'`.
+
+## Soul Character References (`soul_id.py`)
+
+Train a character identity once from 5-20 images, then reuse it for consistent stills and
+video across a whole production (the real mechanism behind character consistency, beyond
+prompt discipline). Training is a paid job; check the returned status before relying on it.
+
+```bash
+# Train a new Soul (5-20 images; --model soul-2 or soul-cinematic)
+python skills/image-gen/scripts/soul_id.py create --name Alice --model soul-2 \
+  --image a1.jpg --image a2.jpg --image a3.jpg --image a4.jpg --image a5.jpg
+
+python skills/image-gen/scripts/soul_id.py list          # existing refs
+python skills/image-gen/scripts/soul_id.py get <soul_id> # inspect one
+python skills/image-gen/scripts/soul_id.py wait <soul_id> # poll training
+```
+
+## Brand Imagery (`brand.py`)
+
+Backend prompt enhancement for commercial work. `--enhance-only` returns the enhanced
+prompt(s) for free (no image jobs); without it, every returned image is downloaded to
+`--output-dir` (default `/tmp/media_gen_brand`).
+
+```bash
+# Product photoshoot (modes: product_shot, lifestyle_scene, hero_banner, ad_creative_pack,
+#   moodboard_pin, conceptual_product, restyle, virtual_model_tryout, closeup_product_with_person, social_carousel)
+python skills/image-gen/scripts/brand.py photoshoot --mode product_shot \
+  --prompt "hero shot of the bottle" --image bottle.jpg --count 3
+
+# See the backend-enhanced prompt without spending (free)
+python skills/image-gen/scripts/brand.py photoshoot --mode lifestyle_scene \
+  --prompt "bottle for IG" --image bottle.jpg --enhance-only
+
+# Marketplace cards (scopes: main, product-images, aplus, full-set)
+python skills/image-gen/scripts/brand.py cards --scope full-set \
+  --prompt "peach lemonade can" --image can.png
+```
+
+Photoshoot enhancement can target an expensive model (e.g. gpt_image_2, ~7 cr/image), so
+`--enhance-only` first, then generate. `--count` is 1-10.
+
 ## Utility Commands
 
 ```bash
@@ -113,11 +211,20 @@ python skills/image-gen/scripts/generate.py --balance
 | `--video` | Generate video instead of image |
 | `--threed` | Generate a 3D mesh (default output `.glb`) |
 | `--audio` | Generate audio: music or speech (default output `.mp3`) |
+| `--workflow` | Post-production workflow: reframe, dubbing, voice_change, draw_to_video, image_decompose, kling3_0_motion_control |
+| `--video-input` | Source video for a workflow (reframe/dubbing/voice_change/draw_to_video) |
+| `--sketch` | Sketch/drawing frame for the draw_to_video workflow |
+| `--target-language` | Target language code for dubbing (eng, spa, fra, deu, ita, ...; no Greek) |
+| `--start-image`, `--end-image` | First/last-frame keyframes (video create) |
+| `--video-references` | Motion/style source clip for a video model |
+| `--voice-id`, `--voice-type` | Voice for speech / voice_change (preset or element); see `--list-voices` |
+| `--pitch`, `--speed` | Voice pitch/speed for speech (seed_audio) |
 | `--backend` | Backend: auto (default, tries Higgsfield then Pollinations), higgsfield, pollinations |
 | `--resolution` | Resolution: 1k, 2k, 4k (default: 2k, images only) |
 | `--duration` | Duration in seconds (video and music; model-dependent) |
 | `--extra` | JSON string of extra model params (e.g. `'{"quality":"high"}'`) |
 | `--list-models` | List all model aliases and exit |
+| `--list-voices` | List text-to-speech voices and exit |
 | `--cost` | Estimate credits cost without generating |
 | `--balance` | Show account credits balance |
 | `--user` | Telegram user ID for per-user iteration tracking |

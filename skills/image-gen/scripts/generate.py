@@ -108,6 +108,20 @@ KIND_ALIASES = {
     "audio": AUDIO_MODEL_ALIASES,
 }
 
+# --- net-new post-production workflows/models (Higgsfield 1.1.x) ---
+# `workflow list` mixes two dispatch mechanisms, verified live on the 1.1.x CLI:
+#   cmd="workflow" -> run via `generate workflow <name>` (video post-production, source clip)
+#   cmd="create"   -> run via `generate create <name>`   (prompt-less create models)
+# Cost is uniform for both: `generate cost <name>`. Each takes an existing media input.
+WORKFLOWS = {
+    "reframe": {"cmd": "workflow", "media": "video", "out": ".mp4"},                # re-aspect a video (aspect_ratio + video required)
+    "draw_to_video": {"cmd": "workflow", "media": "video", "out": ".mp4"},          # sketch-guided edit (video + prompt required)
+    "dubbing": {"cmd": "workflow", "media": "video", "out": ".mp4"},                # dub into another language (target_language required)
+    "voice_change": {"cmd": "workflow", "media": "video", "out": ".mp4"},           # swap the voice (voice_id required)
+    "image_decompose": {"cmd": "create", "media": "image", "out": ".png"},          # split an image into layers (image + mode)
+    "kling3_0_motion_control": {"cmd": "create", "media": "video", "out": ".mp4"},  # motion transfer (image + video refs)
+}
+
 
 def resolve_model(model: str, kind: str = "image") -> str:
     """Resolve a friendly alias to a Higgsfield job_set_type for the given kind."""
@@ -251,6 +265,24 @@ def get_account_status() -> dict:
     return {}
 
 
+def list_voices() -> list[dict]:
+    """Return the text-to-speech voice catalog (preset + cloned)."""
+    try:
+        result = subprocess.run(
+            ["higgsfield", "voices", "list", "--json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if isinstance(data, dict):
+                return data.get("items", [])
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
 def estimate_cost(model: str, prompt: str = "test", aspect_ratio: str | None = None,
                    resolution: str | None = None, duration: int | None = None,
                    kind: str = "image", extra_params: dict | None = None) -> dict:
@@ -378,6 +410,9 @@ def generate_video(
     duration: int | None = None,
     ref_image: str | None = None,
     extra_params: dict | None = None,
+    start_image: str | None = None,
+    end_image: str | None = None,
+    video_references: str | None = None,
 ) -> dict:
     resolved = VIDEO_MODEL_ALIASES.get(model, model)
 
@@ -399,6 +434,14 @@ def generate_video(
 
     if ref_image:
         cmd.extend(["--image", ref_image])
+
+    # Keyframing (first/last frame) and a motion/style source clip. All auto-uploaded.
+    if start_image:
+        cmd.extend(["--start-image", start_image])
+    if end_image:
+        cmd.extend(["--end-image", end_image])
+    if video_references:
+        cmd.extend(["--video-references", video_references])
 
     if extra_params:
         for k, v in extra_params.items():
@@ -462,44 +505,31 @@ def generate_video(
         return {"success": False, "path": "", "error": str(e)}
 
 
-def generate_job(
-    prompt: str,
-    output_path: str,
-    resolved_model: str,
-    duration: int | None = None,
-    ref_media: str | None = None,
-    extra_params: dict | None = None,
-    timeout: int = 660,
-) -> dict:
-    """Generic create -> wait -> download for kinds beyond image/video (3D meshes, audio).
+def _extract_result_url(data: dict) -> str:
+    """Pull the output URL from a job result. Most jobs put it at result_url; some
+    (e.g. image_decompose) leave that null and return outputs under params.medias[].data.url."""
+    url = data.get("result_url") or data.get("min_result_url") or ""
+    if url:
+        return url
+    medias = (data.get("params") or {}).get("medias") or []
+    for m in medias:
+        if isinstance(m, dict):
+            candidate = (m.get("data") or {}).get("url")
+            if candidate:
+                return candidate
+    return ""
 
-    Note: image (generate_higgsfield) and video (generate_video) keep their own
-    proven functions to avoid regressions on the live pipeline; this generic path
-    serves the new 3D/audio kinds. A later cleanup could fold all three into this one.
+
+def _submit_and_download(cmd: list[str], output_path: str, timeout: int = 660,
+                          dl_timeout: int = 180, fallback_model: str = "") -> dict:
+    """Run an already-built higgsfield create/workflow command, parse the result URL,
+    download it to output_path, and return the standard result dict.
+
+    Shared by the generic create path (generate_job) and the workflow path
+    (generate_workflow). The proven image (generate_higgsfield) and video
+    (generate_video) functions keep their own bodies to avoid any regression on
+    the live pipeline.
     """
-    cmd = [
-        "higgsfield", "generate", "create", resolved_model,
-        "--prompt", prompt,
-        "--wait",
-        "--wait-timeout", "10m",
-        "--wait-interval", "5s",
-        "--json",
-    ]
-
-    if duration is not None:
-        cmd.extend(["--duration", str(duration)])
-
-    if ref_media:
-        cmd.extend(["--image", ref_media])
-
-    if extra_params:
-        for k, v in extra_params.items():
-            if v is not None and v != "":
-                if isinstance(v, bool):
-                    cmd.extend([f"--{k}", str(v).lower()])
-                else:
-                    cmd.extend([f"--{k}", str(v)])
-
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
@@ -516,11 +546,11 @@ def generate_job(
         if isinstance(data, str):
             data = {"result_url": data}
 
-        url = data.get("result_url", "")
+        url = _extract_result_url(data)
         if not url:
             return {"success": False, "path": "", "error": f"No result URL in response: {result.stdout[:300]}"}
 
-        with httpx.Client(timeout=180, follow_redirects=True) as client:
+        with httpx.Client(timeout=dl_timeout, follow_redirects=True) as client:
             resp = client.get(url)
         if resp.status_code != 200:
             return {"success": False, "path": "", "error": f"Failed to download result: HTTP {resp.status_code}"}
@@ -533,7 +563,7 @@ def generate_job(
         return {
             "success": True,
             "path": str(output_path),
-            "model": data.get("display_name", resolved_model),
+            "model": data.get("display_name", fallback_model),
             "url": url,
             "credits_used": data.get("credits_used", ""),
             "credits_remaining": acct.get("credits", ""),
@@ -546,6 +576,122 @@ def generate_job(
         return {"success": False, "path": "", "error": f"Invalid JSON from CLI: {result.stdout[:300]}"}
     except Exception as e:
         return {"success": False, "path": "", "error": str(e)}
+
+
+def _append_extra(cmd: list[str], extra_params: dict | None) -> None:
+    """Append --key value pairs for extra model/workflow params (booleans lowercased)."""
+    if not extra_params:
+        return
+    for k, v in extra_params.items():
+        if v is not None and v != "":
+            cmd.extend([f"--{k}", str(v).lower() if isinstance(v, bool) else str(v)])
+
+
+def generate_job(
+    prompt: str,
+    output_path: str,
+    resolved_model: str,
+    duration: int | None = None,
+    ref_media: str | None = None,
+    extra_params: dict | None = None,
+    timeout: int = 660,
+) -> dict:
+    """Generic create -> wait -> download for kinds beyond image/video (3D meshes, audio)."""
+    cmd = [
+        "higgsfield", "generate", "create", resolved_model,
+        "--prompt", prompt,
+        "--wait",
+        "--wait-timeout", "10m",
+        "--wait-interval", "5s",
+        "--json",
+    ]
+    if duration is not None:
+        cmd.extend(["--duration", str(duration)])
+    if ref_media:
+        cmd.extend(["--image", ref_media])
+    _append_extra(cmd, extra_params)
+    return _submit_and_download(cmd, output_path, timeout=timeout, fallback_model=resolved_model)
+
+
+def _workflow_params(
+    video: str | None = None,
+    image_refs: list[str] | str | None = None,
+    sketch: str | None = None,
+    aspect_ratio: str | None = None,
+    resolution: str | None = None,
+    duration: int | None = None,
+    prompt: str | None = None,
+    voice_id: str | None = None,
+    voice_type: str | None = None,
+    target_language: str | None = None,
+    extra_params: dict | None = None,
+) -> list[str]:
+    """Build the shared --flag value list for a workflow. Used by both the cost
+    estimate (`generate cost <name>`) and the run (`generate workflow <name>`), since
+    Higgsfield validates the same params (including required media) for both."""
+    params: list[str] = []
+    if video:
+        params.extend(["--video", video])
+    if image_refs:
+        for img in (image_refs if isinstance(image_refs, list) else [image_refs]):
+            if img:
+                params.extend(["--image", img])
+    if sketch:
+        params.extend(["--sketch", sketch])
+    if aspect_ratio:
+        params.extend(["--aspect-ratio", aspect_ratio])
+    if resolution:
+        params.extend(["--resolution", resolution])
+    if duration is not None:
+        params.extend(["--duration", str(duration)])
+    if prompt:
+        params.extend(["--prompt", prompt])
+    if voice_id:
+        params.extend(["--voice-id", voice_id])
+    if voice_type:
+        params.extend(["--voice-type", voice_type])
+    if target_language:
+        params.extend(["--target-language", target_language])
+    _append_extra(params, extra_params)
+    return params
+
+
+def generate_workflow(name: str, output_path: str, timeout: int = 660, **kwargs) -> dict:
+    """Run a Higgsfield post-production workflow or prompt-less create model.
+
+    Covers reframe, draw_to_video, dubbing, voice_change (via `generate workflow`) and
+    image_decompose, kling3_0_motion_control (via `generate create`). Local media paths
+    are auto-uploaded by the CLI. Flag names use the CLI's hyphenated form.
+    """
+    verb = WORKFLOWS.get(name, {}).get("cmd", "workflow")
+    # duration is a cost-estimation input for these workflows; the run derives duration
+    # from the input media and rejects the param (e.g. reframe). Output duration for
+    # workflows that support it (draw_to_video) can still be forced via --extra.
+    kwargs.pop("duration", None)
+    cmd = [
+        "higgsfield", "generate", verb, name,
+        "--wait",
+        "--wait-timeout", "10m",
+        "--wait-interval", "5s",
+        "--json",
+    ] + _workflow_params(**kwargs)
+    return _submit_and_download(cmd, output_path, timeout=timeout, fallback_model=name)
+
+
+def workflow_cost(name: str, **kwargs) -> dict:
+    """Estimate a workflow's cost via `generate cost <name>`. Requires the same media
+    and required params as the run itself, so pass the same kwargs as generate_workflow."""
+    cmd = ["higgsfield", "generate", "cost", name, "--json"] + _workflow_params(**kwargs)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            acct = get_account_status()
+            data["credits_remaining"] = acct.get("credits", "unknown")
+            return data
+    except Exception as e:
+        return {"error": str(e)}
+    return {"error": f"Cost check failed: {result.stderr.strip()[:200]}"}
 
 
 def generate_pollinations(
@@ -623,6 +769,21 @@ def main():
     parser.add_argument("-H", "--height", type=int, default=768, help="Height for Pollinations (max 768)")
     parser.add_argument("-s", "--seed", type=int, default=None, help="Seed for Pollinations reproducibility")
     parser.add_argument("--enhance", action="store_true", help="Let Pollinations enhance the prompt")
+    # --- Workflows (post-production: reframe, dubbing, voice_change, draw_to_video, motion control, decompose) ---
+    parser.add_argument("--workflow", default=None, choices=sorted(WORKFLOWS.keys()), help="Run a post-production workflow instead of a create job")
+    parser.add_argument("--video-input", default=None, dest="video_input", help="Source video for a workflow (reframe/dubbing/voice_change/draw_to_video/motion control)")
+    parser.add_argument("--sketch", default=None, help="Sketch/drawing frame for the draw_to_video workflow")
+    parser.add_argument("--target-language", default=None, dest="target_language", help="Target language code for the dubbing workflow (e.g. spa, fra, deu)")
+    # --- Video keyframing + motion reference (generate create, video models) ---
+    parser.add_argument("--start-image", default=None, dest="start_image", help="First-frame keyframe image (video create)")
+    parser.add_argument("--end-image", default=None, dest="end_image", help="Last-frame keyframe image (video create)")
+    parser.add_argument("--video-references", default=None, dest="video_references", help="Motion/style source clip for a video model")
+    # --- Voiced text-to-speech (seed_audio) ---
+    parser.add_argument("--voice-id", default=None, dest="voice_id", help="Voice id for voiced speech (--audio -m speech) or voice_change. See --list-voices")
+    parser.add_argument("--voice-type", default=None, dest="voice_type", choices=["preset", "element"], help="Voice type: preset (built-in) or element (cloned)")
+    parser.add_argument("--pitch", type=int, default=None, help="Voice pitch rate for speech (seed_audio pitch_rate)")
+    parser.add_argument("--speed", type=int, default=None, help="Voice speech rate for speech (seed_audio speech_rate)")
+    parser.add_argument("--list-voices", action="store_true", help="List available text-to-speech voices and exit")
 
     args = parser.parse_args()
 
@@ -661,6 +822,16 @@ def main():
         print("\nRun 'higgsfield model list' for the full model catalog.")
         return
 
+    if args.list_voices:
+        voices = list_voices()
+        if voices:
+            print("Text-to-speech voices (use --voice-id <id> --voice-type <type> with --audio -m speech):")
+            for v in voices:
+                print(f"  {v.get('id', ''):38s}  {v.get('name', ''):16s}  {v.get('voice_type', '')}")
+        else:
+            print("No voices returned (check auth).")
+        return
+
     extra_params = {}
     if args.extra:
         try:
@@ -668,6 +839,41 @@ def main():
         except json.JSONDecodeError:
             print(json.dumps({"error": "Invalid JSON in --extra"}), file=sys.stderr)
             sys.exit(1)
+
+    if args.workflow:
+        wf = WORKFLOWS[args.workflow]
+        wf_kind = "video" if wf["media"] == "video" else "image"
+        if args.output is None:
+            args.output = f"/tmp/generated_workflow{wf['out']}"
+        # Workflow resolution (480p/720p/1080p) travels via --extra, not the image-style
+        # --resolution flag (1k/2k/4k); pull it out so it reaches the CLI correctly.
+        wf_res = None
+        if extra_params:
+            wf_res = extra_params.pop("resolution", None)
+        wf_kwargs = dict(
+            video=args.video_input,
+            image_refs=args.ref_image,
+            sketch=args.sketch,
+            aspect_ratio=args.aspect_ratio,
+            resolution=wf_res,
+            duration=args.duration,
+            prompt=args.prompt or None,
+            voice_id=args.voice_id,
+            voice_type=args.voice_type,
+            target_language=args.target_language,
+            extra_params=extra_params or None,
+        )
+        if args.cost:
+            print(json.dumps(workflow_cost(args.workflow, **wf_kwargs), indent=2))
+            return
+        print(f"Running workflow {args.workflow}...", file=sys.stderr)
+        result = generate_workflow(args.workflow, args.output, **wf_kwargs)
+        print(json.dumps(result, indent=2))
+        if result["success"]:
+            _save_last_generation(args.output, wf_kind, args.workflow, args.prompt or args.workflow, user_id=args.user)
+        else:
+            sys.exit(1)
+        return
 
     # Resolve the generation kind (image is the default). video > 3d > audio priority.
     if args.video:
@@ -724,14 +930,23 @@ def main():
     if kind == "video":
         print(f"Generating video with {args.model}...", file=sys.stderr)
         result = generate_video(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
-                                duration=args.duration, ref_image=args.ref_image, extra_params=extra_params or None)
+                                duration=args.duration, ref_image=args.ref_image, extra_params=extra_params or None,
+                                start_image=args.start_image, end_image=args.end_image,
+                                video_references=args.video_references)
     elif kind in ("3d", "audio"):
         resolved = resolve_model(args.model, kind)
         label = "3D asset" if kind == "3d" else "audio"
         print(f"Generating {label} with {resolved}...", file=sys.stderr)
         job_duration = args.duration if resolved == "sonilo_music" else None
+        job_extra = dict(extra_params)
+        if resolved == "seed_audio":
+            # Voiced speech: fold the voice controls into seed_audio's params.
+            for key, val in (("voice_id", args.voice_id), ("voice_type", args.voice_type),
+                             ("pitch_rate", args.pitch), ("speech_rate", args.speed)):
+                if val is not None and key not in job_extra:
+                    job_extra[key] = val
         result = generate_job(args.prompt, args.output, resolved,
-                              duration=job_duration, ref_media=args.ref_image, extra_params=extra_params or None)
+                              duration=job_duration, ref_media=args.ref_image, extra_params=job_extra or None)
     else:
         print(f"Generating image with {args.backend}...", file=sys.stderr)
         if args.backend == "pollinations":

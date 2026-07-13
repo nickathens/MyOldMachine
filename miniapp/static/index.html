@@ -2762,7 +2762,10 @@ body{
         {id:'ms-studio',name:'MS Studio',cost:'2 cr'},
         {id:'z',name:'Z Image',cost:'1 cr'},
         {id:'gpt',name:'GPT Image 2',cost:'1-12 cr'},
-        {id:'hazel',name:'Hazel',cost:'2-6 cr'}
+        {id:'hazel',name:'Hazel',cost:'2-6 cr'},
+        {id:'recraft',name:'Recraft V4.1',cost:'1-2 cr'},
+        {id:'nano-lite',name:'Nano 2 Lite',cost:'1 cr'},
+        {id:'soul-cinema',name:'Soul Cinema',cost:'1 cr'}
     ];
 
     var VIDEO_MODELS=[
@@ -2781,7 +2784,11 @@ body{
         {id:'veo3',name:'Veo 3',cost:'varies'},
         {id:'veo3.1',name:'Veo 3.1',cost:'11-48 cr'},
         {id:'veo3-lite',name:'Veo 3.1 Lite',cost:'varies'},
-        {id:'marketing',name:'Marketing Studio',cost:'5 cr/s'}
+        {id:'marketing',name:'Marketing Studio',cost:'5 cr/s'},
+        {id:'kling-turbo',name:'Kling 3.0 Turbo',cost:'7 cr'},
+        {id:'seedance-mini',name:'Seedance 2.0 Mini',cost:'12 cr'},
+        {id:'gemini',name:'Gemini Omni',cost:'24 cr'},
+        {id:'cinematic3.5',name:'Cinematic Video 3.5',cost:'25 cr'}
     ];
 
     var MODEL_DURATIONS={
@@ -2800,7 +2807,11 @@ body{
         'cinematic3':{type:'slider',def:5,min:5,max:20},
         'cinematic-video':{type:'preset',def:5,options:[5,10]},
         'cinematic-v2':{type:'slider',def:5,min:3,max:10},
-        'marketing':{type:'slider',def:15,min:5,max:60}
+        'marketing':{type:'slider',def:15,min:5,max:60},
+        'kling-turbo':{type:'slider',def:5,min:3,max:15},
+        'seedance-mini':{type:'slider',def:5,min:5,max:30},
+        'gemini':{type:'preset',def:8,options:[4,6,8]},
+        'cinematic3.5':{type:'slider',def:15,min:5,max:20}
     };
 
     var IMG_OPTIONS={};
@@ -2815,7 +2826,7 @@ body{
         'nano2':['1k','2k','4k'],'nano-pro':['1k','2k','4k'],
         'flux':['1k','2k'],'cinematic':['1k','2k','4k'],
         'gpt':['1k','2k','4k'],'kling':['1k','2k'],
-        'ms-studio':['1k','2k','4k']
+        'ms-studio':['1k','2k','4k'],'recraft':['1k','2k']
     };
 
     var mgState={type:'image',model:'nano2',aspect:'1:1',resolution:'2k',duration:5};
