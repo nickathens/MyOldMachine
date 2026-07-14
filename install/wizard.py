@@ -1609,9 +1609,9 @@ OPTIONAL_FEATURES = [
             "effort), schedule (calendar of reminders), projects (per-user, "
             "with archive), and quick-launch (weather, media, research, voice, "
             "edit). Bind 127.0.0.1, expose via Tailscale Funnel (default), "
-            "Cloudflare Tunnel, or LAN. Linux-only for now."
+            "Cloudflare Tunnel, or LAN."
         ),
-        "applies_to": lambda: platform.system() == "Linux",
+        "applies_to": lambda: platform.system() in ("Linux", "Darwin"),
         "is_configured": lambda c: _is_miniapp_configured(),
         "configure": lambda c: _run_miniapp_setup_step(c),
     },
