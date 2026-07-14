@@ -1,12 +1,10 @@
 """MyOldMachine Mini App installer.
 
-Installs the optional Telegram Mini App as a systemd service bound to
-127.0.0.1:8090, then guides the user through tunnel setup (Tailscale Funnel
-by default, Cloudflare Tunnel as the advanced option, or LAN-only) and
-registers the chat menu button via the Bot API for every user in users.json.
-
-Linux-only for now: the service template is systemd. macOS support can be
-added later with a launchd plist.
+Installs the optional Telegram Mini App as a background service bound to
+127.0.0.1:8090 (systemd on Linux, a launchd LaunchAgent on macOS), then
+guides the user through tunnel setup (Tailscale Funnel by default,
+Cloudflare Tunnel as the advanced option, or LAN-only) and registers the
+chat menu button via the Bot API for every user in users.json.
 """
 
 from __future__ import annotations
@@ -26,6 +24,9 @@ from pathlib import Path
 REPO_DIR = Path(__file__).parent.parent
 
 MINIAPP_PORT_DEFAULT = 8090
+
+# macOS LaunchAgent identity (mirrors com.myoldmachine.bot on the bot service).
+LAUNCH_AGENT_LABEL = "com.myoldmachine.miniapp"
 
 # Output formatting — mirrors install/service.py / wizard.py palette.
 BOLD = "\033[1m"
@@ -55,11 +56,19 @@ def error(msg: str) -> None:
 # ─── State helpers ───────────────────────────────────────────────────
 
 
+def _launch_agent_plist_path() -> Path:
+    """Path to the macOS LaunchAgent plist for the Mini App."""
+    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+
+
 def is_miniapp_configured(repo_dir: Path = REPO_DIR) -> bool:
-    """True if the Mini App service template has been installed."""
-    if platform.system() != "Linux":
-        return False
-    return Path("/etc/systemd/system/myoldmachine-miniapp.service").exists()
+    """True if the Mini App service has been installed for this platform."""
+    system = platform.system()
+    if system == "Linux":
+        return Path("/etc/systemd/system/myoldmachine-miniapp.service").exists()
+    if system == "Darwin":
+        return _launch_agent_plist_path().exists()
+    return False
 
 
 def _miniapp_port() -> int:
@@ -158,6 +167,70 @@ def _install_systemd_service(repo_dir: Path, port: int, sudo_password: str | Non
     return True
 
 
+# ─── Step 2b: launchd LaunchAgent (macOS) ────────────────────────────
+
+
+def _render_miniapp_plist(template_text: str, repo_dir: Path, port: int, home: Path) -> str:
+    """Fill the LaunchAgent plist template. Pure (no I/O), so it is unit-testable."""
+    from install.service import _discover_cli_bin_paths
+
+    venv_python = repo_dir / ".venv" / "bin" / "python"
+    content = template_text
+    content = content.replace("{{PYTHON}}", str(venv_python))
+    content = content.replace("{{WORKING_DIR}}", str(repo_dir))
+    content = content.replace("{{ENV_FILE}}", str(repo_dir / ".env"))
+    content = content.replace("{{LOG_DIR}}", str(repo_dir / "data" / "logs"))
+    content = content.replace("{{VENV_BIN}}", str(repo_dir / ".venv" / "bin"))
+    content = content.replace("{{MINIAPP_PORT}}", str(port))
+    content = content.replace("{{HOME}}", str(home))
+    content = content.replace("{{CLI_BIN_PATHS}}", _discover_cli_bin_paths(home))
+    return content
+
+
+def _install_launchd_service(repo_dir: Path, port: int) -> bool:
+    """Render the Mini App LaunchAgent and load it via launchctl. Returns True
+    on success.
+
+    Writes to ~/Library/LaunchAgents/com.myoldmachine.miniapp.plist and loads
+    it in the per-user GUI domain, mirroring how the bot registers its own
+    LaunchAgent in install/service.py. No sudo: the plist lives in the user's
+    own Library, unlike the Linux systemd unit under /etc.
+    """
+    from install.os_detect import detect as detect_os
+    from install.service import _launchctl_load
+
+    template = repo_dir / "install" / "templates" / "com.myoldmachine.miniapp.plist"
+    if not template.exists():
+        error(f"Plist template not found: {template}")
+        return False
+
+    venv_python = repo_dir / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        error(f"Virtual environment not found at {venv_python}")
+        warn("Run the installer again to create it.")
+        return False
+
+    home = Path.home()
+    content = _render_miniapp_plist(
+        template.read_text(encoding="utf-8"), repo_dir, port, home
+    )
+
+    (repo_dir / "data" / "logs").mkdir(parents=True, exist_ok=True)
+
+    plist_path = _launch_agent_plist_path()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        plist_path.write_text(content, encoding="utf-8")
+    except OSError as e:
+        error(f"Failed to write LaunchAgent plist: {e}")
+        return False
+
+    _launchctl_load(plist_path, detect_os(), system_wide=False)
+    ok(f"Mini App LaunchAgent installed at {plist_path}")
+    info(f"It binds 127.0.0.1:{port}, starts on login, and restarts on crash.")
+    return True
+
+
 # ─── Step 3: Tunnel guidance ─────────────────────────────────────────
 
 
@@ -219,8 +292,13 @@ def _setup_tailscale(port: int) -> str | None:
     if not _tailscale_present():
         print("  Tailscale is not installed on this machine.")
         print()
-        print("  Install (Linux):")
-        print(f"    {BOLD}curl -fsSL https://tailscale.com/install.sh | sh{NC}")
+        if platform.system() == "Darwin":
+            print("  Install (macOS):")
+            print(f"    {BOLD}brew install tailscale{NC}    # then: sudo tailscaled install-system-daemon")
+            print("    or install the Tailscale app from the Mac App Store")
+        else:
+            print("  Install (Linux):")
+            print(f"    {BOLD}curl -fsSL https://tailscale.com/install.sh | sh{NC}")
         print()
         print("  Then run, in order:")
         print(f"    {BOLD}sudo tailscale up{NC}              # follow the login URL in your browser")
@@ -260,8 +338,11 @@ def _setup_cloudflare(port: int) -> str | None:
         print("  cloudflared is not installed.")
         print()
         print("  Install:")
-        print(f"    {BOLD}curl -fsSL https://pkg.cloudflare.com/install.sh | sh{NC}")
-        print("    # then: sudo apt install cloudflared    (or your distro's equivalent)")
+        if platform.system() == "Darwin":
+            print(f"    {BOLD}brew install cloudflared{NC}")
+        else:
+            print(f"    {BOLD}curl -fsSL https://pkg.cloudflare.com/install.sh | sh{NC}")
+            print("    # then: sudo apt install cloudflared    (or your distro's equivalent)")
         print()
     print("  Steps (you only do these once):")
     print(f"    1) {BOLD}cloudflared tunnel login{NC}")
@@ -285,31 +366,45 @@ def _setup_cloudflare(port: int) -> str | None:
     return None
 
 
+def _detect_lan_ip() -> str | None:
+    """Best-effort primary LAN IPv4, cross-platform (Linux + macOS).
+
+    Opens a UDP socket toward a reserved, never-routed address to learn which
+    local interface the OS would route through, then reads that interface's IP.
+    No packets are sent (a UDP connect only sets the route), so it works offline
+    as long as a default route exists. Returns None if no usable IP is found.
+    """
+    import socket
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # 192.0.2.0/24 is TEST-NET-1 (RFC 5737): reserved, never actually reached.
+            s.connect(("192.0.2.1", 9))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return None
+    if not ip or ip.startswith("127."):
+        return None
+    return ip
+
+
 def _setup_lan(port: int) -> str | None:
     """Print LAN-only guidance and return a guessed URL."""
     print()
     print(f"  {BOLD}LAN-only setup{NC}")
     info("Detecting LAN IP...")
-    ip = None
-    try:
-        result = subprocess.run(
-            ["hostname", "-I"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            for token in result.stdout.split():
-                if "." in token and not token.startswith("127."):
-                    ip = token
-                    break
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
+    ip = _detect_lan_ip()
 
     if ip:
         url = f"http://{ip}:{port}"
         ok(f"Mini App reachable on your LAN at: {url}")
     else:
         url = None
-        warn("Could not auto-detect a LAN IP. Find one with `ip addr` or `hostname -I`.")
+        warn("Could not auto-detect a LAN IP.")
+        print("  Find yours with `ip addr` (Linux) or `ipconfig getifaddr en0` (macOS).")
         print(f"  Then the URL is: http://<your-ip>:{port}")
 
     print()
@@ -389,8 +484,9 @@ def _register_menu_buttons(repo_dir: Path, web_url: str) -> None:
 
 def run_miniapp_setup_step(config: dict, ask=None) -> None:
     """Interactive Mini App install. Designed to plug into wizard.OPTIONAL_FEATURES."""
-    if platform.system() != "Linux":
-        warn("Mini App is currently Linux-only (systemd service). Skipping.")
+    system = platform.system()
+    if system not in ("Linux", "Darwin"):
+        warn("Mini App requires Linux (systemd) or macOS (launchd). Skipping.")
         return
 
     if ask is None:
@@ -405,7 +501,7 @@ def run_miniapp_setup_step(config: dict, ask=None) -> None:
     print()
     print(f"  {YELLOW}Installs:{NC}")
     print("    1. fastapi + uvicorn into the venv")
-    print("    2. myoldmachine-miniapp.service (binds 127.0.0.1:8090)")
+    print("    2. A background service on 127.0.0.1:8090 that starts automatically")
     print("    3. Tunnel of your choice (Tailscale / Cloudflare / LAN)")
     print("    4. Telegram chat menu button for each registered user")
     print()
@@ -419,15 +515,20 @@ def run_miniapp_setup_step(config: dict, ask=None) -> None:
         warn("Could not install fastapi/uvicorn. Aborting Mini App install.")
         return
 
-    # Sudo password is cached by install.sudo; this re-uses it.
-    from install.service import get_sudo_password
-    sudo_password = get_sudo_password()
-
     port = _miniapp_port()
-    if not _install_systemd_service(REPO_DIR, port, sudo_password):
-        warn("Service install failed. The Python code is in place — you can")
-        warn("install the systemd unit manually from install/templates/.")
-        return
+    if system == "Linux":
+        # Sudo password is cached by install.sudo; this re-uses it.
+        from install.service import get_sudo_password
+        sudo_password = get_sudo_password()
+        if not _install_systemd_service(REPO_DIR, port, sudo_password):
+            warn("Service install failed. The Python code is in place. You can")
+            warn("install the systemd unit manually from install/templates/.")
+            return
+    else:  # Darwin
+        if not _install_launchd_service(REPO_DIR, port):
+            warn("Service install failed. The Python code is in place. You can")
+            warn("install the LaunchAgent manually from install/templates/.")
+            return
 
     config["miniapp_enabled"] = True
     config["miniapp_port"] = port
