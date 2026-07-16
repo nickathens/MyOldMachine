@@ -26,7 +26,7 @@ def _surviving_sleepers():
         ["pgrep", "-f", f"sleep {MARKER_SLEEP}"],
         capture_output=True, text=True,
     )
-    return [l for l in out.stdout.strip().splitlines() if l.strip()]
+    return [line for line in out.stdout.strip().splitlines() if line.strip()]
 
 
 def _reap_sleepers():
