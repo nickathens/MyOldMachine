@@ -15,6 +15,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from datetime import datetime
@@ -76,6 +77,42 @@ def _extract_version(output: str) -> str:
     return ""
 
 
+# GUI applications get ONLY the canonical --version flag: the fallback
+# spellings (-version, bare version) are not flags to them but a file to
+# open, so they launch the full app and never exit. They also get a longer
+# timeout — a big .app answers --version slowly right after a cask upgrade.
+_GUI_APPS = {"blender", "gimp", "inkscape", "soffice", "chromium",
+             "godot-4", "musescore"}
+
+
+def _run_version_cmd(cmd: list, timeout: float) -> str:
+    """Run a version command, killing its WHOLE process group on timeout.
+
+    Homebrew casks install shell wrappers that spawn the real app as a
+    child, often without exec. subprocess.run's timeout kills only the
+    wrapper, orphaning the already-started app (a GUI app fed a bogus
+    flag then lingers forever holding RAM). start_new_session puts the
+    wrapper and everything it spawns into one group we can kill together.
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, start_new_session=(platform.system() != "Windows"),
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return (stdout or stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError, AttributeError):
+            proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            pass
+        raise
+
+
 def _check_binary(name: str, aliases: list = None) -> dict:
     """Check if a binary exists and get its version.
 
@@ -90,14 +127,14 @@ def _check_binary(name: str, aliases: list = None) -> dict:
     if not path:
         return {"available": False}
 
+    is_gui = name in _GUI_APPS
+    flags = ["--version"] if is_gui else ["--version", "-version", "version"]
+    timeout = 15 if is_gui else 5
+
     version = ""
-    for flag in ["--version", "-version", "version"]:
+    for flag in flags:
         try:
-            result = subprocess.run(
-                [path, flag],
-                capture_output=True, text=True, timeout=5,
-            )
-            output = (result.stdout or result.stderr or "").strip()
+            output = _run_version_cmd([path, flag], timeout=timeout)
             if not output:
                 continue
             extracted = _extract_version(output)
