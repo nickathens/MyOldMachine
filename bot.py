@@ -3661,6 +3661,32 @@ def _setup_maintenance_jobs(scheduler):
         )
         logger.info("Scheduled nightly machine sanity check job at 4:40 AM")
 
+    # --- Nightly report job: 4:45 AM (after all the jobs it reports on) ---
+    # nightly_report.py resolves the admin and sends the summary through
+    # send_to_telegram itself, so the command takes no args and notify stays
+    # False (the scheduler must not send a second copy of the output).
+    if "nightly-report" not in existing_names:
+        report_script = str(BOT_DIR / "utils" / "nightly_report.py")
+        run_at = datetime.now().replace(hour=4, minute=45, second=0, microsecond=0)
+        if run_at <= datetime.now():
+            run_at += timedelta(days=1)
+
+        report_cmd = " ".join([
+            shlex.quote(venv_python),
+            shlex.quote(report_script),
+        ])
+        scheduler.add_job(
+            user_id=admin_id,
+            message="Nightly maintenance report",
+            run_at=run_at,
+            repeat="daily",
+            job_type="command",
+            name="nightly-report",
+            notify=False,
+            command=report_cmd,
+        )
+        logger.info("Scheduled nightly maintenance report job at 4:45 AM")
+
 
 @requires_auth
 async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
