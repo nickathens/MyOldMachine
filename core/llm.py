@@ -2362,10 +2362,12 @@ class GrokProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # Current Grok vision-capable: 4.20 family, 4.1 Fast, 4-0709, any *vision* model.
+        # Current Grok vision-capable: 4.5 (native video), 4.20 family, 4.1 Fast,
+        # 4-0709, any *vision* model.
         m = self.model
         return ("vision" in m or "grok-4-1-fast" in m or "grok-4-fast" in m
                 or m == "grok-4-0709"
+                or "grok-4.5" in m or "grok-4-5" in m
                 or "grok-4.20" in m or "grok-4-20" in m)
 
     def _is_reasoning_model(self) -> bool:
