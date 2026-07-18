@@ -131,9 +131,13 @@ command. Optional upgrades are stated per engine and never required.
   `... plaisio --l 6 --h 3.5 --w 35.25 --dokos IPE330 --stylos HEB240
   --w-sls 25` for the pinned base portal by Kleinlogel, with the wL2/8
   statics identity enforced, first pass EN 1993 utilization and deflection;
-  add `--pynite` for an independent FE cross check when PyNiteFEA is
-  installed (pip install PyNiteFEA); `... diatomes` lists the tagged section
-  catalog.
+  add `--pynite` for an independent FE cross check. PyNiteFEA needs numpy
+  `>= 2.4`, which collides with the base install (whisper and numba pin numpy
+  `<= 2.3`), so it lives in an isolated venv you build once with `bash
+  $SKILL_DIR/scripts/setup_engine_venv.sh` (or point `$GREEK_ENGINEER_VENV` at
+  your own); `plaisio.py` bridges to it automatically over a subprocess, and if
+  the venv is absent the closed form stands alone. `... diatomes` lists the
+  tagged section catalog.
 - **Envelope**: `python $SKILL_DIR/scripts/domisi.py perigramma --emvadon
   500 --sd 0.8 --kalypsi 60 --ypsos 11` turns user confirmed όροι δόμησης
   into buildable area, footprint and indicative floors. It refuses to know
@@ -177,8 +181,12 @@ ODA File Converter; the structural packages (SCIA, SCADA Pro, Robot, Fespa)
 stay on the engineer's Windows machine and this skill supplies the
 independent second opinion, the regulatory picture and the prechecks around
 them. SAF and IFC are named in `practice/diepafes.md` as later stage links;
-heavy engines (OpenSeesPy, ifcopenshell, pandapower) deliberately go to an
-isolated venv when that stage arrives, never into the shared environment.
+heavy engines go to an isolated venv, never into the shared environment:
+PyNiteFEA already lives there (`scripts/setup_engine_venv.sh` builds it,
+`plaisio.py` bridges to it over a subprocess), and OpenSeesPy, ifcopenshell and
+pandapower join it when those stages arrive. This isolation is not cosmetic:
+PyNiteFEA pulls numpy `>= 2.4`, which silently breaks whisper and numba in the
+shared venv (they pin numpy `<= 2.3`).
 
 ## Grounding: fetched sources before memory
 

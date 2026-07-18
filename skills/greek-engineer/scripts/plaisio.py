@@ -9,9 +9,13 @@
    μηχανή να τρέχει παντού και να ελέγχεται με ταυτότητες στατικής: στο
    συμμετρικό πλαίσιο το άθροισμα ροπής ανοίγματος και γωνίας ισούται με wL2/8.
 
-2. ΠΡΟΑΙΡΕΤΙΚΗ ΔΙΑΣΤΑΥΡΩΣΗ ΜΕ ΑΝΕΞΑΡΤΗΤΟ ΕΠΙΛΥΤΗ. Αν υπάρχει εγκατεστημένο το
-   PyNiteFEA (pip install PyNiteFEA), η εντολή --pynite ξαναλύνει το πλαίσιο με
-   πεπερασμένα στοιχεία και τυπώνει τη σύγκριση. Δεύτερη γνώμη, όχι προϋπόθεση.
+2. ΠΡΟΑΙΡΕΤΙΚΗ ΔΙΑΣΤΑΥΡΩΣΗ ΜΕ ΑΝΕΞΑΡΤΗΤΟ ΕΠΙΛΥΤΗ. Η εντολή --pynite ξαναλύνει το
+   πλαίσιο με πεπερασμένα στοιχεία (PyNiteFEA) και τυπώνει τη σύγκριση. Δεύτερη
+   γνώμη, όχι προϋπόθεση. Το PyNiteFEA απαιτεί numpy >= 2.4, που συγκρούεται με τη
+   βασική εγκατάσταση (whisper/numba θέλουν numpy <= 2.3), γι' αυτό ζει σε δικό του
+   απομονωμένο venv (~/.venvs/engineering, ή $GREEK_ENGINEER_VENV) και η
+   διασταύρωση γεφυρώνεται εκεί με υποδιεργασία. Στήσιμο: scripts/setup_engine_venv.sh.
+   Αν το venv λείπει, οι κλειστοί τύποι ισχύουν μόνοι.
 
 3. ΟΙ ΤΙΜΕΣ ΔΙΑΤΟΜΩΝ ΕΙΝΑΙ ΠΙΝΑΚΕΣ, ΟΧΙ ΑΥΘΕΝΤΙΑ. Ο μικρός κατάλογος IPE και
    HEB φέρει [ΕΠΑΛΗΘΕΥΣΕ]: πριν από χρήση σε μελέτη, οι ιδιότητες επιβεβαιώνονται
@@ -33,8 +37,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 _VERIFY = "[ΕΠΑΛΗΘΕΥΣΕ]"
 
@@ -201,17 +210,69 @@ def plaisio(span, height, w_uls, dokos_name, stylos_name, xalyvas="S275", w_sls=
     return out
 
 
-def pynite_cross_check(result, xalyvas="S275"):
-    """Διασταύρωση του πλαισίου με PyNiteFEA, αν είναι εγκατεστημένο.
+def _engine_python():
+    """Ο διερμηνέας του απομονωμένου engineering venv, ή None αν λείπει.
 
-    Επιστρέφει dict σύγκρισης ή None όταν το PyNite λείπει. Η απόκλιση των
-    κλειστών τύπων από την ανάλυση μέλους αναμένεται μικρή (οι τύποι Kleinlogel
-    αγνοούν αξονικές και διατμητικές παραμορφώσεις).
+    Σειρά: $GREEK_ENGINEER_VENV (αν οριστεί, είναι αυθεντικό, χωρίς fallback),
+    διαφορετικά ~/.venvs/engineering. Εκεί ζει το PyNiteFEA ώστε το numpy >= 2.4
+    που απαιτεί να μη μολύνει τη βασική εγκατάσταση (whisper/numba, numpy <= 2.3).
+    """
+    override = os.environ.get("GREEK_ENGINEER_VENV")
+    root = Path(override) if override else Path.home() / ".venvs" / "engineering"
+    for sub in ("bin/python", "bin/python3", "Scripts/python.exe"):
+        cand = root / sub
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def _bridge_cross_check(result, xalyvas):
+    """Τρέχει το _fem_solve στο απομονωμένο engineering venv μέσω υποδιεργασίας.
+
+    Επιστρέφει το dict σύγκρισης, ή None αν το venv λείπει ή η επίλυση αποτύχει
+    (τότε οι κλειστοί τύποι ισχύουν μόνοι, ακριβώς όπως και χωρίς PyNite).
+    """
+    py = _engine_python()
+    if not py:
+        return None
+    payload = json.dumps({"result": result, "xalyvas": xalyvas})
+    try:
+        proc = subprocess.run(
+            [py, str(Path(__file__).resolve()), "_femworker"],
+            input=payload, capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def pynite_cross_check(result, xalyvas="S275"):
+    """Διασταύρωση του πλαισίου με PyNiteFEA, ανεξάρτητος επιλυτής.
+
+    Δύο δρόμοι, ο ίδιος κώδικας: αν το PyNiteFEA βρίσκεται στον τρέχοντα διερμηνέα
+    τρέχει επιτόπου, αλλιώς γεφυρώνει στο απομονωμένο engineering venv (βλ.
+    _engine_python). Επιστρέφει dict σύγκρισης, ή None όταν κανένας δρόμος δεν
+    είναι διαθέσιμος. Η απόκλιση των κλειστών τύπων από την ανάλυση μέλους
+    αναμένεται μικρή (οι τύποι Kleinlogel αγνοούν αξονικές/διατμητικές παραμορφώσεις).
     """
     try:
-        from Pynite import FEModel3D
+        return _fem_solve(result, xalyvas)
     except ImportError:
-        return None
+        return _bridge_cross_check(result, xalyvas)
+
+
+def _fem_solve(result, xalyvas="S275"):
+    """Η καθαυτό επίλυση πεπερασμένων στοιχείων του πλαισίου με PyNiteFEA.
+
+    Απαιτεί PyNiteFEA στον τρέχοντα διερμηνέα (σηκώνει ImportError αλλιώς, που ο
+    pynite_cross_check το μεταφράζει σε γεφύρωμα). Επιστρέφει dict σύγκρισης.
+    """
+    from Pynite import FEModel3D
     span, height, w = result["L_m"], result["H_m"], result["w_OKA_kN_m"]
     sb = SECTIONS[result["dokos"]]
     sc = SECTIONS[result["stylos"]]
@@ -248,6 +309,19 @@ def pynite_cross_check(result, xalyvas="S275"):
     }
 
 
+def _femworker():
+    """Κρυφό σημείο εισόδου, τρέχει από το engineering venv: διαβάζει
+    {result, xalyvas} από το stdin, καλεί _fem_solve, τυπώνει JSON. Το stdout
+    κρατιέται καθαρό (μόνο το JSON) ώστε ο γονέας να το διαβάσει με ασφάλεια,
+    ακόμη κι αν ο επιλυτής τυπώσει κάτι."""
+    payload = json.load(sys.stdin)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        out = _fem_solve(payload["result"], payload.get("xalyvas", "S275"))
+    sys.stdout.write(json.dumps(out))
+    return 0
+
+
 def _print_result(r):
     for key, val in r.items():
         if key == "simeiosi":
@@ -257,6 +331,10 @@ def _print_result(r):
 
 
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "_femworker":
+        return _femworker()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
