@@ -146,8 +146,10 @@ def plaisio(span, height, w_uls, dokos_name, stylos_name, xalyvas="S275", w_sls=
     """Μονώροφο μονότοξο πλαίσιο με αρθρωτές βάσεις, ομοιόμορφο φορτίο στο ζύγωμα.
 
     Τύποι Kleinlogel: k = (Ib h) / (Ic L), ροπή γωνίας M = wL2 / (4(2k+3)).
-    Αυτοέλεγχος: |M γωνίας| + |M ανοίγματος| = wL2/8, ταυτότητα ισορροπίας
-    που πρέπει να κλείνει στην ακρίβεια της μηχανής, αλλιώς σφάλμα.
+    Αναλλοίωτη συνέπειας: |M γωνίας| + |M ανοίγματος| = wL2/8. Επειδή η ροπή
+    ανοίγματος κατασκευάζεται από την ίδια ταυτότητα, ο έλεγχος αυτός πιάνει
+    μόνο αριθμητική διαφθορά, δεν είναι ανεξάρτητη επαλήθευση. Η ανεξάρτητη
+    διασταύρωση του πλαισίου είναι το pynite_cross_check.
     """
     if span <= 0 or height <= 0:
         raise ValueError("Άνοιγμα και ύψος πρέπει να είναι θετικά.")
@@ -166,7 +168,7 @@ def plaisio(span, height, w_uls, dokos_name, stylos_name, xalyvas="S275", w_sls=
     identity = abs(m_corner) + abs(m_span)
     target = w_uls * span ** 2 / 8
     if abs(identity - target) > 1e-6 * max(1.0, target):
-        raise RuntimeError("Αποτυχία ταυτότητας στατικής: ο υπολογισμός είναι εσφαλμένος.")
+        raise RuntimeError("Αποτυχία αναλλοίωτης συνέπειας: αριθμητική διαφθορά στον υπολογισμό.")
 
     m_pl_rd = sb["Wpl"] * 1e-6 * fy / GAMMA_M0
     util = max(abs(m_span), abs(m_corner)) / m_pl_rd

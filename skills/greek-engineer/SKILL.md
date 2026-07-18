@@ -159,8 +159,9 @@ command. Optional upgrades are stated per engine and never required.
   DXF writing needs ezdxf (declared in deps.json); DWG goes through the free
   ODA File Converter, installed separately.
 - **Pre seismic program**: `python $SKILL_DIR/scripts/proseismikos.py amoivi
-  --tm 350` for the program fee structure; `... vimata` for registry
-  enrollment steps.
+  --tm 350` for the tiered fee scale (buildings; `--typos kerkides` or
+  `--typos stegastro` for sports facility scales, `--pylones N` for pylon
+  groups); `... vimata` for registry enrollment steps.
 - **Dossier precheck, the signature feature**: `python
   $SKILL_DIR/scripts/fakelos.py check --typos nea-oikodomi --exo
   topografiko,statiki` lists what is missing, what is conditionally open,

@@ -177,29 +177,100 @@ class AfthairetaTests(unittest.TestCase):
 
 
 class ProseismikosTests(unittest.TestCase):
+    """Κλιμακωτή αποζημίωση κατά την ΚΥΑ ΥΠ 688/2026 (ΦΕΚ Β' 1276/6.3.2026)."""
+
     def test_minimum_fee_floor(self):
         r = proseismikos.amoivi(350)
         self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 500.0)
         self.assertTrue(r["efarmostike_elaxisti"])
 
-    def test_area_rate_above_threshold(self):
+    def test_breakeven_point(self):
+        r = proseismikos.amoivi(500)
+        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 500.0)
+
+    def test_zone1_upper_edge(self):
+        # 1.000 m2 ανήκει στην πρώτη ζώνη: 1,00 x 1000 = 1000.
+        r = proseismikos.amoivi(1000)
+        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 1000.0)
+        self.assertAlmostEqual(r["vathmida"]["eyro_ana_tm"], 1.00)
+
+    def test_zone2_lower_edge_minimum_applies(self):
+        # 1.001 m2: 0,90 x 1001 = 900,9 αλλά ισχύει το ελάχιστο 1.000 της ζώνης.
+        r = proseismikos.amoivi(1001)
+        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 1000.0)
+        self.assertTrue(r["efarmostike_elaxisti"])
+
+    def test_zone2_minimum_region(self):
+        # 1.050 m2: 945 με τον συντελεστή, υπερισχύει το ελάχιστο 1.000.
+        r = proseismikos.amoivi(1050)
+        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 1000.0)
+
+    def test_zone2_upper_edge(self):
+        # 1.500 m2: 0,90 x 1500 = 1350.
+        r = proseismikos.amoivi(1500)
+        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 1350.0)
+        self.assertAlmostEqual(r["vathmida"]["eyro_ana_tm"], 0.90)
+
+    def test_zone3_lower_edge_minimum_applies(self):
+        # 1.501 m2: 0,80 x 1501 = 1200,8 αλλά ισχύει το ελάχιστο 1.350 της ζώνης.
+        r = proseismikos.amoivi(1501)
+        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 1350.0)
+        self.assertTrue(r["efarmostike_elaxisti"])
+
+    def test_zone3_worked_example(self):
+        # Το παράδειγμα χρήσης του module: 2.400 m2 στη ζώνη 0,80 δίνει 1.920,
+        # όχι 2.400 του ενιαίου 1 ευρώ ανά m2 της ανακοίνωσης έναρξης.
         r = proseismikos.amoivi(2400)
-        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 2400.0)
+        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 1920.0)
+        self.assertAlmostEqual(r["ana_elegkti_eyro"], 960.0)
         self.assertFalse(r["efarmostike_elaxisti"])
 
     def test_portfolio_total(self):
         r = proseismikos.amoivi(2400, ktiria=3)
-        self.assertAlmostEqual(r["synolo_eyro"], 7200.0)
+        self.assertAlmostEqual(r["synolo_eyro"], 5760.0)
 
-    def test_breakeven_point(self):
-        r = proseismikos.amoivi(500)
-        self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], 500.0)
+    def test_fee_monotonic_across_zone_edges(self):
+        # Τα ελάχιστα των ζωνών κάνουν την αμοιβή συνεχή και μη φθίνουσα:
+        # δεν υπάρχει εμβαδόν όπου περισσότερα τετραγωνικά δίνουν λιγότερα ευρώ.
+        areas = [900, 999, 1000, 1001, 1050, 1112, 1499, 1500, 1501, 1687, 1688, 2400]
+        fees = [proseismikos.amoivi(a)["amoivi_ana_ktirio_eyro"] for a in areas]
+        for prev, cur in zip(fees, fees[1:]):
+            self.assertLessEqual(prev, cur)
+
+    def test_kerkides_steps(self):
+        for tm, expected in [(500, 500.0), (501, 1000.0), (2000, 1000.0),
+                             (2001, 2500.0), (5001, 5000.0), (10001, 7000.0)]:
+            r = proseismikos.amoivi(tm, typos="kerkides")
+            self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], expected)
+
+    def test_stegastra_steps(self):
+        for tm, expected in [(100, 500.0), (500, 1000.0), (2000, 2000.0),
+                             (3500, 2750.0), (7500, 5000.0), (20000, 10000.0),
+                             (20001, 15000.0)]:
+            r = proseismikos.amoivi(tm, typos="stegastro")
+            self.assertAlmostEqual(r["amoivi_ana_ktirio_eyro"], expected)
+
+    def test_pylones_minimum_and_rate(self):
+        r = proseismikos.amoivi_pylonon(2)
+        self.assertAlmostEqual(r["amoivi_omadas_eyro"], 500.0)
+        self.assertTrue(r["efarmostike_elaxisti"])
+        r = proseismikos.amoivi_pylonon(5)
+        self.assertAlmostEqual(r["amoivi_omadas_eyro"], 750.0)
+        self.assertAlmostEqual(r["ana_elegkti_eyro"], 375.0)
+
+    def test_split_between_two_inspectors(self):
+        r = proseismikos.amoivi(1000)
+        self.assertAlmostEqual(r["ana_elegkti_eyro"], 500.0)
 
     def test_rejects_bad_inputs(self):
         with self.assertRaises(ValueError):
             proseismikos.amoivi(0)
         with self.assertRaises(ValueError):
             proseismikos.amoivi(100, ktiria=0)
+        with self.assertRaises(ValueError):
+            proseismikos.amoivi(100, typos="gefyra")
+        with self.assertRaises(ValueError):
+            proseismikos.amoivi_pylonon(0)
 
 
 class FakelosTests(unittest.TestCase):
