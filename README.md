@@ -210,7 +210,7 @@ If you've seen [OpenClaw](https://github.com/openclaw/openclaw), you might wonde
 | **AI providers** | 13 — Claude CLI, Codex CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, Claude API, FCC (free-claude-code proxy) | Primarily OpenAI, configurable profiles |
 | **Free/local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier (200 req/day), Gemini free tier, FCC with free backends | No built-in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, etc.) |
-| **Skills** | 75 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
+| **Skills** | 76 skills with auto-installing dependencies, resource-aware hooks | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux/macOS — runs on 1GB RAM with Ollama small models | Modern hardware recommended |
 | **Ownership** | Independent, MIT licensed | OpenAI-acquired (March 2026) |
 | **MCP support** | Client — connects to any MCP server for unlimited tool expansion | Native MCP client support |
