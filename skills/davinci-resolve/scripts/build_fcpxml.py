@@ -16,7 +16,7 @@ import xml.dom.minidom
 from fractions import Fraction
 from pathlib import Path
 from urllib.parse import quote
-from xml.sax.saxutils import escape, quoteattr
+from xml.sax.saxutils import quoteattr
 
 FRAME_DURATIONS = {
     "23.976": Fraction(1001, 24000),

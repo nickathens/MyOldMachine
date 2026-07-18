@@ -1,6 +1,6 @@
 {
   "pre": {
-    "min_ram_mb": 8192
+    "min_ram_mb": 1024
   },
   "stop": {
     "clean_patterns": ["/tmp/resolve_install", "/tmp/DaVinci_Resolve_*"]

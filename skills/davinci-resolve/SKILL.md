@@ -1,15 +1,17 @@
 # DaVinci Resolve
 
-Drive DaVinci Resolve for real editorial work: build timelines from media, hand off rough cuts, queue renders. Complements the ffmpeg-based video-editing skill — use this one when the result must live in a Resolve project (client work, grading, finishing), use video-editing for quick mechanical cuts.
+Drive DaVinci Resolve for real editorial work: build timelines from media, hand off rough cuts, queue renders. Complements the ffmpeg-based video-editing skill: use this one when the result must live in a Resolve project (client work, grading, finishing), use video-editing for quick mechanical cuts.
+
+Platform scope: on Linux only build_fcpxml.py applies (it needs just Python and ffprobe). Everything else (install, status, launch, quit, the external API and the menu-script bridge) is macOS only.
 
 ## The two editions (read this first)
 
-- **Free edition** (what gets installed by default): scripts run only INSIDE the app — from the Workspace, Scripts menu or the Console. An outside process cannot connect to it. Automation still works via two bridges below.
-- **Studio edition** (paid license/dongle): full external scripting — the bot can launch Resolve (even headless with -nogui), build projects and render with nobody at the screen.
+- **Free edition** (what gets installed by default): scripts run only INSIDE the app, from the Workspace, Scripts menu or the Console. An outside process cannot connect to it. Automation still works via two bridges below.
+- **Studio edition** (paid license/dongle): full external scripting, so the bot can launch Resolve (even headless with -nogui), build projects and render with nobody at the screen.
 
 `resolve_api.py status` reports which situation the machine is in. Never assume; run it.
 
-## Bridge 1 — one-click jobs (works on free)
+## Bridge 1: one-click jobs (works on free)
 
 The bot prepares a job file, the user triggers it with one click inside Resolve:
 
@@ -31,7 +33,7 @@ One-time setup (puts "CooCoo Run Job" into Resolve's Scripts menu):
 python skills/davinci-resolve/scripts/install_menu_scripts.py
 ```
 
-## Bridge 2 — importable timelines, fully offline (works everywhere)
+## Bridge 2: importable timelines, fully offline (works everywhere)
 
 Build a `.fcpxml` timeline file without Resolve even running. The user imports it: File, Import Timeline, Import AAF, EDL, XML. Media relinks automatically (absolute file paths are embedded).
 
@@ -60,16 +62,16 @@ On the free edition these commands fail with a clear message pointing to the two
 Not in Homebrew (the cask was retired). Blackmagic requires a name and email registration for the free download, so the installer script needs real details:
 
 ```bash
-bash skills/davinci-resolve/scripts/install_resolve.sh --first Nick --last Athens --email user@example.com
+bash skills/davinci-resolve/scripts/install_resolve.sh --first Jane --last Doe --email jane@example.com
 ```
 
 Downloads the latest free edition (~3.5 GB), installs the pkg with sudo, cleans up. To uninstall, the download DMG ships an "Uninstall Resolve" app.
 
 ## Examples
 
-"Assemble these clips into a rough cut I can open in Resolve" — build_fcpxml, send the file
-"Put these 12 shots on a timeline and render an H.264" — queue-job with render, tell user to click Workspace, Scripts, CooCoo Run Job
-"Is Resolve installed / running / scriptable?" — resolve_api.py status
+"Assemble these clips into a rough cut I can open in Resolve": build_fcpxml, send the file
+"Put these 12 shots on a timeline and render an H.264": queue-job with render, tell user to click Workspace, Scripts, CooCoo Run Job
+"Is Resolve installed / running / scriptable?": resolve_api.py status
 
 ## Notes
 
@@ -78,4 +80,4 @@ Downloads the latest free edition (~3.5 GB), installs the pkg with sudo, cleans 
 - Never kill the Resolve process from a hook or script; the user may be mid-edit with unsaved work.
 - The job file lives at ~/Library/Application Support/CooCoo/resolve_job.json; the menu script writes its result back into it.
 - Timeline fps must be decided before clips land; changing it later is a Resolve limitation.
-- Verified on this machine 2026-07-18: Resolve 21.0.2 free edition — external API connection refused (as documented), menu-script bridge and fcpxml import are the working paths.
+- Verified on this machine 2026-07-18: Resolve 21.0.2 free edition; external API connection refused (as documented), menu-script bridge and fcpxml import are the working paths.

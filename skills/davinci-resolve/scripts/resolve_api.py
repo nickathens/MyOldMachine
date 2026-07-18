@@ -22,7 +22,9 @@ API_DIR = Path(os.environ.get(
     "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"))
 LIB = Path(os.environ.get("RESOLVE_SCRIPT_LIB",
                           str(APP / "Contents/Libraries/Fusion/fusionscript.so")))
-JOB_FILE = Path.home() / "Library/Application Support/CooCoo/resolve_job.json"
+# COOCOO_RESOLVE_JOB overrides the job file location (tests; menu script honors it too)
+JOB_FILE = Path(os.environ.get("COOCOO_RESOLVE_JOB")
+                or Path.home() / "Library/Application Support/CooCoo/resolve_job.json")
 
 FREE_EDITION_HINT = (
     "Could not connect to Resolve from outside the app. Either Resolve is not "
@@ -84,7 +86,7 @@ def cmd_status(args):
     print(f"process       : {'running' if running else 'not running'}")
     resolve, err = connect()
     if resolve:
-        print(f"external api  : CONNECTED — {resolve.GetProductName()} {resolve.GetVersionString()}")
+        print(f"external api  : CONNECTED, {resolve.GetProductName()} {resolve.GetVersionString()}")
         pm = resolve.GetProjectManager()
         project = pm.GetCurrentProject()
         print(f"open project  : {project.GetName() if project else 'none'}")
@@ -93,7 +95,7 @@ def cmd_status(args):
         print(f"                {err.splitlines()[0]}")
     job = read_job()
     if job:
-        print(f"queued job    : '{job.get('timeline')}' — status {job.get('status')}")
+        print(f"queued job    : '{job.get('timeline')}', status {job.get('status')}")
 
 
 def cmd_launch(args):
@@ -206,7 +208,9 @@ def cmd_queue_job(args):
         "timeline": args.name,
         "fps": args.fps,
         "media": media,
-        "render": ({"preset": args.render_preset, "out": str(Path(args.render_out).expanduser().resolve())}
+        "render": ({"preset": args.render_preset,
+                    "out": (str(Path(args.render_out).expanduser().resolve())
+                            if args.render_out else None)}
                    if args.render_preset or args.render_out else None),
         "created": datetime.now().isoformat(timespec="seconds"),
         "status": "pending",

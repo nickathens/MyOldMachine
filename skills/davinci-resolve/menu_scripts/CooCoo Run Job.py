@@ -10,7 +10,8 @@ import json
 import os
 import time
 
-JOB_FILE = os.path.expanduser("~/Library/Application Support/CooCoo/resolve_job.json")
+JOB_FILE = (os.environ.get("COOCOO_RESOLVE_JOB")
+            or os.path.expanduser("~/Library/Application Support/CooCoo/resolve_job.json"))
 
 
 def get_resolve():
@@ -39,7 +40,7 @@ def fail(job, message):
     job["status"] = "error"
     job["error"] = message
     save(job)
-    print("CooCoo: FAILED —", message)
+    print("CooCoo: FAILED:", message)
 
 
 def main():
@@ -49,7 +50,7 @@ def main():
     with open(JOB_FILE) as f:
         job = json.load(f)
     if job.get("status") == "done":
-        print("CooCoo: last job already done — queue a new one first.")
+        print("CooCoo: last job already done, queue a new one first.")
         return
 
     r = get_resolve()
@@ -78,6 +79,18 @@ def main():
     items = pool.ImportMedia(media)
     if not items:
         return fail(job, "media import returned nothing")
+
+    # ImportMedia does not guarantee its return order matches the input list;
+    # remap by file path so the timeline follows the queued clip order.
+    by_path = {}
+    for item in items:
+        try:
+            by_path[os.path.realpath(item.GetClipProperty("File Path"))] = item
+        except Exception:
+            pass
+    ordered = [by_path.get(os.path.realpath(m)) for m in media]
+    if all(o is not None for o in ordered):
+        items = ordered
 
     timeline = pool.CreateTimelineFromClips(job.get("timeline", "CooCoo Timeline"), items)
     if timeline is None:

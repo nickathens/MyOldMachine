@@ -6,14 +6,14 @@
 # package refuses without it); this script installs it if missing.
 #
 # Usage:
-#   install_resolve.sh --first Nick --last Athens --email nick@example.com
-#     [--phone "+30 210 0000000"] [--city Athens] [--country gr] [--keep-zip]
+#   install_resolve.sh --first Jane --last Doe --email jane@example.com
+#     [--phone "+1 212 5550100"] [--city "New York"] [--country us] [--keep-zip]
 #
 # Verified working 2026-07-18 against DaVinci Resolve 21.0.2. The Homebrew
 # cask route is dead (cask retired), which is why this exists.
 set -euo pipefail
 
-FIRST="" LAST="" EMAIL="" PHONE="+30 210 0000000" CITY="Athens" COUNTRY="gr" KEEP=0
+FIRST="" LAST="" EMAIL="" PHONE="+1 212 5550100" CITY="New York" COUNTRY="us" KEEP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --first)   FIRST="$2"; shift 2 ;;
