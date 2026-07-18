@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.llm import GrokProvider  # noqa: E402
+from core.llm import GrokProvider, _claude_accepts_temperature  # noqa: E402
 from install import wizard  # noqa: E402
 
 
@@ -48,6 +48,11 @@ class CatalogIntegrityTests(unittest.TestCase):
 
 
 class CurrentFlagshipsPresentTests(unittest.TestCase):
+    def test_sonnet_5_present(self):
+        # Sonnet 5 (claude-sonnet-5) GA June 30, 2026 — current Sonnet flagship.
+        self.assertIn("claude-sonnet-5", _ids("claude"))
+        self.assertIn("claude-sonnet-5", _ids("claude-api"))
+
     def test_gpt_5_6_present(self):
         self.assertIn("gpt-5.6", _ids("openai"))
         self.assertIn("gpt-5.6", _ids("codex"))
@@ -83,6 +88,11 @@ class RetiredModelsAbsentTests(unittest.TestCase):
             self.assertNotIn("claude-opus-4-6", ids)
         self.assertNotIn("claude-sonnet-4-5-20250929", _ids("claude-api"))
 
+    def test_superseded_sonnet_removed(self):
+        # Sonnet 4.6 is superseded by Sonnet 5 at identical standard pricing.
+        for provider in ("claude", "claude-api"):
+            self.assertNotIn("claude-sonnet-4-6", _ids(provider))
+
     def test_dead_ollama_cloud_tags_removed(self):
         ids = _ids("ollama-cloud")
         self.assertNotIn("glm-5:cloud", ids)
@@ -108,6 +118,23 @@ class RetiredModelsAbsentTests(unittest.TestCase):
 class GrokVisionGateTests(unittest.TestCase):
     def test_grok_4_5_supports_vision(self):
         self.assertTrue(GrokProvider("grok-4.5").supports_vision)
+
+
+class ClaudeSamplingGateTests(unittest.TestCase):
+    """Sonnet 5, Fable 5, and Opus 4.7+ 400 on non-default temperature; the
+    API provider must omit it for them and keep sending it to legacy models."""
+
+    def test_new_models_omit_temperature(self):
+        for model in ("claude-sonnet-5", "claude-fable-5",
+                      "claude-opus-4-8", "claude-opus-4-7"):
+            with self.subTest(model=model):
+                self.assertFalse(_claude_accepts_temperature(model))
+
+    def test_legacy_models_keep_temperature(self):
+        for model in ("claude-sonnet-4-6", "claude-sonnet-4-5-20250929",
+                      "claude-haiku-4-5"):
+            with self.subTest(model=model):
+                self.assertTrue(_claude_accepts_temperature(model))
 
 
 if __name__ == "__main__":

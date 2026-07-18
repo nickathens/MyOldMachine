@@ -348,7 +348,7 @@ def _call_claude_cli(prompt: str) -> str:
         if configured_model.startswith("claude-"):
             cli_model = configured_model
         else:
-            cli_model = "claude-sonnet-4-6"
+            cli_model = "claude-sonnet-5"
         result = subprocess.run(
             ["claude", "-p", prompt, "--model", cli_model],
             capture_output=True, text=True, timeout=120,

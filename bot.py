@@ -2454,6 +2454,12 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not _llm_provider.has_active_processes:
                 break
             await asyncio.sleep(1)
+    # The Mini App imports the model catalog at process start, so bounce it
+    # too — otherwise a bot-only restart leaves the dashboard picker serving
+    # the pre-update model list.
+    mini_ok, mini_msg = restart_service("miniapp")
+    if not mini_ok:
+        await update.message.reply_text(f"Note: Mini App restart failed: {mini_msg}")
     await asyncio.sleep(1)
     success, msg = restart_service()
     if not success:

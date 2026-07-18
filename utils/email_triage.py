@@ -69,7 +69,7 @@ CLI_PROVIDERS = {"claude", "claude-cli", "fcc"}
 # Haiku so the loop never burns the premium chat model. API providers only
 # have one configured model, so they use it for both calls.
 CLI_CLASSIFY_MODEL = "claude-haiku-4-5-20251001"
-CLI_DRAFT_FALLBACK_MODEL = "claude-sonnet-4-6"
+CLI_DRAFT_FALLBACK_MODEL = "claude-sonnet-5"
 
 # Drafting writes outbound text in the owner's name, so the quality bar is
 # higher than classification. Weak providers still classify and ping; they

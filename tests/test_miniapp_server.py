@@ -257,10 +257,11 @@ class TestClaudeModelCatalog(unittest.TestCase):
         ids = {m["id"] for m in srv._available_models("claude-api")}
         self.assertIn("claude-opus-4-8", ids)
 
-    def test_default_stays_sonnet_4_6(self) -> None:
-        # Adding Opus 4.8 must not hijack the recommended/default model.
-        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude"), "claude-sonnet-4-6")
-        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude-api"), "claude-sonnet-4-6")
+    def test_default_is_current_sonnet(self) -> None:
+        # Opus/Fable entries must not hijack the recommended/default model;
+        # the default tracks the current Sonnet (Sonnet 5 since June 30, 2026).
+        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude"), "claude-sonnet-5")
+        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude-api"), "claude-sonnet-5")
 
 
 class TestPendingMediaGenTTL(unittest.TestCase):
