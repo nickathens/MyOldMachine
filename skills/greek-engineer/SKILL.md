@@ -131,15 +131,18 @@ command. Optional upgrades are stated per engine and never required.
   `... plaisio --l 6 --h 3.5 --w 35.25 --dokos IPE330 --stylos HEB240
   --w-sls 25` for the pinned base portal by Kleinlogel, with the wL2/8
   statics identity enforced, first pass EN 1993 utilization and deflection;
-  add `--pynite` for an independent FE cross check. PyNiteFEA needs numpy
-  `>= 2.4`, while the numba the audio stack depends on (0.63.1 here) needs
-  numpy `< 2.4`; the ranges are disjoint, so a shared venv breaks numba and the
-  whisper voice built on it (whisper itself carries no numpy bound). It lives in
-  an isolated venv you build once with `bash
+  add `--pynite` for an independent FE cross check. PyNiteFEA lives in an
+  isolated venv you build once with `bash
   $SKILL_DIR/scripts/setup_engine_venv.sh` (or point `$GREEK_ENGINEER_VENV` at
   your own); `plaisio.py` bridges to it automatically over a subprocess, and if
-  the venv is absent the closed form stands alone. `... diatomes` lists the
-  tagged section catalog.
+  the venv is absent the closed form stands alone. The split is isolation
+  policy, not a live conflict: PyNiteFEA needs numpy `>= 2.4`, and the numpy
+  ceiling of the numba the audio stack rides on moves with the numba version
+  (the 0.63.x line capped numpy `< 2.4`, disjoint; the 0.65.1 installed here,
+  checked 2026-07-18, allows `< 2.5` and coexists with PyNiteFEA on numpy
+  2.4.4; whisper itself carries no numpy bound), so heavy engines stay out of
+  the shared venv rather than betting on the overlap of the day.
+  `... diatomes` lists the tagged section catalog.
 - **Envelope**: `python $SKILL_DIR/scripts/domisi.py perigramma --emvadon
   500 --sd 0.8 --kalypsi 60 --ypsos 11` turns user confirmed όροι δόμησης
   into buildable area, footprint and indicative floors. It refuses to know
@@ -187,11 +190,12 @@ heavy engines go to an isolated venv, never into the shared environment:
 PyNiteFEA already lives there (`scripts/setup_engine_venv.sh` builds it,
 `plaisio.py` bridges to it over a subprocess), and OpenSeesPy, ifcopenshell and
 pandapower join it when those stages arrive. This isolation is not cosmetic:
-PyNiteFEA needs numpy `>= 2.4`, and where numba caps numpy `< 2.4` (as the
-shipped 0.63.1 does) the two are mutually exclusive, so a shared install
-silently breaks numba and the whisper voice pipeline that rides on it. The exact
-numba cap moves with the numba version, so the venv split, not a single numpy
-pin, is the durable fix.
+PyNiteFEA needs numpy `>= 2.4`, and the numpy cap of the numba that the
+whisper voice pipeline rides on moves with the numba version (the 0.63.x line
+capped numpy `< 2.4`, mutually exclusive with PyNiteFEA; the 0.65.1 installed
+here, checked 2026-07-18, allows `< 2.5` and coexists on numpy 2.4.4). A
+shared install works or breaks depending on which numba is current, so the
+venv split, not a single numpy pin, is the durable fix.
 
 ## Grounding: fetched sources before memory
 

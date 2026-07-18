@@ -221,8 +221,9 @@ class PlaisioFrameTests(unittest.TestCase):
 
 class PlaisioEngineBridgeTests(unittest.TestCase):
     """The PyNite cross check runs in an isolated engineering venv, reached over
-    a subprocess, so PyNiteFEA's numpy >= 2.4 never pollutes the base install
-    (whisper and numba pin numpy <= 2.3). These cover venv discovery and the
+    a subprocess, so PyNiteFEA's numpy >= 2.4 stays out of the base install,
+    whose numpy ceiling is set by whatever numba version is current (isolation
+    policy, not a live conflict). These cover venv discovery and the
     graceful-absence path deterministically, without needing the venv to exist.
     The live round trip is covered by test_pynite_cross_check_absent_or_close on
     any machine that has the engineering venv."""
