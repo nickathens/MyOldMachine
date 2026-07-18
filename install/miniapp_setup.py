@@ -549,6 +549,14 @@ def run_miniapp_setup_step(config: dict, ask=None) -> None:
     if public_url:
         _register_menu_buttons(REPO_DIR, public_url)
         config["miniapp_url"] = public_url
+        # Persist the URL to data/miniapp.json so the runtime guard
+        # (utils/miniapp_guard.py) can verify and self-heal the button later.
+        # Until now the only copy of this URL lived inside Telegram's button.
+        try:
+            from utils.miniapp_guard import record_setup
+            record_setup(REPO_DIR, public_url, tunnel)
+        except Exception:
+            pass  # the guard self-seeds from the live tunnel at next startup
     else:
         print()
         print(f"  {YELLOW}When your tunnel is up:{NC}")
