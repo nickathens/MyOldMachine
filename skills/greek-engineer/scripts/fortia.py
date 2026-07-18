@@ -86,14 +86,15 @@ BETA = 0.20  # κατώφλι φάσματος σχεδιασμού, συνισ�
 def combos(g, q, category, q2=None, category2=None):
     """Συνδυασμοί δράσεων EN 1990 για μόνιμο G και έως δύο μεταβλητές δράσεις.
 
-    Επιστρέφει τους συνδυασμούς ΟΚΑ (6.10) και ΟΚΛ (χαρακτηριστικό, συχνό,
-    οιονεί μόνιμο), και τον σεισμικό συνδυασμό G + ψ2 Q. Οι τιμές είναι σε
-    όποια μονάδα δόθηκαν τα G και Q (η μηχανή δεν υποθέτει μονάδες).
+    Επιστρέφει τους συνδυασμούς ΟΚΑ (6.10) και ΟΚΛ (χαρακτηριστικό 6.14b,
+    συχνό 6.15b, οιονεί μόνιμο 6.16b), και τον σεισμικό συνδυασμό G + ψ2 Q.
+    Οι τιμές είναι σε όποια μονάδα δόθηκαν τα G και Q (η μηχανή δεν υποθέτει
+    μονάδες).
 
-    Στον ΟΚΑ κάθε μεταβλητή δοκιμάζεται ως κύρια και επιστρέφεται η
-    δυσμενέστερη περίπτωση. Στον συχνό ΟΚΛ ως κύρια (ψ1) λαμβάνεται η ΠΡΩΤΗ
-    μεταβλητή όπως δόθηκε: αν σε ενδιαφέρει άλλος συνδυασμός, δώσε πρώτη τη
-    δράση που θεωρείς κύρια.
+    Σε κάθε συνδυασμό που διακρίνει κύρια δράση (ΟΚΑ 6.10, χαρακτηριστικός
+    με ψ0 στις συνοδευτικές, συχνός με ψ1 κύρια και ψ2 λοιπές) κάθε μεταβλητή
+    δοκιμάζεται ως κύρια και επιστρέφεται η δυσμενέστερη περίπτωση, με τη
+    δράση που κυβέρνησε κατονομασμένη στο αποτέλεσμα.
     """
     if g < 0 or q < 0 or (q2 is not None and q2 < 0):
         raise ValueError("Οι δράσεις δίνονται ως μη αρνητικά μεγέθη.")
@@ -120,19 +121,33 @@ def combos(g, q, category, q2=None, category2=None):
         uls_options.append({"kyria": code, "typos": " + ".join(parts), "timi": round(total, 4)})
     uls = max(uls_options, key=lambda o: o["timi"])
 
-    sls_char = g + sum(e[0] for e in entries)
-    sls_freq = g + entries[0][1]["psi1"] * entries[0][0]
+    # ΟΚΛ 6.14b και 6.15b: όπως στον ΟΚΑ, κάθε μεταβλητή δοκιμάζεται ως κύρια
+    # (χαρακτηριστικός: κύρια πλήρης, συνοδευτικές με ψ0. Συχνός: κύρια με ψ1,
+    # λοιπές με ψ2) και κρατιέται η δυσμενέστερη περίπτωση.
+    def _sls_worst(lead_psi_key, other_psi_key):
+        best_code, best_total = None, None
+        for lead_idx, (qi, cati, code) in enumerate(entries):
+            lead_part = qi if lead_psi_key is None else cati[lead_psi_key] * qi
+            total = g + lead_part + sum(
+                catj[other_psi_key] * qj
+                for j, (qj, catj, _c) in enumerate(entries) if j != lead_idx)
+            if best_total is None or total > best_total:
+                best_code, best_total = code, total
+        return best_code, best_total
+
+    char_lead, sls_char = _sls_worst(None, "psi0")
+    freq_lead, sls_freq = _sls_worst("psi1", "psi2")
     sls_qp = g + sum(e[1]["psi2"] * e[0] for e in entries)
     seismic = g + sum(e[1]["psi2"] * e[0] for e in entries)
-    if len(entries) > 1:
-        sls_freq += sum(e[1]["psi2"] * e[0] for e in entries[1:])
 
     return {
         "eisodos": {"G": g, "Q": [{"timi": e[0], "katigoria": e[2]} for e in entries]},
         "OKA_6_10": uls,
         "OKA_oles_oi_periptoseis": uls_options,
         "OKL_xaraktiristikos": round(sls_char, 4),
+        "OKL_xaraktiristikos_kyria": char_lead,
         "OKL_syxnos": round(sls_freq, 4),
+        "OKL_syxnos_kyria": freq_lead,
         "OKL_oionei_monimos": round(sls_qp, 4),
         "seismikos_G_psi2Q": round(seismic, 4),
         "simeiosi": (
@@ -219,8 +234,8 @@ def _print_combos(r):
     print(f"  ΟΚΑ 6.10 (δυσμενέστερος): {r['OKA_6_10']['typos']} = {r['OKA_6_10']['timi']}")
     for o in r["OKA_oles_oi_periptoseis"]:
         print(f"    με κύρια την Q({o['kyria']}): {o['timi']}")
-    print(f"  ΟΚΛ χαρακτηριστικός: {r['OKL_xaraktiristikos']}")
-    print(f"  ΟΚΛ συχνός: {r['OKL_syxnos']}")
+    print(f"  ΟΚΛ χαρακτηριστικός: {r['OKL_xaraktiristikos']} (κύρια η Q({r['OKL_xaraktiristikos_kyria']}))")
+    print(f"  ΟΚΛ συχνός: {r['OKL_syxnos']} (κύρια η Q({r['OKL_syxnos_kyria']}))")
     print(f"  ΟΚΛ οιονεί μόνιμος: {r['OKL_oionei_monimos']}")
     print(f"  Σεισμικός (G + ψ2 Q, χωρίς AEd): {r['seismikos_G_psi2Q']}")
     print(f"  {r['simeiosi']}")

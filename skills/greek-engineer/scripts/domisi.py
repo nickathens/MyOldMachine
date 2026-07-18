@@ -59,6 +59,10 @@ def perigramma(emvadon, sd, kalypsi_pct, ypsos, orofos_ypsos=OROFOS_YPSOS_DEFAUL
     orofoi_apo_domisi = max(1, math.ceil(max_domisi / max_kalypsi))
     endeiktikoi_orofoi = min(orofoi_apo_ypsos, max(orofoi_apo_domisi, 1))
     apotypoma_gia_orofous = max_domisi / orofoi_apo_ypsos
+    # Το αποτύπωμα εξάντλησης δεν επιτρέπεται να υπονοεί αδύνατο κτίριο: αν
+    # υπερβαίνει τη μέγιστη κάλυψη, ο ΣΔ δεν εξαντλείται μέσα στο ύψος.
+    megisti_domisi_sto_ypsos = min(max_domisi, max_kalypsi * orofoi_apo_ypsos)
+    domisi_exantleitai = apotypoma_gia_orofous <= max_kalypsi + 1e-9
 
     return {
         "eisodos": {"emvadon_m2": emvadon, "sd": sd, "kalypsi_pct": kalypsi_pct,
@@ -69,6 +73,8 @@ def perigramma(emvadon, sd, kalypsi_pct, ypsos, orofos_ypsos=OROFOS_YPSOS_DEFAUL
         "elaxistoi_orofoi_gia_pliri_domisi": orofoi_apo_domisi,
         "endeiktikoi_orofoi": endeiktikoi_orofoi,
         "apotypoma_gia_pliri_domisi_sto_ypsos_m2": round(apotypoma_gia_orofous, 2),
+        "domisi_exantleitai_sto_ypsos": domisi_exantleitai,
+        "megisti_domisi_sto_ypsos_m2": round(megisti_domisi_sto_ypsos, 2),
         "simeiosi": (
             "Οι όροι δόμησης βεβαιώνονται από την αρμόδια ΥΔΟΜ για το συγκεκριμένο "
             f"οικόπεδο {_VERIFY}. Δεν περιλαμβάνονται: αποστάσεις Δ, εξοστάσεις, "
@@ -107,6 +113,10 @@ def main(argv=None):
         print(f"  Ελάχιστοι όροφοι για εξάντληση δόμησης: {r['elaxistoi_orofoi_gia_pliri_domisi']}")
         print(f"  Αποτύπωμα για εξάντληση δόμησης στο ύψος: "
               f"{r['apotypoma_gia_pliri_domisi_sto_ypsos_m2']} m2 ανά όροφο")
+        if not r["domisi_exantleitai_sto_ypsos"]:
+            print("  ΠΡΟΣΟΧΗ: το αποτύπωμα αυτό υπερβαίνει τη μέγιστη κάλυψη, άρα ο ΣΔ "
+                  "δεν εξαντλείται μέσα στο επιτρεπόμενο ύψος. Μέγιστη δόμηση στο ύψος: "
+                  f"{r['megisti_domisi_sto_ypsos_m2']} m2.")
         print(f"  {r['simeiosi']}")
     return 0
 

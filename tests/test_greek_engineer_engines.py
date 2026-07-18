@@ -42,6 +42,19 @@ class FortiaCombosTests(unittest.TestCase):
         self.assertEqual(r["OKA_6_10"]["kyria"], "H")
         self.assertEqual(len(r["OKA_oles_oi_periptoseis"]), 2)
 
+    def test_sls_two_variables_apply_psi_to_accompanying(self):
+        # EN 1990 6.14b and 6.15b with G=10, QA=5 (psi 0.7/0.5/0.3), QH=2 (0/0/0).
+        # Characteristic, lead A: 10+5+0*2 = 15. Lead H: 10+2+0.7*5 = 15.5.
+        # Frequent, lead A: 10+0.5*5+0*2 = 12.5. Lead H: 10+0*2+0.3*5 = 11.5.
+        # The accompanying action must carry its psi factor, never enter full.
+        r = fortia.combos(10.0, 5.0, "A", q2=2.0, category2="H")
+        self.assertAlmostEqual(r["OKL_xaraktiristikos"], 15.5)
+        self.assertEqual(r["OKL_xaraktiristikos_kyria"], "H")
+        self.assertAlmostEqual(r["OKL_syxnos"], 12.5)
+        self.assertEqual(r["OKL_syxnos_kyria"], "A")
+        self.assertAlmostEqual(r["OKL_oionei_monimos"], 10 + 0.3 * 5)
+        self.assertAlmostEqual(r["seismikos_G_psi2Q"], 10 + 0.3 * 5)
+
     def test_storage_psi_heavier_than_residential(self):
         e = fortia.PSI["E"]
         a = fortia.PSI["A"]

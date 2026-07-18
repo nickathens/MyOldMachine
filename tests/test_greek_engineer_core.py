@@ -108,6 +108,22 @@ class DomisiTests(unittest.TestCase):
         self.assertAlmostEqual(r["apotypoma_gia_pliri_domisi_sto_ypsos_m2"],
                                round(400.0 / 3, 2))
 
+    def test_exhaustion_flag_true_when_sd_fits_under_height(self):
+        r = domisi.perigramma(500, 0.8, 60, 11)
+        self.assertTrue(r["domisi_exantleitai_sto_ypsos"])
+        self.assertAlmostEqual(r["megisti_domisi_sto_ypsos_m2"], 400.0)
+
+    def test_flags_when_sd_cannot_be_exhausted_within_height(self):
+        # 500 m2 plot, SD 2.0 -> 1000 m2 buildable, coverage 40% -> 200 m2
+        # footprint, height 9 m -> 3 floors. 3 x 200 = 600 < 1000: the naive
+        # per floor footprint (333 m2) would exceed the allowed coverage, so
+        # the tool must say the SD does not fit under the height cap.
+        r = domisi.perigramma(500, 2.0, 40, 9)
+        self.assertFalse(r["domisi_exantleitai_sto_ypsos"])
+        self.assertAlmostEqual(r["megisti_domisi_sto_ypsos_m2"], 600.0)
+        self.assertGreater(r["apotypoma_gia_pliri_domisi_sto_ypsos_m2"],
+                           r["max_kalypsi_m2"])
+
     def test_low_rise_rural_case(self):
         r = domisi.perigramma(4000, 0.2, 20, 7.5, orofos_ypsos=3.2)
         self.assertAlmostEqual(r["max_domisi_m2"], 800.0)
