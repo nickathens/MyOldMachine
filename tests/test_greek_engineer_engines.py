@@ -12,9 +12,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "greek-engineer" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -211,9 +214,38 @@ class PlaisioFrameTests(unittest.TestCase):
         r = self.frame()
         cross = plaisio.pynite_cross_check(r)
         if cross is None:
-            self.skipTest("PyNiteFEA not installed; closed form stands alone")
+            self.skipTest("no PyNiteFEA in-process and no engineering venv; closed form stands alone")
         self.assertLess(cross["apoklisi_gonias_pct"], 5.0)
         self.assertLess(cross["apoklisi_anoigmatos_pct"], 5.0)
+
+
+class PlaisioEngineBridgeTests(unittest.TestCase):
+    """The PyNite cross check runs in an isolated engineering venv, reached over
+    a subprocess, so PyNiteFEA's numpy >= 2.4 stays out of the base install,
+    whose numpy ceiling is set by whatever numba version is current (isolation
+    policy, not a live conflict). These cover venv discovery and the
+    graceful-absence path deterministically, without needing the venv to exist.
+    The live round trip is covered by test_pynite_cross_check_absent_or_close on
+    any machine that has the engineering venv."""
+
+    def test_engine_python_honours_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            binpy = Path(d) / "bin" / "python"
+            binpy.parent.mkdir(parents=True)
+            binpy.write_text("")
+            with mock.patch.dict(os.environ, {"GREEK_ENGINEER_VENV": d}):
+                self.assertEqual(plaisio._engine_python(), str(binpy))
+
+    def test_engine_python_none_for_empty_override(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"GREEK_ENGINEER_VENV": d}):
+            self.assertIsNone(plaisio._engine_python())
+
+    def test_bridge_returns_none_without_engine(self):
+        r = plaisio.plaisio(6.0, 3.5, 35.25, "IPE330", "HEB240", "S275")
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"GREEK_ENGINEER_VENV": d}):
+            self.assertIsNone(plaisio._bridge_cross_check(r, "S275"))
 
 
 class IlektrologikaTests(unittest.TestCase):
