@@ -268,11 +268,26 @@ def _system_section() -> list[str]:
     return lines
 
 
+def _miniapp_section() -> list[str]:
+    """Mini App health, proven from the outside: the public URL is loaded over
+    the real internet like a phone would, the app shell must actually render,
+    and a drifted App button is re-pointed on the spot and reported as fixed.
+    Empty when the Mini App is not installed, so plain installs see no noise."""
+    try:
+        from utils.miniapp_guard import build_report_section
+        return build_report_section()
+    except Exception as e:
+        return ["Mini App", f"  Guard failed to run: {e}"]
+
+
 def build_report() -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     parts = [f"Nightly maintenance report for {today}", ""]
     parts += _backup_section() + [""]
     parts += _jobs_section() + [""]
+    miniapp = _miniapp_section()
+    if miniapp:
+        parts += miniapp + [""]
     parts += _system_section()
     return "\n".join(parts).rstrip() + "\n"
 

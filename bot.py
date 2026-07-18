@@ -4556,6 +4556,30 @@ def main():
         # Schedule maintenance jobs (system update, cleanup, backup) if not already present
         _setup_maintenance_jobs(scheduler)
 
+        # Self-fixing App button: if the machine's public address changed while
+        # the bot was down (e.g. a Tailscale account switch minting a new
+        # hostname), re-point every user's Telegram menu button at the live
+        # address. Runs in the background after a grace delay so a tunnel that
+        # boots alongside the bot has time to come up; never blocks startup.
+        async def _miniapp_button_guard():
+            try:
+                from install.miniapp_setup import is_miniapp_configured
+                if not is_miniapp_configured():
+                    return
+                await asyncio.sleep(15)
+                from utils.miniapp_guard import run_startup_guard
+                outcome = await asyncio.to_thread(run_startup_guard)
+                if outcome.get("fixed"):
+                    logger.info(
+                        f"Mini App button re-pointed for {len(outcome['fixed'])} user(s) "
+                        f"to {outcome.get('url')}"
+                    )
+                else:
+                    logger.info(f"Mini App button check: {outcome.get('detail', 'ok')}")
+            except Exception as e:
+                logger.warning(f"Mini App button guard failed (non-fatal): {e}")
+        asyncio.create_task(_miniapp_button_guard())
+
         # Start proactive health monitoring (system resources)
         asyncio.create_task(_health_monitor_loop(scheduler))
 
