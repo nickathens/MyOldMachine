@@ -11,8 +11,10 @@
 
 2. ΠΡΟΑΙΡΕΤΙΚΗ ΔΙΑΣΤΑΥΡΩΣΗ ΜΕ ΑΝΕΞΑΡΤΗΤΟ ΕΠΙΛΥΤΗ. Η εντολή --pynite ξαναλύνει το
    πλαίσιο με πεπερασμένα στοιχεία (PyNiteFEA) και τυπώνει τη σύγκριση. Δεύτερη
-   γνώμη, όχι προϋπόθεση. Το PyNiteFEA απαιτεί numpy >= 2.4, που συγκρούεται με τη
-   βασική εγκατάσταση (whisper/numba θέλουν numpy <= 2.3), γι' αυτό ζει σε δικό του
+   γνώμη, όχι προϋπόθεση. Το PyNiteFEA απαιτεί numpy >= 2.4, ενώ το numba, από το
+   οποίο εξαρτάται το audio stack (0.63.1 εδώ), απαιτεί numpy < 2.4: τα δύο εύρη
+   δεν τέμνονται, οπότε στο ίδιο venv το PyNiteFEA σπάει το numba και μαζί τη
+   φωνητική μεταγραφή whisper (το whisper δεν καρφώνει numpy), γι' αυτό ζει σε δικό του
    απομονωμένο venv (~/.venvs/engineering, ή $GREEK_ENGINEER_VENV) και η
    διασταύρωση γεφυρώνεται εκεί με υποδιεργασία. Στήσιμο: scripts/setup_engine_venv.sh.
    Αν το venv λείπει, οι κλειστοί τύποι ισχύουν μόνοι.
@@ -215,7 +217,8 @@ def _engine_python():
 
     Σειρά: $GREEK_ENGINEER_VENV (αν οριστεί, είναι αυθεντικό, χωρίς fallback),
     διαφορετικά ~/.venvs/engineering. Εκεί ζει το PyNiteFEA ώστε το numpy >= 2.4
-    που απαιτεί να μη μολύνει τη βασική εγκατάσταση (whisper/numba, numpy <= 2.3).
+    που απαιτεί να μη μολύνει τη βασική εγκατάσταση, όπου το numba (0.63.1) θέλει
+    numpy < 2.4 και θα έσπαγε μαζί με τη φωνητική μεταγραφή whisper.
     """
     override = os.environ.get("GREEK_ENGINEER_VENV")
     root = Path(override) if override else Path.home() / ".venvs" / "engineering"
