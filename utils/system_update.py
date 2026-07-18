@@ -39,7 +39,12 @@ _UPGRADE_CMDS = {
     "pacman": "pacman -Su --noconfirm",
     "zypper": "zypper update -y",
     "apk": "apk upgrade",
-    "brew": "brew upgrade",
+    # Formulae only: cask upgrades swap .app bundles, which hangs forever in a
+    # headless launchd session (no GUI to mediate the trash/replace step) and a
+    # timeout kill then strands the cask half-installed (Blender, 2026-07-15..18).
+    # Outdated casks are reported in the summary instead — upgrade them
+    # interactively.
+    "brew": "brew upgrade --formula",
 }
 
 _CLEAN_CMDS = {
@@ -58,7 +63,7 @@ _CHECK_UPGRADABLE_CMDS = {
     "pacman": "pacman -Qu 2>/dev/null | wc -l",
     "zypper": "zypper list-updates 2>/dev/null | grep -c '|' || echo 0",
     "apk": "apk version -l '<' 2>/dev/null | wc -l",
-    "brew": "brew outdated 2>/dev/null | wc -l",
+    "brew": "brew outdated --formula 2>/dev/null | wc -l",
 }
 
 
@@ -171,6 +176,31 @@ def _count_upgradable(mgr: str) -> int:
     return 0
 
 
+def _brew_cask_note() -> str:
+    """One-line note about outdated casks, or "" when none.
+
+    Casks are excluded from the nightly upgrade (see _UPGRADE_CMDS) so pending
+    app updates would otherwise go silent — surface them in the summary.
+    """
+    rc, output = _run_cmd(
+        "brew outdated --cask 2>/dev/null | wc -l", use_sudo=False, timeout=60
+    )
+    if rc != 0:
+        return ""
+    count = 0
+    for line in reversed(output.strip().splitlines()):
+        line = line.strip()
+        if line.isdigit():
+            count = int(line)
+            break
+    if count == 0:
+        return ""
+    return (
+        f"{count} app update(s) (brew casks) pending — not auto-installed, "
+        "ask me to update them."
+    )
+
+
 def _count_softwareupdate_available() -> int:
     """Count how many Apple updates `softwareupdate -l` reports as available.
 
@@ -223,7 +253,7 @@ def _run_macos_softwareupdate(
     if rc != 0:
         msg = f"softwareupdate: install failed (rc={rc})"
         log_fn(f"ERROR: {msg}")
-        log_fn(output[:500] if output else "no output")
+        log_fn(output[-500:] if output else "no output")
         notify_fn(msg)
         return msg
 
@@ -263,15 +293,18 @@ def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
         if rc != 0:
             msg = f"System update: package list refresh failed ({mgr})"
             log_fn(f"ERROR: {msg}")
-            log_fn(output[:500] if output else "no output")
+            log_fn(output[-500:] if output else "no output")
             notify_fn(msg)
             return msg, True
 
     # Step 2: Count available updates
     before_count = _count_upgradable(mgr)
+    cask_note = _brew_cask_note() if mgr == "brew" else ""
+    if cask_note:
+        log_fn(cask_note)
     if before_count == 0:
         log_fn("No updates available.")
-        return "", False
+        return cask_note, False
 
     log_fn(f"{before_count} package(s) available for upgrade")
 
@@ -282,11 +315,13 @@ def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
         log_fn(msg)
         return msg, False
 
-    rc, output = _run_cmd(upgrade_cmd, use_sudo=use_sudo, timeout=600)
+    # 30 min: big cask downloads (e.g. Blender ~400MB) can exceed 10 min, and a
+    # timeout kill mid-upgrade strands the cask half-installed (2026-07-15).
+    rc, output = _run_cmd(upgrade_cmd, use_sudo=use_sudo, timeout=1800)
     if rc != 0:
         msg = f"System update: upgrade failed ({mgr})"
         log_fn(f"ERROR: {msg}")
-        log_fn(output[:500] if output else "no output")
+        log_fn(output[-500:] if output else "no output")
         notify_fn(msg)
         return msg, True
 
@@ -315,6 +350,8 @@ def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
         parts.append(f"{after_count} held back.")
     if reboot_msg:
         parts.append(reboot_msg.strip())
+    if cask_note:
+        parts.append(cask_note)
     summary = " ".join(parts)
     log_fn(summary)
     return summary, False
