@@ -417,6 +417,18 @@ async def _http_get_health(
     return False, f"{provider_label}: HTTP {resp.status_code} {snippet}".rstrip()
 
 
+# Anthropic models that still accept a non-default ``temperature``. Sonnet 5,
+# Fable/Mythos 5, and Opus 4.7+ return HTTP 400 if sampling params are set,
+# while omitting the field is accepted by every model — so temperature is sent
+# only to legacy models known to take it.
+_CLAUDE_SAMPLING_OK = ("sonnet-4-", "opus-4-1", "opus-4-5", "opus-4-6", "haiku")
+
+
+def _claude_accepts_temperature(model: str) -> bool:
+    m = model.lower()
+    return any(tag in m for tag in _CLAUDE_SAMPLING_OK)
+
+
 # --- Multimodal image helpers ---
 
 def _encode_image_base64(path: str) -> tuple[str, str]:
@@ -522,7 +534,7 @@ class ClaudeCLIProvider(LLMProvider):
     PROGRESS_SCHEDULE = ()
     PROGRESS_INTERVAL = 600  # flat 10-minute cadence, first update included
 
-    def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
+    def __init__(self, model: str = "claude-sonnet-5", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
         # Resolve to an absolute path so sudoers can match it literally in
@@ -1660,7 +1672,7 @@ class FreeCCProvider(ClaudeCLIProvider):
 
     DEFAULT_PROXY_URL = "http://localhost:8082/v1"
 
-    def __init__(self, model: str = "claude-sonnet-4-6", api_key: str = ""):
+    def __init__(self, model: str = "claude-sonnet-5", api_key: str = ""):
         super().__init__(model, api_key)
         self._proxy_url = os.environ.get(
             "FCC_PROXY_URL", self.DEFAULT_PROXY_URL
@@ -1747,10 +1759,11 @@ class ClaudeAPIProvider(LLMProvider):
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "system": system_prompt,
             "messages": api_messages,
         }
+        if _claude_accepts_temperature(self.model):
+            body["temperature"] = temperature
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
                 resp = await client.post(self.API_URL, headers=headers, json=body)

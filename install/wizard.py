@@ -370,8 +370,8 @@ def _get_available_providers() -> list:
     return list(_ALL_LLM_PROVIDERS)
 
 DEFAULT_MODELS = {
-    "claude": "claude-sonnet-4-6",
-    "claude-api": "claude-sonnet-4-6",
+    "claude": "claude-sonnet-5",
+    "claude-api": "claude-sonnet-5",
     "codex": "gpt-5.5",
     "openai": "gpt-5.6",
     "deepseek": "deepseek-v4-flash",
@@ -383,17 +383,19 @@ DEFAULT_MODELS = {
     "ollama": "llama3.1:8b",
     "ollama-cloud": "qwen3.5:cloud",
     "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
-    "fcc": "claude-sonnet-4-6",
+    "fcc": "claude-sonnet-5",
 }
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
-# Last updated: July 18, 2026 — Anthropic verified via the claude-api reference;
+# Last updated: July 18, 2026 — Anthropic verified live against the
+# platform.claude.com models overview (Sonnet 5 GA June 30 supersedes Sonnet 4.6;
+# do NOT verify Anthropic against cached references, they lag launches);
 # Gemini + OpenRouter queried live against their /models endpoints; OpenAI, xAI,
 # DeepSeek, Kimi, MiniMax, Z.ai and Ollama Cloud verified against current docs.
 PROVIDER_MODELS = {
     "claude": [
-        ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, strong reasoning, 1M ctx (recommended)"),
+        ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, near-Opus performance, 1M ctx (recommended)"),
         ("claude-fable-5", "Claude Fable 5 — next-gen flagship, hardest coding + agentic work, uses plan quota fast"),
         ("claude-opus-4-8", "Claude Opus 4.8 — most capable, best agentic coding, 1M ctx"),
     ],
@@ -405,7 +407,7 @@ PROVIDER_MODELS = {
         ("gpt-5.3-codex", "GPT-5.3 Codex — specialist coding model, maximum coding depth"),
     ],
     "claude-api": [
-        ("claude-sonnet-4-6", "Claude Sonnet 4.6 — fast, 1M ctx, $3/$15 per MTok (recommended)"),
+        ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, 1M ctx, $3/$15 per MTok, intro $2/$10 through Aug 31 (recommended)"),
         ("claude-fable-5", "Claude Fable 5 — next-gen flagship, hardest coding + agentic work, $10/$50 per MTok"),
         ("claude-opus-4-8", "Claude Opus 4.8 — most capable, best agentic coding, 1M ctx, $5/$25 per MTok"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, 200K ctx, $1/$5 per MTok"),

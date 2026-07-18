@@ -601,6 +601,13 @@ async def restart_target(request: Request, user: dict = Depends(_get_user)):
     success, message = restart_service(target)
     if not success:
         raise HTTPException(status_code=500, detail=message)
+    if target == "bot":
+        # New code should reach both processes: this server imports the model
+        # catalog (PROVIDER_MODELS) at startup, so schedule our own restart
+        # too. Detached with a ~3s delay, so this response still lands first.
+        mini_ok, mini_msg = restart_service("miniapp")
+        if not mini_ok:
+            log.warning("miniapp self-restart failed: %s", mini_msg)
     return {"target": target, "message": message}
 
 

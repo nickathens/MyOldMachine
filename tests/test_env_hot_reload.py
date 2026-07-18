@@ -67,7 +67,7 @@ class TestEnvFileHotReload(EnvReloadBase):
         already decided precedence (pre-set process env wins over the file)."""
         os.environ.pop("LLM_MODEL", None)
         self.write_env("LLM_MODEL=from-file\n")
-        self.assertEqual(config.get_llm_model(), "claude-sonnet-4-6")
+        self.assertEqual(config.get_llm_model(), "claude-sonnet-5")
 
     def test_edit_applies_without_restart(self):
         os.environ.pop("LLM_MODEL", None)
@@ -121,7 +121,7 @@ class TestEnvFileHotReload(EnvReloadBase):
 
     def test_missing_file_is_harmless(self):
         os.environ.pop("LLM_MODEL", None)
-        self.assertEqual(config.get_llm_model(), "claude-sonnet-4-6")
+        self.assertEqual(config.get_llm_model(), "claude-sonnet-5")
 
     def test_int_getter_reloads_too(self):
         os.environ.pop("WEBHOOK_PORT", None)
