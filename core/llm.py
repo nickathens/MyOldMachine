@@ -1086,6 +1086,18 @@ class ClaudeCLIProvider(LLMProvider):
                 if self._user_processes.get(user_id) is process:
                     self._user_processes.pop(user_id, None)
                 self._stop_requested.discard(user_id)
+                # If the CLI refreshed its OAuth token during this turn, the
+                # rename it used detached this workspace's credential symlink
+                # into a private copy. Fold that fresh token back into the
+                # shared file so the other users' workspaces don't go stale.
+                # Never let a hiccup here disturb the finished turn.
+                try:
+                    from core.claude_workspace import reconcile_shared_credentials
+                    reconcile_shared_credentials(user_id)
+                except Exception as exc:
+                    logger.debug(
+                        "credential reconcile skipped for %s: %s", user_id, exc
+                    )
 
     @property
     def has_active_processes(self) -> bool:

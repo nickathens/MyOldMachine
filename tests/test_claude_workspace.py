@@ -10,6 +10,7 @@ no real users.json.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -265,6 +266,130 @@ class ClaudeWorkspaceEnvTests(WorkspaceTestBase):
             env = llm._claude_workspace_env(7)
         self.assertNotIn("CLAUDE_CONFIG_DIR", env)
         self.assertEqual(env["JARVIS_USER_ID"], "7")
+
+
+class ReconcileSharedCredentialsTests(WorkspaceTestBase):
+    """The refresh-heal that keeps the shared OAuth chain intact.
+
+    The CLI rewrites .credentials.json by renaming a temp file onto it when
+    the token refreshes, which detaches a workspace's symlink into a private
+    copy. reconcile_shared_credentials folds that refresh back into the
+    shared file and restores the symlink so no workspace goes stale.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.legacy / ".credentials.json").write_text('{"tok": "t"}')
+
+    def make_workspace(self, uid: int) -> Path:
+        return cw.ensure_user_claude_config(
+            uid, legacy_root=self.legacy, bot_dir=FAKE_BOT_DIR
+        )
+
+    def simulate_refresh(self, cfg: Path, token: bytes) -> None:
+        """Mimic the CLI's refresh write: a temp file renamed onto the
+        credential path, which detaches the symlink into a regular file."""
+        cred = cfg / ".credentials.json"
+        tmp = cfg / ".credentials.json.tmp.deadbeef"
+        tmp.write_bytes(token)
+        os.replace(tmp, cred)
+
+    def test_fresh_workspace_credential_is_a_symlink(self):
+        cfg = self.make_workspace(1)
+        self.assertTrue((cfg / ".credentials.json").is_symlink())
+
+    def test_detached_credential_propagates_and_relinks(self):
+        cfg = self.make_workspace(1)
+        self.simulate_refresh(cfg, b'{"tok": "REFRESHED"}')
+        self.assertFalse((cfg / ".credentials.json").is_symlink())  # detached
+
+        result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+
+        self.assertTrue(result)
+        self.assertEqual(
+            (self.legacy / ".credentials.json").read_bytes(), b'{"tok": "REFRESHED"}'
+        )
+        self.assertTrue((cfg / ".credentials.json").is_symlink())
+        self.assertEqual(
+            (cfg / ".credentials.json").read_bytes(), b'{"tok": "REFRESHED"}'
+        )
+
+    def test_symlinked_credential_is_a_noop(self):
+        cfg = self.make_workspace(1)
+        result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+        self.assertFalse(result)
+        self.assertTrue((cfg / ".credentials.json").is_symlink())
+        self.assertEqual(
+            (self.legacy / ".credentials.json").read_bytes(), b'{"tok": "t"}'
+        )
+
+    def test_absent_credential_is_a_noop(self):
+        # user 2 has no workspace at all; nothing to reconcile.
+        result = cw.reconcile_shared_credentials(2, legacy_root=self.legacy)
+        self.assertFalse(result)
+
+    def test_identical_detached_credential_relinks_without_rewrite(self):
+        cfg = self.make_workspace(1)
+        shared = self.legacy / ".credentials.json"
+        ino_before = shared.stat().st_ino
+        # The CLI rewrote byte-identical content (token not really refreshed).
+        self.simulate_refresh(cfg, b'{"tok": "t"}')
+
+        result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+
+        self.assertFalse(result)  # nothing new to propagate
+        self.assertTrue((cfg / ".credentials.json").is_symlink())  # still healed
+        self.assertEqual(shared.stat().st_ino, ino_before)  # shared untouched
+
+    def test_refreshed_token_reaches_the_other_workspace(self):
+        # The convergence proof: one user's refresh must reach the others.
+        a = self.make_workspace(1)
+        b = self.make_workspace(2)
+        self.assertEqual((a / ".credentials.json").read_bytes(), b'{"tok": "t"}')
+        self.assertEqual((b / ".credentials.json").read_bytes(), b'{"tok": "t"}')
+
+        self.simulate_refresh(a, b'{"tok": "REFRESHED"}')
+        self.assertTrue(cw.reconcile_shared_credentials(1, legacy_root=self.legacy))
+
+        # user 2, untouched and still symlinked, now reads the refreshed token.
+        self.assertTrue((b / ".credentials.json").is_symlink())
+        self.assertEqual(
+            (b / ".credentials.json").read_bytes(), b'{"tok": "REFRESHED"}'
+        )
+        self.assertTrue((a / ".credentials.json").is_symlink())
+
+    def test_ensure_reconverges_a_detached_credential(self):
+        # Crash-recovery net: a refresh left un-propagated by a restart is
+        # healed by the pre-turn reconcile inside ensure_user_claude_config.
+        cfg = self.make_workspace(1)
+        self.simulate_refresh(cfg, b'{"tok": "REFRESHED"}')
+
+        cfg2 = self.make_workspace(1)
+
+        self.assertEqual(cfg, cfg2)
+        self.assertTrue((cfg / ".credentials.json").is_symlink())
+        self.assertEqual(
+            (self.legacy / ".credentials.json").read_bytes(), b'{"tok": "REFRESHED"}'
+        )
+
+    def test_write_failure_does_not_raise(self):
+        cfg = self.make_workspace(1)
+        self.simulate_refresh(cfg, b'{"tok": "NEW"}')
+        with patch(
+            "core.claude_workspace.os.replace", side_effect=OSError("boom")
+        ):
+            result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+        self.assertFalse(result)  # propagation failed, but no exception escaped
+
+    def test_repeated_refresh_cycles_stay_converged(self):
+        a = self.make_workspace(1)
+        b = self.make_workspace(2)
+        for token in (b'{"tok": "r1"}', b'{"tok": "r2"}', b'{"tok": "r3"}'):
+            self.simulate_refresh(a, token)
+            cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+            self.assertTrue((a / ".credentials.json").is_symlink())
+            self.assertTrue((b / ".credentials.json").is_symlink())
+            self.assertEqual((b / ".credentials.json").read_bytes(), token)
 
 
 if __name__ == "__main__":

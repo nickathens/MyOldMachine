@@ -29,9 +29,15 @@ Credentials: the CLI's OAuth login lives in the macOS keychain, which the
 CLI only consults for the default config dir. Each workspace therefore
 gets a symlink to ONE shared .credentials.json (exported from the
 keychain once, or already present on Linux installs), so every session
-rides the same refresh chain. If no credential can be provisioned the
-workspace is refused and the turn falls back to the shared config dir,
-because a private-but-unauthenticated turn would just die.
+rides the same refresh chain. That symlink alone is not enough: the CLI
+rewrites the credential by renaming a temp file onto it whenever the OAuth
+token refreshes, and rename onto a symlink detaches it into a private
+copy, forking the token per workspace and leaving the shared file (and
+every other workspace) stale. reconcile_shared_credentials folds each
+refresh back into the shared file after the turn, so the chain actually
+holds across refreshes. If no credential can be provisioned the workspace
+is refused and the turn falls back to the shared config dir, because a
+private-but-unauthenticated turn would just die.
 
 System turns (user_id None: maintenance, health checks, nightly jobs)
 keep the process-default config dir and are unaffected.
@@ -46,6 +52,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -57,7 +64,8 @@ _BOT_DIR = Path(__file__).parent.parent.resolve()
 # via symlink. Hooks and permissions (settings*.json) and plugins are
 # machine-wide concerns; .credentials.json is deliberately ONE shared file
 # so all workspaces ride a single OAuth refresh chain instead of forking
-# the token per user (see _ensure_shared_credentials).
+# the token per user (see _ensure_shared_credentials to provision it and
+# reconcile_shared_credentials to keep the chain intact across refreshes).
 _SHARED_CONFIG_ENTRIES = (
     "settings.json",
     "settings.local.json",
@@ -134,6 +142,86 @@ def _ensure_shared_credentials(legacy_root: Path) -> bool:
     return _export_keychain_credentials(cred)
 
 
+def reconcile_shared_credentials(
+    user_id: int,
+    *,
+    legacy_root: Optional[Path] = None,
+) -> bool:
+    """Fold a per-user token refresh back into the shared credential file.
+
+    The symlink from a workspace's .credentials.json to the shared file
+    only survives until the CLI refreshes the OAuth token. On refresh the
+    CLI writes the new token to a temp file and renames it onto
+    .credentials.json; rename onto a symlink REPLACES the symlink with a
+    private regular file (proven on this macOS). After that first refresh
+    the workspace holds the freshest token privately while the shared file
+    -- and every other workspace still linked to it -- goes stale. With
+    rotated refresh tokens the stale copy soon fails to refresh, the turn
+    falls open to the shared config dir, and the per-user isolation the
+    workspace exists to provide silently unwinds.
+
+    So after every per-user CLI turn we check whether this workspace's
+    credential has detached: if it has, copy it onto the shared file
+    (atomically, and only when the bytes actually changed) and restore the
+    symlink. The shared file thus always carries the freshest token and
+    every workspace re-converges on it at its next turn. Idempotent and
+    safe to call when nothing refreshed -- a still-symlinked or absent
+    credential is a no-op. Never raises: a failure here must not fail the
+    turn it runs after.
+
+    Returns True if a refreshed credential was propagated to the shared file.
+    """
+    legacy_root = legacy_root or default_legacy_root()
+    shared = legacy_root / ".credentials.json"
+    link = user_claude_dir(user_id) / ".credentials.json"
+
+    # Still a symlink (or never created) => the CLI did not rewrite it.
+    if link.is_symlink() or not link.is_file():
+        return False
+
+    try:
+        fresh = link.read_bytes()
+    except OSError as exc:
+        logger.warning("unreadable refreshed credential %s: %s", link, exc)
+        return False
+
+    propagated = False
+    try:
+        current = shared.read_bytes() if shared.exists() else None
+    except OSError:
+        current = None
+    if current != fresh:
+        try:
+            shared.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(
+                dir=str(shared.parent), prefix=".credentials.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(fresh)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, shared)  # atomic: readers see whole old or new
+                propagated = True
+            except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            logger.warning("could not update shared credential: %s", exc)
+            return False
+
+    # Rejoin the shared refresh chain so the next turn reads the shared file.
+    try:
+        link.unlink()
+        link.symlink_to(shared)
+    except OSError as exc:
+        logger.warning("could not restore credential symlink %s: %s", link, exc)
+
+    return propagated
+
+
 def ensure_user_claude_config(
     user_id: int,
     *,
@@ -160,6 +248,14 @@ def ensure_user_claude_config(
 
     cfg = user_claude_dir(user_id)
     cfg.mkdir(parents=True, exist_ok=True)
+
+    # Heal a credential that a prior turn's token refresh detached from the
+    # shared file. The post-turn hook normally does this, but a crash or
+    # restart between the refresh and that hook would leave the private copy
+    # in place -- and the symlink loop below skips an entry that already
+    # exists as a regular file, so it could never re-link on its own. Running
+    # reconcile here first re-converges this user on the next turn.
+    reconcile_shared_credentials(user_id, legacy_root=legacy_root)
 
     for name in _SHARED_CONFIG_ENTRIES:
         src, dst = legacy_root / name, cfg / name
