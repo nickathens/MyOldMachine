@@ -134,13 +134,19 @@ def parse_natural_time(text: str) -> Optional[datetime]:
             tomorrow = now + timedelta(days=1)
             return tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
+    # A weekday anywhere in the text must win over the bare-time branch below:
+    # "at 5pm on monday" used to match the "at HH" pattern first and silently
+    # resolve to today/tomorrow, ignoring the weekday entirely.
+    weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+    weekday_in_text = any(day in text for day in weekdays)
+
     # "at HH:MM" or "at Ham/pm" — requires "at" keyword, HH:MM format, or am/pm suffix
     at_pattern = re.match(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
     if not at_pattern:
         at_pattern = re.match(r'(\d{1,2}):(\d{2})\s*(am|pm)?$', text)
     if not at_pattern:
         at_pattern = re.match(r'(\d{1,2})()\s*(am|pm)', text)
-    if at_pattern:
+    if at_pattern and not weekday_in_text:
         hm = _parse_hm(at_pattern)
         if hm:
             hour, minute = hm
@@ -150,10 +156,15 @@ def parse_natural_time(text: str) -> Optional[datetime]:
             return target
 
     # Weekday names
-    weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
     for i, day in enumerate(weekdays):
         if day in text:
+            # Same three time shapes as the branch above, searched anywhere in
+            # the string so "5pm on monday" keeps its time, not the 9:00 default.
             time_match = re.search(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
+            if not time_match:
+                time_match = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', text)
+            if not time_match:
+                time_match = re.search(r'(\d{1,2})()\s*(am|pm)', text)
             hour, minute = 9, 0
             if time_match:
                 hm = _parse_hm(time_match)
@@ -198,7 +209,8 @@ def _init_meta_db():
             created_at TEXT NOT NULL,
             run_at TEXT NOT NULL DEFAULT '',
             raw_at TEXT NOT NULL DEFAULT '',
-            created_context TEXT NOT NULL DEFAULT ''
+            created_context TEXT NOT NULL DEFAULT '',
+            recovery_attempts INTEGER NOT NULL DEFAULT 0
         )
     """)
     # Upgrade path: add columns if missing
@@ -207,6 +219,11 @@ def _init_meta_db():
             conn.execute(f"SELECT {col} FROM job_meta LIMIT 1")
         except sqlite3.OperationalError:
             conn.execute(f"ALTER TABLE job_meta ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+    # Add recovery_attempts column if missing (failed one-shot give-up counter)
+    try:
+        conn.execute("SELECT recovery_attempts FROM job_meta LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE job_meta ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0")
     # Add end_date column if missing (recurring job expiry)
     try:
         conn.execute("SELECT end_date FROM job_meta LIMIT 1")
@@ -224,6 +241,24 @@ def _init_meta_db():
 # Default timeout for command-type jobs when no per-job override is set.
 # apt-get upgrade, tar backups, etc. routinely exceed 5 minutes on slow disks.
 DEFAULT_COMMAND_TIMEOUT = 1800
+
+# One-shot jobs past due by more than this are discarded instead of recovered.
+# Applies both at startup recovery and in the running sync loop — a stale
+# reminder delivered days late is noise, and an undeliverable one must not
+# be retried forever.
+STALE_ONESHOT_SECONDS = 86400
+
+# How many times the sync loop may re-schedule a failed one-shot before it
+# gives up and alerts the admins. Without this cap, a reminder to a user who
+# blocked the bot re-fires every sync tick forever (~3 Telegram calls plus a
+# history row per cycle) until the next restart.
+MAX_RECOVERY_ATTEMPTS = 5
+
+# Execution history rows kept across ALL jobs. This DB is the only forensic
+# record of what fired ("did it run?" is answered here, never from the live
+# job list) and the nightly report reads it — keep it deep enough that one
+# noisy job cannot evict last night's evidence.
+HISTORY_MAX_ROWS = 2000
 
 
 def _init_history_db():
@@ -290,6 +325,8 @@ def _get_meta(job_id: str) -> Optional[dict]:
         d["end_date"] = None
     if "timeout_seconds" not in d:
         d["timeout_seconds"] = None
+    if "recovery_attempts" not in d:
+        d["recovery_attempts"] = 0
     return d
 
 
@@ -311,6 +348,8 @@ def _get_all_meta(user_id: int = None) -> list[dict]:
             d["end_date"] = None
         if "timeout_seconds" not in d:
             d["timeout_seconds"] = None
+        if "recovery_attempts" not in d:
+            d["recovery_attempts"] = 0
         result.append(d)
     return result
 
@@ -319,6 +358,18 @@ def _delete_meta(job_id: str):
     """Delete job metadata from SQLite."""
     conn = _connect_db(DB_PATH)
     conn.execute("DELETE FROM job_meta WHERE job_id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+
+
+def _bump_recovery_attempts(job_id: str) -> None:
+    """Count one sync-loop recovery of a failed one-shot job."""
+    conn = _connect_db(DB_PATH)
+    conn.execute(
+        "UPDATE job_meta SET recovery_attempts = COALESCE(recovery_attempts, 0) + 1 "
+        "WHERE job_id = ?",
+        (job_id,),
+    )
     conn.commit()
     conn.close()
 
@@ -332,10 +383,10 @@ def _log_execution(job_id: str, user_id: int, message: str,
         VALUES (?, ?, ?, ?, ?, ?)
     """, (job_id, user_id, message[:100], datetime.now().isoformat(),
           int(success), error))
-    # Keep only last 200 entries
-    conn.execute("""
+    # Trim to the newest HISTORY_MAX_ROWS entries
+    conn.execute(f"""
         DELETE FROM history WHERE id NOT IN (
-            SELECT id FROM history ORDER BY id DESC LIMIT 200
+            SELECT id FROM history ORDER BY id DESC LIMIT {int(HISTORY_MAX_ROWS)}
         )
     """)
     conn.commit()
@@ -958,7 +1009,40 @@ class Scheduler:
                     # to fire in a few seconds instead of using the past time.
                     # Using a past DateTrigger causes APScheduler to silently drop
                     # jobs outside misfire_grace_time.
+                    #
+                    # This is also the retry path for one-shots whose delivery
+                    # FAILED (executor keeps the meta row for recovery, the fired
+                    # APS job is gone, so the row shows up here again). Without a
+                    # bound, an undeliverable reminder loops forever: apply the
+                    # same >24h staleness cutoff startup recovery has, plus a
+                    # give-up counter with a single admin alert.
                     if not meta.get("repeat") and run_at < now:
+                        stale = (now - run_at).total_seconds() > STALE_ONESHOT_SECONDS
+                        attempts = meta.get("recovery_attempts") or 0
+                        if stale or attempts >= MAX_RECOVERY_ATTEMPTS:
+                            reason = (
+                                "past due by more than 24h"
+                                if stale else
+                                f"gave up after {attempts} failed recovery attempts"
+                            )
+                            logger.error(
+                                f"Discarding one-shot job {meta['job_id']} "
+                                f"({meta.get('name', '')}): {reason}"
+                            )
+                            _log_execution(meta["job_id"], meta["user_id"],
+                                           meta.get("message", ""), False,
+                                           f"Discarded: {reason}")
+                            _delete_meta(meta["job_id"])
+                            if not stale:
+                                self._notify_admins(
+                                    f"⚠️ Scheduler gave up on job "
+                                    f"{meta['job_id']} ({meta.get('name', '')}) "
+                                    f"for user {meta['user_id']} after {attempts} "
+                                    f"failed delivery attempts: "
+                                    f"{meta.get('message', '')[:200]}"
+                                )
+                            continue
+                        _bump_recovery_attempts(meta["job_id"])
                         run_at = now + timedelta(seconds=5)
 
                     end_date = None
@@ -1008,6 +1092,30 @@ class Scheduler:
                     f"({meta.get('name', '')}) — end_date was {end_date_str}"
                 )
 
+    def _notify_admins(self, text: str) -> None:
+        """Fire-and-forget alert to every admin. Never raises.
+
+        sync_from_meta is synchronous but runs on the event loop thread
+        (start() during post_init, and the async _sync_loop), so scheduling
+        a send task is normally possible; without a running loop the alert
+        is logged and dropped.
+        """
+        try:
+            from core.users import get_admin_telegram_ids
+            admins = get_admin_telegram_ids()
+        except Exception as e:
+            logger.error(f"Admin lookup for alert failed: {e}")
+            return
+        if not admins:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning(f"No running event loop; admin alert dropped: {text[:120]}")
+            return
+        for admin_id in admins:
+            loop.create_task(self.send_message(admin_id, text))
+
     async def _recover_missed_jobs(self):
         """Fire one-shot jobs that were missed while bot was down."""
         now = datetime.now()
@@ -1033,7 +1141,7 @@ class Scheduler:
             delay_minutes = int(delay_seconds / 60)
 
             # Skip jobs missed by more than 24 hours — stale reminders aren't useful
-            if delay_seconds > 86400:
+            if delay_seconds > STALE_ONESHOT_SECONDS:
                 logger.info(
                     f"Discarding stale missed job {meta['job_id']} "
                     f"({meta.get('name', '')}) — was due {delay_minutes}m ago (>24h)"

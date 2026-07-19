@@ -164,6 +164,27 @@ def get_allowed_users() -> list[int]:
     return base
 
 
+def get_primary_admin_id() -> Optional[int]:
+    """Return the Telegram ID that admin-facing notifications go to.
+
+    Never use get_allowed_users()[0] for this: users.json is written with
+    sort_keys=True, so the first *user* is whoever has the smallest Telegram
+    ID, not the admin. Registering any user with a smaller ID would silently
+    re-route reports and alerts to them. First admin wins; the allowed-users
+    fallback covers the bootstrap window when users.json does not exist yet
+    (ALLOWED_USERS env) and legacy installs with no admin role recorded.
+    """
+    try:
+        from core.users import get_admin_telegram_ids
+        admins = get_admin_telegram_ids()
+    except ImportError:
+        admins = []
+    if admins:
+        return admins[0]
+    allowed = get_allowed_users()
+    return allowed[0] if allowed else None
+
+
 def get_bot_name() -> str:
     return _env("BOT_NAME", "MyOldMachine")
 

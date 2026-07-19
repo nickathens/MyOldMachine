@@ -47,11 +47,11 @@ BOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BOT_DIR))
 
 from core.config import (  # noqa: E402
-    get_allowed_users,
     get_llm_api_key,
     get_llm_model,
     get_llm_provider,
     get_ollama_base_url,
+    get_primary_admin_id,
 )
 from core.users import resolve_user_dir  # noqa: E402
 from utils.safe_json import load_json, save_json  # noqa: E402
@@ -262,19 +262,23 @@ def can_draft(provider: str, model: str) -> bool:
 
 
 def token_mode(user_id: int, user_dir: Path, bot_dir: Path = BOT_DIR,
-               allowed_users: list | None = None) -> str:
+               primary_user: int | None = None) -> str:
     """Which Gmail token this user may use.
 
     'user'    = per-user token under the user's own data dir.
     'legacy'  = bot-root gmail_token.json; allowed ONLY for the primary
-                (first allowed) user, so a second user on a shared install
-                can never read the owner's mailbox through triage.
+                admin (the machine owner), so a second user on a shared
+                install can never read the owner's mailbox through triage.
+                This gate must never be "first allowed user": the allowed
+                list is sorted by Telegram ID, so registering a user with
+                a smaller ID would hand them the owner's mailbox.
     'missing' = no usable token; the user must auth via gmail.py first.
     """
     if (user_dir / "google" / "gmail_token.json").exists():
         return "user"
-    allowed = get_allowed_users() if allowed_users is None else allowed_users
-    if (bot_dir / "gmail_token.json").exists() and allowed and user_id == allowed[0]:
+    if primary_user is None:
+        primary_user = get_primary_admin_id()
+    if (bot_dir / "gmail_token.json").exists() and primary_user and user_id == primary_user:
         return "legacy"
     return "missing"
 

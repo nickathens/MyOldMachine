@@ -32,6 +32,7 @@ load_dotenv(Path(__file__).parent / ".env")
 from core.config import (
     BOT_DIR, DATA_DIR, USERS_DIR, SKILLS_DIR,
     get_telegram_token, get_telegram_api_base, get_allowed_users,
+    get_primary_admin_id,
     get_bot_name, get_llm_provider, get_llm_model, get_llm_api_key,
     get_background_model, get_ollama_base_url, get_user_profile, is_admin,
     LOG_DIR,
@@ -3504,9 +3505,8 @@ def _setup_reflection_job(scheduler):
     venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
     reflect_script = str(BOT_DIR / "utils" / "reflect.py")
 
-    # Get admin user for notifications
-    allowed = get_allowed_users()
-    admin_id = allowed[0] if allowed else 0
+    # Get admin user for notifications (first admin, never first-by-ID user)
+    admin_id = get_primary_admin_id() or 0
 
     scheduler.add_job(
         user_id=admin_id,
@@ -3530,8 +3530,9 @@ def _setup_maintenance_jobs(scheduler):
     existing_names = {meta.get("name") for meta in existing}
 
     venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
-    allowed = get_allowed_users()
-    admin_id = allowed[0] if allowed else 0
+    # First admin, never first-by-ID user: failure alerts and job ownership
+    # must not re-route to whichever registered user happens to sort first.
+    admin_id = get_primary_admin_id() or 0
 
     config = load_config()
 
