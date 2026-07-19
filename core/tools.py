@@ -662,6 +662,35 @@ BLOCKED_WRITE_PATHS = [
 ] + _BOT_CORE_FILES  # Protect bot's own venv, core/, bot.py, .env
 
 
+def _expand_write_block_anchors(paths) -> list:
+    """Pair each blocklist entry with every anchor it must match against.
+
+    Candidates are compared fully resolved, so each entry must also be
+    present in resolved form: on macOS /etc and /var are symlinks into
+    /private, which silently killed every literal /etc entry -- a candidate
+    "/etc/passwd" resolved to "/private/etc/passwd" and matched nothing.
+    Resolving the anchors blocks both spellings on macOS and is a no-op on
+    Linux, where these paths are real directories.
+    """
+    pairs = []
+    for blocked in paths:
+        # Normalize trailing slash so file and directory entries compare equally.
+        anchor = blocked.rstrip("/")
+        if not anchor:
+            continue
+        variants = {anchor}
+        try:
+            variants.add(str(Path(anchor).resolve()))
+        except OSError:
+            pass
+        for variant in sorted(variants):
+            pairs.append((blocked, variant))
+    return pairs
+
+
+_WRITE_BLOCK_ANCHOR_PAIRS = _expand_write_block_anchors(BLOCKED_WRITE_PATHS)
+
+
 _COMPILED_BLOCKED = [re.compile(p) for p in BLOCKED_PATTERNS]
 
 
@@ -895,11 +924,7 @@ def _is_write_blocked(path: str) -> str | None:
     after the prefix to be ``/`` so that only true children are blocked.
     """
     resolved = str(Path(path).expanduser().resolve())
-    for blocked in BLOCKED_WRITE_PATHS:
-        # Normalize trailing slash so file and directory entries compare equally.
-        anchor = blocked.rstrip("/")
-        if not anchor:
-            continue
+    for blocked, anchor in _WRITE_BLOCK_ANCHOR_PAIRS:
         if resolved == anchor or resolved.startswith(anchor + "/"):
             return f"Blocked: cannot write to protected path: {blocked}"
     return None
