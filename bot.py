@@ -3752,6 +3752,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "  /maintenance backup-passphrase  (borg only, admin)",
             "  /maintenance updates on|off",
             "  /maintenance cleanup on|off",
+            "  /maintenance reaper on|off",
         ]
         if platform.system() == "Darwin":
             cmd_lines.append("  /maintenance macos-updates on|off")
@@ -3761,6 +3762,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "  /maintenance run backup",
             "  /maintenance run update",
             "  /maintenance run cleanup",
+            "  /maintenance run reaper",
         ]
         report += "\n".join(cmd_lines)
         await update.message.reply_text(report)
@@ -4019,6 +4021,28 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("Usage: /maintenance cleanup on|off")
         return
 
+    # --- /maintenance reaper on|off (idle heavyweight-app janitor) ---
+    # No scheduled job to add/remove: the reaper loop is always running and
+    # reads this flag each sweep, so a toggle takes effect within ~2 minutes.
+    if subcmd == "reaper":
+        if arg.lower() in ("on", "true", "yes", "1"):
+            update_config(reap_idle_apps=True)
+            mins = load_config().get("reap_idle_app_minutes", 20)
+            await update.message.reply_text(
+                f"Idle-app reaper enabled. Orphaned LibreOffice, GIMP, Inkscape and "
+                f"Blender processes are closed once they sit idle for {mins} minutes. "
+                f"Active renders and conversions are never touched."
+            )
+        elif arg.lower() in ("off", "false", "no", "0"):
+            update_config(reap_idle_apps=False)
+            await update.message.reply_text(
+                "Idle-app reaper disabled. Heavyweight helper apps will stay resident "
+                "until they exit on their own or the machine restarts."
+            )
+        else:
+            await update.message.reply_text("Usage: /maintenance reaper on|off")
+        return
+
     # --- /maintenance macos-updates on|off (Apple softwareupdate sub-toggle) ---
     if subcmd == "macos-updates":
         if platform.system() != "Darwin":
@@ -4083,9 +4107,25 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             from utils.cleanup import run_cleanup
             result = await asyncio.to_thread(run_cleanup)
             await update.message.reply_text(result)
+        elif task == "reaper":
+            await update.message.reply_text("Sweeping for idle helper apps...")
+            from utils.process_reaper import reap_idle_apps
+            # Force the sweep to run regardless of the config toggle, so the
+            # admin can always trigger a manual cleanup on demand.
+            cfg = load_config()
+            cfg["reap_idle_apps"] = True
+            reaped = await reap_idle_apps(config=cfg)
+            if reaped:
+                freed = sum(c["rss_mb"] for c in reaped)
+                names = ", ".join(sorted({c["name"] for c in reaped}))
+                await update.message.reply_text(
+                    f"Closed {len(reaped)} idle app(s) ({names}), freed ~{freed:.0f} MB."
+                )
+            else:
+                await update.message.reply_text("No idle helper apps to close.")
         else:
             await update.message.reply_text(
-                "Usage: /maintenance run backup|update|cleanup"
+                "Usage: /maintenance run backup|update|cleanup|reaper"
             )
         return
 

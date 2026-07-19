@@ -49,6 +49,13 @@ DEFAULT_CONFIG = {
     # Auto-restart if any update requires it. Off by default so the nightly
     # job never surprise-reboots a workstation. Ignored unless macos_system_updates is on.
     "macos_system_updates_restart": False,
+    # Close idle, orphaned heavyweight helper apps (LibreOffice, GIMP, Inkscape,
+    # Blender) that skills spawn headless and leave resident. On by default: the
+    # process reaper only touches an app that is BOTH older than the window below
+    # AND sitting near-idle on CPU, so live renders/conversions are never hit.
+    "reap_idle_apps": True,
+    # How many minutes a listed app may sit idle before it is closed.
+    "reap_idle_app_minutes": 20,
 }
 
 
@@ -104,6 +111,13 @@ def get_status_report() -> str:
         lines.append("Cleanup: ON (nightly)")
     else:
         lines.append("Cleanup: OFF")
+
+    # Idle-app reaper (closes orphaned LibreOffice/GIMP/Inkscape/Blender)
+    if config.get("reap_idle_apps", True):
+        mins = config.get("reap_idle_app_minutes", 20)
+        lines.append(f"Idle-app reaper: ON (closes idle helper apps after {mins} min)")
+    else:
+        lines.append("Idle-app reaper: OFF")
 
     # Backup
     if config.get("backup_enabled"):
