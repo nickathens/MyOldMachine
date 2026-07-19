@@ -53,6 +53,11 @@ class EidikotitaTests(unittest.TestCase):
         hits = eidikotita.find("φερουσα τοιχοποιια και σεισμος")
         self.assertEqual(hits[0]["slug"], "politikos")
 
+    def test_routing_wastewater_phrase(self):
+        hits = eidikotita.find("οξειδωτικη ταφρος επεξεργασιας αστικων λυματων")
+        self.assertEqual(hits[0]["slug"], "perivallontikos")
+        self.assertIn("lymata.py", hits[0]["tools"])
+
     def test_accent_and_case_insensitive(self):
         upper = eidikotita.find("ΠΤΩΣΗ ΤΑΣΗΣ")
         accented = eidikotita.find("πτώση τάσης")
@@ -79,8 +84,13 @@ class KanonismoiTests(unittest.TestCase):
 
     def test_expected_domains_present(self):
         for slug in ("nok", "xorotaxia", "eurocodes", "energeia", "afthaireta",
-                     "proseismikos", "e-adeies"):
+                     "proseismikos", "e-adeies", "astika-lymata"):
             self.assertIn(slug, kanonismoi.DOMAINS)
+
+    def test_wastewater_domain_names_transposition(self):
+        d = kanonismoi.DOMAINS["astika-lymata"]
+        self.assertIn("2024/3019", d["katastasi"])
+        self.assertIn("5673/400/1997", d["katastasi"])
 
     def test_freshness_zero_age_on_verification_day(self):
         day = dt.date.fromisoformat(kanonismoi.DOMAINS["nok"]["as_of"])
@@ -89,8 +99,10 @@ class KanonismoiTests(unittest.TestCase):
             self.assertFalse(r["stale"])
 
     def test_freshness_flags_stale_after_limit(self):
-        day = dt.date.fromisoformat(kanonismoi.DOMAINS["nok"]["as_of"])
-        rows = kanonismoi.freshness(today=day + dt.timedelta(days=kanonismoi.STALE_DAYS + 1))
+        # Base the threshold on the newest domain, so the "all stale" assertion
+        # holds even when domains carry different verification dates.
+        latest = max(dt.date.fromisoformat(d["as_of"]) for d in kanonismoi.DOMAINS.values())
+        rows = kanonismoi.freshness(today=latest + dt.timedelta(days=kanonismoi.STALE_DAYS + 1))
         self.assertTrue(all(r["stale"] for r in rows))
 
 
@@ -321,6 +333,30 @@ class FakelosTests(unittest.TestCase):
         r = fakelos.check("allagi-xrisis")
         self.assertLess(len(r["kena"]), len(fakelos.check("nea-oikodomi")["kena"]))
 
+    def test_eel_type_is_environmental_not_building(self):
+        # The ΕΕΛ dossier must carry the environmental licensing items and must
+        # NOT drag in building-permit studies like the coverage diagram.
+        eel = fakelos.check("eel")
+        slugs = [k["slug"] for k in eel["kena"]] + \
+            [q["slug"] for q in eel["anoixtes_erotiseis"]] + eel["plires"]
+        self.assertIn("mpe", slugs)
+        self.assertIn("aepo", slugs)
+        self.assertIn("meleti-eel", slugs)
+        self.assertNotIn("diagramma-kalypsis", slugs)
+        self.assertNotIn("architektoniki", slugs)
+
+    def test_eel_elements_excluded_from_building_types(self):
+        for typos in ("nea-oikodomi", "prosthiki"):
+            slugs = fakelos.TYPOI[typos]["stoixeia"]
+            for eel_only in fakelos._EEL_STOIXEIA:
+                self.assertNotIn(eel_only, slugs, f"{eel_only} leaked into {typos}")
+
+    def test_eel_conditional_discharge_stays_a_question(self):
+        r = fakelos.check("eel")
+        self.assertIn("adeia-diathesis", [q["slug"] for q in r["anoixtes_erotiseis"]])
+        r2 = fakelos.check("eel", synthikes_isxyoun=["adeia-diathesis"])
+        self.assertIn("adeia-diathesis", [k["slug"] for k in r2["kena"]])
+
     def test_rejects_unknown_type_and_item(self):
         with self.assertRaises(ValueError):
             fakelos.check("gefyra")
@@ -366,7 +402,8 @@ class SkillIntegrityTests(unittest.TestCase):
     def test_verify_tag_is_pervasive(self):
         # The honesty protocol must actually appear in every scaffolding script.
         for name in ("fortia.py", "plaisio.py", "ilektrologika.py", "michanologika.py",
-                     "afthaireta.py", "domisi.py", "proseismikos.py", "fakelos.py"):
+                     "afthaireta.py", "domisi.py", "proseismikos.py", "fakelos.py",
+                     "lymata.py"):
             text = (SCRIPTS / name).read_text(encoding="utf-8")
             self.assertIn("ΕΠΑΛΗΘΕΥΣΕ", text, f"{name} lacks the verify tag")
 

@@ -2,9 +2,10 @@
 
 Technical and regulatory assistant for engineering practice in Greece, across
 the specialties that meet on a building: πολιτικός μηχανικός, αρχιτέκτονας,
-ηλεκτρολόγος, μηχανολόγος, and the roles beside them. One shared regulatory
-spine, one figure discipline, and deterministic calculation engines that show
-their work and check themselves. It serves two audiences from one skill: an
+ηλεκτρολόγος, μηχανολόγος, and the roles beside them, now reaching its first
+work beyond the building with the μηχανικός περιβάλλοντος for wastewater
+treatment. One shared regulatory spine, one figure discipline, and
+deterministic calculation engines that show their work and check themselves. It serves two audiences from one skill: an
 owner who needs plain Greek orientation, and an engineer who needs numbers
 with assumptions tagged, sources dated, and limits stated. It is an aid for
 work done under the responsibility of a licensed engineer. It never replaces
@@ -98,6 +99,10 @@ One spine, per specialty packs. Route a work phrase with
   intervals (ilektrologika.py), dossier precheck.
 - **michanologos**: heating loop hydraulics and pump duty
   (michanologika.py), dossier precheck, regulatory picture.
+- **perivallontikos**: urban wastewater treatment, activated sludge sizing and
+  oxidation ditch geometry (lymata.py), the ΕΕΛ environmental dossier
+  (fakelos.py), regulatory picture. The first branch beyond the building; v1
+  is wastewater process design only.
 - **energeiakos, topografos**: routed with the shared tools now, full packs
   in a later stage (see roadmap).
 
@@ -176,7 +181,21 @@ command. Optional upgrades are stated per engine and never required.
   topografiko,statiki` lists what is missing, what is conditionally open,
   who signs each item, and what the reviewer would strike. `... list` and
   `... eidikotites` print the catalog. A building is where all the μελέτες
-  must agree; this is the single list they agree against.
+  must agree; this is the single list they agree against. The same tool covers
+  the environmental world: `... check --typos eel` prechecks the ΕΕΛ dossier
+  (ΜΠΕ ή ΠΠΔ, ΑΕΠΟ, process and tank studies, sludge management), which is a
+  permit of environmental approval, not a building permit.
+- **Wastewater treatment**: `python $SKILL_DIR/scripts/lymata.py
+  diastasiologisi --ik 2000` sizes the activated sludge biological stage by
+  the Metcalf & Eddy / DWA-A 131 mass balance: reactor volume, HRT, F/M,
+  volumetric load, sludge production and oxygen demand (with optional
+  nitrification via `--tkn`), each value flagged against its typical range;
+  `... tafros --v 1200 --vathos 3.5 --platos 4.0` turns the process volume
+  into oxidation ditch loop geometry and the circulation duty for the 0.3 m/s
+  suspension velocity; `... ides` prints the tagged design values. The F/M
+  and volumetric loading identity is enforced at runtime. The method and its
+  sources live in `reference/perivallontikos.md`. This is the μηχανικός
+  περιβάλλοντος pack, v1 scoped to wastewater process design.
 
 ## Interfaces to professional tooling
 
@@ -225,6 +244,11 @@ under `reference/` carry the dated picture.
   diepafes.md; reference packs kanonistiko-2026.md, eurocodes.md, diktya.md.
   Offline tests for every engine, worked examples with self checking
   identities.
+- Stage 1b (shipped): the μηχανικός περιβάλλοντος branch, the first beyond the
+  building. Wastewater process engine (lymata.py: activated sludge sizing and
+  oxidation ditch geometry), the astika-lymata regulatory domain, the ΕΕΛ
+  environmental dossier type in fakelos.py, and reference/perivallontikos.md.
+  v1 is deliberately scoped to wastewater process design only.
 - Stage 2a (next): the αμοιβές engine. Deliberately NOT shipped in stage 1:
   the fee coefficient tables must be transcribed from the primary sources,
   never from model memory, and that transcription is its own careful task.
@@ -233,7 +257,9 @@ under `reference/` carry the dated picture.
   text itself with a fetcher, so old to new citations resolve offline.
 - Stage 3: per specialty deepening. ΚΕΝΑΚ energy engine once the EPBD
   transposition lands, πυροπροστασία rules engine, τοπογράφος pack with
-  ΕΓΣΑ '87 transformations, ενεργειακός pack.
+  ΕΓΣΑ '87 transformations, ενεργειακός pack. Environmental branch beyond
+  wastewater (water supply networks, solid waste, air, noise, ΜΠΕ tooling)
+  only on real demand, each with its own primary source pass.
 - Stage 4: interop. SAF export for structural models, IFC through
   ifcopenshell in an isolated venv, DWG bridge automation, and optionally an
   MCP server exposing the engines to an engineer's own machine.
