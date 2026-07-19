@@ -793,6 +793,27 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("You have full access to the operating system through tool calls. "
                      "You can run commands, read and write files, install software, "
                      "manage files, and configure services.")
+        # Soft multi-user model: one OS account, several Telegram users.
+        # Conversations and memory are per user, but the filesystem is
+        # shared -- without this guard the model tends to attribute any
+        # uncommitted work it finds on disk to whoever is currently talking
+        # (2026-07-19 incident: one user's animation presented to another
+        # user as their own work).
+        try:
+            from core.users import list_users as _list_users
+            _multiuser = len(_list_users()) > 1
+        except Exception:
+            _multiuser = False
+        if _multiuser:
+            parts.append(
+                "This machine hosts multiple Telegram users behind one OS account. "
+                "Conversations and memory are private per user, but the filesystem, "
+                "installed software, and project folders are shared. Files, "
+                "uncommitted changes, or running work you find on disk may have "
+                "been produced by another user's session. Never present shared "
+                "machine state as this user's own work unless you can trace it to "
+                "this user; if the origin is unclear, say so plainly."
+            )
         if not is_cli_provider:
             parts.append(
                 "You have 5 tools available:\n"
