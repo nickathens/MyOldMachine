@@ -6,8 +6,11 @@ asyncio.create_subprocess_shell raised before `success` was assigned.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
+import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -184,6 +187,162 @@ class SendMessageTimeoutDedupTests(unittest.TestCase):
         result = self._run(scheduler._send_with_retry(sched, 123, "hi"))
         self.assertTrue(result)
         sched.send_message.assert_called_once()
+
+
+class ParseWeekdayTimeTests(unittest.TestCase):
+    """A weekday anywhere in the text must win over the bare-time branch.
+
+    'at 5pm on monday' used to resolve to today/tomorrow 17:00 with the
+    weekday silently dropped, while 'monday at 5pm' parsed correctly.
+    """
+
+    def test_at_time_on_weekday_keeps_weekday(self):
+        result = scheduler.parse_natural_time("at 5pm on monday")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.weekday(), 0)
+        self.assertEqual((result.hour, result.minute), (17, 0))
+
+    def test_bare_time_on_weekday_keeps_both_time_and_weekday(self):
+        result = scheduler.parse_natural_time("5pm on friday")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.weekday(), 4)
+        self.assertEqual((result.hour, result.minute), (17, 0))
+
+    def test_hhmm_on_weekday(self):
+        result = scheduler.parse_natural_time("at 17:30 on tuesday")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.weekday(), 1)
+        self.assertEqual((result.hour, result.minute), (17, 30))
+
+    def test_weekday_first_unchanged(self):
+        result = scheduler.parse_natural_time("monday at 5pm")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.weekday(), 0)
+        self.assertEqual((result.hour, result.minute), (17, 0))
+
+    def test_weekday_with_bare_hhmm(self):
+        result = scheduler.parse_natural_time("friday 17:30")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.weekday(), 4)
+        self.assertEqual((result.hour, result.minute), (17, 30))
+
+    def test_weekday_alone_defaults_to_9am(self):
+        result = scheduler.parse_natural_time("on wednesday")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.weekday(), 2)
+        self.assertEqual((result.hour, result.minute), (9, 0))
+
+    def test_plain_at_time_without_weekday_unchanged(self):
+        result = scheduler.parse_natural_time("at 3pm")
+        self.assertIsNotNone(result)
+        self.assertEqual((result.hour, result.minute), (15, 0))
+
+
+class SyncGiveUpTests(unittest.TestCase):
+    """The sync loop must not re-schedule a failed one-shot forever.
+
+    Chain being killed: one-shot delivery fails -> executor keeps meta 'for
+    recovery' -> fired APS job is gone -> sync re-adds it 5s out -> fires,
+    fails again -> repeat every tick until restart. There was no attempt
+    counter and the >24h staleness cutoff existed only in startup recovery.
+    """
+
+    def _sch(self):
+        sch = scheduler.Scheduler.__new__(scheduler.Scheduler)
+        sch._aps = MagicMock()
+        sch._aps.get_jobs.return_value = []
+        sch._notify_admins = MagicMock()
+        return sch
+
+    def _meta(self, attempts=0, minutes_past=5, repeat=None):
+        return {
+            "job_id": "j1", "user_id": 42, "message": "hello",
+            "job_type": "reminder", "name": "test-reminder", "notify": True,
+            "command": None, "log_file": None, "repeat": repeat,
+            "weekdays": None, "channel": "telegram",
+            "created_at": datetime.now().isoformat(),
+            "run_at": (datetime.now() - timedelta(minutes=minutes_past)).isoformat(),
+            "raw_at": "", "created_context": "", "end_date": None,
+            "timeout_seconds": None, "recovery_attempts": attempts,
+        }
+
+    def test_fresh_past_oneshot_rescheduled_and_counted(self):
+        sch = self._sch()
+        with patch.object(scheduler, "_get_all_meta", return_value=[self._meta(attempts=0)]), \
+             patch.object(scheduler, "_bump_recovery_attempts") as bump, \
+             patch.object(scheduler, "_delete_meta") as delete, \
+             patch.object(scheduler, "_log_execution"):
+            sch.sync_from_meta()
+        sch._aps.add_job.assert_called_once()
+        bump.assert_called_once_with("j1")
+        delete.assert_not_called()
+        sch._notify_admins.assert_not_called()
+
+    def test_exhausted_oneshot_discarded_with_admin_alert(self):
+        sch = self._sch()
+        meta = self._meta(attempts=scheduler.MAX_RECOVERY_ATTEMPTS)
+        with patch.object(scheduler, "_get_all_meta", return_value=[meta]), \
+             patch.object(scheduler, "_bump_recovery_attempts") as bump, \
+             patch.object(scheduler, "_delete_meta") as delete, \
+             patch.object(scheduler, "_log_execution") as log:
+            sch.sync_from_meta()
+        sch._aps.add_job.assert_not_called()
+        bump.assert_not_called()
+        delete.assert_called_once_with("j1")
+        sch._notify_admins.assert_called_once()
+        self.assertFalse(log.call_args.args[3])  # logged as failure
+
+    def test_stale_oneshot_discarded_without_alert(self):
+        sch = self._sch()
+        meta = self._meta(attempts=0, minutes_past=25 * 60)  # >24h past due
+        with patch.object(scheduler, "_get_all_meta", return_value=[meta]), \
+             patch.object(scheduler, "_bump_recovery_attempts"), \
+             patch.object(scheduler, "_delete_meta") as delete, \
+             patch.object(scheduler, "_log_execution"):
+            sch.sync_from_meta()
+        sch._aps.add_job.assert_not_called()
+        delete.assert_called_once_with("j1")
+        sch._notify_admins.assert_not_called()
+
+    def test_recurring_job_never_hits_giveup(self):
+        sch = self._sch()
+        meta = self._meta(attempts=99, repeat="daily")
+        with patch.object(scheduler, "_get_all_meta", return_value=[meta]), \
+             patch.object(scheduler, "_bump_recovery_attempts") as bump, \
+             patch.object(scheduler, "_delete_meta") as delete, \
+             patch.object(scheduler, "_log_execution"):
+            sch.sync_from_meta()
+        sch._aps.add_job.assert_called_once()
+        bump.assert_not_called()
+        delete.assert_not_called()
+
+
+class HistoryCapTests(unittest.TestCase):
+    """History is the only forensic record; the cap must hold at 2000 rows."""
+
+    def test_cap_keeps_newest_2000(self):
+        with tempfile.TemporaryDirectory() as td:
+            hist = Path(td) / "history.db"
+            with patch.object(scheduler, "SCHEDULER_DIR", Path(td)), \
+                 patch.object(scheduler, "HISTORY_DB_PATH", hist):
+                scheduler._init_history_db()
+                conn = sqlite3.connect(str(hist))
+                conn.executemany(
+                    "INSERT INTO history (job_id, user_id, message, executed_at, success, error) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [(f"j{i}", 1, "m", "2026-01-01T00:00:00", 1, None) for i in range(2500)],
+                )
+                conn.commit()
+                conn.close()
+                scheduler._log_execution("newest", 1, "m", True)
+                conn = sqlite3.connect(str(hist))
+                count = conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+                newest = conn.execute(
+                    "SELECT job_id FROM history ORDER BY id DESC LIMIT 1"
+                ).fetchone()[0]
+                conn.close()
+        self.assertEqual(count, scheduler.HISTORY_MAX_ROWS)
+        self.assertEqual(newest, "newest")
 
 
 if __name__ == "__main__":

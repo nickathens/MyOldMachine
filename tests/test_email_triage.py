@@ -214,21 +214,29 @@ class TestTokenMode(unittest.TestCase):
         token.parent.mkdir(parents=True)
         token.write_text("{}")
         self.assertEqual(
-            token_mode(111, self.user_dir, self.bot_dir, allowed_users=[222, 111]),
+            token_mode(111, self.user_dir, self.bot_dir, primary_user=222),
             "user")
 
-    def test_legacy_token_only_for_primary_user(self):
+    def test_legacy_token_only_for_primary_admin(self):
         (self.bot_dir / "gmail_token.json").write_text("{}")
         self.assertEqual(
-            token_mode(111, self.user_dir, self.bot_dir, allowed_users=[111, 222]),
+            token_mode(111, self.user_dir, self.bot_dir, primary_user=111),
             "legacy")
         self.assertEqual(
-            token_mode(222, self.user_dir, self.bot_dir, allowed_users=[111, 222]),
+            token_mode(222, self.user_dir, self.bot_dir, primary_user=111),
+            "missing")
+
+    def test_legacy_token_not_granted_by_smaller_user_id(self):
+        # The old gate was allowed[0] (smallest Telegram ID). A non-admin
+        # with a smaller ID must NOT reach the owner's mailbox.
+        (self.bot_dir / "gmail_token.json").write_text("{}")
+        self.assertEqual(
+            token_mode(111, self.user_dir, self.bot_dir, primary_user=222),
             "missing")
 
     def test_no_token_missing(self):
         self.assertEqual(
-            token_mode(111, self.user_dir, self.bot_dir, allowed_users=[111]),
+            token_mode(111, self.user_dir, self.bot_dir, primary_user=111),
             "missing")
 
 

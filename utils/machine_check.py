@@ -18,8 +18,8 @@ and is protected from then on, while a capability that drops out stays flagged u
 returns or is explicitly re-blessed with --capture. That high-water-mark policy is what
 keeps a vanished tool from silently becoming the new "normal" on the next run.
 
-Design mirrors utils/nightly_report.py: reuse core.config.get_allowed_users for the admin
-id and shell out to utils/send_to_telegram.py for the ping (which reloads the token from
+Design mirrors utils/nightly_report.py: reuse core.config.get_primary_admin_id for the
+admin id and shell out to utils/send_to_telegram.py for the ping (which reloads the token from
 .env itself, so the alert survives the scheduler's secret-stripped environment).
 
 Usage:
@@ -196,15 +196,14 @@ def notify_admin(message: str, user_id: int) -> bool:
 
 
 def _resolve_admin(explicit: int | None) -> int | None:
-    """Admin Telegram id: explicit flag wins, else the first allowed user."""
+    """Admin Telegram id: explicit flag wins, else the first admin user."""
     if explicit:
         return explicit
     try:
-        from core.config import get_allowed_users
-        allowed = get_allowed_users()
+        from core.config import get_primary_admin_id
+        return get_primary_admin_id()
     except Exception:
         return None
-    return allowed[0] if allowed else None
 
 
 def main(argv=None) -> int:

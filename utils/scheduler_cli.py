@@ -6,11 +6,16 @@ This CLI writes directly to the job_meta SQLite database.
 The running bot's APScheduler sync loop (every 60s) picks up new jobs automatically.
 
 Usage:
-    # Reminders
+    # Reminders (a text message delivered at the set time)
     python scheduler_cli.py add --user 12345 --at "2026-02-17 08:00" --message "Pay rent"
     python scheduler_cli.py add --user 12345 --at "tomorrow 09:00" --message "Call dentist"
     python scheduler_cli.py add --user 12345 --at "in 30 minutes" --message "Check oven"
     python scheduler_cli.py add --user 12345 --at "09:00" --message "Countdown" --repeat daily --until "2026-03-17 09:00"
+
+    # Agent tasks (wakes the assistant to actually DO the thing at the set
+    # time — a reminder only texts about it). --no-notify runs it silently.
+    python scheduler_cli.py add --user 12345 --at "14:25" --type agent --message "Attempt the Higgsfield login and report the result"
+    python scheduler_cli.py add --user 12345 --at "07:00" --type agent --repeat daily --no-notify --message "Refresh the news digest cache"
 
     # Update (reword without losing the schedule)
     python scheduler_cli.py update --id abc123 --user 12345 --message "New reminder text"
@@ -52,8 +57,20 @@ def parse_time(time_str: str) -> datetime:
 
 
 def cmd_add(args):
-    """Add a new reminder."""
+    """Add a new reminder or agent job."""
     run_at = parse_time(args.at)
+
+    # A past one-shot does not error out in the engine — the sync loop treats
+    # it as missed and fires it ~65s after creation. So a typo'd year goes off
+    # immediately, possibly at night. Mirror the Mini App's guard and make
+    # fire-now an explicit choice. Recurring jobs are exempt: their run_at is
+    # just the time-of-day anchor.
+    if not args.repeat and run_at < datetime.now() and not args.allow_past:
+        print(f"ERROR: Cannot schedule a one-time event in the past "
+              f"({run_at:%Y-%m-%d %H:%M}).")
+        print("  A past one-shot fires immediately on the next sync (~60s). "
+              "If that is intended, pass --allow-past.")
+        return 1
 
     # Parse end date if provided
     end_date = None
@@ -69,9 +86,9 @@ def cmd_add(args):
         job_id=job_id,
         user_id=args.user,
         message=args.message,
-        job_type="reminder",
+        job_type=args.type,
         name=args.message[:50],
-        notify=True,
+        notify=not args.no_notify,
         repeat=args.repeat,
         run_at=run_at,
         raw_at=args.at,
@@ -80,7 +97,7 @@ def cmd_add(args):
     )
     repeat_text = f" (repeats {args.repeat})" if args.repeat else ""
     until_text = f" (until {end_date.strftime('%Y-%m-%d %H:%M')})" if end_date else ""
-    print(f"Added job {job_id} for {run_at:%Y-%m-%d %H:%M}{repeat_text}{until_text}: {args.message}")
+    print(f"Added {args.type} job {job_id} for {run_at:%Y-%m-%d %H:%M}{repeat_text}{until_text}: {args.message}")
     print("The bot will pick this up within 60 seconds.")
     return 0
 
@@ -194,15 +211,23 @@ def cmd_remove(args):
     return 0
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scheduler CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # add
-    add_p = sub.add_parser("add", help="Add a reminder")
+    add_p = sub.add_parser("add", help="Add a reminder or agent job")
     add_p.add_argument("--user", type=int, required=True, help="Telegram user ID")
     add_p.add_argument("--at", type=str, required=True, help="When: 'YYYY-MM-DD HH:MM', 'tomorrow 09:00', 'in 30 minutes'")
-    add_p.add_argument("--message", type=str, required=True, help="Reminder message")
+    add_p.add_argument("--message", type=str, required=True, help="Reminder text, or the task for --type agent")
+    add_p.add_argument("--type", type=str, default="reminder",
+                       choices=["reminder", "agent"],
+                       help="reminder = text the message at the set time; "
+                            "agent = wake the assistant to perform the message as a task")
+    add_p.add_argument("--no-notify", action="store_true",
+                       help="Agent jobs: don't send the task result to the user (run silently)")
+    add_p.add_argument("--allow-past", action="store_true",
+                       help="Allow a one-time job in the past (fires immediately on next sync)")
     add_p.add_argument("--repeat", type=str, default=None,
                        choices=["daily", "weekly", "biweekly", "monthly"],
                        help="Repeat schedule")
@@ -226,7 +251,11 @@ def main():
     rm_p.add_argument("--user", type=int, default=None, help="User ID (ownership check)")
     rm_p.add_argument("--force", action="store_true", help="Allow removing system command jobs")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
 
     from utils.session_guard import enforce as _enforce_session_user
     if getattr(args, "user", None) is not None:
