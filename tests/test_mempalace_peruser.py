@@ -13,9 +13,15 @@ import importlib.util
 import json
 import sqlite3
 import sys
+import unittest
 from pathlib import Path
 
-import pytest
+try:
+    import pytest
+except ImportError as exc:  # unittest-discover runs without pytest installed
+    raise unittest.SkipTest(
+        "pytest not installed; this module is a pytest suite"
+    ) from exc
 
 ROOT = Path(__file__).resolve().parent.parent
 SYNC_PATH = ROOT / "skills" / "mempalace" / "scripts" / "mempalace_sync.py"
