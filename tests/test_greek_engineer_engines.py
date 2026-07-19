@@ -21,6 +21,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import fortia  # noqa: E402
 import ilektrologika  # noqa: E402
+import lymata  # noqa: E402
 import michanologika  # noqa: E402
 import plaisio  # noqa: E402
 
@@ -323,6 +324,112 @@ class MichanologikaTests(unittest.TestCase):
             michanologika.friction_factor(0, 0.0)
 
 
+class LymataDiastasiologisiTests(unittest.TestCase):
+    """Ισοζύγιο μάζας ενεργού ιλύος (Metcalf & Eddy / DWA-A 131). Οι τιμές
+    αναφοράς επαληθεύονται από τη μέθοδο: για 2000 ι.κ. με τις τυπικές
+    παραμέτρους, So = 300 mg/L, Yobs = 0.294, V = 269.5 m3, HRT = 16.2 h."""
+
+    def test_worked_example_2000_pe(self):
+        r = lymata.diastasiologisi(ik=2000)
+        self.assertAlmostEqual(r["eisodos"]["So_mg_L"], 300.0)
+        self.assertAlmostEqual(r["eisodos"]["fortio_kgBOD_d"], 120.0)
+        self.assertAlmostEqual(r["eisodos"]["paroxi_m3_d"], 400.0)
+        self.assertAlmostEqual(r["fainomeni_apodosi_Yobs"], 0.294, places=3)
+        self.assertAlmostEqual(r["ogkos_m3"], 269.5, delta=0.1)
+        self.assertAlmostEqual(r["ydravlikos_xronos_h"], 16.2, delta=0.1)
+        self.assertAlmostEqual(r["F_M_kgBOD_kgMLSS_d"], 0.148, places=3)
+        self.assertAlmostEqual(r["ogkometriki_fortisi_kgBOD_m3_d"], 0.445, places=3)
+        self.assertAlmostEqual(r["paragogi_ilyos_kgVSS_d"], 32.3, delta=0.1)
+
+    def test_oxygen_carbon_only_without_tkn(self):
+        r = lymata.diastasiologisi(ik=2000)
+        # O2 = Q dBOD / f - 1.42 Px = 400*275/1000/0.68 - 1.42*32.34 = 115.8
+        self.assertAlmostEqual(r["apaitisi_o2_anthraka_kgO2_d"], 115.8, delta=0.2)
+        self.assertAlmostEqual(r["apaitisi_o2_nitropoiisis_kgO2_d"], 0.0)
+        self.assertAlmostEqual(r["apaitisi_o2_kgO2_d"], r["apaitisi_o2_anthraka_kgO2_d"])
+
+    def test_nitrification_adds_oxygen(self):
+        r = lymata.diastasiologisi(ik=5000, tkn=55)
+        # Nox = 0.8 * 1000 * 55/1000 = 44 kgN/d, O2n = 4.57*44 = 201.1
+        self.assertAlmostEqual(r["nitropoioumeno_N_kgN_d"], 44.0, delta=0.1)
+        self.assertAlmostEqual(r["apaitisi_o2_nitropoiisis_kgO2_d"], 201.1, delta=0.2)
+        self.assertGreater(r["apaitisi_o2_kgO2_d"], r["apaitisi_o2_anthraka_kgO2_d"])
+
+    def test_mass_balance_closes_on_reported_values(self):
+        # V*MLVSS must equal Px*SRT (mass in tank = daily production x age).
+        r = lymata.diastasiologisi(ik=2000, mlss=4000, vss_ratio=0.75, srt=25)
+        maza_tank = r["ogkos_m3"] * (4000 * 0.75) / 1000.0
+        maza_prod = r["paragogi_ilyos_kgVSS_d"] * 25
+        self.assertAlmostEqual(maza_tank, maza_prod, delta=2.0)
+
+    def test_volume_scales_linearly_with_load(self):
+        small = lymata.diastasiologisi(ik=2000)
+        big = lymata.diastasiologisi(ik=4000)
+        self.assertAlmostEqual(big["ogkos_m3"], 2 * small["ogkos_m3"], delta=0.2)
+
+    def test_direct_load_form_matches_pe_form(self):
+        # 2000 pe -> 120 kg/d, 400 m3/d, So 300. Direct inputs must agree.
+        pe = lymata.diastasiologisi(ik=2000)
+        direct = lymata.diastasiologisi(fortio=120.0, paroxi=400.0, so=300.0)
+        self.assertAlmostEqual(pe["ogkos_m3"], direct["ogkos_m3"], places=1)
+
+    def test_range_flags_report_position(self):
+        r = lymata.diastasiologisi(ik=2000, mlss=4000)
+        self.assertIn(r["elegxoi"]["MLSS"], ("εντός τυπικού εύρους",))
+        # SRT 25 is inside 15-30; a tiny SRT must read as below range.
+        low = lymata.diastasiologisi(ik=2000, srt=5)
+        self.assertEqual(low["elegxoi"]["SRT"], "κάτω από το τυπικό εύρος")
+
+    def test_rejects_bad_inputs(self):
+        with self.assertRaises(ValueError):
+            lymata.diastasiologisi(ik=2000, fortio=120)          # both forms
+        with self.assertRaises(ValueError):
+            lymata.diastasiologisi(ik=2000, so=300)              # ik already fixes So
+        with self.assertRaises(ValueError):
+            lymata.diastasiologisi()                              # neither form
+        with self.assertRaises(ValueError):
+            lymata.diastasiologisi(fortio=120, paroxi=400, so=300, se=300)  # se >= so
+        with self.assertRaises(ValueError):
+            lymata.diastasiologisi(ik=2000, srt=0)
+        with self.assertRaises(ValueError):
+            lymata.diastasiologisi(ik=2000, vss_ratio=1.5)
+        with self.assertRaises(ValueError):
+            lymata.diastasiologisi(ik=-1)
+        with self.assertRaises(ValueError):
+            lymata.diastasiologisi(ik=2000, tkn=-5)
+
+
+class LymataTafrosTests(unittest.TestCase):
+    def test_geometry_worked_example(self):
+        r = lymata.tafros(1200, 3.5, 4.0)
+        self.assertAlmostEqual(r["diatomi_m2"], 14.0)
+        self.assertAlmostEqual(r["mikos_vroxou_m"], 85.7, delta=0.1)
+        self.assertAlmostEqual(r["synoliko_vathos_m"], 4.0)
+        self.assertAlmostEqual(r["paroxi_kykloforias_m3_s"], 4.2, places=2)
+
+    def test_deeper_channel_shortens_loop(self):
+        shallow = lymata.tafros(1200, 1.5, 4.0)
+        deep = lymata.tafros(1200, 4.0, 4.0)
+        self.assertLess(deep["mikos_vroxou_m"], shallow["mikos_vroxou_m"])
+
+    def test_multiple_channels_share_volume(self):
+        one = lymata.tafros(1200, 3.5, 4.0, kanalia=1)
+        two = lymata.tafros(1200, 3.5, 4.0, kanalia=2)
+        self.assertAlmostEqual(two["diatomi_m2"], 2 * one["diatomi_m2"])
+        self.assertAlmostEqual(two["mikos_vroxou_m"], one["mikos_vroxou_m"] / 2, delta=0.1)
+
+    def test_circulation_flow_matches_velocity(self):
+        r = lymata.tafros(1200, 3.5, 4.0, taxytita=0.30)
+        self.assertAlmostEqual(r["paroxi_kykloforias_m3_s"], 0.30 * r["diatomi_m2"], places=3)
+
+    def test_rejects_bad_inputs(self):
+        for bad in ((0, 3.5, 4.0), (1200, 0, 4.0), (1200, 3.5, 0)):
+            with self.assertRaises(ValueError):
+                lymata.tafros(*bad)
+        with self.assertRaises(ValueError):
+            lymata.tafros(1200, 3.5, 4.0, kanalia=0)
+
+
 class CliSmokeTests(unittest.TestCase):
     """The argparse wiring end to end, with JSON output parsed back."""
 
@@ -359,10 +466,18 @@ class CliSmokeTests(unittest.TestCase):
                                            "--d", "0.020", "--l", "38", "--zeta", "10", "--json"])
         self.assertAlmostEqual(json.loads(out)["paroxi_m3_h"], 0.527, places=3)
 
+    def test_lymata_cli_json(self):
+        out = self.run_cli(lymata, ["diastasiologisi", "--ik", "2000", "--json"])
+        self.assertAlmostEqual(json.loads(out)["ogkos_m3"], 269.5, delta=0.1)
+        out = self.run_cli(lymata, ["tafros", "--v", "1200", "--vathos", "3.5",
+                                    "--platos", "4.0", "--json"])
+        self.assertAlmostEqual(json.loads(out)["diatomi_m2"], 14.0)
+
     def test_reference_table_commands(self):
         for module, argv in ((fortia, ["psi"]), (fortia, ["zones"]),
                              (plaisio, ["diatomes"]), (ilektrologika, ["pinakes"]),
-                             (ilektrologika, ["yde"]), (michanologika, ["ides"])):
+                             (ilektrologika, ["yde"]), (michanologika, ["ides"]),
+                             (lymata, ["ides"])):
             out = self.run_cli(module, argv)
             self.assertTrue(out.strip())
 
