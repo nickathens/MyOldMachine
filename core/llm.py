@@ -104,6 +104,30 @@ def _user_identity_env(user_id: Optional[int]) -> dict:
     }
 
 
+def _claude_workspace_env(user_id: Optional[int]) -> dict:
+    """Identity env plus a per-user CLAUDE_CONFIG_DIR for Claude CLI turns.
+
+    The Claude CLI keys its auto-memory pool and session transcripts by
+    config dir. Sharing one config dir across Telegram users means one
+    shared memory pool, and private context from one user's chat bleeds
+    into another's. Each user therefore gets data/users/<id>/claude.
+    Fails open: if the workspace cannot be prepared, the turn still runs
+    on the process-default config dir and the problem is logged, because
+    a broken workspace must not take the conversation down with it.
+    """
+    env = _user_identity_env(user_id)
+    if user_id is None:
+        return env
+    try:
+        from core.claude_workspace import ensure_user_claude_config
+        env["CLAUDE_CONFIG_DIR"] = str(ensure_user_claude_config(user_id))
+    except Exception as exc:
+        logger.warning(
+            "per-user claude workspace unavailable for %s: %s", user_id, exc
+        )
+    return env
+
+
 @dataclass
 class Message:
     role: str  # "user" or "assistant"
@@ -561,7 +585,7 @@ class ClaudeCLIProvider(LLMProvider):
                 "ANTHROPIC_BASE_URL",
                 "CLAUDE_CONFIG_DIR",
             }),
-            extra=_user_identity_env(user_id),
+            extra=_claude_workspace_env(user_id),
         )
 
     def stop_user(self, user_id: int) -> bool:
@@ -1062,6 +1086,18 @@ class ClaudeCLIProvider(LLMProvider):
                 if self._user_processes.get(user_id) is process:
                     self._user_processes.pop(user_id, None)
                 self._stop_requested.discard(user_id)
+                # If the CLI refreshed its OAuth token during this turn, the
+                # rename it used detached this workspace's credential symlink
+                # into a private copy. Fold that fresh token back into the
+                # shared file so the other users' workspaces don't go stale.
+                # Never let a hiccup here disturb the finished turn.
+                try:
+                    from core.claude_workspace import reconcile_shared_credentials
+                    reconcile_shared_credentials(user_id)
+                except Exception as exc:
+                    logger.debug(
+                        "credential reconcile skipped for %s: %s", user_id, exc
+                    )
 
     @property
     def has_active_processes(self) -> bool:
@@ -1713,7 +1749,7 @@ class FreeCCProvider(ClaudeCLIProvider):
             }),
             extra={
                 "ANTHROPIC_BASE_URL": self._proxy_url,
-                **(_user_identity_env(user_id) or {}),
+                **(_claude_workspace_env(user_id) or {}),
             },
         )
 

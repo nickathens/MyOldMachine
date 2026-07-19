@@ -216,6 +216,19 @@ class IsWriteBlockedTests(unittest.TestCase):
         self.assertIsNotNone(tools._is_write_blocked("/boot/config-1.0"))
         self.assertIsNotNone(tools._is_write_blocked("/var/spool/cron/root"))
 
+    @unittest.skipUnless(
+        sys.platform == "darwin", "macOS symlinks /etc and /var into /private"
+    )
+    def test_macos_private_twins_blocked(self):
+        # Finding 7, audit 2026-07-19: on macOS /etc resolves to /private/etc,
+        # so literal /etc anchors matched nothing against resolved candidates
+        # and the whole system-file blocklist was inert. Both spellings must
+        # block, and lookalikes must stay unblocked.
+        self.assertIsNotNone(tools._is_write_blocked("/private/etc/passwd"))
+        self.assertIsNotNone(tools._is_write_blocked("/private/etc/sudoers.d/x"))
+        self.assertIsNotNone(tools._is_write_blocked("/private/var/spool/cron/root"))
+        self.assertIsNone(tools._is_write_blocked("/private/etc/passwd-foo"))
+
 
 class CheckRiskyCommandTests(unittest.TestCase):
     """Risky-but-allowed commands surface warnings for the LLM."""

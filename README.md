@@ -442,6 +442,8 @@ The system adapts to the model running it:
 
 Each Telegram user gets their own person model, observations, and memory directory. A family sharing one machine gets individual contexts. Privacy note: this is organizational scoping, not a security boundary. All data lives as files on disk, and any allowlisted user who can run tools (or anyone with SSH access) can read it. See [Trust model](#trust-model).
 
+The Claude CLI provider extends this scoping to the model's own workspace: each user gets a private `CLAUDE_CONFIG_DIR` under `data/users/<id>/claude`, so the CLI's auto-memory pool and session transcripts never cross users. On the first turn after upgrading, the previously shared memory pool is split once by provenance: each memory file's origin session is traced back to the Telegram user it served, unattributable files go to the primary admin, and the old shared pool stays on disk untouched as a frozen backup. Machine-wide hooks and permissions (`settings.json`, plugins) and the CLI credential file are shared into every workspace via symlink, so all users ride one login and one token refresh chain; on macOS the credential is exported once from the keychain, which the CLI only consults for its default config dir.
+
 ### What gets remembered
 
 | Observation type | Example |

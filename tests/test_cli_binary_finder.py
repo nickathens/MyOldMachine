@@ -32,8 +32,21 @@ class FindCliBinaryTests(unittest.TestCase):
         (self.fake_home / ".local" / "bin").mkdir(parents=True)
         (self.fake_home / ".npm-global" / "bin").mkdir(parents=True)
         (self.fake_home / ".bun" / "bin").mkdir(parents=True)
+        # Stand-in for the absolute fallback slots (/opt/homebrew/bin,
+        # /usr/local/bin). Those real dirs may genuinely contain claude or
+        # codex on the machine running the suite, which turned every
+        # "not found" expectation into a false failure. The fallback list
+        # is data, so point it into the tmpdir instead of the real disk.
+        self.brew_bin = self.fake_home / "brew" / "bin"
+        self.brew_bin.mkdir(parents=True)
+        self._dirs = patch.object(
+            llm, "_CLI_FALLBACK_DIRS",
+            ("~/.local/bin", str(self.brew_bin), "~/.npm-global/bin", "~/.bun/bin"),
+        )
+        self._dirs.start()
 
     def tearDown(self) -> None:
+        self._dirs.stop()
         self._tmp.cleanup()
 
     def _patch_home(self):
@@ -51,18 +64,14 @@ class FindCliBinaryTests(unittest.TestCase):
             self.assertEqual(llm._find_cli_binary("claude"), str(target))
 
     def test_falls_back_to_homebrew(self) -> None:
-        with self._patch_home(), \
-             patch.object(llm.shutil, "which", return_value=None), \
-             patch.object(llm.Path, "exists", autospec=True) as exists, \
-             patch.object(llm.Path, "is_dir", autospec=True) as is_dir:
-            # Make only /opt/homebrew/bin/claude exist.
-            def exists_side(self):
-                return str(self) == "/opt/homebrew/bin/claude"
-            def is_dir_side(self):
-                return False
-            exists.side_effect = exists_side
-            is_dir.side_effect = is_dir_side
-            self.assertEqual(llm._find_cli_binary("claude"), "/opt/homebrew/bin/claude")
+        # Covers the absolute-path fallback slots (/opt/homebrew/bin,
+        # /usr/local/bin) through the tmpdir stand-in, so the test proves
+        # absolute entries work without depending on real machine state.
+        target = self.brew_bin / "claude"
+        target.write_text("#!/bin/sh\nexit 0\n")
+        target.chmod(0o755)
+        with self._patch_home(), patch.object(llm.shutil, "which", return_value=None):
+            self.assertEqual(llm._find_cli_binary("claude"), str(target))
 
     def test_falls_back_to_nvm(self) -> None:
         nvm_node = self.fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
@@ -186,6 +195,7 @@ class HealthCheckRediscoveryTests(unittest.TestCase):
             target.write_text("ok")
             target.chmod(0o755)
             with patch.dict(os.environ, {"HOME": str(fake_home)}), \
+                 patch.object(llm, "_CLI_FALLBACK_DIRS", ("~/.local/bin",)), \
                  patch.object(llm.shutil, "which", return_value=None), \
                  patch.object(llm.asyncio, "create_subprocess_exec",
                                new=AsyncMock(side_effect=FileNotFoundError())):
@@ -200,6 +210,7 @@ class HealthCheckRediscoveryTests(unittest.TestCase):
         provider = llm.ClaudeCLIProvider("claude-sonnet-4-6")
         provider._cli_binary = ""
         with patch.dict(os.environ, {"HOME": "/no/such/dir"}), \
+             patch.object(llm, "_CLI_FALLBACK_DIRS", ()), \
              patch.object(llm.shutil, "which", return_value=None):
             ok_, msg = asyncio.run(provider.health_check())
             self.assertFalse(ok_)
