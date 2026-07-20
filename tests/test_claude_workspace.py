@@ -392,5 +392,225 @@ class ReconcileSharedCredentialsTests(WorkspaceTestBase):
             self.assertEqual((b / ".credentials.json").read_bytes(), token)
 
 
+class CredentialUsabilityTests(unittest.TestCase):
+    """_credential_is_usable: the difference between "a file is there" and
+    "the CLI can authenticate with it"."""
+
+    def test_well_formed_oauth_is_usable(self):
+        raw = json.dumps({"claudeAiOauth": {
+            "accessToken": "a", "refreshToken": "r"}})
+        self.assertTrue(cw._credential_is_usable(raw))
+
+    def test_expired_access_with_live_refresh_is_usable(self):
+        # The normal recoverable state. Rejecting it would break the very
+        # refresh chain this module maintains.
+        raw = json.dumps({"claudeAiOauth": {
+            "accessToken": "a", "refreshToken": "r", "expiresAt": 1}})
+        self.assertTrue(cw._credential_is_usable(raw))
+
+    def test_hollow_tokens_are_not_usable(self):
+        for oauth in ({"accessToken": "", "refreshToken": "r"},
+                      {"accessToken": "a", "refreshToken": ""},
+                      {"accessToken": "", "refreshToken": ""},
+                      {}):
+            with self.subTest(oauth=oauth):
+                raw = json.dumps({"claudeAiOauth": oauth})
+                self.assertFalse(cw._credential_is_usable(raw))
+
+    def test_malformed_input_is_not_usable(self):
+        for raw in ("", "{", "[]", "null", b"\xff\xfe", None, b""):
+            with self.subTest(raw=raw):
+                self.assertFalse(cw._credential_is_usable(raw))
+
+    def test_unknown_shapes_pass_through_unjudged(self):
+        # An API-key-form credential is not the OAuth shape; this helper
+        # must not veto a credential it cannot read.
+        self.assertTrue(cw._credential_is_usable('{"apiKey": "sk-x"}'))
+
+    def test_bytes_are_accepted(self):
+        raw = json.dumps({"claudeAiOauth": {
+            "accessToken": "a", "refreshToken": "r"}}).encode()
+        self.assertTrue(cw._credential_is_usable(raw))
+
+
+class KeychainNamespaceTests(unittest.TestCase):
+    """Locks in the CLI's undocumented per-config-dir keychain naming.
+
+    If a CLI release moves this scheme, these fail loudly in CI rather
+    than letting the bot silently read a credential nobody is maintaining.
+    Both expectations were observed live on the affected machine.
+    """
+
+    def test_matches_values_observed_live(self):
+        self.assertEqual(
+            cw._namespaced_keychain_service(
+                Path("/Users/coocooai/MyOldMachine/data/users/8044898180/claude")),
+            "Claude Code-credentials-8ca26d87",
+        )
+        self.assertEqual(
+            cw._namespaced_keychain_service(
+                Path("/Users/coocooai/MyOldMachine/data/users/8488788773/claude")),
+            "Claude Code-credentials-a5656211",
+        )
+
+    def test_distinct_config_dirs_get_distinct_services(self):
+        self.assertNotEqual(
+            cw._namespaced_keychain_service(Path("/a")),
+            cw._namespaced_keychain_service(Path("/b")),
+        )
+
+    def test_never_resolves_to_the_real_login_item(self):
+        # Safety invariant: reconcile DELETES the service this returns, and
+        # the unsuffixed "Claude Code-credentials" is the machine's actual
+        # login. A derivation that ever collapsed to it would log the human
+        # out of Claude Code entirely.
+        for path in (Path("/"), Path(""), Path("/Users/x/.claude"),
+                     Path(cw._KEYCHAIN_SERVICE)):
+            with self.subTest(path=path):
+                self.assertNotEqual(
+                    cw._namespaced_keychain_service(path), cw._KEYCHAIN_SERVICE)
+                self.assertTrue(
+                    cw._namespaced_keychain_service(path).startswith(
+                        cw._KEYCHAIN_SERVICE + "-"))
+
+
+class EnsureSharedCredentialsTests(WorkspaceTestBase):
+    """A hollow credential file must not count as success forever."""
+
+    def test_usable_file_is_accepted_without_keychain_export(self):
+        cred = self.legacy / ".credentials.json"
+        cred.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "a", "refreshToken": "r"}}))
+        with patch.object(cw, "_export_keychain_credentials") as export:
+            self.assertTrue(cw._ensure_shared_credentials(self.legacy))
+        export.assert_not_called()
+
+    def test_hollow_file_triggers_keychain_reexport(self):
+        cred = self.legacy / ".credentials.json"
+        cred.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "", "refreshToken": ""}}))
+        with patch.object(cw, "_export_keychain_credentials",
+                          return_value=True) as export:
+            self.assertTrue(cw._ensure_shared_credentials(self.legacy))
+        export.assert_called_once()
+
+    def test_hollow_file_and_dead_keychain_reports_failure(self):
+        (self.legacy / ".credentials.json").write_text("{}")
+        with patch.object(cw, "_export_keychain_credentials", return_value=False):
+            self.assertFalse(cw._ensure_shared_credentials(self.legacy))
+
+
+class KeychainShadowingTests(WorkspaceTestBase):
+    """The 2026-07-20 outage: on macOS a per-config-dir keychain item
+    shadows .credentials.json entirely, so every file-based repair in this
+    module runs, logs success, and changes nothing the CLI actually reads.
+    """
+
+    GOOD = json.dumps({"claudeAiOauth": {
+        "accessToken": "fresh", "refreshToken": "fresh-r"}})
+    HOLLOW = json.dumps({"claudeAiOauth": {
+        "accessToken": "", "refreshToken": ""}})
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.legacy / ".credentials.json").write_text(
+            json.dumps({"claudeAiOauth": {
+                "accessToken": "old", "refreshToken": "old-r"}})
+        )
+        self._darwin = patch.object(cw.sys, "platform", "darwin")
+        self._darwin.start()
+
+    def tearDown(self) -> None:
+        self._darwin.stop()
+        super().tearDown()
+
+    def make_workspace(self, uid: int) -> Path:
+        return cw.ensure_user_claude_config(
+            uid, legacy_root=self.legacy, bot_dir=FAKE_BOT_DIR
+        )
+
+    def test_refreshed_item_is_folded_into_shared_file_and_removed(self):
+        self.make_workspace(1)
+        with patch.object(cw, "_read_keychain_item", return_value=self.GOOD), \
+             patch.object(cw, "_delete_keychain_item", return_value=True) as delete:
+            result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+
+        self.assertTrue(result)
+        self.assertEqual(
+            (self.legacy / ".credentials.json").read_text(), self.GOOD)
+        # Removed so the workspace rejoins the shared file on its next turn.
+        delete.assert_called_once()
+
+    def test_shadowing_is_checked_even_when_the_symlink_is_intact(self):
+        # The regression that made this bug invisible: an untouched symlink
+        # says nothing about whether a keychain item exists, so returning
+        # early on "still a symlink" skipped the check that mattered.
+        cfg = self.make_workspace(1)
+        self.assertTrue((cfg / ".credentials.json").is_symlink())
+        with patch.object(cw, "_read_keychain_item",
+                          return_value=self.GOOD) as read, \
+             patch.object(cw, "_delete_keychain_item", return_value=True):
+            result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+        read.assert_called_once()
+        self.assertTrue(result)
+
+    def test_unusable_item_is_removed_without_overwriting_shared_file(self):
+        # Exactly the outage state, and exactly what the manual recovery
+        # did: drop the dead item so the healthy shared file takes over.
+        self.make_workspace(1)
+        before = (self.legacy / ".credentials.json").read_text()
+        with patch.object(cw, "_read_keychain_item", return_value=self.HOLLOW), \
+             patch.object(cw, "_delete_keychain_item", return_value=True) as delete:
+            result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+
+        self.assertFalse(result)
+        self.assertEqual((self.legacy / ".credentials.json").read_text(), before)
+        delete.assert_called_once()
+
+    def test_item_is_preserved_when_publishing_fails(self):
+        # Never delete the only fresh copy on the strength of a write that
+        # did not land.
+        self.make_workspace(1)
+        with patch.object(cw, "_read_keychain_item", return_value=self.GOOD), \
+             patch.object(cw, "_write_shared_credential", return_value=False), \
+             patch.object(cw, "_delete_keychain_item") as delete:
+            result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+
+        self.assertFalse(result)
+        delete.assert_not_called()
+
+    def test_absent_item_is_a_noop(self):
+        self.make_workspace(1)
+        before = (self.legacy / ".credentials.json").read_text()
+        with patch.object(cw, "_read_keychain_item", return_value=None), \
+             patch.object(cw, "_delete_keychain_item") as delete:
+            result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+        self.assertFalse(result)
+        self.assertEqual((self.legacy / ".credentials.json").read_text(), before)
+        delete.assert_not_called()
+
+    def test_keychain_is_not_consulted_off_darwin(self):
+        self.make_workspace(1)
+        with patch.object(cw.sys, "platform", "linux"), \
+             patch.object(cw, "_read_keychain_item") as read:
+            cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+        read.assert_not_called()
+
+    def test_hollow_detached_file_does_not_clobber_good_shared_file(self):
+        cfg = self.make_workspace(1)
+        before = (self.legacy / ".credentials.json").read_text()
+        tmp = cfg / ".credentials.json.tmp"
+        tmp.write_text(self.HOLLOW)
+        os.replace(tmp, cfg / ".credentials.json")
+
+        with patch.object(cw, "_read_keychain_item", return_value=None):
+            result = cw.reconcile_shared_credentials(1, legacy_root=self.legacy)
+
+        self.assertFalse(result)
+        self.assertEqual((self.legacy / ".credentials.json").read_text(), before)
+        # Still re-linked, so the next turn reads the healthy shared file.
+        self.assertTrue((cfg / ".credentials.json").is_symlink())
+
+
 if __name__ == "__main__":
     unittest.main()

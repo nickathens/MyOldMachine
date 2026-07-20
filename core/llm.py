@@ -267,6 +267,32 @@ def _looks_like_binary_load_failure(text: str) -> bool:
 _DELIVERABLE_MIN_CHARS = 500
 
 
+# Substrings that mark a failed turn as a CREDENTIAL problem rather than a
+# transient API or tool failure. Matched against the CLI's own result text,
+# which is prose and version-dependent, so this is deliberately broad: a
+# false positive costs a slightly wrong explanation, a false negative sends
+# the user chasing a problem only the operator can fix.
+_AUTH_ERROR_MARKERS = (
+    "authenticate",
+    "authentication",
+    "unauthorized",
+    "oauth",
+    "invalid api key",
+    "invalid x-api-key",
+    "credentials",
+    "not logged in",
+    "please run /login",
+)
+
+
+def _is_auth_failure(result_text: str, api_error_status) -> bool:
+    """True if a failed turn was rejected for credentials, not content."""
+    if api_error_status in (401, "401", 403, "403"):
+        return True
+    lowered = (result_text or "").lower()
+    return any(marker in lowered for marker in _AUTH_ERROR_MARKERS)
+
+
 def _compose_full_reply(final_result: str, text_blocks: list[str]) -> str:
     """Compose the user-facing reply for a successful turn.
 
@@ -655,7 +681,20 @@ class ClaudeCLIProvider(LLMProvider):
         text = ((stdout or b"") + (stderr or b"")).decode("utf-8", errors="replace").strip()
         if proc.returncode == 0:
             first_line = text.splitlines()[0] if text else "ok"
-            return True, first_line
+            # --version passes with zero valid credentials, so a dead login
+            # read as healthy right up until a user's message failed (the
+            # 2026-07-20 outage). Only a real turn exercises auth. Startup
+            # plus every 4h, so this costs a few trivial turns a day.
+            #
+            # Scope limit worth knowing: this probes the provider's default
+            # env, so it catches a broadly dead credential but NOT a single
+            # per-user workspace whose credential has detached. Guarding
+            # that is reconcile_shared_credentials' job, and a failure there
+            # now surfaces as a loud turn failure rather than silence.
+            auth_ok, auth_detail = await self._auth_probe()
+            if not auth_ok:
+                return False, auth_detail
+            return True, f"{first_line} (auth ok)"
         if _looks_like_binary_load_failure(text):
             return False, (
                 f"Claude CLI binary fails to load on this OS: "
@@ -668,6 +707,56 @@ class ClaudeCLIProvider(LLMProvider):
             f"Claude CLI --version exited {proc.returncode}: "
             f"{text[:300] if text else '(no output)'}"
         )
+
+    async def _auth_probe(self) -> tuple[bool, str]:
+        """Smallest real turn that proves the CLI can authenticate.
+
+        Tools are disabled so the probe cannot touch the machine, and the
+        prompt is one token. Failure is read from the result event's
+        is_error, because the CLI reports auth rejection there with
+        subtype still "success" (verified live 2026-07-20).
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._cli_binary, "-p", "ok",
+                "--output-format", "json",
+                "--disallowedTools", "*",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._get_cli_env(None),
+            )
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            return False, f"Claude CLI auth probe could not start: {exc}"
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90.0)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+            return False, "Claude CLI auth probe timed out (90s)."
+
+        raw = (stdout or b"").decode("utf-8", errors="replace").strip()
+        err = (stderr or b"").decode("utf-8", errors="replace").strip()
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            data = None
+        if isinstance(data, dict) and data.get("is_error"):
+            detail = _error_excerpt(data.get("result") or err, 200)
+            if _is_auth_failure(data.get("result"), data.get("api_error_status")):
+                return False, (
+                    f"Claude CLI is not authenticated: {detail}. "
+                    f"Re-run `claude` interactively on this machine to log in."
+                )
+            return False, f"Claude CLI probe turn failed: {detail}"
+        if proc.returncode != 0:
+            return False, (
+                f"Claude CLI auth probe exited {proc.returncode}: "
+                f"{_error_excerpt(err or raw, 200) or '(no output)'}"
+            )
+        return True, "authenticated"
 
     async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7,
                        chat=None, user_id: int = None, original_message: str = "") -> LLMResponse:
@@ -711,6 +800,8 @@ class ClaudeCLIProvider(LLMProvider):
         last_progress_save = start_time
         progress_count = 0
         final_result = None
+        result_is_error = False
+        api_error_status = None
         partial_text = ""
         all_text_blocks = []  # Every text block in order, for reply composition
         last_turn_text_blocks = []
@@ -938,8 +1029,20 @@ class ClaudeCLIProvider(LLMProvider):
                                     tool_in_progress = None
                                     current_status = "processing result"
 
-                            if msg_type == "result" and "result" in data:
-                                final_result = data["result"]
+                            if msg_type == "result":
+                                if "result" in data:
+                                    final_result = data["result"]
+                                # The CLI reports a FAILED turn inside an
+                                # otherwise normal result event. Measured
+                                # against the live CLI 2026-07-20: an auth
+                                # failure carries is_error true while subtype
+                                # is still "success", so subtype cannot be
+                                # used to detect it -- is_error is the only
+                                # reliable signal. (The status field is
+                                # api_error_status, snake_case.)
+                                if data.get("is_error"):
+                                    result_is_error = True
+                                    api_error_status = data.get("api_error_status")
 
                             # Save progress periodically
                             current_time = asyncio.get_running_loop().time()
@@ -960,6 +1063,50 @@ class ClaudeCLIProvider(LLMProvider):
             await process.wait()
             stderr_bytes = await process.stderr.read()
             stderr_text = stderr_bytes.decode(errors="replace").strip()
+
+            # A turn the CLI itself marked failed. This MUST be checked
+            # before the exit-code guard below, which requires an empty
+            # final_result and so never fires for these: the CLI exits
+            # non-zero but still emits result text, so an auth failure
+            # sailed through as a normal 73-char assistant reply, was
+            # texted to the user, and was stored in conversation history.
+            # That is how the 2026-07-20 outage ran silently for 90
+            # minutes. Setting .error routes it to the admin alert and
+            # keeps it out of history (see _save_and_send in bot.py).
+            if result_is_error:
+                detail = _error_excerpt(final_result or stderr_text, 300) or "CLI reported is_error"
+                logger.error(
+                    f"Claude turn FAILED for user {user_id} "
+                    f"(is_error, api_error_status={api_error_status}, "
+                    f"exit {process.returncode}): {detail}"
+                )
+                if self.on_progress_clear and user_id:
+                    self.on_progress_clear(user_id)
+                if _is_auth_failure(final_result, api_error_status):
+                    # The "partial work" here is only the auth error string
+                    # itself, so there is nothing worth salvaging. Say what
+                    # is actually wrong instead of relaying CLI wording.
+                    return LLMResponse(
+                        text=(
+                            "I can't reach Claude right now because the bot's "
+                            "login was rejected. This needs fixing on the "
+                            "machine, and nothing you did caused it. Your "
+                            "message was not lost, just resend it once the "
+                            "login is renewed."
+                        ),
+                        model=self.model, provider=self.provider_name,
+                        error=f"auth failure: {detail}",
+                    )
+                # Other failures can arrive after real work, so keep any
+                # genuine output rather than discarding it -- but still mark
+                # the turn failed so it alerts and stays out of history.
+                last_turn = "\n".join(last_turn_text_blocks).strip()
+                salvage = last_turn or partial_text.strip()
+                return LLMResponse(
+                    text=salvage or f"That turn failed before it finished: {detail}",
+                    model=self.model, provider=self.provider_name,
+                    error=detail, tool_use=bool(salvage),
+                )
 
             if process.returncode != 0 and not final_result:
                 logger.error(f"Claude error for user {user_id} (exit {process.returncode}): {stderr_text}")
@@ -1086,11 +1233,13 @@ class ClaudeCLIProvider(LLMProvider):
                 if self._user_processes.get(user_id) is process:
                     self._user_processes.pop(user_id, None)
                 self._stop_requested.discard(user_id)
-                # If the CLI refreshed its OAuth token during this turn, the
-                # rename it used detached this workspace's credential symlink
-                # into a private copy. Fold that fresh token back into the
-                # shared file so the other users' workspaces don't go stale.
-                # Never let a hiccup here disturb the finished turn.
+                # If the CLI refreshed its OAuth token during this turn it
+                # left the fresh token somewhere private: a detached copy of
+                # the credential symlink, or (on macOS) a per-config-dir
+                # keychain item that from then on SHADOWS the shared file
+                # entirely. Fold either one back so the other users'
+                # workspaces don't go stale and this one rejoins the shared
+                # chain. Never let a hiccup here disturb the finished turn.
                 try:
                     from core.claude_workspace import reconcile_shared_credentials
                     reconcile_shared_credentials(user_id)
