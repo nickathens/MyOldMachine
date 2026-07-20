@@ -10,8 +10,13 @@ WorkingDirectory={{WORKING_DIR}}
 ExecStart={{PYTHON}} bot.py
 Restart=always
 RestartSec=10
-StandardOutput=append:{{LOG_DIR}}/bot.log
-StandardError=append:{{LOG_DIR}}/bot.log
+# Must NOT be {{LOG_DIR}}/bot.log: bot.py owns that path via a
+# RotatingFileHandler. systemd holds this file open for the process lifetime,
+# so on rollover it would keep appending to the renamed inode (bot.log.1)
+# while Python wrote to a fresh bot.log, and backupCount would eventually
+# unlink the inode still being written.
+StandardOutput=append:{{LOG_DIR}}/bot.systemd.log
+StandardError=append:{{LOG_DIR}}/bot.systemd.log
 EnvironmentFile={{WORKING_DIR}}/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH={{WORKING_DIR}}/.venv/bin:{{CLI_BIN_PATHS}}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

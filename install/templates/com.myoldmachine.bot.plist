@@ -21,11 +21,16 @@
     <key>KeepAlive</key>
     <true/>
 
+    <!-- Must NOT be {{LOG_DIR}}/bot.log: bot.py owns that path via a
+         RotatingFileHandler. launchd holds this file open for the process
+         lifetime, so on rollover it would keep appending to the renamed
+         inode (bot.log.1) while Python wrote to a fresh bot.log, and
+         backupCount would eventually unlink the inode still being written. -->
     <key>StandardOutPath</key>
-    <string>{{LOG_DIR}}/bot.log</string>
+    <string>{{LOG_DIR}}/bot.launchd.log</string>
 
     <key>StandardErrorPath</key>
-    <string>{{LOG_DIR}}/bot.log</string>
+    <string>{{LOG_DIR}}/bot.launchd.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

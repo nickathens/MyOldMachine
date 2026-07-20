@@ -10,8 +10,9 @@ WorkingDirectory={{WORKING_DIR}}
 ExecStart={{PYTHON}} -m uvicorn miniapp.server:app --host 127.0.0.1 --port {{MINIAPP_PORT}}
 Restart=on-failure
 RestartSec=10
-StandardOutput=append:{{LOG_DIR}}/miniapp.log
-StandardError=append:{{LOG_DIR}}/miniapp.log
+# Separate from any app-owned rotating log; see myoldmachine.service for why.
+StandardOutput=append:{{LOG_DIR}}/miniapp.systemd.log
+StandardError=append:{{LOG_DIR}}/miniapp.systemd.log
 EnvironmentFile={{WORKING_DIR}}/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH={{WORKING_DIR}}/.venv/bin:{{CLI_BIN_PATHS}}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
