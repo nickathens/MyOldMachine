@@ -25,19 +25,42 @@ whose origin cannot be established fall back to the primary admin. The
 legacy pool is never modified beyond one marker file, so it stays intact
 as a frozen backup.
 
-Credentials: the CLI's OAuth login lives in the macOS keychain, which the
-CLI only consults for the default config dir. Each workspace therefore
-gets a symlink to ONE shared .credentials.json (exported from the
-keychain once, or already present on Linux installs), so every session
-rides the same refresh chain. That symlink alone is not enough: the CLI
-rewrites the credential by renaming a temp file onto it whenever the OAuth
-token refreshes, and rename onto a symlink detaches it into a private
-copy, forking the token per workspace and leaving the shared file (and
-every other workspace) stale. reconcile_shared_credentials folds each
-refresh back into the shared file after the turn, so the chain actually
-holds across refreshes. If no credential can be provisioned the workspace
-is refused and the turn falls back to the shared config dir, because a
-private-but-unauthenticated turn would just die.
+Credentials: the CLI's OAuth login lives in the macOS keychain. Each
+workspace gets a symlink to ONE shared .credentials.json (exported from
+the keychain once, or already present on Linux installs), so every
+session rides the same refresh chain. Two things break that link, and
+both are folded back by reconcile_shared_credentials after every turn:
+
+1. Refresh detaches the symlink. The CLI rewrites the credential by
+   renaming a temp file onto it; rename onto a symlink REPLACES the
+   symlink with a private regular file, forking the token per workspace
+   and leaving the shared file (and every other workspace) stale.
+
+2. macOS shadows the file with a per-config-dir keychain item. The CLI
+   does not read the plain "Claude Code-credentials" item for a custom
+   CLAUDE_CONFIG_DIR -- it keys the credential by config dir, as
+   "Claude Code-credentials-<sha256(config_dir)[:8]>". Precedence is:
+   namespaced item if one exists, else the file. So the file is
+   authoritative only until the CLI writes such an item, and from that
+   moment every file-based repair in this module runs, logs success, and
+   has NO effect on the credential the CLI actually uses.
+
+   Measured on this machine 2026-07-20: a successful turn from a file
+   credential does NOT create the item, but a token REFRESH does. So a
+   workspace silently detaches from the shared file at its first refresh
+   -- which is the 2026-07-20 outage: the item for one user held a
+   revoked token, the CLI sent it, the API returned 401, and the file
+   machinery reported healthy throughout.
+
+   The naming scheme is undocumented (Anthropic documents only the plain
+   service name and the file fallback). It is corroborated by community
+   multi-account tooling and verified live here, but a CLI change could
+   move it -- hence test_namespace_derivation, which fails loudly rather
+   than letting the breakage reach production silently.
+
+If no credential can be provisioned the workspace is refused and the turn
+falls back to the shared config dir, because a private-but-unauthenticated
+turn would just die.
 
 System turns (user_id None: maintenance, health checks, nightly jobs)
 keep the process-default config dir and are unaffected.
@@ -45,6 +68,7 @@ keep the process-default config dir and are unaffected.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -77,6 +101,113 @@ _KEYCHAIN_SERVICE = "Claude Code-credentials"
 
 _MIGRATION_MARKER = ".per-user-split-done"
 
+
+def _namespaced_keychain_service(config_dir: Path) -> str:
+    """The keychain service the CLI uses for a non-default config dir.
+
+    "Claude Code-credentials-<sha256(config_dir)[:8]>", hashed over the
+    config dir path exactly as given (not resolved -- the CLI hashes the
+    string it was handed). Undocumented; see the module docstring.
+    """
+    digest = hashlib.sha256(str(config_dir).encode()).hexdigest()[:8]
+    return f"{_KEYCHAIN_SERVICE}-{digest}"
+
+
+def _credential_is_usable(raw) -> bool:
+    """True if `raw` is a credential the CLI could actually authenticate with.
+
+    Existence is not usability. A hollow credential (accessToken "")
+    satisfies a bare .exists() check forever, so the keychain re-export
+    never fires and every workspace linked to the file gets a credential
+    guaranteed to fail.
+
+    Expiry is deliberately NOT checked: an expired accessToken with a live
+    refreshToken is the normal recoverable state, and rejecting it would
+    break the very refresh chain this module exists to maintain.
+    """
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    oauth = data.get("claudeAiOauth")
+    if not isinstance(oauth, dict):
+        # Other shapes (API-key form) pass through unjudged: this function
+        # knows the OAuth shape only, and must not veto what it cannot read.
+        return bool(data)
+    return bool(oauth.get("accessToken")) and bool(oauth.get("refreshToken"))
+
+
+def _read_keychain_item(service: str) -> Optional[str]:
+    """The secret for `service`, or None if absent/unreadable."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        proc = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("keychain read failed for %s: %s", service, exc)
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _delete_keychain_item(service: str) -> bool:
+    """Remove `service` so the CLI falls back to the shared file."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        proc = subprocess.run(
+            ["security", "delete-generic-password", "-s", service],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("keychain delete failed for %s: %s", service, exc)
+        return False
+    return proc.returncode == 0
+
+
+def _write_shared_credential(shared: Path, payload: bytes) -> bool:
+    """Atomically publish `payload` as the shared credential file (0600).
+
+    Atomic because other workspaces read this file concurrently: a reader
+    must see the whole old credential or the whole new one, never a torn
+    half of each.
+    """
+    try:
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=str(shared.parent), prefix=".credentials.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, shared)
+            return True
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        logger.warning("could not update shared credential: %s", exc)
+        return False
+
 _ORIGIN_RE = re.compile(r"originSessionId:\s*([A-Za-z0-9][A-Za-z0-9-]{6,})")
 _TELEGRAM_ID_RE = re.compile(r"User's Telegram ID: (\d+)")
 
@@ -105,41 +236,152 @@ def user_claude_dir(user_id: int) -> Path:
 def _export_keychain_credentials(dest: Path) -> bool:
     """macOS: copy the CLI's OAuth credential out of the login keychain.
 
-    The CLI stores its login in the keychain but only consults it for the
-    default config dir; a session pointed at any other CLAUDE_CONFIG_DIR
-    reports "Not logged in" (live-proven 2026-07-19). The file form of the
-    credential, standard on Linux, works for any config dir, so the
-    keychain secret is exported once to the legacy root and shared from
-    there. 0600, same exposure class as the bot token in .env (see the
-    README trust model: one OS account, disk is the boundary).
+    The CLI stores its login under the plain service name, and does NOT
+    consult that item for a custom CLAUDE_CONFIG_DIR: a workspace with no
+    credential file and no namespaced item of its own reports "Not logged
+    in" (live-proven 2026-07-19). The file form of the credential,
+    standard on Linux, is read for any config dir, so the keychain secret
+    is exported once to the legacy root and shared from there. 0600, same
+    exposure class as the bot token in .env (see the README trust model:
+    one OS account, disk is the boundary).
+
+    Refuses to publish an unusable secret: writing a hollow credential
+    here would hand every linked workspace a token guaranteed to 401,
+    which is worse than leaving the old one in place for the caller to
+    report on.
     """
-    if sys.platform != "darwin":
+    secret = _read_keychain_item(_KEYCHAIN_SERVICE)
+    if not secret:
         return False
-    try:
-        proc = subprocess.run(
-            ["security", "find-generic-password", "-s", _KEYCHAIN_SERVICE, "-w"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("keychain export failed: %s", exc)
+    if not _credential_is_usable(secret):
+        logger.warning("keychain credential is hollow/malformed; not exporting")
         return False
-    secret = proc.stdout.strip()
-    if proc.returncode != 0 or not secret:
-        return False
-    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(secret)
-    return True
+    return _write_shared_credential(dest, secret.encode("utf-8"))
 
 
 def _ensure_shared_credentials(legacy_root: Path) -> bool:
-    """True if a CLI credential file exists (or was provisioned) to share."""
+    """True if a *usable* CLI credential file exists (or was provisioned).
+
+    Checking only existence made a hollow file count as success forever,
+    so the keychain re-export could never fire to repair it. Independent
+    of the keychain-shadowing outage, but the same class of bug: treating
+    "a file is there" as "auth works".
+    """
     cred = legacy_root / ".credentials.json"
     if cred.exists():
-        return True
+        try:
+            if _credential_is_usable(cred.read_bytes()):
+                return True
+        except OSError as exc:
+            logger.warning("unreadable shared credential %s: %s", cred, exc)
+        logger.warning("shared credential %s unusable; re-exporting from keychain", cred)
     return _export_keychain_credentials(cred)
+
+
+def _relink(link: Path, shared: Path) -> None:
+    """Rejoin the shared chain so the next turn reads the shared file."""
+    try:
+        link.unlink()
+        link.symlink_to(shared)
+    except OSError as exc:
+        logger.warning("could not restore credential symlink %s: %s", link, exc)
+
+
+def _reconcile_detached_file(link: Path, shared: Path) -> bool:
+    """Publish a refresh-detached workspace credential, then re-link it."""
+    try:
+        fresh = link.read_bytes()
+    except OSError as exc:
+        logger.warning("unreadable refreshed credential %s: %s", link, exc)
+        return False
+
+    if not _credential_is_usable(fresh):
+        # Never overwrite a healthy shared credential with a hollow one.
+        # Discard it and rejoin the chain: the shared file is the better
+        # bet, and _ensure_shared_credentials repairs it if it is not.
+        logger.warning("detached credential %s unusable; discarding and re-linking", link)
+        _relink(link, shared)
+        return False
+
+    propagated = False
+    try:
+        current = shared.read_bytes() if shared.exists() else None
+    except OSError:
+        current = None
+    if current != fresh:
+        if not _write_shared_credential(shared, fresh):
+            return False
+        propagated = True
+
+    _relink(link, shared)
+    return propagated
+
+
+def _reconcile_keychain_credential(config_dir: Path, shared: Path) -> bool:
+    """Fold a macOS per-config-dir keychain credential back into the file.
+
+    The CLI writes "Claude Code-credentials-<hash>" when it refreshes a
+    token in a workspace, and from then on reads that item INSTEAD of the
+    file. The workspace silently leaves the shared refresh chain, and
+    every file-based repair in this module becomes a no-op for it while
+    still logging success. That is the 2026-07-20 outage.
+
+    Restore the invariant "the shared file is the one credential" by
+    folding the item back and then removing it, so the next turn reads the
+    file again. Same shape as the detached-symlink case below: capture the
+    refresh, republish it, rejoin the chain. The item will reappear at the
+    next refresh and be folded again -- convergence per turn, not a
+    one-time repair.
+
+    Ordering is deliberate: publish first, delete second. Deleting first
+    would strand the only fresh copy if the write then failed.
+
+    An item that is present but unusable is deleted WITHOUT publishing: it
+    has no recovery value, and while it exists it shadows a shared file
+    that may well be healthy. That is precisely the state that took the
+    bot down, and precisely what the manual recovery did by hand.
+
+    Safe from races in practice: this runs after the CLI process has
+    exited, so nothing is writing the item concurrently.
+
+    Returns True if a credential was propagated to the shared file.
+    """
+    if sys.platform != "darwin":
+        return False
+
+    service = _namespaced_keychain_service(config_dir)
+    secret = _read_keychain_item(service)
+    if secret is None:
+        return False  # nothing shadowing the file
+
+    if not _credential_is_usable(secret):
+        logger.warning(
+            "keychain item %s is unusable and shadows the shared credential; "
+            "removing so %s falls back to the shared file",
+            service, config_dir,
+        )
+        _delete_keychain_item(service)
+        return False
+
+    payload = secret.encode("utf-8")
+    propagated = False
+    try:
+        current = shared.read_bytes() if shared.exists() else None
+    except OSError:
+        current = None
+    if current != payload:
+        if not _write_shared_credential(shared, payload):
+            # Leave the item in place: right now it is the only fresh copy.
+            return False
+        propagated = True
+        logger.info("folded refreshed keychain credential %s into shared file", service)
+
+    if not _delete_keychain_item(service):
+        logger.warning(
+            "could not remove keychain item %s; that workspace stays detached "
+            "from the shared credential", service,
+        )
+    return propagated
 
 
 def reconcile_shared_credentials(
@@ -173,51 +415,23 @@ def reconcile_shared_credentials(
     """
     legacy_root = legacy_root or default_legacy_root()
     shared = legacy_root / ".credentials.json"
-    link = user_claude_dir(user_id) / ".credentials.json"
-
-    # Still a symlink (or never created) => the CLI did not rewrite it.
-    if link.is_symlink() or not link.is_file():
-        return False
-
-    try:
-        fresh = link.read_bytes()
-    except OSError as exc:
-        logger.warning("unreadable refreshed credential %s: %s", link, exc)
-        return False
+    config_dir = user_claude_dir(user_id)
+    link = config_dir / ".credentials.json"
 
     propagated = False
-    try:
-        current = shared.read_bytes() if shared.exists() else None
-    except OSError:
-        current = None
-    if current != fresh:
-        try:
-            shared.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(
-                dir=str(shared.parent), prefix=".credentials.", suffix=".tmp"
-            )
-            try:
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(fresh)
-                os.chmod(tmp, 0o600)
-                os.replace(tmp, shared)  # atomic: readers see whole old or new
-                propagated = True
-            except OSError:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
-        except OSError as exc:
-            logger.warning("could not update shared credential: %s", exc)
-            return False
 
-    # Rejoin the shared refresh chain so the next turn reads the shared file.
-    try:
-        link.unlink()
-        link.symlink_to(shared)
-    except OSError as exc:
-        logger.warning("could not restore credential symlink %s: %s", link, exc)
+    # Case 1: a refresh detached the symlink into a private regular file.
+    # A still-symlinked (or absent) credential means the CLI never
+    # rewrote it, so there is nothing to fold.
+    if link.is_file() and not link.is_symlink():
+        propagated = _reconcile_detached_file(link, shared) or propagated
+
+    # Case 2: macOS keychain shadowing. Checked even when the symlink is
+    # intact, because the item is written independently of the file -- an
+    # untouched symlink says nothing about whether one exists. Runs last
+    # because the item is what the CLI actually reads, which makes it the
+    # CLI's own view of the current credential: if both moved, it wins.
+    propagated = _reconcile_keychain_credential(config_dir, shared) or propagated
 
     return propagated
 

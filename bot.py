@@ -113,6 +113,16 @@ _stop_drain: set[int] = set()
 # avoiding redundant disk reads within the same request cycle.
 _conversation_cache: dict[int, list] = {}
 
+# Users whose current turn failed at the provider (auth rejected, CLI error).
+# A failed turn must not enter conversation history: storing the failure as an
+# assistant message makes the model read "I can't reach Claude right now" as
+# its own prior words and answer accordingly, poisoning every later turn in
+# the session. During the 2026-07-20 auth outage every failed turn was stored
+# this way. call_llm records the user here; _save_and_send skips persistence
+# and clears the flag. Safe as plain module state because turns are
+# serialized per user by _get_user_lock.
+_failed_turns: set[int] = set()
+
 # Tracks the monotonic timestamp of each user's most recent /clear. A
 # compaction task scheduled before the clear must abort its summary write,
 # otherwise it would re-create stale "Session Continuation" content the
@@ -1493,6 +1503,9 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
     Args:
         images: Optional list of file paths to images for multimodal vision.
     """
+    # Fresh turn: clear any failure recorded by the previous one.
+    _failed_turns.discard(user_id)
+
     # Apply any .env edit made since the last turn (Mini App, ssh, editor):
     # rebuild the provider if the file's LLM settings drifted from the live
     # object. Must run before the health gate so a config fix can clear a
@@ -1643,6 +1656,8 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
         # the default providers. Alert on any error, then preserve the original
         # return behaviour (error string only when there is no usable text).
         logger.error(f"LLM error for user {user_id} ({response.provider}): {response.error}")
+        # Keep this turn out of conversation history (see _failed_turns).
+        _failed_turns.add(user_id)
         await _alert_turn_failure(user_id, response.provider, response.error)
         if not response.text:
             return f"Error from {response.provider}: {response.error}"
@@ -1690,6 +1705,23 @@ def _save_and_send(user_id: int, user_message: str, response: str,
     """
     if session is None:
         session = get_session(user_id)
+
+    # A turn that failed at the provider is not a conversation turn. Storing
+    # it would feed the model its own error text as prior assistant speech.
+    # The append-only log below still records it, so the failure stays
+    # visible for debugging without polluting the context window.
+    if user_id in _failed_turns:
+        _failed_turns.discard(user_id)
+        _conversation_cache.pop(user_id, None)  # drop it as the normal path does
+        logger.warning(
+            f"Not storing failed turn for user {user_id} in conversation history"
+        )
+        try:
+            log_exchange(user_id, user_message, response,
+                         message_id=message_id, topic=session.get_current_topic())
+        except Exception as e:
+            logger.error(f"Failed to log message for user {user_id}: {e}")
+        return response
 
     # Truncate stored messages to prevent unbounded history growth.
     # Full content is preserved in the append-only message log below.
