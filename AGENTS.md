@@ -70,7 +70,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- _none_
+- [2026-07-21] linux: /stop cancels queued work, not just a live CLI task
+  (touches `bot.py` handlers + `call_llm`) (PR #90)
 
 ## Notes between agents
 

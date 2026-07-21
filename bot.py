@@ -112,7 +112,25 @@ logger = logging.getLogger(__name__)
 
 # Per-user locks
 _user_locks: dict[int, asyncio.Lock] = {}
-_stop_drain: set[int] = set()
+
+# /stop generation counter per user. Every unit of user work (a message, an
+# album) stamps itself with the counter when it ARRIVES, and re-checks it right
+# before it runs; /stop increments it. So a stop drops exactly the work that
+# arrived before it, and a message sent after the stop stamps the new value and
+# always runs. This replaces the old sticky _stop_drain flag, which stayed set
+# after the drain and could silently swallow the next message a user sent.
+_stop_epoch: dict[int, int] = {}
+
+# How many units of this user's work a /stop could still cancel right now:
+# queued behind the user's own lock, or waiting on the global LLM semaphore.
+# Decremented the instant a turn passes its last cancellation check, so /stop
+# reports exactly what it dropped instead of guessing.
+_pending_turns: dict[int, int] = {}
+
+# Users whose turn is past that check: the provider call is starting or already
+# running. Set before any subprocess exists, so /stop stays truthful during the
+# CLI spawn window too (the provider registers the process only once it is live).
+_running_turns: set[int] = set()
 
 # Cache conversation history from build_messages for reuse in _save_and_send,
 # avoiding redundant disk reads within the same request cycle.
@@ -140,6 +158,64 @@ def _get_user_lock(user_id: int) -> asyncio.Lock:
     # lock for the same brand-new user end up with the same Lock object. A
     # naive `if k not in d: d[k] = Lock()` could mint two and let both run.
     return _user_locks.setdefault(user_id, asyncio.Lock())
+
+
+class _TurnCancelled(Exception):
+    """Raised when /stop dropped a turn before the provider was ever called."""
+
+
+def _pending_incr(user_id: int) -> None:
+    _pending_turns[user_id] = _pending_turns.get(user_id, 0) + 1
+
+
+def _pending_decr(user_id: int) -> None:
+    remaining = _pending_turns.get(user_id, 0) - 1
+    if remaining > 0:
+        _pending_turns[user_id] = remaining
+    else:
+        _pending_turns.pop(user_id, None)
+
+
+class _PendingTurn:
+    """One unit of user work that /stop can still cancel.
+
+    Stamps the user's /stop epoch on creation (message arrival) and counts
+    itself in _pending_turns until it either starts for real or is dropped.
+    `release` is idempotent, so the point-of-no-return call inside call_llm and
+    the context-manager exit can both fire without double counting.
+    """
+
+    __slots__ = ("user_id", "epoch", "_counted")
+
+    def __init__(self, user_id: int, epoch: int | None = None):
+        self.user_id = user_id
+        self.epoch = _stop_epoch.get(user_id, 0) if epoch is None else epoch
+        self._counted = False
+
+    def start(self) -> "_PendingTurn":
+        """Begin counting. Separate from __enter__ so a buffered album can be
+        counted at arrival and released by whichever task ends up running it."""
+        if not self._counted:
+            _pending_incr(self.user_id)
+            self._counted = True
+        return self
+
+    def __enter__(self) -> "_PendingTurn":
+        return self.start()
+
+    def __exit__(self, *exc) -> bool:
+        self.release()
+        return False
+
+    def cancelled(self) -> bool:
+        """True if a /stop arrived after this unit of work did."""
+        return _stop_epoch.get(self.user_id, 0) != self.epoch
+
+    def release(self) -> None:
+        """Stop counting this unit as cancellable. Idempotent."""
+        if self._counted:
+            self._counted = False
+            _pending_decr(self.user_id)
 
 
 def requires_auth(func):
@@ -182,6 +258,12 @@ class _NoOpSemaphore:
 _llm_semaphore = None  # Lazily created on first use inside event loop (Python 3.8 compat)
 _semaphore_active = False  # Whether real semaphore is in use
 
+# What currently holds the global semaphore: "user", "compaction", or None.
+# Tracked ONLY when _semaphore_active, because that is the only mode where the
+# semaphore actually serializes: with _NoOpSemaphore several holders coexist and
+# a single name would be a lie. /stop reads it to explain why a user is waiting.
+_semaphore_holder: str | None = None
+
 
 def _get_llm_semaphore():
     """Get the LLM semaphore, creating it lazily inside the running event loop.
@@ -197,6 +279,67 @@ def _get_llm_semaphore():
         else:
             _llm_semaphore = _NoOpSemaphore()
     return _llm_semaphore
+
+
+class _SemaphoreOwner:
+    """Records who holds the global semaphore for the duration of the block.
+
+    Composes with the semaphore on one line, so the guarded body keeps its
+    existing shape:  `async with _get_llm_semaphore(), _SemaphoreOwner("user"):`
+    Exits before the semaphore is released, so there is never a window where
+    the semaphore is free but still reported as held.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
+
+    async def __aenter__(self):
+        global _semaphore_holder
+        if _semaphore_active:
+            _semaphore_holder = self.name
+        return self
+
+    async def __aexit__(self, *args):
+        global _semaphore_holder
+        if _semaphore_active and _semaphore_holder == self.name:
+            _semaphore_holder = None
+        return False
+
+
+class _TurnGate:
+    """The point of no return for one turn, entered once the semaphore is held.
+
+    A turn can wait a long time here while another request runs. If /stop fired
+    during that wait the turn is dropped now, instead of running work the user
+    already cancelled: entering raises _TurnCancelled, which the Telegram
+    handlers catch. Otherwise the turn stops counting as cancellable and is
+    marked running, so /stop reports it accurately even before a CLI subprocess
+    exists. Background callers pass turn=None and are never cancelled, so a
+    scheduled reminder cannot be swallowed by an unrelated /stop.
+    """
+
+    __slots__ = ("user_id", "turn")
+
+    def __init__(self, user_id: int, turn: "_PendingTurn | None"):
+        self.user_id = user_id
+        self.turn = turn
+
+    async def __aenter__(self):
+        if self.turn is not None:
+            self.turn.release()
+            if self.turn.cancelled():
+                logger.info(
+                    f"Dropped queued turn for user {self.user_id}: cancelled by /stop"
+                )
+                raise _TurnCancelled()
+        _running_turns.add(self.user_id)
+        return self
+
+    async def __aexit__(self, *args):
+        _running_turns.discard(self.user_id)
+        return False
 
 
 async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size: int):
@@ -228,7 +371,7 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
         return cleared_at is not None and cleared_at > start_time
 
     try:
-        async with _get_llm_semaphore():
+        async with _get_llm_semaphore(), _SemaphoreOwner("compaction"):
             if _was_cleared():
                 logger.info(
                     f"Compaction for user {user_id} aborted before Claude call: "
@@ -539,7 +682,7 @@ SLASH_COMMAND_MENU: list[tuple[str, str]] = [
     ("help", "Show what I can do"),
     ("status", "See how things are running"),
     ("clear", "Start a fresh conversation"),
-    ("stop", "Stop the current task"),
+    ("stop", "Stop the current task and cancel queued messages"),
     ("remember", "Save something I should always know"),
     ("memories", "See what I remember about you"),
     ("remind", "Set a reminder"),
@@ -1560,11 +1703,18 @@ def _refresh_provider_if_env_changed() -> None:
         logger.error(f"LLM provider rebuild after .env change failed: {e}")
 
 
-async def call_llm(user_id: int, message: str, chat=None, images: list = None) -> str:
+async def call_llm(user_id: int, message: str, chat=None, images: list = None,
+                   turn: "_PendingTurn | None" = None) -> str:
     """Call the configured LLM provider and return the response text.
 
     Args:
         images: Optional list of file paths to images for multimodal vision.
+        turn: Makes the call cancellable. A turn can sit at the global
+            semaphore for a long time while another request runs; if /stop
+            fires during that wait the turn is dropped the moment the semaphore
+            frees, raising _TurnCancelled for the Telegram handlers to catch,
+            instead of running work the user already cancelled. Background
+            callers (scheduler, intro flow) pass None and are never cancelled.
     """
     # Fresh turn: clear any failure recorded by the previous one.
     _failed_turns.discard(user_id)
@@ -1670,7 +1820,7 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None) -
     from core.tools import set_current_user_dir, reset_current_user_dir
     _user_ctx_token = set_current_user_dir(get_user_dir(user_id))
     try:
-        async with sem:
+        async with sem, _SemaphoreOwner("user"), _TurnGate(user_id, turn):
             # For Claude CLI provider, pass extra kwargs for progress tracking
             if isinstance(_llm_provider, _CLI_PROVIDERS):
                 response: LLMResponse = await _llm_provider.complete(
@@ -2250,26 +2400,100 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Reminder '{text}' cancelled.")
 
 
+def _stop_reply(killed: bool, running: bool, cancelled: int, holder: str | None,
+                cli_provider: bool) -> str:
+    """Compose what /stop tells the user, given what it actually just did."""
+    if killed:
+        if cancelled:
+            word = "message" if cancelled == 1 else "messages"
+            return f"Stopping current task...\nAlso cancelled {cancelled} queued {word}."
+        return "Stopping current task..."
+
+    lines = []
+    if cancelled:
+        word = "request" if cancelled == 1 else "requests"
+        lines.append(f"Cancelled {cancelled} pending {word}.")
+
+    if running:
+        if cli_provider:
+            lines.append(
+                "A request of yours is already running and could not be interrupted. "
+                "It will finish on its own."
+            )
+        else:
+            lines.append(
+                "A request of yours is already running. Only the Claude CLI and Codex "
+                "CLI providers can interrupt a running request, so this one will "
+                "finish on its own."
+            )
+    elif cancelled:
+        lines.append("Nothing of yours had reached the model yet.")
+        if holder == "user":
+            lines.append(
+                "Another user's request is still running. That one is not yours to "
+                "stop, and it will finish on its own."
+            )
+        elif holder == "compaction":
+            lines.append(
+                "A background task is still finishing. It will clear on its own."
+            )
+
+    return "\n".join(lines) if lines else "No active task to stop."
+
+
+async def _apply_stop(reply, user_id: int) -> None:
+    """Cancel everything this user has pending, then report what was cancelled.
+
+    Three states, and /stop used to act on only the first:
+      1. a live CLI task, killed as before
+      2. turns waiting on the global semaphore, or messages queued behind the
+         user's own lock, dropped by bumping this user's /stop epoch
+      3. nothing pending, which is the only case that says so
+
+    Before this, a user queued behind another user's request was told "No active
+    task to stop" and their queued messages ran anyway: /stop only ever looked
+    at the provider's process table, and a waiting turn has no subprocess yet.
+
+    The epoch is bumped unconditionally so that work inside a window this does
+    not count (an album still collecting in its buffer) is dropped too.
+    Cancelling the queue works on every provider; only killing a live request is
+    CLI-only, because that is the only provider kind holding a subprocess we can
+    signal. Each user can only stop their own work.
+    """
+    running = user_id in _running_turns
+    cancelled = _pending_turns.get(user_id, 0)
+    holder = _semaphore_holder
+    cli_provider = isinstance(_llm_provider, _CLI_PROVIDERS)
+
+    _stop_epoch[user_id] = _stop_epoch.get(user_id, 0) + 1
+
+    killed = False
+    if cli_provider:
+        try:
+            killed = bool(_llm_provider.stop_user(user_id))
+        except Exception:
+            logger.exception(f"stop_user failed for user {user_id}")
+
+    logger.info(
+        f"/stop for user {user_id}: killed={killed}, running={running}, "
+        f"cancelled={cancelled}, semaphore_holder={holder}"
+    )
+    try:
+        await reply(_stop_reply(killed, running, cancelled, holder, cli_provider))
+    except Exception:
+        logger.warning(f"Could not deliver the /stop reply to user {user_id}")
+
+
 @requires_auth
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Kill the active CLI task for this user.
+    """Stop everything this user has pending: a running task, and anything queued.
 
-    Only affects subprocess CLI providers (Claude CLI, Codex CLI). Each user can
-    only stop their own task. The in-flight turn returns whatever partial output
-    was accumulated, with a '[Stopped by /stop command]' suffix.
+    Killing a live task only works on the subprocess CLI providers (Claude CLI,
+    Codex CLI), where the in-flight turn returns whatever partial output was
+    accumulated with a '[Stopped by /stop command]' suffix. Cancelling queued
+    work happens on every provider. Each user can only stop their own.
     """
-    user_id = update.effective_user.id
-    if not isinstance(_llm_provider, _CLI_PROVIDERS):
-        await update.message.reply_text(
-            "/stop is only supported for CLI providers (Claude CLI, Codex CLI)."
-        )
-        return
-    killed = _llm_provider.stop_user(user_id)
-    if killed:
-        _stop_drain.add(user_id)
-        await update.message.reply_text("Stopping current task...")
-    else:
-        await update.message.reply_text("No active task to stop.")
+    await _apply_stop(update.message.reply_text, update.effective_user.id)
 
 
 @requires_auth
@@ -2957,7 +3181,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /remind — Set a reminder (e.g. /remind tomorrow 9am Call the dentist)\n"
         "  /reminders — See your upcoming reminders\n"
         "  /cancel — Cancel a reminder\n"
-        "  /stop — Stop the current AI task immediately\n\n"
+        "  /stop — Stop the current task and cancel anything you have queued\n\n"
         "Organization:\n"
         "  /topic — Switch to a separate conversation thread\n"
         "  /topics — See all your conversation threads\n\n"
@@ -3186,6 +3410,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if media_group_id not in _media_group_buffers:
             _media_group_buffers[media_group_id] = {
                 "updates": [], "timer": None, "user_id": user_id,
+                # Stamped at arrival, not after the buffer wait: a /stop sent
+                # while the album is still collecting must drop it too.
+                "turn": _PendingTurn(user_id).start(),
             }
         buf = _media_group_buffers[media_group_id]
         buf["updates"].append(update)
@@ -3206,27 +3433,30 @@ async def _process_media_group(media_group_id: str, context: ContextTypes.DEFAUL
         return
     user_id = buf["user_id"]
     updates = buf["updates"]
+    # Counted and epoch-stamped since the album started buffering, so a /stop
+    # during the collection window drops it and is reported as having done so.
+    turn = buf["turn"]
 
-    lock = _get_user_lock(user_id)
-    if lock.locked():
-        try:
-            await updates[0].message.chat.send_message(
-                "Still working on your previous request. Your message is queued."
-            )
-        except Exception:
-            pass
+    try:
+        lock = _get_user_lock(user_id)
+        if lock.locked():
+            try:
+                await updates[0].message.chat.send_message(
+                    "Still working on your previous request. Your message is queued."
+                )
+            except Exception:
+                pass
+
         async with lock:
-            if user_id in _stop_drain:
+            if turn.cancelled():
+                logger.info(f"Dropped queued album for user {user_id}: cancelled by /stop")
                 return
-            await _process_media_group_inner(updates, user_id, context)
-        return
-
-    _stop_drain.discard(user_id)
-    async with lock:
-        await _process_media_group_inner(updates, user_id, context)
+            await _process_media_group_inner(updates, user_id, context, turn)
+    finally:
+        turn.release()
 
 
-async def _process_media_group_inner(updates, user_id, context):
+async def _process_media_group_inner(updates, user_id, context, turn=None):
     """Inner handler for media group processing (runs under per-user lock)."""
     session = get_session(user_id)
     if session.should_daily_reset():
@@ -3269,8 +3499,11 @@ async def _process_media_group_inner(updates, user_id, context):
         except Exception:
             pass
 
-        response = await call_llm(user_id, user_message, chat=chat,
-                                  images=image_paths or None)
+        try:
+            response = await call_llm(user_id, user_message, chat=chat,
+                                      images=image_paths or None, turn=turn)
+        except _TurnCancelled:
+            return
 
         _save_and_send(user_id, user_message, response, session=session, message_id=first_msg_id)
 
@@ -3289,34 +3522,33 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lock = _get_user_lock(user_id)
 
-    if lock.locked():
-        text = (update.message.text or "").strip().lower()
-        if text == "stop" and isinstance(_llm_provider, _CLI_PROVIDERS):
-            killed = _llm_provider.stop_user(user_id)
-            if killed:
-                _stop_drain.add(user_id)
-                try:
-                    await update.message.reply_text("Stopping current task...")
-                except Exception:
-                    pass
-            return
-
-        try:
-            await update.message.reply_text("Still working on your previous request. I'll get to this once it's done.")
-        except Exception:
-            pass
-        async with lock:
-            if user_id in _stop_drain:
+    with _PendingTurn(user_id) as turn:
+        if lock.locked():
+            # Plain text "stop" while a task is running = same as /stop, on
+            # every provider: cancelling the queue never needed a subprocess.
+            # Released first because this message is a control command, not
+            # queued work, so /stop never counts itself among what it cancelled.
+            text = (update.message.text or "").strip().lower()
+            if text == "stop":
+                turn.release()
+                await _apply_stop(update.message.reply_text, user_id)
                 return
-            await _process_single_inner(update, context)
-        return
 
-    _stop_drain.discard(user_id)
-    async with lock:
-        await _process_single_inner(update, context)
+            try:
+                await update.message.reply_text("Still working on your previous request. I'll get to this once it's done.")
+            except Exception:
+                pass
+
+        # Queue: wait for the lock, then run unless /stop dropped us meanwhile
+        async with lock:
+            if turn.cancelled():
+                logger.info(f"Dropped queued message for user {user_id}: cancelled by /stop")
+                return
+            await _process_single_inner(update, context, turn)
 
 
-async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                turn=None):
     """Inner handler for single message processing (runs under per-user lock)."""
     user_id = update.effective_user.id
 
@@ -3502,8 +3734,11 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             llm_message = user_message
 
-        response = await call_llm(user_id, llm_message, chat=update.message.chat,
-                                  images=image_paths or None)
+        try:
+            response = await call_llm(user_id, llm_message, chat=update.message.chat,
+                                      images=image_paths or None, turn=turn)
+        except _TurnCancelled:
+            return
 
         _save_and_send(user_id, user_message, response, session=session,
                        message_id=update.message.message_id)
