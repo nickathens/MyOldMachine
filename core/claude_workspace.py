@@ -586,8 +586,15 @@ def heal_credential_chains(
     neighbours -- this module now only ever removes keychain items.)
 
     Returns a one-line description of what was healed, or None if nothing
-    needed doing. Never raises: this runs alongside a turn, not instead of
-    one.
+    needed doing.
+
+    Errors: the body catches what it can foresee (OSError on the file read,
+    subprocess failures inside the keychain helpers) but does NOT promise to
+    swallow everything -- test_never_raises_into_the_turn_it_runs_beside
+    shows an OSError from the keychain read escaping. The guarantee callers
+    actually rely on is theirs to keep: reconcile_shared_credentials wraps
+    this in `except Exception`. Any new caller must do the same, because this
+    runs alongside a turn, not instead of one.
     """
     if sys.platform != "darwin":
         return None  # one chain only; nothing to heal from
@@ -683,8 +690,15 @@ def reconcile_shared_credentials(
     symlink. The shared file thus always carries the freshest token and
     every workspace re-converges on it at its next turn. Idempotent and
     safe to call when nothing refreshed -- a still-symlinked or absent
-    credential is a no-op. Never raises: a failure here must not fail the
-    turn it runs after.
+    credential is a no-op.
+
+    Errors: individual steps are guarded, but the body does not promise to
+    absorb every failure. A failure here must not fail the turn it runs
+    after, and that is enforced at the two call sites rather than here --
+    core/llm.py wraps the post-turn call in `except Exception`, and the
+    pre-turn call inside ensure_user_claude_config is covered by the same
+    fail-open guard around ensure_user_claude_config itself. A new caller
+    that skips that guard breaks the contract.
 
     Returns True if a refreshed credential was propagated to the shared file.
     """

@@ -25,7 +25,9 @@ Three defects lived in the gap between those two, all found on 2026-07-21:
      bytes and still exits 0. Hence the rule these tests lock down -- this
      module removes keychain items and never writes them.
 """
+import ast
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -61,6 +63,75 @@ HOLLOW = json.dumps({"claudeAiOauth": {
 # What the corrupting stdin write actually left in the keychain: valid-looking
 # for 128 bytes and then cut off mid-token.
 TRUNCATED = _cred(access="sk-ant-oat01-" + "v" * 200)[:129]
+
+
+class _FakeSecurity:
+    """Stands in for the `security` binary at the subprocess boundary.
+
+    Mocking the WRAPPERS (_read_keychain_item and friends) leaves the write
+    path invisible: a re-added `add-generic-password` calls subprocess
+    directly, sails straight past those mocks and reaches the machine's own
+    keychain. Measured 2026-07-21 on this very class -- an inserted write ran
+    for real out of five separate tests, which is precisely the accident that
+    corrupted the live login on 2026-07-20.
+
+    Faking the binary itself puts every keychain touch through one recorder,
+    including one nobody has written yet.
+    """
+
+    def __init__(self, items: dict, service: str):
+        self.items = dict(items)  # account -> raw secret
+        self.service = service
+        self.calls = []
+
+    def _flags(self, cmd) -> dict:
+        return {cmd[i]: cmd[i + 1] for i in range(len(cmd) - 1) if cmd[i].startswith("-")}
+
+    def __call__(self, cmd, *args, **kwargs):
+        self.calls.append(list(cmd))
+        verb = cmd[1] if len(cmd) > 1 else ""
+        flags = self._flags(cmd)
+
+        if verb == "dump-keychain":
+            blocks = [f'"acct"<blob>="{acct}"\n"svce"<blob>="{self.service}"'
+                      for acct in self.items]
+            return subprocess.CompletedProcess(cmd, 0, "\nkeychain: ".join(blocks), "")
+
+        if verb == "find-generic-password":
+            if flags.get("-s") != self.service:
+                return subprocess.CompletedProcess(cmd, 44, "", "not found")
+            acct = flags.get("-a")
+            secret = self.items.get(acct) if acct else next(iter(self.items.values()), None)
+            if secret is None:
+                return subprocess.CompletedProcess(cmd, 44, "", "not found")
+            return subprocess.CompletedProcess(cmd, 0, secret + "\n", "")
+
+        if verb == "delete-generic-password":
+            if flags.get("-s") != self.service:
+                return subprocess.CompletedProcess(cmd, 44, "", "not found")
+            acct = flags.get("-a")
+            if acct is None:
+                self.items.pop(next(iter(self.items), None), None)
+            elif self.items.pop(acct, None) is None:
+                return subprocess.CompletedProcess(cmd, 44, "", "not found")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        # add-generic-password lands here: recorded, never executed. The
+        # assertion that it must not appear is the caller's, so the failure
+        # names the rule instead of an opaque subprocess error.
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def verbs(self) -> list:
+        return [c[1] for c in self.calls if len(c) > 1]
+
+
+def _no_real_keychain(cmd, *args, **kwargs):
+    """Installed over subprocess.run for every heal test; see _FakeSecurity."""
+    raise AssertionError(
+        "a test reached the real `security` binary: " + " ".join(map(str, cmd))
+        + "\nKeychain access must be faked at the subprocess boundary "
+          "(_FakeSecurity), never left to hit the machine's own keychain."
+    )
 
 
 class KeychainAccountSelectionTests(unittest.TestCase):
@@ -149,6 +220,12 @@ class HealCredentialChainsTests(unittest.TestCase):
         self._patches = [
             patch.object(cw.sys, "platform", "darwin"),
             patch.object(cw, "default_legacy_root", return_value=self.root),
+            # The mocks in _heal stand in front of the real keychain today,
+            # but they are wrapper mocks: anything calling subprocess itself
+            # goes round them. Measured before this guard existed, one test
+            # in this class issued four live `security` calls against the
+            # machine's own keychain. Fail loudly instead.
+            patch.object(cw.subprocess, "run", side_effect=_no_real_keychain),
         ]
         for p in self._patches:
             p.start()
@@ -231,23 +308,87 @@ class HealCredentialChainsTests(unittest.TestCase):
         self.assertEqual(self.shared.read_text(), before)
         delete.assert_not_called()
 
-    def test_never_writes_the_keychain(self):
+    def _fake_security(self, items):
+        fake = _FakeSecurity(items, cw._KEYCHAIN_SERVICE)
+        return fake, patch.object(cw.subprocess, "run", side_effect=fake)
+
+    def test_never_writes_the_keychain_while_restoring_the_file(self):
         """The rule that exists because writing it corrupted the real login.
 
         `security add-generic-password` fed over stdin truncates at 128 bytes
         and still exits 0, so a 509-byte credential landed as 129 bytes of
         unparseable JSON on top of the working one.
-        """
-        self.shared.write_text(_cred())
-        with patch.object(cw.subprocess, "run") as run:
-            run.return_value.returncode = 0
-            run.return_value.stdout = ""
-            for keychain in (None, HOLLOW, TRUNCATED, _cred(refresh_days=-1)):
-                with self.subTest(keychain=str(keychain)[:24]):
-                    cw.heal_credential_chains(self.root)
 
-        for call in run.call_args_list:
-            self.assertNotIn("add-generic-password", call[0][0])
+        This drives the branch a re-added write would live in -- the one that
+        moves a login BETWEEN stores -- and it asserts the branch was reached
+        before asserting what did not happen there. An earlier version of this
+        test mocked the wrappers instead, never got past the early return, and
+        passed with two live `add-generic-password` calls inserted into the
+        function it was guarding.
+        """
+        self.shared.write_text(HOLLOW)  # file dead, so the keychain is copied to it
+        good = _cred(refresh="from-keychain")
+        fake, guard = self._fake_security({"coocooai": good})
+
+        with guard:
+            result = cw.heal_credential_chains(self.root)
+
+        # Reached: only the restore branch produces this outcome.
+        self.assertEqual(result, "restored the shared credential file from the keychain login")
+        self.assertEqual(self.shared.read_text(), good)
+        self.assertIn("find-generic-password", fake.verbs())
+        # ...and the rule itself.
+        self.assertNotIn("add-generic-password", fake.verbs())
+
+    def test_never_writes_the_keychain_while_clearing_a_dead_item(self):
+        """The other half: the branch that removes, where a "restore the good
+        one back" write is the obvious thing for a future hand to add."""
+        self.shared.write_text(_cred(refresh="healthy-file"))
+        fake, guard = self._fake_security({"coocooai": TRUNCATED})
+
+        with guard:
+            result = cw.heal_credential_chains(self.root)
+
+        # Reached: only the delete loop produces this outcome.
+        self.assertEqual(
+            result,
+            "removed a dead keychain login so every job falls back to the shared file",
+        )
+        self.assertIn("delete-generic-password", fake.verbs())
+        self.assertNotIn("add-generic-password", fake.verbs())
+        self.assertIn("healthy-file", self.shared.read_text())
+
+    def test_no_keychain_write_exists_anywhere_in_the_module(self):
+        """Belt to the two dynamic tests' braces.
+
+        Those cover the branches a write lives in TODAY. This one needs no
+        branch to be reached and no scenario to be imagined: it reads the
+        module's own syntax tree and fails if the string appears in live code
+        at all. Docstrings are exempt -- heal_credential_chains explains the
+        accident in prose, and that explanation is the point.
+        """
+        tree = ast.parse(Path(cw.__file__).read_text())
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef))
+            and node.body and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        }
+        offenders = [
+            node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and id(node) not in docstrings
+            and "add-generic-password" in node.value
+        ]
+        self.assertEqual(offenders, [], (
+            f"{Path(cw.__file__).name} writes the keychain at line(s) {offenders}. "
+            "Two stores holding the same rotating refresh token is a race, not "
+            "redundancy, and the stdin form of this command silently truncates "
+            "a credential at 128 bytes while exiting 0."
+        ))
 
     def test_a_foreign_root_is_refused_so_real_tokens_never_leak_into_it(self):
         """Caught for real: a test deleted its temp credential and found a
@@ -271,11 +412,17 @@ class HealCredentialChainsTests(unittest.TestCase):
 
     def test_never_raises_into_the_turn_it_runs_beside(self):
         self.shared.write_text(_cred())
-        with patch.object(cw, "_read_keychain_item", side_effect=OSError("keychain gone")):
+        # _purge_hollow_keychain_items runs before the read and is what used
+        # to carry this test into the machine's real keychain.
+        with patch.object(cw, "_purge_hollow_keychain_items", return_value=0), \
+             patch.object(cw, "_read_keychain_item", side_effect=OSError("keychain gone")):
             with self.assertRaises(OSError):
                 cw.heal_credential_chains(self.root)
-        # ...but the caller swallows it, which is what actually protects the turn.
+        # ...but the caller swallows it, which is what actually protects the
+        # turn. The keychain reconcile past it is not this test's subject and
+        # was the second route into the machine's real keychain.
         with patch.object(cw, "heal_credential_chains", side_effect=OSError("boom")), \
+             patch.object(cw, "_reconcile_keychain_credential", return_value=False), \
              patch.object(cw, "user_claude_dir", return_value=self.root / "u"):
             cw.reconcile_shared_credentials(1, legacy_root=self.root)
 
@@ -378,6 +525,50 @@ class KeychainLoginStateTests(unittest.TestCase):
     def test_off_darwin_there_is_no_second_chain(self):
         with patch.object(lc.sys, "platform", "linux"):
             self.assertIsNone(lc.read_keychain_login_state())
+
+
+class CliChainSelectionTests(unittest.TestCase):
+    """Which chains a given invocation actually inspects.
+
+    The usage comment claimed `--path FILE` skipped the keychain; it does
+    not, `--file-only` does. Prose drifts, so the contract is pinned here.
+    """
+
+    def _dispatch(self, argv):
+        healthy = {"status": "ok", "detail": "fine", "days_left": 28.0,
+                   "expires_at": None, "access_expires_at": None, "chains": {}}
+        with patch.object(sys, "argv", ["claude_login_check.py"] + argv), \
+             patch.object(lc, "read_login_state", return_value=dict(healthy)) as file_only, \
+             patch.object(lc, "read_machine_login_state", return_value=dict(healthy)) as both:
+            lc.main()
+        return file_only, both
+
+    def test_file_only_skips_the_keychain(self):
+        file_only, both = self._dispatch(["--file-only"])
+
+        self.assertEqual(file_only.call_count, 1)
+        both.assert_not_called()
+
+    def test_path_alone_still_reads_the_keychain(self):
+        """The exact claim the old usage comment got wrong."""
+        file_only, both = self._dispatch(["--path", "/tmp/whatever.json"])
+
+        both.assert_called_once()
+        file_only.assert_not_called()
+        self.assertEqual(both.call_args.kwargs["path"], Path("/tmp/whatever.json"))
+
+    def test_the_default_invocation_reads_both_chains(self):
+        file_only, both = self._dispatch([])
+
+        both.assert_called_once()
+        file_only.assert_not_called()
+
+    def test_file_only_and_path_combine(self):
+        """The form the corrected usage line now advertises."""
+        file_only, both = self._dispatch(["--file-only", "--path", "/tmp/x.json"])
+
+        both.assert_not_called()
+        self.assertEqual(file_only.call_args.kwargs["path"], Path("/tmp/x.json"))
 
 
 if __name__ == "__main__":

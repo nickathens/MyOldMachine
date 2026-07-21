@@ -43,7 +43,8 @@ Usage:
     python claude_login_check.py            # human-readable status
     python claude_login_check.py --json     # machine-readable
     python claude_login_check.py --warn-days 7
-    python claude_login_check.py --path FILE  # that file only, skip the keychain
+    python claude_login_check.py --path FILE  # inspect that file as the file chain
+    python claude_login_check.py --file-only [--path FILE]  # skip the keychain chain
 """
 
 import argparse
