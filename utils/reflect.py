@@ -338,6 +338,46 @@ def _is_cap_message(text: str) -> bool:
     )
 
 
+# Why a provider call failed, kept so the admin alert can name a cause. The
+# providers report failures as an empty return value, so without capturing the
+# detail here it is gone by the time the alert is written.
+_last_provider_error: str = ""
+
+
+def _record_provider_error(detail: str) -> str:
+    """Remember why a provider call failed. Returns the detail, so call sites can
+    wrap their existing log() call instead of growing an extra line."""
+    global _last_provider_error
+    _last_provider_error = (detail or "").strip()
+    return _last_provider_error
+
+
+# Failures that mean "a human must log in on the machine", not "the model is
+# misconfigured". These need a different fix from every other provider error.
+_AUTH_FAILURE_RE = re.compile(
+    r"oauth session expired|could not be refreshed|not authenticated|"
+    r"invalid api key|authentication_error|please run .?claude",
+    re.IGNORECASE,
+)
+
+
+def _describe_no_llm_failure() -> str:
+    """Explain a no_llm outcome in terms the admin can act on.
+
+    This used to be the fixed string "No capable model available", which points
+    at model configuration whatever the real cause was. An expired login is the
+    most common cause by far and needs a completely different response, so the
+    recorded provider detail decides the wording.
+    """
+    detail = _last_provider_error
+    if not detail:
+        return "No capable model available (providers returned no output and no error)"
+    if _AUTH_FAILURE_RE.search(detail):
+        return ("Claude login expired — run `claude` in Terminal on the machine to log "
+                f"in again. Provider said: {detail[:200]}")
+    return f"No usable model output. Provider said: {detail[:200]}"
+
+
 def _call_claude_cli(prompt: str) -> str:
     """Call Claude CLI for reflection. Returns output text or empty string."""
     if not which("claude"):
@@ -356,15 +396,22 @@ def _call_claude_cli(prompt: str) -> str:
         if result.returncode == 0 and result.stdout.strip():
             out = result.stdout.strip()
             if _is_cap_message(out):
-                log("Claude CLI is capped (usage or spend limit); treating as "
-                    "unavailable so reflection fails over to the API provider")
+                log(_record_provider_error(
+                    "Claude CLI is capped (usage or spend limit); treating as "
+                    "unavailable so reflection fails over to the API provider"))
                 return ""
             return out
-        log(f"Claude CLI failed: exit={result.returncode}, stderr={result.stderr[:200]}")
+        # The CLI reports *why* it failed on stdout — expired login, unknown
+        # model, usage cap — and leaves stderr for unrelated warnings. Logging
+        # stderr alone printed a bare "stderr=" on the night the login expired,
+        # which is exactly when the reason mattered most.
+        detail = (result.stdout or "").strip() or (result.stderr or "").strip() or "no output"
+        log(_record_provider_error(
+            f"Claude CLI failed: exit={result.returncode}: {detail[:300]}"))
     except subprocess.TimeoutExpired:
-        log("Claude CLI timed out (120s)")
+        log(_record_provider_error("Claude CLI timed out (120s)"))
     except Exception as e:
-        log(f"Claude CLI error: {e}")
+        log(_record_provider_error(f"Claude CLI error: {e}"))
     return ""
 
 
@@ -421,7 +468,8 @@ def _call_api(prompt: str) -> str:
                         msg = choices[0].get("message") or {}
                         return msg.get("content", "")
                 else:
-                    log(f"Ollama API returned {resp.status_code}")
+                    log(_record_provider_error(
+                        f"Ollama API returned {resp.status_code}: {resp.text[:200]}"))
             return ""
 
         elif provider in ("gemini", "google"):
@@ -439,7 +487,8 @@ def _call_api(prompt: str) -> str:
                     parts = content.get("parts") or []
                     return "".join(p.get("text", "") for p in parts)
                 else:
-                    log(f"Gemini API returned {resp.status_code}")
+                    log(_record_provider_error(
+                        f"Gemini API returned {resp.status_code}: {resp.text[:200]}"))
             return ""
 
         elif provider == "claude-api":
@@ -464,7 +513,8 @@ def _call_api(prompt: str) -> str:
                         b["text"] for b in data.get("content", []) if b.get("type") == "text"
                     )
                 else:
-                    log(f"Claude API returned {resp.status_code}")
+                    log(_record_provider_error(
+                        f"Claude API returned {resp.status_code}: {resp.text[:200]}"))
             return ""
 
         else:
@@ -509,11 +559,12 @@ def _call_api(prompt: str) -> str:
                         msg = choices[0].get("message") or {}
                         return msg.get("content", "")
                 else:
-                    log(f"{provider} API returned {resp.status_code}")
+                    log(_record_provider_error(
+                        f"{provider} API returned {resp.status_code}: {resp.text[:200]}"))
             return ""
 
     except Exception as e:
-        log(f"API reflection failed ({provider}): {e}")
+        log(_record_provider_error(f"API reflection failed ({provider}): {e}"))
         return ""
 
 
@@ -548,6 +599,10 @@ def _run_phase2_with_retry(prompt: str, mm) -> tuple:
     empty_count = 0
     format_count = 0
     attempt = 0
+
+    # Clear per-run, so a failure recorded while reflecting on one user is never
+    # reported as the cause of the next user's failure.
+    _record_provider_error("")
 
     while empty_count < PHASE2_MAX_EMPTY_RETRIES and format_count < PHASE2_MAX_FORMAT_RETRIES:
         attempt += 1
@@ -850,8 +905,9 @@ def run_intro_reflection(mm: MemoryManager, user_id: int, user_name: str,
     if not output:
         output = _call_api(prompt)
     if not output:
-        log(f"  No LLM available for intro reflection on user {user_id}")
-        return {"user_id": user_id, "status": "no_llm"}
+        reason = _describe_no_llm_failure()
+        log(f"  No LLM available for intro reflection on user {user_id}: {reason}")
+        return {"user_id": user_id, "status": "no_llm", "reason": reason}
 
     model_content, _summary = mm.parse_reflection_output(output)
     if not model_content:
@@ -971,8 +1027,9 @@ def run_reflection(mm: MemoryManager, user_id: int, dry_run: bool = False,
     model_content, summary, failure = _run_phase2_with_retry(prompt, mm)
 
     if failure == "no_llm":
-        log(f"No LLM available for reflection on user {user_id} after retries")
-        return {"user_id": user_id, "status": "no_llm", "reason": "No capable model available"}
+        reason = _describe_no_llm_failure()
+        log(f"No LLM available for reflection on user {user_id} after retries: {reason}")
+        return {"user_id": user_id, "status": "no_llm", "reason": reason}
 
     if failure == "parse_error" or not model_content:
         log(f"Could not parse model update for user {user_id} after retries")
@@ -1034,6 +1091,28 @@ def _send_alert(message: str):
         pass
 
 
+def _warn_if_login_expiring(dry: bool = False):
+    """Warn the admin before the Claude login lapses.
+
+    Every LLM-backed job on this machine fails closed when the login dies, and
+    only a human at the keyboard can renew it. The expiry is knowable weeks
+    ahead, so there is no reason for the first signal to be a dead nightly run —
+    this rides along with the job that already runs every night.
+
+    Never raises: a problem reading the credential file must not stop the
+    reflection that follows it.
+    """
+    try:
+        from utils.claude_login_check import read_login_state, warning_message
+        state = read_login_state()
+        log(f"Login check: {state['detail']}")
+        message = warning_message(state)
+        if message and not dry:
+            _send_alert(message)
+    except Exception as e:
+        log(f"Login check skipped: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Nightly reflection for the memory system")
     parser.add_argument("--dry", action="store_true", help="Preview without writing")
@@ -1046,6 +1125,8 @@ def main():
     mm = MemoryManager(DATA_DIR)
 
     log("=== Nightly Reflection Started ===")
+
+    _warn_if_login_expiring(dry=args.dry)
 
     results = []
 
