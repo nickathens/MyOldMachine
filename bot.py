@@ -60,7 +60,12 @@ from core.message_log import log_exchange
 from utils.safe_json import save_json as _atomic_save_json
 from utils.env_io import atomic_env_write as _atomic_env_write
 
-from telegram import Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeDefault,
+    Update,
+)
 from telegram.error import BadRequest, NetworkError
 from telegram.request import HTTPXRequest
 from telegram.ext import (
@@ -513,6 +518,64 @@ _RESERVED_COMMANDS = {
     "adduser", "removeuser", "users",
     "maintenance", "skillstats",
 }
+
+
+# --- Slash-command menu ---
+
+# The "/" auto-complete list Telegram shows in every chat. Curated from the
+# everyday commands in help_command and kept deliberately short so the list
+# stays scannable, rather than dumping all ~30 handlers. This is discovery
+# only: each command still enforces its own auth when invoked (most are
+# @requires_auth), so the privileged entries (provider, model, health,
+# restart) are safe to advertise to everyone, exactly as help_command already
+# lists them to all users.
+#
+# Every name here must be a real registered command (a member of
+# _RESERVED_COMMANDS); test_slash_command_menu locks that, so the menu can
+# never drift into advertising a command the bot does not handle. Descriptions
+# are provider-neutral (this bot runs any of a dozen LLM backends) and stay
+# within Telegram's limits: name 1-32 chars of [a-z0-9_], description 1-256.
+SLASH_COMMAND_MENU: list[tuple[str, str]] = [
+    ("help", "Show what I can do"),
+    ("status", "See how things are running"),
+    ("clear", "Start a fresh conversation"),
+    ("stop", "Stop the current task"),
+    ("remember", "Save something I should always know"),
+    ("memories", "See what I remember about you"),
+    ("remind", "Set a reminder"),
+    ("reminders", "See your upcoming reminders"),
+    ("topics", "See your conversation threads"),
+    ("provider", "Change the AI provider"),
+    ("model", "Change the AI model"),
+    ("health", "Check system health"),
+    ("restart", "Restart the bot"),
+]
+
+
+async def publish_slash_commands(bot) -> bool:
+    """Publish SLASH_COMMAND_MENU to Telegram as the "/" auto-complete list.
+
+    Writes both the default scope and the all-private-chats scope. Telegram
+    resolves a chat's menu by the most specific matching scope, and a private
+    DM reads all_private_chats BEFORE default, so a menu written to only one
+    scope can be silently shadowed by a stale list in the other. Writing both
+    keeps the advertised menu correct regardless of what BotFather held before.
+
+    Returns True on success, False if Telegram rejected the update. Never
+    raises: a menu hiccup must not be able to block startup.
+    """
+    menu = [BotCommand(name, description) for name, description in SLASH_COMMAND_MENU]
+    try:
+        await bot.set_my_commands(menu, scope=BotCommandScopeDefault())
+        await bot.set_my_commands(menu, scope=BotCommandScopeAllPrivateChats())
+        logger.info(
+            f"Published slash-command menu ({len(menu)} commands, "
+            "default + all_private_chats)"
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish slash-command menu: {e}")
+        return False
 
 
 # --- User data helpers ---
@@ -4632,6 +4695,11 @@ def main():
         scheduler.start()
         logger.info("Scheduler started with Claude handler")
         await recover_pending_messages(application.bot)
+
+        # Publish the "/" slash-command menu shown in Telegram clients. Kept in
+        # code (not BotFather) so it tracks the commands the bot handles and
+        # survives a bot-token change.
+        await publish_slash_commands(application.bot)
 
         # Connect to configured MCP servers (if any)
         from core.mcp_client import get_mcp_manager
