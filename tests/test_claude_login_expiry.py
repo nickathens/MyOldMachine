@@ -115,7 +115,13 @@ class ReflectionPreflightTests(unittest.TestCase):
 
     def _run_preflight(self, state, dry=False):
         sent = []
+        # The keychain chain is stubbed out, not left to the machine. Without
+        # this the result depends on whether the developer's own Mac happens
+        # to hold a Claude keychain item, which is how a green suite starts
+        # meaning nothing.
         with patch("utils.claude_login_check.read_login_state", return_value=state), \
+             patch("utils.claude_login_check.read_keychain_login_state",
+                   return_value=None), \
              patch("utils.reflect._send_alert", side_effect=lambda m: sent.append(m)):
             reflect._warn_if_login_expiring(dry=dry)
         return sent

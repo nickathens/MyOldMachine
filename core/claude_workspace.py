@@ -77,6 +77,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -98,6 +99,13 @@ _SHARED_CONFIG_ENTRIES = (
 )
 
 _KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+# Attribute lines in `security dump-keychain` output, e.g.
+#     "acct"<blob>="coocooai"
+# Non-ASCII values come back hex-encoded (0x...) instead of quoted; those
+# simply do not match, which is the right outcome -- an account name this
+# module cannot read is one it must not act on.
+_KEYCHAIN_ATTR_RE = re.compile(r'"(acct|svce)"<blob>="([^"]*)"')
 
 _MIGRATION_MARKER = ".per-user-split-done"
 
@@ -144,17 +152,99 @@ def _credential_is_usable(raw) -> bool:
     return bool(oauth.get("accessToken")) and bool(oauth.get("refreshToken"))
 
 
-def _read_keychain_item(service: str) -> Optional[str]:
-    """The secret for `service`, or None if absent/unreadable."""
+def _credential_is_hollow(raw) -> bool:
+    """True only for a credential that is definitively empty.
+
+    Narrower than ``not _credential_is_usable``: that says "do not trust
+    this", which is the right test before USING a secret. This one says
+    "this can never be anything to anyone", which is the only safe licence
+    to DELETE a secret. Anything unparseable, or in a shape this module
+    does not understand, is deliberately not hollow -- unreadable is not
+    the same as empty, and the cost of being wrong is destroying the last
+    copy of a login.
+    """
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    oauth = data.get("claudeAiOauth")
+    if not isinstance(oauth, dict):
+        return False
+    return not oauth.get("accessToken") and not oauth.get("refreshToken")
+
+
+def _refresh_expiry_ms(raw) -> float:
+    """refreshTokenExpiresAt from a credential blob, -inf when absent.
+
+    -inf rather than 0 so a credential that does not record an expiry
+    always loses a "which of these lives longest" comparison instead of
+    tying with one that expired at the epoch.
+    """
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return float("-inf")
+    try:
+        oauth = (json.loads(raw) or {}).get("claudeAiOauth") or {}
+    except (TypeError, ValueError, AttributeError):
+        return float("-inf")
+    at = oauth.get("refreshTokenExpiresAt")
+    return float(at) if isinstance(at, (int, float)) else float("-inf")
+
+
+def _keychain_accounts(service: str) -> list:
+    """Every account name stored under `service`, in keychain order.
+
+    `security find-generic-password -s SERVICE -w` returns ONE item and
+    never says which. With several items under a single service macOS
+    picks by its own ordering -- and on this machine it picks a HOLLOW
+    "unknown" account over the real login (measured 2026-07-21: the
+    account-less read returns accessToken ""). So every account-less read
+    is a coin flip that this machine loses. Enumerate, then choose.
+
+    Metadata only: `dump-keychain` without -d reads no secret material,
+    needs no unlock, and raises no access dialog (measured: 15ms, exit 0).
+    """
     if sys.platform != "darwin":
-        return None
+        return []
     try:
         proc = subprocess.run(
-            ["security", "find-generic-password", "-s", service, "-w"],
+            ["security", "dump-keychain"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
         )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("keychain enumeration failed: %s", exc)
+        return []
+    if proc.returncode != 0:
+        return []
+
+    accounts = []
+    for block in proc.stdout.split("\nkeychain: "):
+        attrs = dict(_KEYCHAIN_ATTR_RE.findall(block))
+        if attrs.get("svce") == service:
+            acct = attrs.get("acct")
+            if acct is not None and acct not in accounts:
+                accounts.append(acct)
+    return accounts
+
+
+def _read_keychain_secret(service: str, account: Optional[str]) -> Optional[str]:
+    """One raw secret, by service and (optionally) account."""
+    cmd = ["security", "find-generic-password", "-s", service, "-w"]
+    if account is not None:
+        cmd[2:2] = ["-a", account]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("keychain read failed for %s: %s", service, exc)
         return None
@@ -163,21 +253,85 @@ def _read_keychain_item(service: str) -> Optional[str]:
     return proc.stdout.strip() or None
 
 
-def _delete_keychain_item(service: str) -> bool:
-    """Remove `service` so the CLI falls back to the shared file."""
+def _read_keychain_item(service: str) -> Optional[str]:
+    """The best secret stored under `service`, or None if there is none.
+
+    "Best" means: a usable item if any exists, and among usable items the
+    one whose refresh token lives longest. An unusable item is still
+    returned when it is all there is, because callers must be able to tell
+    "nothing here" (leave it alone) from "something broken here" (clear
+    it) -- collapsing those two would leave a hollow item shadowing the
+    file forever.
+    """
+    if sys.platform != "darwin":
+        return None
+
+    secrets = []
+    for account in _keychain_accounts(service):
+        secret = _read_keychain_secret(service, account)
+        if secret:
+            secrets.append(secret)
+    if not secrets:
+        # Enumeration can fail (or be unavailable) while a direct read
+        # works, so never let a dump-keychain problem look like "no login".
+        secret = _read_keychain_secret(service, None)
+        if secret:
+            secrets.append(secret)
+    if not secrets:
+        return None
+
+    usable = [s for s in secrets if _credential_is_usable(s)]
+    return max(usable, key=_refresh_expiry_ms) if usable else secrets[0]
+
+
+def _delete_keychain_item(service: str, account: Optional[str] = None) -> bool:
+    """Remove an item so the CLI falls back to the shared file.
+
+    `account` is optional only because the namespaced per-config-dir items
+    are unique per service. Pass it whenever several items share a service
+    name: an account-less delete removes whichever one macOS picks first,
+    which on this machine is not the one you meant.
+    """
     if sys.platform != "darwin":
         return False
+    cmd = ["security", "delete-generic-password", "-s", service]
+    if account is not None:
+        cmd += ["-a", account]
     try:
-        proc = subprocess.run(
-            ["security", "delete-generic-password", "-s", service],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("keychain delete failed for %s: %s", service, exc)
         return False
     return proc.returncode == 0
+
+
+def _purge_hollow_keychain_items(service: str) -> int:
+    """Delete every definitively-empty item under `service`; count them.
+
+    Refusing to USE a hollow credential (the 2026-07-20 fix) stopped it
+    handing out tokens guaranteed to 401, but left the trap armed: while
+    the item exists it still wins account-less lookups and still starves
+    the repair path that is supposed to rescue the machine unattended.
+    Removing it is what actually disarms it.
+
+    Only ever removes items that parse as an OAuth credential with both
+    tokens empty -- see _credential_is_hollow. Never touches an item it
+    cannot read or does not recognise.
+    """
+    if sys.platform != "darwin":
+        return 0
+    purged = 0
+    for account in _keychain_accounts(service):
+        secret = _read_keychain_secret(service, account)
+        if secret and _credential_is_hollow(secret):
+            if _delete_keychain_item(service, account):
+                purged += 1
+                logger.warning(
+                    "removed hollow keychain credential %s (account %s); it was "
+                    "shadowing the real login on account-less lookups",
+                    service, account,
+                )
+    return purged
 
 
 def _write_shared_credential(shared: Path, payload: bytes) -> bool:
@@ -384,6 +538,127 @@ def _reconcile_keychain_credential(config_dir: Path, shared: Path) -> bool:
     return propagated
 
 
+def _chain_is_alive(raw, now_ms: float) -> bool:
+    """True if `raw` could still mint a new access token unattended."""
+    if not raw or not _credential_is_usable(raw):
+        return False
+    return _refresh_expiry_ms(raw) > now_ms
+
+
+def heal_credential_chains(
+    legacy_root: Optional[Path] = None,
+    *,
+    now_ms: Optional[float] = None,
+) -> Optional[str]:
+    """Converge the machine onto ONE working login, without a human.
+
+    Two stores can hold a Claude login on macOS:
+
+      * the shared .credentials.json file, read by every per-user turn
+        (those set CLAUDE_CONFIG_DIR, and the CLI reads the file form for
+        any config dir) and, when no keychain item exists, by default-config
+        turns too -- proven live 2026-07-21: with the keychain emptied, a
+        default-config `claude -p` still authenticated off the file.
+      * the plain keychain item, which SHADOWS the file for default-config
+        turns whenever it is present: the nightly reflection, the health
+        checks, and any user with no workspace of their own.
+
+    So the file is the one store that serves everybody, and the keychain
+    item is only ever a bootstrap source or a liability. That asymmetry
+    decides both repairs:
+
+      file dead, keychain alive  -> publish the keychain login to the file.
+      keychain dead, file alive  -> DELETE the keychain item, so the turns
+                                    it was shadowing fall back to the file.
+
+    Deliberately never WRITES the keychain. Two stores holding the same
+    rotating refresh token is not redundancy, it is a race: whichever side
+    refreshes first invalidates the other's token, and the loser dies. One
+    store, many readers, is the configuration that survives rotation --
+    which is exactly why the per-user workspaces symlink to a single file
+    instead of each holding a copy.
+
+    (An earlier draft of this function did copy the file into the keychain.
+    `security add-generic-password` reading its secret from stdin silently
+    truncates at 128 bytes and still exits 0, so it wrote a corrupt 129-byte
+    credential over the real one and reported success. The credential was
+    rebuilt from the file; the lesson is in _delete_keychain_item's
+    neighbours -- this module now only ever removes keychain items.)
+
+    Returns a one-line description of what was healed, or None if nothing
+    needed doing. Never raises: this runs alongside a turn, not instead of
+    one.
+    """
+    if sys.platform != "darwin":
+        return None  # one chain only; nothing to heal from
+
+    legacy_root = legacy_root or default_legacy_root()
+
+    # The plain keychain item is the partner of the DEFAULT config dir and
+    # nothing else. Given some other root, there is no second chain to pair
+    # it with -- and reaching for the machine's real keychain anyway would
+    # copy a live token into a directory the caller never said was a
+    # credential store. Caught by test_env_key_alone_is_enough, which
+    # deletes its temp credential and then found a real one waiting there.
+    try:
+        if legacy_root.resolve() != default_legacy_root().resolve():
+            return None
+    except OSError:
+        return None
+
+    shared = legacy_root / ".credentials.json"
+
+    # Clear hollow items first. One under the plain service is both a
+    # reason this chain reads as dead AND the thing that poisons the read
+    # below, so it has to go before either side is judged.
+    _purge_hollow_keychain_items(_KEYCHAIN_SERVICE)
+
+    try:
+        file_raw = shared.read_text() if shared.exists() else None
+    except OSError as exc:
+        logger.warning("unreadable shared credential %s: %s", shared, exc)
+        file_raw = None
+    keychain_raw = _read_keychain_item(_KEYCHAIN_SERVICE)
+
+    now_ms = time.time() * 1000 if now_ms is None else now_ms
+    file_alive = _chain_is_alive(file_raw, now_ms)
+    keychain_alive = _chain_is_alive(keychain_raw, now_ms)
+
+    if file_alive == keychain_alive:
+        # Both alive: nothing to do. Both dead: a human really is required,
+        # and the login check is what says so.
+        return None
+
+    if keychain_alive:
+        if _write_shared_credential(shared, keychain_raw.encode("utf-8")):
+            logger.warning(
+                "shared credential file was dead; restored it from the keychain login"
+            )
+            return "restored the shared credential file from the keychain login"
+        return None
+
+    if keychain_raw is None:
+        return None  # nothing shadowing the healthy file; already correct
+
+    # A dead keychain item over a healthy file is the 2026-07-20 outage in
+    # miniature: default-config turns read the corpse and fail while the
+    # file beside it works. Removing it is safe precisely because the file
+    # is alive -- those turns fall straight back to it.
+    removed = 0
+    for account in _keychain_accounts(_KEYCHAIN_SERVICE):
+        secret = _read_keychain_secret(_KEYCHAIN_SERVICE, account)
+        if secret and not _chain_is_alive(secret, now_ms):
+            if _delete_keychain_item(_KEYCHAIN_SERVICE, account):
+                removed += 1
+    if not removed:
+        return None
+    logger.warning(
+        "removed %d dead keychain login(s) that were shadowing a healthy "
+        "credential file", removed,
+    )
+    return "removed a dead keychain login so every job falls back to the shared file"
+
+
 def reconcile_shared_credentials(
     user_id: int,
     *,
@@ -419,6 +694,15 @@ def reconcile_shared_credentials(
     link = config_dir / ".credentials.json"
 
     propagated = False
+
+    # Case 0: one of the two machine-level chains has died outright. Run
+    # first, because the cases below both assume the shared file is worth
+    # converging on -- folding a fresh token into a dead file just makes a
+    # newer dead file.
+    try:
+        heal_credential_chains(legacy_root)
+    except Exception:  # pragma: no cover - never fail a turn over this
+        logger.exception("credential chain healing failed")
 
     # Case 1: a refresh detached the symlink into a private regular file.
     # A still-symlinked (or absent) credential means the CLI never
