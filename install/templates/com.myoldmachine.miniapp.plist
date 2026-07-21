@@ -21,11 +21,12 @@
     <key>KeepAlive</key>
     <true/>
 
+    <!-- Separate from any app-owned rotating log; see bot plist for why. -->
     <key>StandardOutPath</key>
-    <string>{{LOG_DIR}}/miniapp.log</string>
+    <string>{{LOG_DIR}}/miniapp.launchd.log</string>
 
     <key>StandardErrorPath</key>
-    <string>{{LOG_DIR}}/miniapp.log</string>
+    <string>{{LOG_DIR}}/miniapp.launchd.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
