@@ -1138,12 +1138,16 @@ def _warn_if_login_expiring(dry: bool = False):
     ahead, so there is no reason for the first signal to be a dead nightly run —
     this rides along with the job that already runs every night.
 
+    Checks BOTH credential chains, not just the shared file. This job is one of
+    the callers that rides the keychain chain, so a file-only check could report
+    healthy from inside an outage that had already killed it.
+
     Never raises: a problem reading the credential file must not stop the
     reflection that follows it.
     """
     try:
-        from utils.claude_login_check import read_login_state, warning_message
-        state = read_login_state()
+        from utils.claude_login_check import read_machine_login_state, warning_message
+        state = read_machine_login_state()
         log(f"Login check: {state['detail']}")
         message = warning_message(state)
         if message and not dry:
