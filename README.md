@@ -149,7 +149,7 @@ If you need kernel-enforced isolation between multiple humans on one machine, ru
 | `/jobs` | Show all scheduled jobs |
 | `/topic <name>` | Switch to a named conversation topic |
 | `/topics` | List all topics |
-| `/stop` | Kill the current task (Claude CLI only) |
+| `/stop` | Stop the current task and cancel anything you have queued (killing a running task needs a CLI provider) |
 | `/recover` | Show interrupted task |
 | `/clear_recovery` | Delete recovery data |
 | `/alias` | Manage custom command shortcuts |
