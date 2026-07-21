@@ -3747,6 +3747,35 @@ def _setup_maintenance_jobs(scheduler):
         )
         logger.info("Scheduled nightly maintenance report job at 4:45 AM")
 
+    # --- Nightly reboot job: 05:00 (opt-in; AFTER the whole update chain) ---
+    # Placed last so it never cuts off the 04:00 update or the 04:30-04:45
+    # probe/check/report that follow it. The util re-checks the config flag and
+    # its own safety guards at run time, so the job existing is not the same as
+    # a reboot happening. Only registered when the admin has opted in.
+    if "nightly-reboot" not in existing_names and config.get("nightly_reboot", False):
+        reboot_script = str(BOT_DIR / "utils" / "nightly_reboot.py")
+        hour = int(config.get("nightly_reboot_hour", 5))
+        minute = int(config.get("nightly_reboot_minute", 0))
+        run_at = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if run_at <= datetime.now():
+            run_at += timedelta(days=1)
+
+        reboot_cmd = f"{venv_python} {reboot_script}"
+        if admin_id:
+            reboot_cmd += f" --user-id {admin_id}"
+
+        scheduler.add_job(
+            user_id=admin_id,
+            message="Nightly reboot",
+            run_at=run_at,
+            repeat="daily",
+            job_type="command",
+            name="nightly-reboot",
+            notify=False,
+            command=reboot_cmd,
+        )
+        logger.info(f"Scheduled nightly reboot job at {hour:02d}:{minute:02d}")
+
 
 @requires_auth
 async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3785,6 +3814,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "  /maintenance updates on|off",
             "  /maintenance cleanup on|off",
             "  /maintenance reaper on|off",
+            "  /maintenance reboot on|off",
         ]
         if platform.system() == "Darwin":
             cmd_lines.append("  /maintenance macos-updates on|off")
@@ -4051,6 +4081,44 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("Cleanup disabled.")
         else:
             await update.message.reply_text("Usage: /maintenance cleanup on|off")
+        return
+
+    # --- /maintenance reboot on|off (opt-in nightly reboot, after the update chain) ---
+    if subcmd == "reboot":
+        if arg.lower() in ("on", "true", "yes", "1"):
+            update_config(nightly_reboot=True)
+            scheduler = get_scheduler()
+            if scheduler:
+                _setup_maintenance_jobs(scheduler)
+            cfg = load_config()
+            h = cfg.get("nightly_reboot_hour", 5)
+            m = cfg.get("nightly_reboot_minute", 0)
+            # Run the stranding guard now, so the admin learns at enable time --
+            # not silently every night -- whether this box can reboot safely.
+            from utils.nightly_reboot import _bot_returns_after_reboot
+            safe, why = await asyncio.to_thread(_bot_returns_after_reboot)
+            msg = f"Nightly reboot enabled (daily at {h:02d}:{m:02d}, after the update chain)."
+            if safe:
+                msg += f"\nReboot-safe: {why}."
+            else:
+                msg += (
+                    f"\n\nWarning: this machine is not set to bring the bot back on boot "
+                    f"({why}). The nightly job will REFUSE to reboot and ping you instead, "
+                    f"until that is fixed."
+                )
+            await update.message.reply_text(msg)
+        elif arg.lower() in ("off", "false", "no", "0"):
+            update_config(nightly_reboot=False)
+            scheduler = get_scheduler()
+            if scheduler:
+                existing = _get_all_meta()
+                for meta in existing:
+                    if meta.get("name") == "nightly-reboot":
+                        scheduler.remove_job(meta.get("job_id", ""))
+                        break
+            await update.message.reply_text("Nightly reboot disabled.")
+        else:
+            await update.message.reply_text("Usage: /maintenance reboot on|off")
         return
 
     # --- /maintenance reaper on|off (idle heavyweight-app janitor) ---
