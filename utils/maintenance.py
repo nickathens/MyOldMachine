@@ -56,6 +56,17 @@ DEFAULT_CONFIG = {
     "reap_idle_apps": True,
     # How many minutes a listed app may sit idle before it is closed.
     "reap_idle_app_minutes": 20,
+    # Nightly reboot. OFF by default: an unattended reboot is only safe on a
+    # machine set to bring the bot back on boot, so the admin opts in. When on,
+    # the bot reboots once a night at the time below, AFTER the whole nightly
+    # maintenance chain, and only if it can confirm the bot restarts on boot
+    # (enabled systemd service, or a boot-launched service / auto-login on
+    # macOS) -- otherwise it refuses and pings the admin instead of stranding
+    # the machine at a login screen. Applies restart-needing updates and clears
+    # the resource creep of an always-on box.
+    "nightly_reboot": False,
+    "nightly_reboot_hour": 5,
+    "nightly_reboot_minute": 0,
 }
 
 
@@ -118,6 +129,14 @@ def get_status_report() -> str:
         lines.append(f"Idle-app reaper: ON (closes idle helper apps after {mins} min)")
     else:
         lines.append("Idle-app reaper: OFF")
+
+    # Nightly reboot (opt-in; reboots the machine after nightly maintenance)
+    if config.get("nightly_reboot", False):
+        h = config.get("nightly_reboot_hour", 5)
+        m = config.get("nightly_reboot_minute", 0)
+        lines.append(f"Nightly reboot: ON (daily at {h:02d}:{m:02d}, after updates)")
+    else:
+        lines.append("Nightly reboot: OFF")
 
     # Backup
     if config.get("backup_enabled"):
