@@ -39,6 +39,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -338,9 +339,76 @@ def _is_cap_message(text: str) -> bool:
     )
 
 
+# Why a provider call failed, kept so the admin alert can name a cause. The
+# providers report failures as an empty return value, so without capturing the
+# detail here it is gone by the time the alert is written. Thread-local because
+# intro reflections run on executor threads in the bot process, and two users
+# onboarding at once must not have their failures cross-attributed.
+_provider_error = threading.local()
+
+
+def _record_provider_error(detail: str) -> str:
+    """Remember why a provider call failed. Returns the detail, so call sites can
+    wrap their existing log() call instead of growing an extra line."""
+    _provider_error.detail = (detail or "").strip()
+    return _provider_error.detail
+
+
+def _recorded_provider_error() -> str:
+    return getattr(_provider_error, "detail", "")
+
+
+# Failures that mean "a human must log in on the machine" — the Claude CLI's
+# OAuth session is dead. Matched only against Claude CLI failures: the same
+# words in an API provider's error body mean a bad API key, and a `claude`
+# login cannot fix that.
+_CLI_LOGIN_FAILURE_RE = re.compile(
+    r"oauth .{0,40}expired|could not be refreshed|not authenticated|"
+    r"failed to authenticate|re-authenticate|please run .?claude",
+    re.IGNORECASE,
+)
+
+# Failures that mean "the provider rejected the configured API key". The fix is
+# that provider's key in .env, not the Claude CLI login.
+_API_KEY_FAILURE_RE = re.compile(
+    r"invalid[ _]api[ _]key|api key not valid|authentication_error|"
+    r"invalid x-api-key|unauthorized|\b401\b",
+    re.IGNORECASE,
+)
+
+
+def _describe_no_llm_failure() -> str:
+    """Explain a no_llm outcome in terms the admin can act on.
+
+    This used to be the fixed string "No capable model available", which points
+    at model configuration whatever the real cause was. The recorded provider
+    detail decides the wording, and the two humanly-fixable causes each name
+    their own fix. Which advice applies depends on which provider failed, not
+    just on the words in the error: `authentication_error` from the CLI means
+    the OAuth login died (re-login fixes it), while the same token from an API
+    provider means the configured key is bad (re-login fixes nothing). Every
+    detail recorded by the CLI paths starts with "Claude CLI", which is what
+    the gate keys on.
+    """
+    detail = _recorded_provider_error()
+    if not detail:
+        return "No capable model available (providers returned no output and no error)"
+    from_cli = detail.startswith("Claude CLI")
+    if from_cli and _CLI_LOGIN_FAILURE_RE.search(detail):
+        return ("Claude login expired — run `claude` in Terminal on the machine to log "
+                f"in again. Provider said: {detail[:200]}")
+    if not from_cli and _API_KEY_FAILURE_RE.search(detail):
+        return ("API key rejected — check that provider's API key in .env; a `claude` "
+                f"login will not fix this. Provider said: {detail[:200]}")
+    return f"No usable model output. Provider said: {detail[:200]}"
+
+
 def _call_claude_cli(prompt: str) -> str:
     """Call Claude CLI for reflection. Returns output text or empty string."""
     if not which("claude"):
+        # Recorded but not logged: on an API-only install this is the normal
+        # fallback path on every call, not an event worth a log line.
+        _record_provider_error("Claude CLI not installed (claude not on PATH)")
         return ""
     try:
         # Use the configured model if it's a Claude model, otherwise use default
@@ -356,15 +424,22 @@ def _call_claude_cli(prompt: str) -> str:
         if result.returncode == 0 and result.stdout.strip():
             out = result.stdout.strip()
             if _is_cap_message(out):
-                log("Claude CLI is capped (usage or spend limit); treating as "
-                    "unavailable so reflection fails over to the API provider")
+                log(_record_provider_error(
+                    "Claude CLI is capped (usage or spend limit); treating as "
+                    "unavailable so reflection fails over to the API provider"))
                 return ""
             return out
-        log(f"Claude CLI failed: exit={result.returncode}, stderr={result.stderr[:200]}")
+        # The CLI reports *why* it failed on stdout — expired login, unknown
+        # model, usage cap — and leaves stderr for unrelated warnings. Logging
+        # stderr alone printed a bare "stderr=" on the night the login expired,
+        # which is exactly when the reason mattered most.
+        detail = (result.stdout or "").strip() or (result.stderr or "").strip() or "no output"
+        log(_record_provider_error(
+            f"Claude CLI failed: exit={result.returncode}: {detail[:300]}"))
     except subprocess.TimeoutExpired:
-        log("Claude CLI timed out (120s)")
+        log(_record_provider_error("Claude CLI timed out (120s)"))
     except Exception as e:
-        log(f"Claude CLI error: {e}")
+        log(_record_provider_error(f"Claude CLI error: {e}"))
     return ""
 
 
@@ -378,6 +453,11 @@ def _call_api(prompt: str) -> str:
 
     # Ollama (local and cloud) doesn't always need an API key
     if not api_key and provider not in ("ollama", "ollama-cloud"):
+        # Only if nothing failed yet this run: _call_api runs after the CLI, and
+        # a config note must not overwrite the CLI's real failure (the expired
+        # login on a CLI-primary box lands exactly here).
+        if not _recorded_provider_error():
+            _record_provider_error(f"No API key configured for provider '{provider}'")
         return ""
 
     # Providers that support reflection (need decent reasoning ability)
@@ -393,6 +473,8 @@ def _call_api(prompt: str) -> str:
     }
 
     if provider not in api_configs and provider not in ("gemini", "google", "ollama", "ollama-cloud"):
+        if not _recorded_provider_error():
+            _record_provider_error(f"Provider '{provider}' has no API fallback for reflection")
         return ""
 
     try:
@@ -421,7 +503,8 @@ def _call_api(prompt: str) -> str:
                         msg = choices[0].get("message") or {}
                         return msg.get("content", "")
                 else:
-                    log(f"Ollama API returned {resp.status_code}")
+                    log(_record_provider_error(
+                        f"Ollama API returned {resp.status_code}: {resp.text[:200]}"))
             return ""
 
         elif provider in ("gemini", "google"):
@@ -439,7 +522,8 @@ def _call_api(prompt: str) -> str:
                     parts = content.get("parts") or []
                     return "".join(p.get("text", "") for p in parts)
                 else:
-                    log(f"Gemini API returned {resp.status_code}")
+                    log(_record_provider_error(
+                        f"Gemini API returned {resp.status_code}: {resp.text[:200]}"))
             return ""
 
         elif provider == "claude-api":
@@ -464,7 +548,8 @@ def _call_api(prompt: str) -> str:
                         b["text"] for b in data.get("content", []) if b.get("type") == "text"
                     )
                 else:
-                    log(f"Claude API returned {resp.status_code}")
+                    log(_record_provider_error(
+                        f"Claude API returned {resp.status_code}: {resp.text[:200]}"))
             return ""
 
         else:
@@ -509,11 +594,12 @@ def _call_api(prompt: str) -> str:
                         msg = choices[0].get("message") or {}
                         return msg.get("content", "")
                 else:
-                    log(f"{provider} API returned {resp.status_code}")
+                    log(_record_provider_error(
+                        f"{provider} API returned {resp.status_code}: {resp.text[:200]}"))
             return ""
 
     except Exception as e:
-        log(f"API reflection failed ({provider}): {e}")
+        log(_record_provider_error(f"API reflection failed ({provider}): {e}"))
         return ""
 
 
@@ -548,6 +634,10 @@ def _run_phase2_with_retry(prompt: str, mm) -> tuple:
     empty_count = 0
     format_count = 0
     attempt = 0
+
+    # Clear per-run, so a failure recorded while reflecting on one user is never
+    # reported as the cause of the next user's failure.
+    _record_provider_error("")
 
     while empty_count < PHASE2_MAX_EMPTY_RETRIES and format_count < PHASE2_MAX_FORMAT_RETRIES:
         attempt += 1
@@ -846,12 +936,17 @@ def run_intro_reflection(mm: MemoryManager, user_id: int, user_name: str,
 
     prompt = _build_intro_prompt(user_name, intro_message, user_reply)
 
+    # Clear per-run, same as _run_phase2_with_retry: a failure recorded during an
+    # earlier run on this thread must never be reported as this user's cause.
+    _record_provider_error("")
+
     output = _call_claude_cli(prompt)
     if not output:
         output = _call_api(prompt)
     if not output:
-        log(f"  No LLM available for intro reflection on user {user_id}")
-        return {"user_id": user_id, "status": "no_llm"}
+        reason = _describe_no_llm_failure()
+        log(f"  No LLM available for intro reflection on user {user_id}: {reason}")
+        return {"user_id": user_id, "status": "no_llm", "reason": reason}
 
     model_content, _summary = mm.parse_reflection_output(output)
     if not model_content:
@@ -971,8 +1066,9 @@ def run_reflection(mm: MemoryManager, user_id: int, dry_run: bool = False,
     model_content, summary, failure = _run_phase2_with_retry(prompt, mm)
 
     if failure == "no_llm":
-        log(f"No LLM available for reflection on user {user_id} after retries")
-        return {"user_id": user_id, "status": "no_llm", "reason": "No capable model available"}
+        reason = _describe_no_llm_failure()
+        log(f"No LLM available for reflection on user {user_id} after retries: {reason}")
+        return {"user_id": user_id, "status": "no_llm", "reason": reason}
 
     if failure == "parse_error" or not model_content:
         log(f"Could not parse model update for user {user_id} after retries")
@@ -1034,6 +1130,28 @@ def _send_alert(message: str):
         pass
 
 
+def _warn_if_login_expiring(dry: bool = False):
+    """Warn the admin before the Claude login lapses.
+
+    Every LLM-backed job on this machine fails closed when the login dies, and
+    only a human at the keyboard can renew it. The expiry is knowable weeks
+    ahead, so there is no reason for the first signal to be a dead nightly run —
+    this rides along with the job that already runs every night.
+
+    Never raises: a problem reading the credential file must not stop the
+    reflection that follows it.
+    """
+    try:
+        from utils.claude_login_check import read_login_state, warning_message
+        state = read_login_state()
+        log(f"Login check: {state['detail']}")
+        message = warning_message(state)
+        if message and not dry:
+            _send_alert(message)
+    except Exception as e:
+        log(f"Login check skipped: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Nightly reflection for the memory system")
     parser.add_argument("--dry", action="store_true", help="Preview without writing")
@@ -1046,6 +1164,8 @@ def main():
     mm = MemoryManager(DATA_DIR)
 
     log("=== Nightly Reflection Started ===")
+
+    _warn_if_login_expiring(dry=args.dry)
 
     results = []
 
