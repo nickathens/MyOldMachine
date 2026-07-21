@@ -18,6 +18,7 @@ machine), not the access token (which refreshes itself).
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -167,7 +168,7 @@ class ProviderErrorReportingTests(unittest.TestCase):
             out = reflect._call_claude_cli("prompt")
 
         self.assertEqual(out, "")
-        self.assertIn("OAuth session expired", reflect._last_provider_error)
+        self.assertIn("OAuth session expired", reflect._recorded_provider_error())
 
     def test_falls_back_to_stderr_when_stdout_is_empty(self):
         with patch("utils.reflect.which", return_value="/usr/bin/claude"), \
@@ -175,14 +176,14 @@ class ProviderErrorReportingTests(unittest.TestCase):
                    return_value=self._cli_result(stdout="", stderr="boom on stderr")):
             reflect._call_claude_cli("prompt")
 
-        self.assertIn("boom on stderr", reflect._last_provider_error)
+        self.assertIn("boom on stderr", reflect._recorded_provider_error())
 
     def test_records_something_even_with_no_output_at_all(self):
         with patch("utils.reflect.which", return_value="/usr/bin/claude"), \
              patch("utils.reflect.subprocess.run", return_value=self._cli_result()):
             reflect._call_claude_cli("prompt")
 
-        self.assertIn("no output", reflect._last_provider_error)
+        self.assertIn("no output", reflect._recorded_provider_error())
 
     def test_auth_failure_names_the_login(self):
         reflect._record_provider_error(
@@ -194,11 +195,56 @@ class ProviderErrorReportingTests(unittest.TestCase):
         self.assertIn("login expired", described.lower())
         self.assertNotIn("No capable model available", described)
 
-    def test_api_auth_failure_also_names_the_login(self):
+    def test_api_key_rejection_names_the_key_not_the_login(self):
+        """A 401 from the claude-api provider means the configured API key is bad.
+        The provider authenticates with x-api-key from .env, not the CLI's OAuth
+        session, so prescribing a `claude` login here is a confident wrong fix."""
         reflect._record_provider_error(
             'Claude API returned 401: {"error":{"type":"authentication_error"}}')
 
+        described = reflect._describe_no_llm_failure()
+
+        self.assertIn("api key rejected", described.lower())
+        self.assertNotIn("login expired", described.lower())
+
+    def test_gemini_bad_key_names_the_key(self):
+        reflect._record_provider_error(
+            "Gemini API returned 400: API key not valid. Please pass a valid API key.")
+
+        described = reflect._describe_no_llm_failure()
+
+        self.assertIn("api key rejected", described.lower())
+        self.assertNotIn("login expired", described.lower())
+
+    def test_openai_underscore_invalid_api_key_names_the_key(self):
+        """OpenAI spells it invalid_api_key — the underscore form must match too."""
+        reflect._record_provider_error(
+            'openai API returned 401: {"error":{"code":"invalid_api_key"}}')
+
+        self.assertIn("api key rejected", reflect._describe_no_llm_failure().lower())
+
+    def test_cli_carrying_api_error_body_still_names_the_login(self):
+        """The CLI itself can surface an API-shaped 401 when its OAuth token dies —
+        the exact alert text from the 2026-07-20 production incident. From the CLI
+        that means re-login, even though the same words from an API provider would
+        mean a bad key."""
+        reflect._record_provider_error(
+            "Claude CLI failed: exit=1: Failed to authenticate. API Error: 401 "
+            "OAuth access token has expired. Re-authenticate to continue.")
+
         self.assertIn("login expired", reflect._describe_no_llm_failure().lower())
+
+    def test_cap_message_is_not_a_login_failure(self):
+        """A usage cap is not an auth problem — telling the admin to re-login
+        when the account is capped would be its own confident wrong cause."""
+        reflect._record_provider_error(
+            "Claude CLI is capped (usage or spend limit); treating as "
+            "unavailable so reflection fails over to the API provider")
+
+        described = reflect._describe_no_llm_failure()
+
+        self.assertNotIn("login expired", described.lower())
+        self.assertIn("capped", described)
 
     def test_non_auth_failure_is_reported_verbatim(self):
         reflect._record_provider_error("Claude CLI timed out (120s)")
@@ -220,7 +266,135 @@ class ProviderErrorReportingTests(unittest.TestCase):
         with patch("utils.reflect._call_llm_for_phase2", return_value="OUTPUT"):
             reflect._run_phase2_with_retry("prompt", mm)
 
-        self.assertEqual(reflect._last_provider_error, "")
+        self.assertEqual(reflect._recorded_provider_error(), "")
+
+
+class SilentFailurePathTests(unittest.TestCase):
+    """Provider paths that return empty without an HTTP error still leave a
+    reason behind — and a late config note never overwrites a real failure."""
+
+    def setUp(self):
+        reflect._record_provider_error("")
+
+    def test_missing_binary_records_a_reason(self):
+        with patch("utils.reflect.which", return_value=None):
+            out = reflect._call_claude_cli("prompt")
+
+        self.assertEqual(out, "")
+        self.assertIn("not installed", reflect._recorded_provider_error())
+
+    def test_no_key_alone_is_recorded(self):
+        with patch("utils.reflect.get_llm_provider", return_value="gemini"), \
+             patch("utils.reflect.get_llm_model", return_value="gemini-2.5-pro"), \
+             patch("utils.reflect.get_llm_api_key", return_value=""):
+            out = reflect._call_api("prompt")
+
+        self.assertEqual(out, "")
+        self.assertIn("No API key configured", reflect._recorded_provider_error())
+
+    def test_cli_login_detail_survives_the_api_fallback(self):
+        """_call_api runs after the CLI fails. Its no-key config note must not
+        overwrite the CLI's real failure — the expired login on a CLI-primary
+        machine takes exactly this path."""
+        reflect._record_provider_error(
+            "Claude CLI failed: exit=1: OAuth session expired and could not be refreshed")
+
+        with patch("utils.reflect.get_llm_provider", return_value="claude"), \
+             patch("utils.reflect.get_llm_model", return_value="claude-sonnet-5"), \
+             patch("utils.reflect.get_llm_api_key", return_value=""):
+            out = reflect._call_api("prompt")
+
+        self.assertEqual(out, "")
+        self.assertIn("login expired", reflect._describe_no_llm_failure().lower())
+
+
+class IntroReflectionAttributionTests(unittest.TestCase):
+    """run_intro_reflection reports causes from its own run only."""
+
+    def test_stale_error_does_not_leak_into_intro_reflection(self):
+        """The bug: intro reflection never cleared the recorded detail, so an
+        earlier run's failure was reported as this user's cause."""
+        reflect._record_provider_error("Claude CLI timed out (120s)")  # earlier run
+
+        with patch("utils.reflect._call_claude_cli", return_value=""), \
+             patch("utils.reflect._call_api", return_value=""):
+            result = reflect.run_intro_reflection(MagicMock(), 42, "User", "hi", "hello")
+
+        self.assertEqual(result["status"], "no_llm")
+        self.assertNotIn("timed out", result["reason"])
+
+    def test_intro_reports_its_own_runs_failure(self):
+        def failing_cli(prompt):
+            reflect._record_provider_error(
+                "Claude CLI failed: exit=1: OAuth session expired and could not be refreshed")
+            return ""
+
+        with patch("utils.reflect._call_claude_cli", side_effect=failing_cli), \
+             patch("utils.reflect._call_api", return_value=""):
+            result = reflect.run_intro_reflection(MagicMock(), 42, "User", "hi", "hello")
+
+        self.assertEqual(result["status"], "no_llm")
+        self.assertIn("login expired", result["reason"].lower())
+
+    def test_concurrent_runs_do_not_cross_attribute(self):
+        """Intro reflections run on executor threads in the bot process. One
+        thread's failure must not be readable as another thread's cause."""
+        outcome = {}
+        barrier = threading.Barrier(2, timeout=5)
+
+        def run(name, detail):
+            reflect._record_provider_error("")
+            if detail:
+                reflect._record_provider_error(detail)
+            barrier.wait()
+            outcome[name] = reflect._recorded_provider_error()
+
+        threads = [
+            threading.Thread(target=run, args=("failed", "error from the failing user")),
+            threading.Thread(target=run, args=("clean", "")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        self.assertEqual(outcome["failed"], "error from the failing user")
+        self.assertEqual(outcome["clean"], "")
+
+
+class RunReflectionReasonTests(unittest.TestCase):
+    """The genuine regression pin: drive run_reflection through the real provider
+    chain with a failing CLI and assert the returned reason carries the real
+    cause. On pre-PR code this fails as a true assertion — reason was the fixed
+    string "No capable model available" — not as a missing-attribute error."""
+
+    def test_reason_reaches_the_run_reflection_result(self):
+        records = [{"raw": "- [2026-07-21] (behavioral) test observation",
+                    "importance": 9, "seen": 1, "type": "behavioral",
+                    "content": "test observation"}]
+        cli_failure = MagicMock()
+        cli_failure.returncode = 1
+        cli_failure.stdout = ("Failed to authenticate: OAuth session expired "
+                              "and could not be refreshed")
+        cli_failure.stderr = ""
+
+        mm = MagicMock()
+        mm.get_model.return_value = "## Person model\ncurrent content"
+
+        with patch("utils.reflect.get_recent_observations", return_value=records), \
+             patch("utils.reflect.route_project_observations", return_value=([], records)), \
+             patch("utils.reflect._is_capable_provider", return_value=False), \
+             patch("utils.reflect.which", return_value="/usr/bin/claude"), \
+             patch("utils.reflect.subprocess.run", return_value=cli_failure), \
+             patch("utils.reflect.get_llm_provider", return_value="claude"), \
+             patch("utils.reflect.get_llm_model", return_value="claude-sonnet-5"), \
+             patch("utils.reflect.get_llm_api_key", return_value=""), \
+             patch("utils.reflect.time.sleep"):
+            result = reflect.run_reflection(mm, 42, dry_run=False, threshold=1)
+
+        self.assertEqual(result["status"], "no_llm")
+        self.assertIn("login expired", result["reason"].lower())
+        self.assertIn("OAuth session expired", result["reason"])
 
 
 if __name__ == "__main__":

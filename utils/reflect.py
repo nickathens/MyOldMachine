@@ -39,6 +39,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -340,23 +341,38 @@ def _is_cap_message(text: str) -> bool:
 
 # Why a provider call failed, kept so the admin alert can name a cause. The
 # providers report failures as an empty return value, so without capturing the
-# detail here it is gone by the time the alert is written.
-_last_provider_error: str = ""
+# detail here it is gone by the time the alert is written. Thread-local because
+# intro reflections run on executor threads in the bot process, and two users
+# onboarding at once must not have their failures cross-attributed.
+_provider_error = threading.local()
 
 
 def _record_provider_error(detail: str) -> str:
     """Remember why a provider call failed. Returns the detail, so call sites can
     wrap their existing log() call instead of growing an extra line."""
-    global _last_provider_error
-    _last_provider_error = (detail or "").strip()
-    return _last_provider_error
+    _provider_error.detail = (detail or "").strip()
+    return _provider_error.detail
 
 
-# Failures that mean "a human must log in on the machine", not "the model is
-# misconfigured". These need a different fix from every other provider error.
-_AUTH_FAILURE_RE = re.compile(
-    r"oauth session expired|could not be refreshed|not authenticated|"
-    r"invalid api key|authentication_error|please run .?claude",
+def _recorded_provider_error() -> str:
+    return getattr(_provider_error, "detail", "")
+
+
+# Failures that mean "a human must log in on the machine" — the Claude CLI's
+# OAuth session is dead. Matched only against Claude CLI failures: the same
+# words in an API provider's error body mean a bad API key, and a `claude`
+# login cannot fix that.
+_CLI_LOGIN_FAILURE_RE = re.compile(
+    r"oauth .{0,40}expired|could not be refreshed|not authenticated|"
+    r"failed to authenticate|re-authenticate|please run .?claude",
+    re.IGNORECASE,
+)
+
+# Failures that mean "the provider rejected the configured API key". The fix is
+# that provider's key in .env, not the Claude CLI login.
+_API_KEY_FAILURE_RE = re.compile(
+    r"invalid[ _]api[ _]key|api key not valid|authentication_error|"
+    r"invalid x-api-key|unauthorized|\b401\b",
     re.IGNORECASE,
 )
 
@@ -365,22 +381,34 @@ def _describe_no_llm_failure() -> str:
     """Explain a no_llm outcome in terms the admin can act on.
 
     This used to be the fixed string "No capable model available", which points
-    at model configuration whatever the real cause was. An expired login is the
-    most common cause by far and needs a completely different response, so the
-    recorded provider detail decides the wording.
+    at model configuration whatever the real cause was. The recorded provider
+    detail decides the wording, and the two humanly-fixable causes each name
+    their own fix. Which advice applies depends on which provider failed, not
+    just on the words in the error: `authentication_error` from the CLI means
+    the OAuth login died (re-login fixes it), while the same token from an API
+    provider means the configured key is bad (re-login fixes nothing). Every
+    detail recorded by the CLI paths starts with "Claude CLI", which is what
+    the gate keys on.
     """
-    detail = _last_provider_error
+    detail = _recorded_provider_error()
     if not detail:
         return "No capable model available (providers returned no output and no error)"
-    if _AUTH_FAILURE_RE.search(detail):
+    from_cli = detail.startswith("Claude CLI")
+    if from_cli and _CLI_LOGIN_FAILURE_RE.search(detail):
         return ("Claude login expired — run `claude` in Terminal on the machine to log "
                 f"in again. Provider said: {detail[:200]}")
+    if not from_cli and _API_KEY_FAILURE_RE.search(detail):
+        return ("API key rejected — check that provider's API key in .env; a `claude` "
+                f"login will not fix this. Provider said: {detail[:200]}")
     return f"No usable model output. Provider said: {detail[:200]}"
 
 
 def _call_claude_cli(prompt: str) -> str:
     """Call Claude CLI for reflection. Returns output text or empty string."""
     if not which("claude"):
+        # Recorded but not logged: on an API-only install this is the normal
+        # fallback path on every call, not an event worth a log line.
+        _record_provider_error("Claude CLI not installed (claude not on PATH)")
         return ""
     try:
         # Use the configured model if it's a Claude model, otherwise use default
@@ -425,6 +453,11 @@ def _call_api(prompt: str) -> str:
 
     # Ollama (local and cloud) doesn't always need an API key
     if not api_key and provider not in ("ollama", "ollama-cloud"):
+        # Only if nothing failed yet this run: _call_api runs after the CLI, and
+        # a config note must not overwrite the CLI's real failure (the expired
+        # login on a CLI-primary box lands exactly here).
+        if not _recorded_provider_error():
+            _record_provider_error(f"No API key configured for provider '{provider}'")
         return ""
 
     # Providers that support reflection (need decent reasoning ability)
@@ -440,6 +473,8 @@ def _call_api(prompt: str) -> str:
     }
 
     if provider not in api_configs and provider not in ("gemini", "google", "ollama", "ollama-cloud"):
+        if not _recorded_provider_error():
+            _record_provider_error(f"Provider '{provider}' has no API fallback for reflection")
         return ""
 
     try:
@@ -900,6 +935,10 @@ def run_intro_reflection(mm: MemoryManager, user_id: int, user_name: str,
     log(f"Intro reflection for user {user_id}: seeding model from first reply")
 
     prompt = _build_intro_prompt(user_name, intro_message, user_reply)
+
+    # Clear per-run, same as _run_phase2_with_retry: a failure recorded during an
+    # earlier run on this thread must never be reported as this user's cause.
+    _record_provider_error("")
 
     output = _call_claude_cli(prompt)
     if not output:
