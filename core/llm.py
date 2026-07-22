@@ -737,6 +737,21 @@ class ClaudeCLIProvider(LLMProvider):
                 pass
             return False, "Claude CLI auth probe timed out (90s)."
 
+        # This probe is a real turn on the DEFAULT config dir, so it refreshes
+        # like any other -- and that refresh rotates the shared login into the
+        # macOS keychain, stranding the file every per-user turn reads. Fold it
+        # back now rather than leaving the machine diverged until whenever the
+        # next user happens to write (2026-07-22: 05:00 probe, first user turn
+        # dead at 12:43). Runs on failure too: a probe that could not refresh is
+        # exactly the case where the other store holds the login that works.
+        try:
+            from core.claude_workspace import heal_credential_chains
+            healed = heal_credential_chains()
+            if healed:
+                logger.warning("auth probe credential repair: %s", healed)
+        except Exception:  # never fail a health check over the repair
+            logger.exception("credential chain healing failed after auth probe")
+
         raw = (stdout or b"").decode("utf-8", errors="replace").strip()
         err = (stderr or b"").decode("utf-8", errors="replace").strip()
         try:

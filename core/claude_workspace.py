@@ -62,8 +62,29 @@ If no credential can be provisioned the workspace is refused and the turn
 falls back to the shared config dir, because a private-but-unauthenticated
 turn would just die.
 
-System turns (user_id None: maintenance, health checks, nightly jobs)
-keep the process-default config dir and are unaffected.
+3. A system turn refreshes the login out from under the file. System turns
+   (user_id None: maintenance, health checks, nightly jobs) keep the
+   process-default config dir, whose store on macOS is the PLAIN keychain
+   item. They are ordinary turns, so they refresh like any other -- and an
+   OAuth refresh here is a ROTATION: the server mints a new refresh token
+   and revokes the one presented. The new pair lands in the keychain; the
+   shared file every user turn reads is never told, and now holds a token
+   the server has already revoked.
+
+   Nothing about that file looks wrong. Its tokens are non-empty and its
+   refreshTokenExpiresAt is weeks out, so every shape-based check passes
+   while every real turn fails with "OAuth session expired and could not
+   be refreshed" until a human logs in again. Measured 2026-07-22: the
+   05:00 startup auth probe refreshed, the bot then sat idle, and the
+   first user turn at 12:43 died on the stranded file -- four turns in a
+   row, each one deleting a shadowing item the CLI immediately recreated.
+   It ran the other way round too (2026-07-20, 2026-07-21): user turns
+   folded a refresh into the file and the probe then read the revoked item.
+
+   Hence the rule below: the two stores are never allowed to hold
+   DIFFERENT live-looking logins. The file wins, the item is removed, and
+   the machine converges on one store with many readers -- the only
+   configuration that survives rotation.
 """
 
 from __future__ import annotations
@@ -197,6 +218,28 @@ def _refresh_expiry_ms(raw) -> float:
     except (TypeError, ValueError, AttributeError):
         return float("-inf")
     at = oauth.get("refreshTokenExpiresAt")
+    return float(at) if isinstance(at, (int, float)) else float("-inf")
+
+
+def _access_expiry_ms(raw) -> float:
+    """expiresAt (ACCESS-token expiry) from a credential blob, -inf when absent.
+
+    The freshness clock for "which of these two stores refreshed last".
+    Every refresh stamps a new expiresAt a few hours out, so the larger
+    value is the later refresh. refreshTokenExpiresAt is the wrong clock
+    for this: it moves in whole weeks and two copies minted from the same
+    login can tie on it while their access tokens are hours apart.
+    """
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return float("-inf")
+    try:
+        oauth = (json.loads(raw) or {}).get("claudeAiOauth") or {}
+    except (TypeError, ValueError, AttributeError):
+        return float("-inf")
+    at = oauth.get("expiresAt")
     return float(at) if isinstance(at, (int, float)) else float("-inf")
 
 
@@ -545,6 +588,88 @@ def _chain_is_alive(raw, now_ms: float) -> bool:
     return _refresh_expiry_ms(raw) > now_ms
 
 
+def _collapse_live_keychain_onto_file(
+    shared: Path, file_raw: Optional[str], keychain_raw: Optional[str]
+) -> Optional[str]:
+    """Converge two stores that BOTH look alive but hold different logins.
+
+    Only one of them can actually work. Refresh tokens rotate: the moment
+    either side refreshes, the server revokes the token the other side is
+    holding, and the loser keeps a credential that is perfectly well formed
+    and completely dead. No inspection can tell the two apart -- the
+    difference lives on Anthropic's side, not in the bytes -- so this does
+    not try. It removes the divergence instead, which is the only state
+    from which one side can be stale in the first place.
+
+    Which side wins is not a guess: expiresAt records when each copy was
+    last refreshed, and the later refresh is by definition the one whose
+    rotation revoked the other. So the newer credential is published to the
+    file, and the keychain item goes either way:
+
+      keychain newer -> publish it to the file, then delete the item.
+      file newer     -> delete the item; it is already the revoked side.
+
+    Deleting rather than rewriting the item is deliberate and matches the
+    rest of this module: it never writes the keychain (see
+    heal_credential_chains on the 128-byte truncation that cost a login),
+    and a default-config turn with no item authenticates from the file --
+    proven live 2026-07-21. One store, many readers, no rotation race.
+
+    The delete is guarded on the file being readable and usable AFTER the
+    write, because deleting the item while the file is broken would destroy
+    the last copy of the login. If that check fails the item stays: a
+    divergence is survivable, having no credential at all is not.
+
+    Returns a one-line description of what was healed, or None.
+    """
+    if not file_raw or not keychain_raw:
+        return None
+    if file_raw.strip() == keychain_raw.strip():
+        return None  # same login on both sides; nothing can rot
+
+    keychain_newer = _access_expiry_ms(keychain_raw) > _access_expiry_ms(file_raw)
+    published = False
+    if keychain_newer:
+        if not _write_shared_credential(shared, keychain_raw.encode("utf-8")):
+            return None  # leave everything alone; the item is the fresh copy
+        published = True
+
+    try:
+        on_disk = shared.read_text()
+    except OSError as exc:
+        logger.warning(
+            "shared credential %s unreadable after converging; keeping the "
+            "keychain item as the surviving copy: %s", shared, exc,
+        )
+        return None
+    if not _credential_is_usable(on_disk):
+        logger.warning(
+            "shared credential %s is not usable after converging; keeping the "
+            "keychain item as the surviving copy", shared,
+        )
+        return None
+
+    for account in _keychain_accounts(_KEYCHAIN_SERVICE) or [None]:
+        _delete_keychain_item(_KEYCHAIN_SERVICE, account)
+
+    if published:
+        logger.warning(
+            "keychain login was newer than the shared credential file "
+            "(a system turn refreshed it); published it to the file and "
+            "removed the item so every turn reads one store"
+        )
+        return (
+            "published a newer keychain login to the shared credential file "
+            "and removed the item"
+        )
+    logger.warning(
+        "keychain login was older than the shared credential file and would "
+        "have failed the next system turn; removed it so those turns fall "
+        "back to the file"
+    )
+    return "removed a stale keychain login that had diverged from the shared file"
+
+
 def heal_credential_chains(
     legacy_root: Optional[Path] = None,
     *,
@@ -631,9 +756,15 @@ def heal_credential_chains(
     file_alive = _chain_is_alive(file_raw, now_ms)
     keychain_alive = _chain_is_alive(keychain_raw, now_ms)
 
-    if file_alive == keychain_alive:
-        # Both alive: nothing to do. Both dead: a human really is required,
-        # and the login check is what says so.
+    if file_alive and keychain_alive:
+        # "Both alive" is a statement about SHAPE, not about whether either
+        # one still authenticates. Two live-looking stores holding different
+        # tokens means one of them lost a rotation and is already revoked,
+        # which is the failure that kept needing a human.
+        return _collapse_live_keychain_onto_file(shared, file_raw, keychain_raw)
+
+    if not file_alive and not keychain_alive:
+        # A human really is required, and the login check is what says so.
         return None
 
     if keychain_alive:

@@ -224,6 +224,30 @@ class AuthProbeTests(unittest.TestCase):
     """health_check must exercise auth: `claude --version` passes with zero
     valid credentials, which is why the outage looked healthy throughout."""
 
+    def setUp(self):
+        # The probe now folds credentials after running, which reaches the
+        # macOS keychain and ~/.claude/.credentials.json for real. Stub it,
+        # and put a loud trap behind the stub: a future edit that calls
+        # `security` from this test would otherwise rewrite the machine's
+        # own login, which is exactly how the 2026-07-20 credential was
+        # corrupted in the first place.
+        from core import claude_workspace as cw
+
+        def _no_real_keychain(cmd, *a, **k):
+            raise AssertionError(f"test reached the real keychain: {cmd}")
+
+        self.heal = MagicMock(return_value=None)
+        self._patches = [
+            patch.object(cw, "heal_credential_chains", self.heal),
+            patch.object(cw.subprocess, "run", side_effect=_no_real_keychain),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+
     def _provider(self):
         provider = llm.ClaudeCLIProvider("claude-sonnet-4-6", api_key="")
         provider._cli_binary = "/usr/bin/env"
@@ -246,6 +270,38 @@ class AuthProbeTests(unittest.TestCase):
 
     def test_probe_passes_on_a_healthy_turn(self):
         provider = self._provider()
+        proc = self._proc(json.dumps(OK_RESULT).encode(), b"", 0)
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            ok, _ = _run(provider._auth_probe())
+        self.assertTrue(ok)
+
+    def test_probe_folds_its_own_refresh_back_into_the_shared_file(self):
+        """The 2026-07-22 outage, at its source.
+
+        This probe is a real turn on the DEFAULT config dir, so it refreshes
+        like any other -- and on macOS that rotation lands in the keychain,
+        revoking the token in the shared file that every per-user turn reads.
+        Nothing was watching, so the machine sat diverged from the 05:00
+        probe until the first user message at 12:43 died on it.
+        """
+        provider = self._provider()
+        proc = self._proc(json.dumps(OK_RESULT).encode(), b"", 0)
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            _run(provider._auth_probe())
+        self.heal.assert_called_once()
+
+    def test_probe_folds_even_when_the_probe_turn_failed(self):
+        # A probe that could not refresh is precisely the case where the
+        # OTHER store holds the login that still works.
+        provider = self._provider()
+        proc = self._proc(json.dumps(AUTH_RESULT).encode(), b"", 1)
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            _run(provider._auth_probe())
+        self.heal.assert_called_once()
+
+    def test_a_failing_repair_never_takes_down_the_health_check(self):
+        provider = self._provider()
+        self.heal.side_effect = OSError("keychain on fire")
         proc = self._proc(json.dumps(OK_RESULT).encode(), b"", 0)
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
             ok, _ = _run(provider._auth_probe())

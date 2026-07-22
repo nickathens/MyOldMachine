@@ -46,11 +46,14 @@ def _ms(days_from_now: float) -> float:
     return (datetime.now() + timedelta(days=days_from_now)).timestamp() * 1000
 
 
-def _cred(access="a", refresh="r", refresh_days=28.0) -> str:
+def _cred(access="a", refresh="r", refresh_days=28.0, access_days=0.2) -> str:
+    # access_days is the freshness clock: every refresh stamps a new
+    # expiresAt, so the larger one is the copy that refreshed last -- and
+    # therefore the copy whose rotation revoked the other.
     return json.dumps({"claudeAiOauth": {
         "accessToken": access,
         "refreshToken": refresh,
-        "expiresAt": _ms(0.2),
+        "expiresAt": _ms(access_days),
         "refreshTokenExpiresAt": _ms(refresh_days),
     }})
 
@@ -279,14 +282,84 @@ class HealCredentialChainsTests(unittest.TestCase):
 
         delete.assert_called_once()
 
-    def test_two_live_chains_are_left_completely_alone(self):
-        before = _cred(refresh="file-side")
+    def test_identical_live_chains_are_left_completely_alone(self):
+        # Same login in both stores is the resting state, not a divergence:
+        # neither copy can revoke the other, so nothing needs healing.
+        before = _cred(refresh="same-login")
         self.shared.write_text(before)
 
-        result, delete = self._heal(_cred(refresh="keychain-side"))
+        result, delete = self._heal(before)
 
         self.assertIsNone(result)
         self.assertEqual(self.shared.read_text(), before)
+        delete.assert_not_called()
+
+    def test_a_newer_keychain_login_is_published_to_the_file(self):
+        """2026-07-22: a system turn refreshed, every user turn then died.
+
+        The auth probe runs on the default config dir, whose store is the
+        plain keychain item. Its refresh rotated the login into the keychain
+        and revoked the token still sitting in the shared file. Both stores
+        stayed well formed, so the old "both alive, nothing to do" rule fired
+        and the machine waited for a human -- while the credential that
+        actually worked was sitting right there in the keychain.
+        """
+        stranded = _cred(refresh="revoked-by-the-probe", access_days=0.05)
+        self.shared.write_text(stranded)
+        fresh = _cred(refresh="minted-by-the-probe", access_days=0.4)
+
+        result, delete = self._heal(fresh)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(self.shared.read_text(), fresh)
+        # And removed, so the next system turn reads the same one store.
+        delete.assert_called_once_with(cw._KEYCHAIN_SERVICE, "coocooai")
+
+    def test_a_newer_file_login_removes_the_stale_keychain_item(self):
+        """The same bug running the other way (2026-07-20, 2026-07-21).
+
+        A user turn refreshed and folded the result into the shared file, so
+        the plain item became the revoked side -- and it shadows every
+        default-config turn, which is why the nightly jobs and health probes
+        were the ones dying with 401 while user turns worked.
+        """
+        fresh = _cred(refresh="minted-by-a-user-turn", access_days=0.4)
+        self.shared.write_text(fresh)
+
+        result, delete = self._heal(_cred(refresh="revoked", access_days=0.05))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(self.shared.read_text(), fresh)  # file untouched
+        delete.assert_called_once_with(cw._KEYCHAIN_SERVICE, "coocooai")
+
+    def test_the_item_survives_a_write_that_did_not_land(self):
+        # Deleting the item after a failed publish would destroy the only
+        # copy of the login that still works.
+        stranded = _cred(refresh="stranded", access_days=0.05)
+        self.shared.write_text(stranded)
+
+        with patch.object(cw, "_write_shared_credential", return_value=False):
+            result, delete = self._heal(_cred(refresh="fresh", access_days=0.4))
+
+        self.assertIsNone(result)
+        self.assertEqual(self.shared.read_text(), stranded)
+        delete.assert_not_called()
+
+    def test_the_item_survives_a_file_that_reads_back_unusable(self):
+        # The write reported success but the file is not something the CLI
+        # could authenticate from. Keep the keychain copy: a divergence is
+        # survivable, no credential at all is not.
+        self.shared.write_text(_cred(refresh="older", access_days=0.05))
+
+        def _write_something_useless(shared, payload):
+            shared.write_text(HOLLOW)
+            return True
+
+        with patch.object(cw, "_write_shared_credential",
+                          side_effect=_write_something_useless):
+            result, delete = self._heal(_cred(refresh="fresh", access_days=0.4))
+
+        self.assertIsNone(result)
         delete.assert_not_called()
 
     def test_two_dead_chains_change_nothing_and_wait_for_a_human(self):
