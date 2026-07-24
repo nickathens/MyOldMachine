@@ -67,6 +67,30 @@ def get_system_uptime() -> str:
     return "unknown"
 
 
+def get_system_uptime_seconds() -> Optional[float]:
+    """System uptime in seconds since boot, or None if unreadable.
+
+    Measured from the SYSTEM's boot (kern.boottime on macOS, /proc/uptime on
+    Linux), NOT the bot's start time. Used to suppress CPU/RAM/swap alerts while
+    the machine is still in its post-boot settling window.
+    """
+    try:
+        if platform.system() == "Darwin":
+            result = subprocess.run(
+                ["sysctl", "-n", "kern.boottime"],
+                capture_output=True, text=True, timeout=5
+            )
+            match = re.search(r"sec\s*=\s*(\d+)", result.stdout)
+            if match:
+                return max(0.0, time.time() - int(match.group(1)))
+        else:
+            with open("/proc/uptime", encoding="utf-8") as f:
+                return float(f.read().split()[0])
+    except Exception:
+        pass
+    return None
+
+
 def get_disk_usage(path: str = "/") -> dict:
     """Get disk usage stats."""
     try:
@@ -142,15 +166,75 @@ def get_memory_usage() -> dict:
         return {"total_gb": 0, "used_gb": 0, "free_gb": 0, "percent": 0}
 
 
-def get_cpu_usage() -> Optional[float]:
-    """Get CPU usage estimate (non-blocking — uses load average, not sleep)."""
+def _read_proc_stat_cpu() -> Optional[tuple[float, float]]:
+    """Return (busy_ticks, total_ticks) cumulative since boot from /proc/stat.
+
+    busy = total - (idle + iowait). Linux only. Returns None on any read/parse
+    failure so the caller can skip the CPU check rather than report a bad number.
+    """
     try:
-        load = os.getloadavg()
-        cpu_count = os.cpu_count() or 1
-        # 1-minute load average normalized to percentage
-        return round(min(load[0] / cpu_count * 100, 100.0), 1)
-    except (OSError, AttributeError):
-        pass
+        with open("/proc/stat", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("cpu "):
+                    fields = [float(x) for x in line.split()[1:]]
+                    if len(fields) < 4:
+                        return None
+                    idle = fields[3] + (fields[4] if len(fields) > 4 else 0.0)
+                    total = sum(fields)
+                    return total - idle, total
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def get_cpu_usage() -> Optional[float]:
+    """Measure ACTUAL CPU busy percentage over a short interval.
+
+    This reports real processor effort (user+system time), NOT load average.
+    Load average counts processes runnable OR waiting on I/O, so during a boot
+    storm it reads high while the CPU sits mostly idle — the source of the old
+    post-restart "CPU at 100%" false alarm. Here we sample true CPU time over a
+    ~1s window and report busy% = 100 - idle%.
+
+    Blocking (~1s): callers must run it off the event loop. run_health_check
+    offloads the whole check to a thread executor for exactly this reason.
+    Returns 0..100, or None if the platform reading is unavailable (the caller
+    then skips the CPU check).
+    """
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            # `top -l 2` takes two real samples ~1s apart. The FIRST sample is
+            # cumulative-since-boot (meaningless as an instant); the SECOND is
+            # the true interval reading, so we keep the LAST "CPU usage" line.
+            result = subprocess.run(
+                ["top", "-l", "2", "-n", "0"],
+                capture_output=True, text=True, timeout=15
+            )
+            idle: Optional[float] = None
+            for line in result.stdout.splitlines():
+                if "CPU usage" in line:
+                    # "CPU usage: 3.44% user, 6.89% sys, 89.65% idle"
+                    m = re.search(r"([\d.]+)%\s*idle", line)
+                    if m:
+                        idle = float(m.group(1))
+            if idle is not None:
+                return round(max(0.0, min(100.0 - idle, 100.0)), 1)
+        else:
+            first = _read_proc_stat_cpu()
+            if first is None:
+                return None
+            time.sleep(0.5)
+            second = _read_proc_stat_cpu()
+            if second is None:
+                return None
+            busy_delta = second[0] - first[0]
+            total_delta = second[1] - first[1]
+            if total_delta <= 0:
+                return None
+            return round(max(0.0, min(busy_delta / total_delta * 100.0, 100.0)), 1)
+    except Exception:
+        return None
     return None
 
 
@@ -280,31 +364,55 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
     """
     Check for critical conditions that should trigger alerts.
     Returns list of alert messages (empty if all OK).
+
+    Disk and network are judged from second one. CPU, RAM and swap are only
+    judged once the machine is past its post-boot settling window, because a
+    booting machine's processor and memory readings are transient noise — that
+    is what produced the daily post-restart "CPU at 100%" false alarm.
     """
+    global _consecutive_net_failures, _consecutive_cpu_breaches
     alerts = []
 
+    # --- Always live: disk is not distorted by boot ---
     disk = get_disk_usage("/")
     if disk["free_gb"] < 2:
         alerts.append(f"CRITICAL: Disk almost full — {disk['free_gb']} GB free")
     elif disk["free_gb"] < 5:
         alerts.append(f"WARNING: Low disk space — {disk['free_gb']} GB free")
 
-    mem = get_memory_usage()
-    if mem["percent"] > 95:
-        alerts.append(f"CRITICAL: RAM at {mem['percent']}% — {mem['free_gb']} GB free")
-    elif mem["percent"] > 90:
-        alerts.append(f"WARNING: RAM at {mem['percent']}% — {mem['free_gb']} GB free")
+    # --- Boot-sensitive: CPU / RAM / swap. Suppress until the machine settles ---
+    uptime = get_system_uptime_seconds()
+    settled = uptime is None or uptime >= _SETTLING_WINDOW_SECONDS
+    if settled:
+        mem = get_memory_usage()
+        if mem["percent"] > 95:
+            alerts.append(f"CRITICAL: RAM at {mem['percent']}% — {mem['free_gb']} GB free")
+        elif mem["percent"] > 90:
+            alerts.append(f"WARNING: RAM at {mem['percent']}% — {mem['free_gb']} GB free")
 
-    swap = get_swap_usage()
-    if swap["total_gb"] > 0 and swap["percent"] > 80:
-        alerts.append(f"WARNING: Swap at {swap['percent']}% — {swap['used_gb']:.1f}/{swap['total_gb']:.1f} GB")
+        swap = get_swap_usage()
+        if swap["total_gb"] > 0 and swap["percent"] > 80:
+            alerts.append(f"WARNING: Swap at {swap['percent']}% — {swap['used_gb']:.1f}/{swap['total_gb']:.1f} GB")
 
-    cpu = get_cpu_usage()
-    if cpu is not None and cpu > 95:
-        load = get_load_average() or "unknown"
-        alerts.append(f"WARNING: CPU load sustained at {cpu}% (load: {load})")
+        # Real CPU busy%, and only after N consecutive breaches (mirrors the
+        # network guard) so a single transient spike never speaks.
+        cpu = get_cpu_usage()
+        if cpu is not None and cpu > _CPU_BUSY_THRESHOLD:
+            _consecutive_cpu_breaches += 1
+            if _consecutive_cpu_breaches >= _CPU_BREACH_THRESHOLD:
+                load = get_load_average() or "unknown"
+                alerts.append(
+                    f"WARNING: CPU busy at {cpu}% across "
+                    f"{_consecutive_cpu_breaches} consecutive checks (load avg: {load})"
+                )
+        else:
+            _consecutive_cpu_breaches = 0
+    else:
+        # Still waking up: do not judge CPU/RAM/swap, and clear any pre-reboot
+        # breach streak so it cannot carry across the boot.
+        _consecutive_cpu_breaches = 0
 
-    global _consecutive_net_failures
+    # --- Always live: network has its own 2-strike guard ---
     if not get_network_status():
         _consecutive_net_failures += 1
         if _consecutive_net_failures >= _NET_FAILURE_THRESHOLD:
@@ -328,6 +436,22 @@ _ALERT_COOLDOWN_SECONDS = 4 * 3600  # Don't repeat the same alert for 4 hours
 _consecutive_net_failures: int = 0
 _NET_FAILURE_THRESHOLD = 2  # Require this many consecutive failures before alerting
 
+# CPU alerting is deliberately conservative — the old check cried wolf after
+# every restart. Three guards now gate it: (1) get_cpu_usage measures REAL
+# busy%, not load average; (2) we require N consecutive breaching checks, like
+# the network guard above, so one transient spike stays silent; (3) check_critical
+# skips CPU/RAM/swap entirely until the machine is past its post-boot settling
+# window (below).
+_CPU_BUSY_THRESHOLD = 95.0    # Percent BUSY (not load) that counts as a breach
+_CPU_BREACH_THRESHOLD = 3     # Consecutive breaching checks before we alert
+_consecutive_cpu_breaches: int = 0
+
+# A freshly booted machine runs every login item, launch agent, Spotlight and
+# the bot itself at once, so CPU/RAM/swap read as transient noise for a few
+# minutes. Suppress those alerts until system uptime clears this window. Disk
+# and network alerts stay live from second one — they are not distorted by boot.
+_SETTLING_WINDOW_SECONDS = 5 * 60
+
 
 def _alert_key(alert_msg: str) -> str:
     """Extract a stable key from an alert message for cooldown tracking."""
@@ -344,7 +468,10 @@ async def run_health_check(send_fn, admin_user_ids: list[int],
     send_fn: async function(user_id: int, text: str) -> bool
     admin_user_ids: list of Telegram user IDs to alert
     """
-    alerts = check_critical(bot_dir)
+    # check_critical() shells out (top samples ~1s, curl probes the network), so
+    # run it in a thread executor rather than blocking the event loop.
+    loop = asyncio.get_running_loop()
+    alerts = await loop.run_in_executor(None, check_critical, bot_dir)
     if not alerts:
         return
 
