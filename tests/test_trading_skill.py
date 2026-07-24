@@ -15,7 +15,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "trading" / "scripts"))
+_SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "trading" / "scripts"
+sys.path.insert(0, str(_SCRIPTS))
+# skills/watch/scripts/watch.py shares the bare name "watch"; see the fuller
+# note in test_trading_watch.py. Evict any same-named module cached from another
+# skill so these imports bind to the trading scripts under `unittest discover`.
+for _name in ("watch", "alert_sweep", "market", "trading_common"):
+    _mod = sys.modules.get(_name)
+    if _mod is not None and not str(getattr(_mod, "__file__", "")).startswith(str(_SCRIPTS)):
+        del sys.modules[_name]
 
 import market  # noqa: E402
 import trading_common as tc  # noqa: E402

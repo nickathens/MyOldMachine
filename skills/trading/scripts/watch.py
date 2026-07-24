@@ -388,12 +388,17 @@ def _bot_python() -> str:
     return str(cand) if cand.exists() else sys.executable
 
 
-def ensure_sweep_job(user_id: int, base_dir: Path | None = None) -> bool:
+def ensure_sweep_job(user_id: int, base_dir: Path | None = None) -> str:
     """Idempotently register the per user 15 minute sweep as a command job.
 
-    Returns True if a new row was inserted, False if one already existed or
-    the scheduler DB could not be reached. Best effort by design: arming the
-    sweep must never fail the add itself.
+    Returns one of three states so the caller can tell a real failure apart
+    from the ordinary already-armed case (a plain bool conflated them, so a
+    scheduler that could not be reached still read as "already armed" and the
+    add reported "Watching" over a sweep that would never run):
+      "created" - a new row was inserted
+      "exists"  - a row was already present, nothing to do
+      "error"   - the scheduler DB could not be reached
+    Best effort by design: arming the sweep must never fail the add itself.
     """
     db = scheduler_db_path(base_dir)
     name = sweep_job_name(user_id)
@@ -412,7 +417,7 @@ def ensure_sweep_job(user_id: int, base_dir: Path | None = None) -> bool:
                 (name, user_id),
             ).fetchone()
             if existing:
-                return False
+                return "exists"
             conn.execute(
                 "INSERT INTO job_meta (job_id, user_id, message, job_type, name, "
                 "notify, command, log_file, repeat, weekdays, channel, created_at, "
@@ -424,11 +429,11 @@ def ensure_sweep_job(user_id: int, base_dir: Path | None = None) -> bool:
                  SWEEP_TIMEOUT_SECONDS),
             )
             conn.commit()
-            return True
+            return "created"
         finally:
             conn.close()
     except sqlite3.Error:
-        return False
+        return "error"
 
 
 def remove_sweep_job(user_id: int, base_dir: Path | None = None) -> bool:
@@ -546,8 +551,12 @@ def cmd_add(args) -> int:
         return 1
 
     entry, created = result["entry"], result["created"]
-    ensure_sweep_job(args.user, args.base_dir)  # arm the per user sweep (idempotent)
+    arm = ensure_sweep_job(args.user, args.base_dir)  # arm the per user sweep (idempotent)
     warnings = [quote_note] if quote_note else []
+    if arm == "error":
+        warnings.append(
+            "could not arm the background sweep (scheduler unavailable); alerts will "
+            "not fire until it is armed. Retry the add once the scheduler is reachable.")
     warnings += [f"level {dup} is already armed, not duplicated"
                  for dup in result.get("dup_levels", [])]
     if args.json:

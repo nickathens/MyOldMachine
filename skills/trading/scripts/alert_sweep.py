@@ -83,7 +83,14 @@ def sweep(user_id: int, dry_run: bool = False, base_dir: Path | None = None,
         attempted += 1
         try:
             readings = watch.fetch_readings(symbol, exchange=cfg.get("exchange", "binance"))
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
+            # SystemExit is what fetch_readings raises when the finance stack
+            # (talib, via lazy_import) is missing. It subclasses BaseException,
+            # so a bare `except Exception` lets it escape this per-symbol guard
+            # and crash the whole sweep every 15 minutes with a raw traceback,
+            # before the blindness throttle downstream ever runs. Treat a
+            # missing library like any data outage: count it failed and let the
+            # throttle collapse it to one ping per 4 hours.
             failed += 1
             print(f"{symbol}: readings failed, skipped ({exc})")
             continue

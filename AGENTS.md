@@ -72,7 +72,11 @@ provider.
 
 - [2026-07-24] linux: trading skill (market data, TA, screening, backtests,
   per user watchlist alerts), new `skills/trading/` + `tests/` + a README row,
-  branch `linux/trading-skill`
+  branch `linux/trading-skill` (PR #91). Review fixes applied on the same
+  branch: sweep now survives a missing finance stack (SystemExit guard),
+  `ensure_sweep_job` returns a tri-state so a failed arm is not reported as
+  "watching", and the trading tests evict the `skills/watch` bare-name
+  collision. Thanks to the mac side for the review.
 
 ## Notes between agents
 

@@ -17,7 +17,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "trading" / "scripts"))
+_SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "trading" / "scripts"
+sys.path.insert(0, str(_SCRIPTS))
+# The video-watch skill ships skills/watch/scripts/watch.py under the same bare
+# module name "watch". Under `unittest discover` whichever test imports "watch"
+# first wins sys.modules, so a foreign copy could silently shadow the trading
+# modules here (and alert_sweep's own internal `import watch`). Evict any cached
+# same-named module not loaded from the trading scripts dir before importing;
+# this mirrors runtime, where the script's own dir is sys.path[0].
+for _name in ("watch", "alert_sweep", "market", "trading_common"):
+    _mod = sys.modules.get(_name)
+    if _mod is not None and not str(getattr(_mod, "__file__", "")).startswith(str(_SCRIPTS)):
+        del sys.modules[_name]
 
 import alert_sweep  # noqa: E402
 import watch  # noqa: E402
@@ -515,6 +526,22 @@ class TestSweep(unittest.TestCase):
         self.sweep_with({"AAPL": RuntimeError("down"), "MSFT": RuntimeError("down")})
         self.assertFalse(self.healthy)
 
+    def test_missing_finance_stack_does_not_crash_sweep(self):
+        # fetch_readings raises SystemExit (a BaseException) when talib is
+        # absent (lazy_import). The sweep must catch it like a data outage
+        # rather than let it escape and crash every 15 minutes. Without the
+        # guard this test errors (SystemExit propagates out of sweep()).
+        self.seed_symbol("AAPL")
+        self.seed_symbol("BTC/USDT")
+
+        def missing_stack(symbol, exchange="binance"):
+            raise SystemExit("talib is not available yet")
+
+        with mock.patch.object(watch, "fetch_readings", side_effect=missing_stack):
+            delivered, healthy = alert_sweep.sweep(1, base_dir=self.base, now=OPEN_NOW)
+        self.assertEqual(delivered, 0)
+        self.assertFalse(healthy)  # every symbol failed -> blindness throttle applies
+
     def test_market_closed_everywhere_is_healthy(self):
         self.seed_symbol("AAPL")
         self.sweep_with({"AAPL": readings()}, now=SATURDAY)
@@ -602,7 +629,7 @@ class TestSweepJobRegistration(unittest.TestCase):
             conn.close()
 
     def test_ensure_inserts_a_command_job(self):
-        self.assertTrue(watch.ensure_sweep_job(7, self.base))
+        self.assertEqual(watch.ensure_sweep_job(7, self.base), "created")
         rows = self._rows()
         self.assertEqual(len(rows), 1)
         row = rows[0]
@@ -616,9 +643,28 @@ class TestSweepJobRegistration(unittest.TestCase):
         self.assertTrue(row["log_file"].endswith("sweep.log"))
 
     def test_ensure_is_idempotent(self):
-        self.assertTrue(watch.ensure_sweep_job(7, self.base))
-        self.assertFalse(watch.ensure_sweep_job(7, self.base))  # already armed
+        self.assertEqual(watch.ensure_sweep_job(7, self.base), "created")
+        self.assertEqual(watch.ensure_sweep_job(7, self.base), "exists")  # already armed
         self.assertEqual(len(self._rows()), 1)
+
+    def test_ensure_reports_error_when_db_unreachable(self):
+        # A scheduler DB that cannot be reached must read as "error", not be
+        # conflated with the ordinary "exists" case (the bug Jarvis flagged).
+        with mock.patch.object(watch.sqlite3, "connect",
+                               side_effect=sqlite3.OperationalError("db locked")):
+            self.assertEqual(watch.ensure_sweep_job(7, self.base), "error")
+        self.assertEqual(self._rows(), [])  # nothing written
+
+    def test_add_warns_when_arming_fails(self):
+        # When arming genuinely fails the add must not claim it is watching
+        # over a sweep that will never run; it surfaces a warning instead.
+        with mock.patch.object(watch.tc, "fetch_quote", return_value={"price": 100.0}), \
+                mock.patch.object(watch, "ensure_sweep_job", return_value="error"):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = watch.cmd_add(add_args("TSLA", self.base))
+        self.assertEqual(rc, 0)  # the symbol is still added to the list
+        self.assertIn("could not arm the background sweep", buf.getvalue())
 
     def test_remove_deletes_only_that_users_job(self):
         watch.ensure_sweep_job(7, self.base)
@@ -655,6 +701,16 @@ class TestUserDirResolution(unittest.TestCase):
             result = watch.trading_dir(5)
         rud.assert_called_once_with(5)
         self.assertEqual(result, sentinel / "trading")
+
+
+class TestModuleBinding(unittest.TestCase):
+    def test_imports_bound_to_the_trading_scripts(self):
+        # Guards the skills/watch bare-name collision: the modules under test
+        # must be the trading copies, not the video-watch skill's watch.py.
+        for mod in (watch, alert_sweep):
+            resolved = str(Path(mod.__file__).resolve()).replace("\\", "/")
+            self.assertIn("skills/trading/scripts", resolved)
+        self.assertTrue(hasattr(watch, "ensure_sweep_job"))  # trading-only symbol
 
 
 if __name__ == "__main__":
