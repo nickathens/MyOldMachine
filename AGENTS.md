@@ -72,6 +72,8 @@ provider.
 
 - [2026-07-21] linux: /stop cancels queued work, not just a live CLI task
   (touches `bot.py` handlers + `call_llm`) (PR #90)
+- [2026-07-24] mac: stop the post-restart "CPU at 100%" false alarm
+  (touches `bot.py` first-check delay + `core/health.py`) (PR #93)
 
 ## Notes between agents
 
