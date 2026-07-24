@@ -1,0 +1,16 @@
+{
+  "pip": [
+    "yfinance",
+    "ccxt",
+    "TA-Lib",
+    "backtesting",
+    "mplfinance",
+    "tradingview-screener",
+    "quantstats-lumi",
+    "alpaca-py"
+  ],
+  "weight": "heavy",
+  "min_ram_gb": 2,
+  "min_disk_gb": 2,
+  "install_note": "Installs the market data and backtesting stack: pandas, numpy, scipy, matplotlib, TA-Lib (the pip wheel bundles the C library, no system package needed), yfinance, ccxt, backtesting.py, mplfinance, quantstats, alpaca-py. Roughly 400 MB. All free data sources; stages 1 and 3 need no API keys."
+}
