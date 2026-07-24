@@ -607,6 +607,11 @@ PROMPT_CHAR_BUDGET = 80000
 
 # Health check interval (seconds)
 _HEALTH_CHECK_INTERVAL = 4 * 3600  # 4 hours
+# Delay the very first health check well past the post-boot storm so the first
+# CPU sample is never taken mid-startup. The settling window in
+# core.health.check_critical still guards CPU/RAM/swap independently; this just
+# keeps us from doing heavy health work while the machine is still waking up.
+_HEALTH_STARTUP_DELAY = 5 * 60  # 5 minutes
 _last_health_check: float | None = None  # None = not yet checked
 
 
@@ -3795,8 +3800,9 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
 async def _health_monitor_loop(scheduler):
     """Periodically check system health and alert admins if issues found."""
     global _last_health_check
-    # Wait 60 seconds after startup before first check
-    await asyncio.sleep(60)
+    # Wait past the post-boot storm before the first check (the settling window
+    # in check_critical still guards CPU/RAM/swap independently).
+    await asyncio.sleep(_HEALTH_STARTUP_DELAY)
     while True:
         try:
             now = asyncio.get_running_loop().time()
