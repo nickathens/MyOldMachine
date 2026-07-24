@@ -2844,6 +2844,35 @@ async def _refresh_provider_health(provider) -> tuple[bool, str]:
     return healthy, reason
 
 
+# Provider ids that /provider accepts but does not advertise: the two CLI
+# aliases (core.llm.create_provider registers both spellings) and claude-api,
+# which is chat-only.
+HIDDEN_PROVIDER_IDS = ("claude-cli", "codex-cli", "claude-api")
+
+
+def provider_default_models() -> dict[str, str]:
+    """Default model per provider for /provider, derived from the setup catalog.
+
+    install/wizard.py DEFAULT_MODELS is the single source of truth. This used
+    to be a hand-copied literal with a "keep in sync" comment, and it drifted:
+    after the July 2026 refresh it still handed out claude-sonnet-4-6 (retired
+    from the catalog entirely) and gpt-5.5 (demoted, OpenAI's default is now
+    gpt-5.6), and it never listed ``codex`` at all. That last one bit hardest,
+    because the same dict is the validation allowlist, so `/provider codex` was
+    rejected as unknown even though the Codex CLI provider is registered in
+    core.llm.create_provider. Deriving it removes the whole class of drift.
+
+    ``claude-cli`` / ``codex-cli`` mirror their canonical entry so both
+    spellings keep working.
+    """
+    from install.wizard import DEFAULT_MODELS as _wizard_defaults
+
+    models = dict(_wizard_defaults)
+    models["claude-cli"] = models.get("claude", "")
+    models["codex-cli"] = models.get("codex", "")
+    return models
+
+
 @requires_auth
 async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Switch LLM provider and/or model without restarting."""
@@ -2855,24 +2884,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = command_body(update.message.text)
 
-    # Default models per provider — keep in sync with install/wizard.py DEFAULT_MODELS
-    # Last updated: June 17, 2026
-    default_models = {
-        "claude": "claude-sonnet-4-6",
-        "claude-cli": "claude-sonnet-4-6",
-        "claude-api": "claude-sonnet-4-6",
-        "openai": "gpt-5.5",
-        "deepseek": "deepseek-v4-flash",
-        "grok": "grok-4.3",
-        "kimi": "kimi-k2.7-code",
-        "minimax": "MiniMax-M3",
-        "zai": "glm-5.2",
-        "gemini": "gemini-3.5-flash",
-        "ollama": "llama3.1:8b",
-        "ollama-cloud": "qwen3.5:cloud",
-        "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
-        "fcc": "claude-sonnet-4-6",
-    }
+    default_models = provider_default_models()
 
     if not text:
         # Show current state and available providers
@@ -2888,7 +2900,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Available providers:\n"
         )
         for p, default_m in default_models.items():
-            if p in ("claude-cli", "claude-api"):
+            if p in HIDDEN_PROVIDER_IDS:
                 continue
             marker = " (active)" if p == current else ""
             msg += f"  {p} — default: {default_m}{marker}\n"
@@ -2922,7 +2934,7 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if new_provider not in valid_providers:
         await update.message.reply_text(
             f"Unknown provider: {new_provider}\n"
-            f"Valid: {', '.join(sorted(p for p in valid_providers if p not in ('claude-cli', 'claude-api')))}"
+            f"Valid: {', '.join(sorted(p for p in valid_providers if p not in HIDDEN_PROVIDER_IDS))}"
         )
         return
 

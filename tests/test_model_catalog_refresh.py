@@ -48,6 +48,18 @@ class CatalogIntegrityTests(unittest.TestCase):
 
 
 class CurrentFlagshipsPresentTests(unittest.TestCase):
+    def test_opus_5_present(self):
+        # Opus 5 (claude-opus-5) launched July 24, 2026 as the current Opus
+        # flagship, same $5/$25 per MTok tier and 1M ctx as the 4.8 it replaces.
+        self.assertIn("claude-opus-5", _ids("claude"))
+        self.assertIn("claude-opus-5", _ids("claude-api"))
+
+    def test_opus_5_does_not_hijack_default(self):
+        # Opus is offered, never recommended: the default stays on Sonnet so a
+        # fresh install does not silently pick the pricier model.
+        for provider in ("claude", "claude-api"):
+            self.assertEqual(wizard.DEFAULT_MODELS[provider], "claude-sonnet-5")
+
     def test_sonnet_5_present(self):
         # Sonnet 5 (claude-sonnet-5) GA June 30, 2026 — current Sonnet flagship.
         self.assertIn("claude-sonnet-5", _ids("claude"))
@@ -81,9 +93,12 @@ class RetiredModelsAbsentTests(unittest.TestCase):
         self.assertNotIn("gpt-5", _ids("openai"))
 
     def test_superseded_opus_removed(self):
-        # Opus 4.6/4.7 are superseded by 4.8 at identical pricing.
+        # Each Opus is retired by its successor at identical pricing: 4.6/4.7
+        # by 4.8, then 4.8 by Opus 5 (July 24, 2026), which is also when the
+        # docs moved 4.8 into the Legacy models table.
         for provider in ("claude", "claude-api"):
             ids = _ids(provider)
+            self.assertNotIn("claude-opus-4-8", ids)
             self.assertNotIn("claude-opus-4-7", ids)
             self.assertNotIn("claude-opus-4-6", ids)
         self.assertNotIn("claude-sonnet-4-5-20250929", _ids("claude-api"))
@@ -125,7 +140,10 @@ class ClaudeSamplingGateTests(unittest.TestCase):
     API provider must omit it for them and keep sending it to legacy models."""
 
     def test_new_models_omit_temperature(self):
-        for model in ("claude-sonnet-5", "claude-fable-5",
+        # Opus 5 has no entry in _CLAUDE_SAMPLING_OK and must not gain one:
+        # omitting temperature is accepted by every model, sending it 400s on
+        # everything from Opus 4.7 forward.
+        for model in ("claude-sonnet-5", "claude-fable-5", "claude-opus-5",
                       "claude-opus-4-8", "claude-opus-4-7"):
             with self.subTest(model=model):
                 self.assertFalse(_claude_accepts_temperature(model))

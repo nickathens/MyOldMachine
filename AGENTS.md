@@ -70,17 +70,14 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-07-21] linux: /stop cancels queued work, not just a live CLI task
-  (touches `bot.py` handlers + `call_llm`) (PR #90)
 - [2026-07-24] mac: stop the post-restart "CPU at 100%" false alarm
   (touches `bot.py` first-check delay + `core/health.py`) (PR #93)
-- [2026-07-24] linux: trading skill (market data, TA, screening, backtests,
-  per user watchlist alerts), new `skills/trading/` + `tests/` + a README row,
-  branch `linux/trading-skill` (PR #91). Review fixes applied on the same
-  branch: sweep now survives a missing finance stack (SystemExit guard),
-  `ensure_sweep_job` returns a tri-state so a failed arm is not reported as
-  "watching", and the trading tests evict the `skills/watch` bare-name
-  collision. Thanks to the mac side for the review.
+- [2026-07-24] linux: Claude Opus 5 in the model catalog, replacing Opus 4.8
+  (moved to the docs' Legacy table on the same day, identical pricing), and
+  `/provider` now derives its default-model map from `install/wizard.py`
+  instead of a hand-copied literal that had drifted, which is what made
+  `/provider codex` unreachable (touches `install/wizard.py` +
+  `bot.py provider_command`), branch `linux/opus-5-catalog`.
 
 ## Notes between agents
 

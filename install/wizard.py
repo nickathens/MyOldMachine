@@ -388,16 +388,20 @@ DEFAULT_MODELS = {
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
-# Last updated: July 18, 2026 — Anthropic verified live against the
-# platform.claude.com models overview (Sonnet 5 GA June 30 supersedes Sonnet 4.6;
-# do NOT verify Anthropic against cached references, they lag launches);
-# Gemini + OpenRouter queried live against their /models endpoints; OpenAI, xAI,
-# DeepSeek, Kimi, MiniMax, Z.ai and Ollama Cloud verified against current docs.
+# Last updated: July 24, 2026 (Anthropic rows) — verified live against the
+# platform.claude.com models overview: Claude Opus 5 (claude-opus-5) is the
+# current Opus at Opus 4.8's price ($5/$25 per MTok, 1M ctx), and Opus 4.8 has
+# moved to the docs' Legacy models table, so it retires here exactly the way
+# 4.6 and 4.7 did. Sonnet 5 stays the recommended default. Do NOT verify
+# Anthropic against cached references, they lag launches.
+# July 18, 2026 for every other provider: Gemini + OpenRouter queried live
+# against their /models endpoints; OpenAI, xAI, DeepSeek, Kimi, MiniMax, Z.ai
+# and Ollama Cloud verified against current docs.
 PROVIDER_MODELS = {
     "claude": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, near-Opus performance, 1M ctx (recommended)"),
         ("claude-fable-5", "Claude Fable 5 — next-gen flagship, hardest coding + agentic work, uses plan quota fast"),
-        ("claude-opus-4-8", "Claude Opus 4.8 — most capable, best agentic coding, 1M ctx"),
+        ("claude-opus-5", "Claude Opus 5 — complex agentic coding and enterprise work, 1M ctx"),
     ],
     "codex": [
         ("gpt-5.5", "GPT-5.5 — Codex CLI default, vision + tools, 1M ctx (recommended)"),
@@ -409,7 +413,7 @@ PROVIDER_MODELS = {
     "claude-api": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, 1M ctx, $3/$15 per MTok, intro $2/$10 through Aug 31 (recommended)"),
         ("claude-fable-5", "Claude Fable 5 — next-gen flagship, hardest coding + agentic work, $10/$50 per MTok"),
-        ("claude-opus-4-8", "Claude Opus 4.8 — most capable, best agentic coding, 1M ctx, $5/$25 per MTok"),
+        ("claude-opus-5", "Claude Opus 5 — complex agentic coding and enterprise work, 1M ctx, $5/$25 per MTok"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, 200K ctx, $1/$5 per MTok"),
     ],
     "openai": [

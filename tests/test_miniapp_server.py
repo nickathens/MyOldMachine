@@ -247,15 +247,26 @@ class TestModelRatios(unittest.TestCase):
 
 
 class TestClaudeModelCatalog(unittest.TestCase):
-    """Opus 4.8 port: selectable for claude/claude-api, default unchanged."""
+    """Opus 5: selectable for claude/claude-api, default unchanged.
 
-    def test_opus_4_8_selectable_for_claude(self) -> None:
+    The picker is data driven from install/wizard.py PROVIDER_MODELS, so these
+    also prove the Mini App inherits a catalog edit with no hardcoded list.
+    """
+
+    def test_opus_5_selectable_for_claude(self) -> None:
         ids = {m["id"] for m in srv._available_models("claude")}
-        self.assertIn("claude-opus-4-8", ids)
+        self.assertIn("claude-opus-5", ids)
 
-    def test_opus_4_8_selectable_for_claude_api(self) -> None:
+    def test_opus_5_selectable_for_claude_api(self) -> None:
         ids = {m["id"] for m in srv._available_models("claude-api")}
-        self.assertIn("claude-opus-4-8", ids)
+        self.assertIn("claude-opus-5", ids)
+
+    def test_retired_opus_not_offered(self) -> None:
+        # Opus 4.8 moved to the docs' Legacy table when Opus 5 landed; the
+        # picker must not keep offering it at the same price.
+        for provider in ("claude", "claude-api"):
+            ids = {m["id"] for m in srv._available_models(provider)}
+            self.assertNotIn("claude-opus-4-8", ids, msg=provider)
 
     def test_default_is_current_sonnet(self) -> None:
         # Opus/Fable entries must not hijack the recommended/default model;
