@@ -20,6 +20,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "trad
 import market  # noqa: E402
 import trading_common as tc  # noqa: E402
 
+# The finance stack self installs on first use (deps.json), so CI and a fresh
+# box run without it. Tests that build a real DataFrame skip there and run on
+# a full install; the rest of the suite is pure logic and always runs.
+try:
+    import pandas  # noqa: F401
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
+
 
 class TestSymbolRouting(unittest.TestCase):
     def test_slash_pairs_are_crypto(self):
@@ -253,6 +262,7 @@ def _tiny_df():
                          "Close": [1.0, 2.0], "Volume": [10.0, 20.0]}, index=idx)
 
 
+@unittest.skipUnless(HAS_PANDAS, "pandas not installed (finance stack self installs on use)")
 class TestJsonPurity(unittest.TestCase):
     """--json stdout must parse as JSON alone; meta lines go to stderr."""
 
