@@ -29,9 +29,15 @@ if str(ROOT) not in sys.path:
 FIRST_CLASS_API_PROVIDERS = ("openai", "deepseek", "grok", "kimi", "minimax", "zai")
 
 # (relative path, anchor that ends with the opening '{' or '(' of the literal)
+#
+# `/provider`'s default-model map used to be a hand-copied literal here too
+# ("bot.py", "default_models = {"). It is now derived from the wizard catalog
+# by bot.provider_default_models(), so there is no literal left to scan and the
+# invariant is structural rather than textual. It is asserted against the
+# derived mapping in test_first_class_providers_in_the_default_model_map below,
+# which is the stronger check: the text scan only proved the name appeared.
 GATING_CONSTRUCTS = (
     ("bot.py", "full_mode = provider in ("),
-    ("bot.py", "default_models = {"),
     ("bot.py", "needs_key = new_provider in ("),
     ("bot.py", "capable_providers = ("),
     ("utils/reflect.py", "api_configs = {"),
@@ -74,6 +80,19 @@ class RuntimeGatingRegistrationTests(unittest.TestCase):
                         f"{prov!r} missing from `{anchor}` in {relpath}",
                     )
 
+    def test_first_class_providers_in_the_default_model_map(self):
+        # Same invariant the "default_models = {" source scan used to carry:
+        # a first-class provider missing from /provider's map is unswitchable,
+        # because the map doubles as the validation allowlist. Asserted on the
+        # derived mapping now, so it also proves the value is non-empty.
+        import bot as botmod
+
+        models = botmod.provider_default_models()
+        for prov in FIRST_CLASS_API_PROVIDERS:
+            with self.subTest(provider=prov):
+                self.assertIn(prov, models, f"{prov!r} missing from /provider's default-model map")
+                self.assertTrue(models[prov], f"{prov!r} has no default model")
+
     def test_provider_alias_canonicalization(self):
         # /provider glm and /provider zhipu must resolve to the canonical 'zai'.
         bot_src = (ROOT / "bot.py").read_text(encoding="utf-8")
@@ -81,13 +100,22 @@ class RuntimeGatingRegistrationTests(unittest.TestCase):
         self.assertIn('"zhipu": "zai"', bot_src)
 
     def test_kimi_runtime_default_synced_to_wizard(self):
-        # bot.py default_models must not lag install/wizard.py DEFAULT_MODELS.
+        # The runtime default must not lag install/wizard.py DEFAULT_MODELS.
+        # This was a source-text assertion against bot.py's hand-copied literal
+        # (the exact drift that stranded kimi on k2.6). The literal is gone and
+        # the map is derived, so the check moves onto the live value: it now
+        # fails if the wizard itself regresses, which the text scan could not
+        # see, and it holds for every provider, not just the one that broke.
+        import bot as botmod
         from install import wizard
 
-        bot_src = (ROOT / "bot.py").read_text(encoding="utf-8")
-        self.assertIn('"kimi": "kimi-k2.7-code"', bot_src)
-        self.assertNotIn('"kimi": "kimi-k2.6"', bot_src)
+        models = botmod.provider_default_models()
         self.assertEqual(wizard.DEFAULT_MODELS["kimi"], "kimi-k2.7-code")
+        self.assertEqual(models["kimi"], "kimi-k2.7-code")
+        self.assertEqual(models, {**wizard.DEFAULT_MODELS, **{
+            "claude-cli": wizard.DEFAULT_MODELS["claude"],
+            "codex-cli": wizard.DEFAULT_MODELS["codex"],
+        }})
 
     def test_zai_runtime_endpoint_matches_provider_base_url(self):
         # The URL baked into the reflect/email-triage maps must match the
