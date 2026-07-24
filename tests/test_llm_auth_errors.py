@@ -240,6 +240,12 @@ class AuthProbeTests(unittest.TestCase):
         self._patches = [
             patch.object(cw, "heal_credential_chains", self.heal),
             patch.object(cw.subprocess, "run", side_effect=_no_real_keychain),
+            # The probe's env build now reads a long-lived setup-token from the
+            # keychain. These tests cover the legacy no-token folding path, so
+            # report "no token stored" -- which also keeps the real-keychain
+            # trap above intact (subprocess is a singleton, so that patch is
+            # global and this read would otherwise trip it).
+            patch.object(llm, "read_claude_oauth_token", return_value=""),
         ]
         for p in self._patches:
             p.start()

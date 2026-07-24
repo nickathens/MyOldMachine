@@ -20,6 +20,8 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -126,6 +128,50 @@ def _claude_workspace_env(user_id: Optional[int]) -> dict:
             "per-user claude workspace unavailable for %s: %s", user_id, exc
         )
     return env
+
+
+# Service name of the macOS keychain item holding the long-lived subscription
+# token created once by an admin via `claude setup-token`.
+_OAUTH_TOKEN_KEYCHAIN_SERVICE = "mom-claude-oauth"
+# Cached only after a non-empty token has been read, so a transient keychain
+# error at startup retries instead of stranding a stored token for the process
+# lifetime.
+_oauth_token_cache = ""
+
+
+def read_claude_oauth_token() -> str:
+    """Return the long-lived ``claude setup-token`` value, or "" if none.
+
+    Injected into every Claude CLI turn as ``CLAUDE_CODE_OAUTH_TOKEN``, this
+    token outranks and bypasses the ``/login`` keychain+file credential store
+    (per Claude Code's documented auth precedence), so the CLI stops reading the
+    rotating per-store credentials behind the recurring daily re-login outage.
+
+    Read through the ``security`` binary and cached for the process lifetime
+    once a non-empty value is found -- a token rotation is a yearly, restart-
+    gated event. A failed or empty read is never cached, so a transient error
+    simply retries on the next turn. Returns "" off macOS or when no token is
+    stored, leaving the existing credential chain untouched.
+    """
+    global _oauth_token_cache
+    if _oauth_token_cache:
+        return _oauth_token_cache
+    if sys.platform != "darwin":
+        return ""
+    try:
+        proc = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", _OAUTH_TOKEN_KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:  # e.g. exit 44 == item not found
+        return ""
+    token = (proc.stdout or "").strip()
+    if token:
+        _oauth_token_cache = token
+    return token
 
 
 @dataclass
@@ -604,14 +650,26 @@ class ClaudeCLIProvider(LLMProvider):
     def _get_cli_env(self, user_id: int = None) -> dict:
         """Build the sanitized env dict for a CLI subprocess."""
         from core.tools import build_cli_env
+        extra = _claude_workspace_env(user_id)
+        # A stored long-lived setup-token outranks the /login keychain+file
+        # store, so the CLI stops depending on the rotating per-store
+        # credentials behind the daily re-login outage. Injected via `extra`,
+        # which bypasses the `.*_TOKEN$` env scrub in core/tools. Skipped when an
+        # explicit CLAUDE_CODE_OAUTH_TOKEN is already in the environment, so an
+        # operator override still wins.
+        if "CLAUDE_CODE_OAUTH_TOKEN" not in os.environ:
+            oauth_token = read_claude_oauth_token()
+            if oauth_token:
+                extra["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
         return build_cli_env(
             provider_keys=frozenset({
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_AUTH_TOKEN",
                 "ANTHROPIC_BASE_URL",
                 "CLAUDE_CONFIG_DIR",
+                "CLAUDE_CODE_OAUTH_TOKEN",
             }),
-            extra=_claude_workspace_env(user_id),
+            extra=extra,
         )
 
     def stop_user(self, user_id: int) -> bool:

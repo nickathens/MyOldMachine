@@ -70,6 +70,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+- [2026-07-21] linux: /stop cancels queued work, not just a live CLI task
+  (touches `bot.py` handlers + `call_llm`) (PR #90)
+- [2026-07-24] mac: stop the post-restart "CPU at 100%" false alarm
+  (touches `bot.py` first-check delay + `core/health.py`) (PR #93)
 - [2026-07-24] linux: trading skill (market data, TA, screening, backtests,
   per user watchlist alerts), new `skills/trading/` + `tests/` + a README row,
   branch `linux/trading-skill` (PR #91). Review fixes applied on the same
