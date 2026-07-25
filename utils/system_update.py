@@ -9,6 +9,7 @@ Designed to run as a scheduled command job (nightly).
 Can also be run standalone: python utils/system_update.py
 """
 
+import json
 import logging
 import platform
 import shutil
@@ -16,10 +17,20 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 BOT_DIR = Path(__file__).parent.parent
 DATA_DIR = BOT_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
+
+# Remembers which app updates the user has already been told about, so the
+# nightly reminder repeats weekly instead of every single night.
+PENDING_APPS_STATE = DATA_DIR / "pending_app_updates.json"
+REMIND_AFTER_DAYS = 7
+
+# Cap on how many cask names go into one summary line before it turns into
+# "and N more" — the summary is a Telegram message, not a report.
+_MAX_NAMED_CASKS = 6
 
 logger = logging.getLogger(__name__)
 
@@ -176,29 +187,90 @@ def _count_upgradable(mgr: str) -> int:
     return 0
 
 
-def _brew_cask_note() -> str:
+def _outdated_casks() -> tuple[str, ...]:
+    """Names of casks with a pending upgrade, or () when none.
+
+    Deliberately NOT --greedy. Greedy also lists casks marked `auto_updates`,
+    which ship their own updater: those apps upgrade themselves on disk while
+    Homebrew's Caskroom metadata stays pinned to the old version. Reporting
+    them would mean nagging the user about updates that already happened
+    (ProtonVPN was live on 6.5.1 while brew still recorded 6.5.0, 2026-07-25).
+    """
+    rc, output = _run_cmd(
+        "brew outdated --cask --quiet", use_sudo=False, timeout=60
+    )
+    if rc != 0:
+        return ()
+    names = [line.strip() for line in output.splitlines() if line.strip()]
+    return tuple(sorted(names))
+
+
+def _brew_cask_note(casks: tuple[str, ...]) -> str:
     """One-line note about outdated casks, or "" when none.
 
     Casks are excluded from the nightly upgrade (see _UPGRADE_CMDS) so pending
-    app updates would otherwise go silent — surface them in the summary.
+    app updates would otherwise go silent. Names them rather than counting them:
+    "libreoffice is waiting" is actionable, "1 app update pending" is not.
     """
-    rc, output = _run_cmd(
-        "brew outdated --cask 2>/dev/null | wc -l", use_sudo=False, timeout=60
-    )
-    if rc != 0:
+    if not casks:
         return ""
-    count = 0
-    for line in reversed(output.strip().splitlines()):
-        line = line.strip()
-        if line.isdigit():
-            count = int(line)
-            break
-    if count == 0:
-        return ""
+    shown = list(casks[:_MAX_NAMED_CASKS])
+    if len(casks) > _MAX_NAMED_CASKS:
+        shown.append(f"and {len(casks) - _MAX_NAMED_CASKS} more")
     return (
-        f"{count} app update(s) (brew casks) pending — not auto-installed, "
-        "ask me to update them."
+        f"{len(casks)} app update(s) waiting on you, not installed "
+        f"automatically: {', '.join(shown)}. Ask me to update them."
     )
+
+
+def _load_pending_state() -> dict:
+    """Read the pending-apps reminder state. Returns {} if missing or unreadable."""
+    try:
+        if not PENDING_APPS_STATE.exists():
+            return {}
+        data = json.loads(PENDING_APPS_STATE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning(f"pending-apps state unreadable: {e}")
+        return {}
+
+
+def _record_pending_notice(casks: tuple[str, ...]) -> None:
+    """Remember that the user has just been told about exactly these apps."""
+    try:
+        PENDING_APPS_STATE.parent.mkdir(parents=True, exist_ok=True)
+        PENDING_APPS_STATE.write_text(
+            json.dumps({
+                "apps": list(casks),
+                "last_notified": datetime.now().strftime("%Y-%m-%d"),
+            }),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warning(f"pending-apps state not saved: {e}")
+
+
+def _should_remind_pending(casks: tuple[str, ...]) -> bool:
+    """True when a quiet night should still ping the user about waiting apps.
+
+    Reminds when the set of waiting apps changed (something new appeared) or
+    when the last reminder is at least REMIND_AFTER_DAYS old. Any unparseable
+    state fails toward reminding: a silent pending update is the bug being
+    fixed here, a duplicate reminder is merely noise.
+    """
+    if not casks:
+        return False
+    state = _load_pending_state()
+    if set(state.get("apps") or []) != set(casks):
+        return True
+    last = state.get("last_notified")
+    if not isinstance(last, str):
+        return True
+    try:
+        last_date = datetime.strptime(last, "%Y-%m-%d").date()
+    except ValueError:
+        return True
+    return (datetime.now().date() - last_date).days >= REMIND_AFTER_DAYS
 
 
 def _count_softwareupdate_available() -> int:
@@ -271,17 +343,29 @@ def _run_macos_softwareupdate(
     return summary
 
 
-def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
+class PkgUpdateResult(NamedTuple):
+    """Outcome of one package-manager cycle.
+
+    summary: one-line digest, "" when there was nothing to say.
+    errored: True when notify_fn already fired with a failure message.
+    pending_apps: apps that need the user's go-ahead (never auto-installed).
+    """
+    summary: str
+    errored: bool
+    pending_apps: tuple[str, ...] = ()
+
+
+def _run_pkg_manager_update(log_fn, notify_fn) -> PkgUpdateResult:
     """Run the OS package manager update cycle (apt/dnf/pacman/zypper/apk/brew).
 
-    Returns (summary, errored). When errored=True, notify_fn has already been
-    called with the failure message — the caller should not notify again.
-    Empty summary means 'no package manager available or nothing to do'.
+    When errored=True, notify_fn has already been called with the failure
+    message — the caller should not notify again. Empty summary means 'no
+    package manager available or nothing to do'.
     """
     mgr = detect_package_manager()
     if not mgr:
         log_fn("No supported package manager found.")
-        return "", False
+        return PkgUpdateResult("", False)
 
     log_fn(f"Package manager: {mgr}")
     use_sudo = mgr != "brew"
@@ -295,16 +379,17 @@ def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
             log_fn(f"ERROR: {msg}")
             log_fn(output[-500:] if output else "no output")
             notify_fn(msg)
-            return msg, True
+            return PkgUpdateResult(msg, True)
 
     # Step 2: Count available updates
     before_count = _count_upgradable(mgr)
-    cask_note = _brew_cask_note() if mgr == "brew" else ""
+    pending_apps = _outdated_casks() if mgr == "brew" else ()
+    cask_note = _brew_cask_note(pending_apps)
     if cask_note:
         log_fn(cask_note)
     if before_count == 0:
         log_fn("No updates available.")
-        return cask_note, False
+        return PkgUpdateResult(cask_note, False, pending_apps)
 
     log_fn(f"{before_count} package(s) available for upgrade")
 
@@ -313,7 +398,7 @@ def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
     if not upgrade_cmd:
         msg = f"No upgrade command configured for {mgr}"
         log_fn(msg)
-        return msg, False
+        return PkgUpdateResult(msg, False, pending_apps)
 
     # 30 min: big cask downloads (e.g. Blender ~400MB) can exceed 10 min, and a
     # timeout kill mid-upgrade strands the cask half-installed (2026-07-15).
@@ -323,7 +408,7 @@ def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
         log_fn(f"ERROR: {msg}")
         log_fn(output[-500:] if output else "no output")
         notify_fn(msg)
-        return msg, True
+        return PkgUpdateResult(msg, True, pending_apps)
 
     # Step 4: Count remaining (held-back) updates
     after_count = _count_upgradable(mgr)
@@ -331,7 +416,10 @@ def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
 
     if actually_upgraded <= 0:
         log_fn(f"All {before_count} updates held back. Nothing changed.")
-        return f"All {before_count} updates held back (phased rollout). Nothing changed.", False
+        held = f"All {before_count} updates held back (phased rollout). Nothing changed."
+        if cask_note:
+            held = f"{held} {cask_note}"
+        return PkgUpdateResult(held, False, pending_apps)
 
     # Step 5: Clean up
     clean_cmd = _CLEAN_CMDS.get(mgr)
@@ -354,7 +442,7 @@ def _run_pkg_manager_update(log_fn, notify_fn) -> tuple[str, bool]:
         parts.append(cask_note)
     summary = " ".join(parts)
     log_fn(summary)
-    return summary, False
+    return PkgUpdateResult(summary, False, pending_apps)
 
 
 def _maybe_run_macos_softwareupdate(log_fn, notify_fn) -> str:
@@ -420,32 +508,43 @@ def run_system_update(notify_fn=None) -> str:
 
     log("=== System update started ===")
 
-    pkg_summary, pkg_errored = _run_pkg_manager_update(log_fn=log, notify_fn=notify)
+    pkg = _run_pkg_manager_update(log_fn=log, notify_fn=notify)
 
     # Apple updates run independently of the package manager flow, but only
     # after a clean (non-error) outcome — a failing brew shouldn't trigger
     # softwareupdate that night.
     sw_summary = ""
-    if not pkg_errored:
+    if not pkg.errored:
         sw_summary = _maybe_run_macos_softwareupdate(log_fn=log, notify_fn=notify)
 
     log("=== System update complete ===")
 
-    if pkg_errored:
+    if pkg.errored:
         # notify() already fired inside the helper.
-        return pkg_summary
+        return pkg.summary
 
-    parts = [s for s in (pkg_summary, sw_summary) if s.strip()]
+    parts = [s for s in (pkg.summary, sw_summary) if s.strip()]
     if not parts:
         return "No updates available."
 
     full = " ".join(parts)
 
-    # Match the prior contract: notify only when something material happened.
-    # Phrases like "No updates available." or "All N updates held back" are
-    # status-only; "upgraded" or "installed" indicate the user should know.
-    if "upgraded" in pkg_summary or "installed" in sw_summary:
+    # Notify when something material happened. Phrases like "No updates
+    # available." or "All N updates held back" are status-only; "upgraded" or
+    # "installed" indicate the user should know.
+    material = "upgraded" in pkg.summary or "installed" in sw_summary
+
+    # ...but an app waiting on the user's go-ahead also has to reach them. It is
+    # never auto-installed, so on a quiet night the old contract logged it and
+    # told nobody, and it could sit unseen for days (LibreOffice, 2026-07-25).
+    # Throttled so a standing update reminds weekly, not nightly.
+    remind = not material and _should_remind_pending(pkg.pending_apps)
+
+    if material or remind:
         notify(full)
+        # Record even on a material night: the digest carries the pending line
+        # too, so that ping starts the clock for the next reminder.
+        _record_pending_notice(pkg.pending_apps)
 
     return full
 
