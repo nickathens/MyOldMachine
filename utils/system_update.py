@@ -12,6 +12,7 @@ Can also be run standalone: python utils/system_update.py
 import json
 import logging
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,12 @@ REMIND_AFTER_DAYS = 7
 # Cap on how many cask names go into one summary line before it turns into
 # "and N more" — the summary is a Telegram message, not a report.
 _MAX_NAMED_CASKS = 6
+
+# Shape of a Homebrew cask token: lowercase, no spaces, no punctuation beyond
+# the separators brew itself uses (`font-fira-code`, `python@3.12`,
+# `homebrew/cask-versions/firefox-beta`). Used to reject anything brew prints
+# that is not an app name — see _outdated_casks.
+_CASK_TOKEN = re.compile(r"[a-z0-9][a-z0-9@._+/-]*")
 
 logger = logging.getLogger(__name__)
 
@@ -195,13 +202,28 @@ def _outdated_casks() -> tuple[str, ...]:
     Homebrew's Caskroom metadata stays pinned to the old version. Reporting
     them would mean nagging the user about updates that already happened
     (ProtonVPN was live on 6.5.1 while brew still recorded 6.5.0, 2026-07-25).
+
+    stderr is discarded and every line is checked against _CASK_TOKEN because
+    _run_cmd merges stdout and stderr. brew writes progress chatter to stderr
+    with rc == 0 when it refreshes its API cache — and since the nightly job
+    runs 24h apart, it hits that refresh almost every time:
+
+        $ brew outdated --cask --quiet     # stdout empty, stderr:
+        ✔︎ JSON API packages.arm64_tahoe.jws.json
+
+    Untreated that line became a phantom pending "app", and because the text
+    varies between nights the app set kept changing, so _should_remind_pending
+    saw news every night and REMIND_AFTER_DAYS could never throttle it.
     """
     rc, output = _run_cmd(
-        "brew outdated --cask --quiet", use_sudo=False, timeout=60
+        "brew outdated --cask --quiet 2>/dev/null", use_sudo=False, timeout=60
     )
     if rc != 0:
         return ()
-    names = [line.strip() for line in output.splitlines() if line.strip()]
+    names = [
+        line.strip() for line in output.splitlines()
+        if _CASK_TOKEN.fullmatch(line.strip())
+    ]
     return tuple(sorted(names))
 
 

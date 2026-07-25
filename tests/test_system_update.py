@@ -458,6 +458,37 @@ class PendingCaskTests(unittest.TestCase):
         su._outdated_casks()
         self.assertNotIn("--greedy", run.call_args.args[0])
 
+    @patch("utils.system_update._run_cmd", return_value=(0, ""))
+    def test_discards_stderr(self, run):
+        # _run_cmd merges stdout and stderr, so brew's chatter has to be
+        # dropped at the shell or it arrives as cask names.
+        su._outdated_casks()
+        self.assertIn("2>/dev/null", run.call_args.args[0])
+
+    @patch("utils.system_update._run_cmd")
+    def test_brew_chatter_is_not_a_cask(self, run):
+        # Real stderr from this machine, 2026-07-25: brew refreshes its API
+        # cache with rc == 0 and prints to stderr. Belt to test_discards_stderr's
+        # braces, since the merge in _run_cmd is one refactor away from leaking.
+        run.return_value = (0, "✔︎ JSON API packages.arm64_tahoe.jws.json\nlibreoffice\n")
+        self.assertEqual(su._outdated_casks(), ("libreoffice",))
+
+    @patch("utils.system_update._run_cmd")
+    def test_chatter_alone_reports_nothing_pending(self, run):
+        # The live state the night this was found: nothing outdated, one
+        # stderr line. Must stay quiet rather than invent an app.
+        run.return_value = (0, "✔︎ JSON API packages.arm64_tahoe.jws.json\n")
+        self.assertEqual(su._outdated_casks(), ())
+        self.assertFalse(su._should_remind_pending(su._outdated_casks()))
+
+    @patch("utils.system_update._run_cmd")
+    def test_real_cask_shapes_survive_the_filter(self, run):
+        run.return_value = (0, "font-fira-code\npython@3.12\nhomebrew/cask-versions/firefox-beta\n")
+        self.assertEqual(
+            su._outdated_casks(),
+            ("font-fira-code", "homebrew/cask-versions/firefox-beta", "python@3.12"),
+        )
+
     def test_note_names_the_apps(self):
         note = su._brew_cask_note(("blender", "libreoffice"))
         self.assertIn("blender", note)
