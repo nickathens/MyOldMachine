@@ -249,6 +249,18 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def supports_mcp(self) -> bool:
+        """Whether a turn here can actually call the configured MCP servers.
+
+        True by default: the API providers execute through `core.tools`,
+        which merges MCP tools into the tool list, and the Claude CLI
+        providers are handed --mcp-config (core.mcp_client.cli_config_args).
+        A provider with no route overrides this to False so the system
+        prompt stops offering tools the turn cannot reach.
+        """
+        return True
+
+    @property
     def has_active_processes(self) -> bool:
         """Whether this provider has subprocesses currently running.
 
@@ -1427,6 +1439,16 @@ class CodexCLIProvider(LLMProvider):
     def supports_vision(self) -> bool:
         # GPT-5.x and GPT-4o families used by Codex CLI all support vision input
         return True
+
+    @property
+    def supports_mcp(self) -> bool:
+        """No route from here: `codex exec` has no MCP flag at all.
+
+        Its servers are registered in ~/.codex/config.toml via `codex mcp
+        add`, which this bot does not manage, so the tools in
+        mcp_servers.json are unreachable on a Codex turn.
+        """
+        return False
 
     async def health_check(self) -> tuple[bool, str]:
         """Run `codex --version` and detect dyld / GLIBC load failures.

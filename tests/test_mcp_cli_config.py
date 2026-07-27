@@ -19,6 +19,7 @@ import stat
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,8 +29,14 @@ if str(ROOT) not in sys.path:
 
 os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
+import bot as botmod  # noqa: E402
 from core import mcp_client  # noqa: E402
-from core.llm import ClaudeCLIProvider, CodexCLIProvider, FreeCCProvider  # noqa: E402
+from core.llm import (  # noqa: E402
+    ClaudeCLIProvider,
+    CodexCLIProvider,
+    FreeCCProvider,
+    LLMProvider,
+)
 
 SERVERS_SHAPE = {
     "servers": [
@@ -206,6 +213,68 @@ class CliProviderArgvTests(unittest.IsolatedAsyncioTestCase):
             await self._run(ClaudeCLIProvider("claude-sonnet-5"))
         self.assertIn("-p", self.captured)
         self.assertNotIn("--mcp-config", self.captured)
+
+
+class _FakeAPIProvider(LLMProvider):
+    """An API provider, which reaches MCP through core.tools rather than argv."""
+
+    async def complete(self, system_prompt, messages, max_tokens=8192, temperature=0.7):
+        raise NotImplementedError
+
+    @property
+    def provider_name(self) -> str:
+        return "fake-api"
+
+
+class PromptOffersOnlyReachableToolsTests(unittest.TestCase):
+    """The prompt must not advertise MCP tools the turn has no route to.
+
+    Same failure mode as the one this wiring fixed, mirrored: before, the CLI
+    providers were handed the tool list with no way to call it; the fix must
+    not now hand that list to Codex, whose `codex exec` takes no MCP flag.
+    """
+
+    TOOL = mcp_client.MCPTool(
+        name="cbm__search",
+        original_name="search",
+        description="search the indexed codebase",
+        input_schema={},
+        server_name="codebase-memory",
+    )
+
+    def setUp(self):
+        manager = unittest.mock.Mock()
+        manager.get_tools.return_value = [self.TOOL]
+        self._mcp = patch.object(mcp_client, "get_mcp_manager", return_value=manager)
+        self._mcp.start()
+        self.addCleanup(self._mcp.stop)
+
+    def _prompt(self, provider) -> str:
+        with patch.object(botmod, "_llm_provider", provider):
+            return botmod.build_system_prompt(user_id=1)
+
+    def test_claude_cli_is_offered_the_tools(self):
+        prompt = self._prompt(ClaudeCLIProvider("claude-sonnet-5"))
+        self.assertIn("cbm__search", prompt)
+        self.assertIn("Call MCP tools just like built-in tools", prompt)
+
+    def test_api_provider_is_offered_the_tools(self):
+        prompt = self._prompt(_FakeAPIProvider("some-model"))
+        self.assertIn("cbm__search", prompt)
+        self.assertIn("Call MCP tools just like built-in tools", prompt)
+
+    def test_codex_is_offered_nothing_it_cannot_call(self):
+        prompt = self._prompt(CodexCLIProvider("gpt-5.5"))
+        self.assertNotIn("cbm__search", prompt)
+        self.assertNotIn("MCP Server Tools", prompt)
+        self.assertNotIn("Call MCP tools just like built-in tools", prompt)
+
+    def test_capability_matches_the_argv_wiring(self):
+        """supports_mcp is the single source of truth for both halves."""
+        self.assertTrue(ClaudeCLIProvider("claude-sonnet-5").supports_mcp)
+        self.assertTrue(FreeCCProvider("claude-sonnet-5").supports_mcp)
+        self.assertTrue(_FakeAPIProvider("some-model").supports_mcp)
+        self.assertFalse(CodexCLIProvider("gpt-5.5").supports_mcp)
 
 
 if __name__ == "__main__":
