@@ -97,9 +97,18 @@ class _TokenRedactFilter(logging.Filter):
         return True
 
 _log_handlers = [
-    RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10*1024*1024, backupCount=3),
     logging.StreamHandler(),
 ]
+# A test run must not write to the production log. Logging is configured once
+# per process, so a single test module that imports bot without this guard
+# routes every LATER module's synthetic failures into the real bot.log, where
+# the digest health report then counts them as production errors. Test modules
+# set MOM_TEST=1 before importing bot; tests/test_log_isolation.py fails if a
+# new module forgets.
+if not os.environ.get("MOM_TEST"):
+    _log_handlers.insert(
+        0, RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10*1024*1024, backupCount=3)
+    )
 for _h in _log_handlers:
     _h.addFilter(_TokenRedactFilter())
 
