@@ -19,6 +19,53 @@ Match the engine to the job:
 
 If no high-quality voice is configured on the machine, use the built-in engines below.
 
+## Render cost: measure it before you promise a long read
+
+A local neural or voice-clone engine is not instant, and its cost is not a constant. It
+is roughly a fixed model load per invocation plus a per-character rate:
+
+```
+seconds ≈ load + rate × characters
+```
+
+On one Linux box (GTX 970, Chatterbox) that came out at 29s load and 0.116s per
+character in English, so a 2000 character reply is a 260 second job. Your machine will
+differ by a lot. Measure it, do not assume it.
+
+**The failure this prevents, seen in production.** A text cap of 2000 characters and a
+kill timeout of 120 seconds, each set sensibly on its own and never checked against the
+other. Every reply over roughly 780 characters was then guaranteed to burn two minutes
+of GPU and deliver nothing at all. The two numbers must be derived from one measurement,
+not chosen independently:
+
+- Measure the rate on this machine, once, and write it down where the code can read it.
+- Derive the character cap from the wait you are willing to accept, not the other way
+  round.
+- Scale the timeout with the actual text length. A flat timeout is both too short for a
+  long render and far too long for a short one that has wedged.
+- **Measure per language.** The same engine can be materially slower in another
+  language: on that box Greek cost 34% more per character than English. Where the
+  language is unknown, assume the slowest measured rate rather than the fastest.
+- **Truncate per engine, not once up front.** If the text is cut to a cloud engine's
+  generous cap and the cloud call then fails, the local fallback inherits text it can
+  never finish, so the fallback is itself a guaranteed timeout.
+
+```bash
+# Measure the two numbers on this machine: run the real engine at two lengths.
+for n in 100 800; do
+  python3 -c "print('a b c ' * $n)" > /tmp/tts_bench.txt
+  /usr/bin/time -f "$n chars: %e s" <your-render-command> /tmp/tts_bench.txt
+done
+# rate = (t_long - t_short) / (chars_long - chars_short);  load = t_short - rate*chars_short
+```
+
+A cloud engine inverts the trade: latency is a few seconds regardless of length, but
+there is a quota. If one is configured, the sane shape is cloud as the default and the
+local engine as the fallback, so an exhausted quota degrades to a slower voice instead
+of silence. Keep the default and the fallback as two separate settings; if the fallback
+simply reads "whatever the default is", a cloud outage retries the cloud and the user
+gets nothing.
+
 ## Tools
 
 - **espeak-ng** — Fast, lightweight TTS (cross-platform, installed by default)
