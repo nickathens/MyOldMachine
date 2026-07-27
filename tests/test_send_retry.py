@@ -13,12 +13,15 @@ retried in vain).
 """
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
 import bot as botmod  # noqa: E402
 from bot import send_chunks_with_retry, split_message  # noqa: E402

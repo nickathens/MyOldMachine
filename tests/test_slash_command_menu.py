@@ -21,6 +21,7 @@ up at runtime until a user notices:
 from __future__ import annotations
 
 import re
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -28,6 +29,8 @@ from unittest.mock import AsyncMock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
 import bot as botmod  # noqa: E402
 from bot import SLASH_COMMAND_MENU, publish_slash_commands  # noqa: E402

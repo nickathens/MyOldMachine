@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 # Config file location
 _CONFIG_FILE = Path(__file__).parent.parent / "mcp_servers.json"
 
+# CLI-shaped copy of the same config, for the subprocess providers. Lives under
+# data/ (0700, gitignored) because it can carry the same tokens as the source.
+_CLI_CONFIG_FILE = Path(__file__).parent.parent / "data" / "mcp_cli_config.json"
+
 # MCP SDK availability flag — set at import time
 _MCP_AVAILABLE = False
 try:
@@ -258,6 +262,77 @@ def _load_config() -> list[dict]:
     except Exception as e:
         logger.error(f"Failed to load mcp_servers.json: {e}")
         return []
+
+
+def _to_cli_shape(servers: list[dict]) -> dict:
+    """Normalize loaded servers into the Claude CLI's own config shape."""
+    out: dict[str, dict] = {}
+    for cfg in servers:
+        name = cfg.get("name")
+        command = cfg.get("command")
+        if not name or not command:
+            continue
+        entry: dict[str, Any] = {"command": command, "args": list(cfg.get("args") or [])}
+        env = cfg.get("env") or {}
+        if env:
+            entry["env"] = dict(env)
+        out[name] = entry
+    return {"mcpServers": out}
+
+
+def cli_config_args() -> list[str]:
+    """CLI flags attaching the configured MCP servers to a subprocess turn.
+
+    The subprocess providers (Claude CLI, FreeCC) run their own agent loop and
+    never touch `core.tools`, so MCPManager's connections are invisible to
+    them: without these flags a server in mcp_servers.json is unreachable from
+    the bot's headline provider, even though the prompt lists its tools.
+
+    Not a pass-through of mcp_servers.json. The CLI reads only
+    `{"mcpServers": {...}}`, while this repo documents (and its example file
+    uses) `{"servers": [...]}`, so the config is normalized into a CLI-shaped
+    copy under data/. It is rewritten only when the content changes, and kept
+    at 0600 because a server's `env` block can hold a token.
+
+    `--strict-mcp-config` keeps the turn to exactly this file, so a server in
+    the operator's own user- or project-level Claude config cannot join a bot
+    turn unannounced.
+
+    Two consequences worth knowing:
+      - every server's tool schemas are sent on every turn, so a large server
+        is a standing context cost, not a per-use one;
+      - servers spawned this way inherit the CLI's environment rather than the
+        sanitized one MCPManager builds, so treat mcp_servers.json entries as
+        trusted code with access to the bot's CLI env.
+
+    Codex is deliberately not wired: `codex exec` has no MCP flag at all, its
+    servers are registered in config.toml via `codex mcp add`.
+    """
+    servers = _load_config()
+    if not servers:
+        return []
+
+    payload = _to_cli_shape(servers)
+    if not payload["mcpServers"]:
+        logger.warning("mcp_servers.json has no entry with both name and command")
+        return []
+
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    try:
+        _CLI_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        current = _CLI_CONFIG_FILE.read_text(encoding="utf-8") if _CLI_CONFIG_FILE.exists() else None
+        if current != text:
+            tmp = _CLI_CONFIG_FILE.with_suffix(".json.tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.chmod(0o600)
+            tmp.replace(_CLI_CONFIG_FILE)
+        else:
+            _CLI_CONFIG_FILE.chmod(0o600)
+    except OSError as e:
+        logger.warning(f"Could not write the CLI MCP config, running without MCP: {e}")
+        return []
+
+    return ["--mcp-config", str(_CLI_CONFIG_FILE), "--strict-mcp-config"]
 
 
 # Singleton

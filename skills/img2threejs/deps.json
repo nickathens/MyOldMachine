@@ -1,0 +1,7 @@
+{
+  "check": {
+    "python3": "python3 --version"
+  },
+  "weight": "light",
+  "install_note": "Nothing to install: pure Python 3 standard library (3.10 or newer). Vendored from img2threejs (Apache-2.0), about 2 MB of pipeline scripts and reference documents. The agent's own vision is the quality gate, so no model download either."
+}

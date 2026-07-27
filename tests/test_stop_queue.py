@@ -20,6 +20,7 @@ composer, so they cover the mechanism rather than a replica of it.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import types
 import unittest
@@ -28,6 +29,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
 import bot as botmod  # noqa: E402
 from core.llm import ClaudeCLIProvider, CodexCLIProvider, LLMResponse, Message  # noqa: E402

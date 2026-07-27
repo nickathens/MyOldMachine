@@ -11,6 +11,7 @@ commands.
 """
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -18,6 +19,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
 import bot  # noqa: E402
 

@@ -97,9 +97,18 @@ class _TokenRedactFilter(logging.Filter):
         return True
 
 _log_handlers = [
-    RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10*1024*1024, backupCount=3),
     logging.StreamHandler(),
 ]
+# A test run must not write to the production log. Logging is configured once
+# per process, so a single test module that imports bot without this guard
+# routes every LATER module's synthetic failures into the real bot.log, where
+# the digest health report then counts them as production errors. Test modules
+# set MOM_TEST=1 before importing bot; tests/test_log_isolation.py fails if a
+# new module forgets.
+if not os.environ.get("MOM_TEST"):
+    _log_handlers.insert(
+        0, RotatingFileHandler(LOG_DIR / "bot.log", maxBytes=10*1024*1024, backupCount=3)
+    )
 for _h in _log_handlers:
     _h.addFilter(_TokenRedactFilter())
 
@@ -1062,18 +1071,20 @@ def build_system_prompt(user_id: int) -> str:
             parts.append(UNTRUSTED_CONTEXT_POLICY)
         parts.append("If the user asks for something and you're missing a tool, install it.")
 
-        # MCP server tools (if any connected)
+        # MCP server tools, listed only where the turn can reach them:
+        # through core.tools for the API providers, through --mcp-config for
+        # the Claude CLI ones (core.mcp_client.cli_config_args). Codex has no
+        # route and reports supports_mcp False, and listing tools a provider
+        # cannot call is the same failure this wiring was added to fix.
         from core.mcp_client import get_mcp_manager
-        mcp = get_mcp_manager()
-        mcp_tools = mcp.get_tools()
+        mcp_tools = get_mcp_manager().get_tools() if _llm_provider.supports_mcp else []
         if mcp_tools:
             parts.append("")
             parts.append("### MCP Server Tools:")
             parts.append("These additional tools are available from connected MCP servers:")
             for t in mcp_tools:
                 parts.append(f"  - {t.name} [{t.server_name}]: {t.description}")
-            if not is_cli_provider:
-                parts.append("Call MCP tools just like built-in tools — they appear in the tool list.")
+            parts.append("Call MCP tools just like built-in tools — they appear in the tool list.")
         parts.append("")
         parts.append("### Communication Style:")
         parts.append(

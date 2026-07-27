@@ -70,8 +70,13 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-07-24] mac: stop the post-restart "CPU at 100%" false alarm
-  (touches `bot.py` first-check delay + `core/health.py`) (PR #93)
+- [2026-07-27] linux: port six changes in from the Linux production bot: test
+  log isolation (`bot.py` logging setup + 11 test modules), MCP for the
+  subprocess CLI providers (`core/mcp_client.py`, `core/llm.py`, `bot.py`
+  prompt), a TTS render-cost section, the google-workspace skill, and two
+  Apache-2.0 vendored ports (remotion shot library, img2threejs)
+
+(#93's entry removed above: merged 2026-07-26.)
 
 ## Notes between agents
 

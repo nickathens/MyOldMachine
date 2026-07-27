@@ -100,6 +100,36 @@ A fan of reward/loyalty cards that opens like a hand fan, holds the spread, then
 | `cards` | 5 cards | array of card objects (gradient, ink, big number or `icon:"gift"`, title lines, sub, optional `button`) |
 | `background` | dark teal | `[from, to]` radial background |
 
+### MetricStomp (1920x1080, 5s)
+
+One headline number owns the frame. Each digit rolls as an independent slot reel, locking left to right; on the final lock a warm bloom fires, the whole group takes a single damped recoil, the background deepens and a gold rule draws under. Nothing moves after the lock, so the punch reads as weight rather than wobble. Built from the `odometer-digit-roll` recipe with the flash borrowed from `cel-flash-stomp`.
+
+| prop | default | meaning |
+|------|---------|---------|
+| `value` | `3200` | the number, as a string; commas and other non digits pass through unrolled |
+| `label` | `RENDERS SHIPPED` | letter-spaced uppercase line above, in the accent colour |
+| `unit` | empty | suffix that fades in on the lock (`%`, `k`, `ms`) |
+| `caption` | `STUDIO / 2026` | small mono info strip at the bottom; empty string removes it |
+| `digitSize` | `300` | pixel height of the digits |
+| `accent` / `background` / `ink` | gold / near black / bone | as above |
+
+---
+
+## Shot vocabulary
+
+`references/` carries 104 motion recipes ported from video-shotcraft (Apache-2.0, see `references/NOTICE.md`), plus its aesthetic rules, pipeline, beat sync and sound design documents.
+
+The workflow is two steps. Read `references/shot-index.md` first: it is an English index of all 104 with a one line gloss each, grouped as camera, data, effects, interaction, opening, outro, rhythm, transition, typography, ui-entrance. Find the shot, then read `references/shots/<category>/<name>.md` for the real card, which carries the intent, the motion core, a parameter table with feel notes, and a known pitfalls section.
+
+The cards are written in Chinese and were kept in the original rather than machine translated, because the value is in their precision. The index is the English surface.
+
+Two things the cards are strict about, and they are right:
+
+- **Energy budgets are caps, not suggestions.** Cards repeatedly say "at most one per video" or "pick one of these two in the same film". Stacking high energy shots is how a piece turns to noise.
+- **Several shots do not work silently.** `cel-flash-stomp` and the `type-rhythm-sync` set are written for a music bed; without sound they read as a slideshow. `references/sound-design.md` and `references/music-beat-sync.md` cover that side.
+
+Only `odometer-digit-roll` is implemented so far, as `MetricStomp`. The rest is a menu to build from, not a library to call.
+
 ---
 
 ## Send the result to the user
@@ -119,6 +149,25 @@ Three steps, no build tooling beyond what is installed:
 3. Render to test: `node render.mjs --comp <Name> --out /tmp/test.mp4`, then extract a frame with ffmpeg (or use `still.mjs --comp <Name> --frame N`) and look at it before delivering.
 
 Animation rule of thumb: drive everything off `frame`. `spring({frame: frame - delay, fps})` for natural motion, `interpolate(frame, [in, out], [from, to], {extrapolateLeft:'clamp', extrapolateRight:'clamp'})` for linear ramps. Stagger elements by subtracting an increasing delay from `frame`.
+
+### Building blocks already in the engine
+
+Ported from video-shotcraft, all pure and frame deterministic. Import them rather than rewriting the same motion.
+
+| import | what it gives you |
+|---|---|
+| `./DigitRoll` | odometer digit column for monospace numerals; non digits pass through. Starts glyph `i` at `delay + i * 4`, lands 22 frames later |
+| `./FlashCut` | warm white bloom over a hard cut |
+| `./Caption` | mono info strip at the bottom of the frame, amber square lead, self fading |
+| `./PageCam` | camera move over a page image |
+| `./VerticalTicker` | infinite vertical ticker column with masked ends and perspective |
+| `./helpers/motion` | `velocityAt` (speed and heading from any pure trajectory, for smear and stretch), `lagged` (follow through as a time shifted sample), `dampedSettle` (closed form recoil tail) |
+| `./helpers/shake` | `handheld`, layered incommensurate sines that read as organic camera drift |
+| `./helpers/rand` | `mulberry32`, deterministic PRNG; seed it once so a scatter never flickers between frames |
+
+**The trap that cost a render, worth knowing before you hit it.** `FlashCut` and `Caption` call `useCurrentFrame()` and ramp from frame 0 of their own timeline. Mounting one conditionally partway through a composition does not rebase that clock, so it reads the global frame, lands past its own out point, and draws nothing at all with no error. Wrap any of these in `<Sequence from={n} durationInFrames={d} layout="none">`. `MetricStomp.tsx` does exactly this for its lock frame bloom; copy that shape.
+
+There is no TypeScript compiler in this engine. Remotion's bundler is esbuild based and strips types without checking them, so a type error is invisible until it becomes a runtime error or a silently wrong frame. The gate is rendering and looking at a frame, not a build step.
 
 ---
 

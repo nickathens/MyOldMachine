@@ -15,6 +15,7 @@ balanced-delimiter extractor that correctly skips inner f-string braces like
 """
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -22,6 +23,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
 # Providers that are first-class hosted chat APIs: each must be wired into
 # every runtime gating list. (openrouter/gemini/ollama are intentionally

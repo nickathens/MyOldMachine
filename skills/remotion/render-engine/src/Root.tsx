@@ -3,6 +3,7 @@ import { Composition } from "remotion";
 import { TitleCard, titleCardDefaults } from "./TitleCard";
 import { BarChartBuild, barChartDefaults } from "./BarChartBuild";
 import { CardFan, cardFanDefaults, cardFan3DDefaults } from "./CardFan";
+import { MetricStomp, metricStompDefaults } from "./MetricStomp";
 
 // Every composition registered here becomes a --comp <id> target for render.mjs.
 // Add a new motion graphic by writing its component file and adding a <Composition> below.
@@ -46,6 +47,15 @@ export const RemotionRoot: React.FC = () => {
         width={1920}
         height={1080}
         defaultProps={cardFan3DDefaults}
+      />
+      <Composition
+        id="MetricStomp"
+        component={MetricStomp}
+        durationInFrames={150}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={metricStompDefaults}
       />
     </>
   );
