@@ -1,0 +1,9 @@
+{
+  "npm": ["@googleworkspace/cli"],
+  "check": {
+    "gws": "gws --version"
+  },
+  "weight": "light",
+  "min_disk_gb": 1,
+  "install_note": "Installs @googleworkspace/cli (gws) globally via npm (~40 MB, Apache-2.0, Google-authored but not Google-supported). Needs a one-time Google OAuth consent before any call works, and the target APIs enabled on the Cloud project (see SKILL.md)."
+}
