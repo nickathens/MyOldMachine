@@ -852,6 +852,15 @@ class ClaudeCLIProvider(LLMProvider):
         prompt += "\nContinue the conversation naturally, responding to the latest message."
 
         from core.config import get_llm_effort
+        # Configured MCP servers, or nothing. This provider runs its own agent
+        # loop and never reaches core.tools, so a server in mcp_servers.json is
+        # unreachable from here unless it is passed on the command line.
+        try:
+            from core.mcp_client import cli_config_args
+            mcp_args = cli_config_args()
+        except Exception:
+            logger.exception("MCP config failed; running this turn without MCP")
+            mcp_args = []
         cmd = [
             self._cli_binary,
             "-p",
@@ -861,6 +870,7 @@ class ClaudeCLIProvider(LLMProvider):
             "--disallowedTools", "Task,EnterPlanMode,AskUserQuestion,Monitor,EnterWorktree,ExitWorktree,ScheduleWakeup,RemoteTrigger,PushNotification,NotebookEdit",
             "--output-format", "stream-json",
             "--verbose",
+            *mcp_args,
             "-",  # Read from stdin
         ]
 

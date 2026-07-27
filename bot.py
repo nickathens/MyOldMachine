@@ -1081,8 +1081,10 @@ def build_system_prompt(user_id: int) -> str:
             parts.append("These additional tools are available from connected MCP servers:")
             for t in mcp_tools:
                 parts.append(f"  - {t.name} [{t.server_name}]: {t.description}")
-            if not is_cli_provider:
-                parts.append("Call MCP tools just like built-in tools — they appear in the tool list.")
+            # True for the CLI providers too since they are passed
+            # --mcp-config (core.mcp_client.cli_config_args). Before that they
+            # were handed this list with no way to call anything on it.
+            parts.append("Call MCP tools just like built-in tools — they appear in the tool list.")
         parts.append("")
         parts.append("### Communication Style:")
         parts.append(
