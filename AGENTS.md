@@ -75,6 +75,10 @@ provider.
   subprocess CLI providers (`core/mcp_client.py`, `core/llm.py`, `bot.py`
   prompt), a TTS render-cost section, the google-workspace skill, and two
   Apache-2.0 vendored ports (remotion shot library, img2threejs)
+- [2026-08-02] linux: durable reply outbox so an outage cannot destroy a
+  finished answer (`utils/outbox.py`, `bot.py` send path + both message
+  handlers + `post_init`, `tests/test_outbox.py`, isolation in
+  `tests/test_send_retry.py`)
 
 (#93's entry removed above: merged 2026-07-26.)
 

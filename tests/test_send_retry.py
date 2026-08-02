@@ -17,6 +17,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -24,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
 import bot as botmod  # noqa: E402
+import core.users as users_mod  # noqa: E402
 from bot import send_chunks_with_retry, split_message  # noqa: E402
 from telegram.error import BadRequest, NetworkError, TimedOut  # noqa: E402
 
@@ -33,9 +35,22 @@ class SendRetryTests(unittest.IsolatedAsyncioTestCase):
         # Make retry backoff instant so tests do not actually sleep.
         self._orig_delay = botmod._SEND_RETRY_DELAY
         botmod._SEND_RETRY_DELAY = 0
+        # A failing send now queues the reply under the user's data dir. Both
+        # roots have to move: get_user_dir resolves through core.users, while
+        # drain_outbox scans bot.USERS_DIR. Without this the failure tests
+        # write fake replies into the real data/users/1/outbox, where the live
+        # drain would try to deliver them to Telegram user 1.
+        self._tmp = TemporaryDirectory()
+        self._orig_users_data_dir = users_mod.USERS_DATA_DIR
+        self._orig_users_dir = botmod.USERS_DIR
+        users_mod.USERS_DATA_DIR = Path(self._tmp.name)
+        botmod.USERS_DIR = Path(self._tmp.name)
 
     def tearDown(self):
         botmod._SEND_RETRY_DELAY = self._orig_delay
+        users_mod.USERS_DATA_DIR = self._orig_users_data_dir
+        botmod.USERS_DIR = self._orig_users_dir
+        self._tmp.cleanup()
 
     async def test_success_on_first_try(self):
         sent = []

@@ -2043,8 +2043,17 @@ def split_message(text: str, max_length: int = 4000) -> list[str]:
 _SEND_MAX_ATTEMPTS = 4
 _SEND_RETRY_DELAY = 3.0
 
+# How often the outbox sweep runs while the bot is up. The startup drain covers
+# a restart; this covers a Telegram endpoint that comes back on its own without
+# the bot being restarted.
+OUTBOX_SWEEP_SECONDS = 120
 
-async def send_chunks_with_retry(send_fn, text: str, user_id: int) -> None:
+# Imported beside the only code that uses it rather than at the top of the
+# file; ruff.toml ignores E402 repo-wide for exactly this pattern.
+from utils import outbox
+
+
+async def send_chunks_with_retry(send_fn, text: str, user_id: int) -> bool:
     """Send ``text`` (split into Telegram-sized chunks) via ``send_fn``, retrying
     transient network failures so a brief local-API restart does not drop the reply.
 
@@ -2054,23 +2063,49 @@ async def send_chunks_with_retry(send_fn, text: str, user_id: int) -> None:
     TimedOut subclass). BadRequest also subclasses NetworkError in PTB but is
     permanent (message too long, chat not found, ...), so it is caught first and
     never retried.
+
+    Returns True when the reply is SAFE, meaning it either landed in full or is
+    durably queued in the user's outbox for redelivery. Returns False only when
+    the reply is genuinely lost, which is the caller's cue to keep the
+    pending-message marker so the user at least learns the turn was interrupted.
+
+    Retries alone were not enough: an outage longer than the retry budget
+    outlives them and the finished answer is thrown away (utils/outbox.py has
+    the incident). So the undelivered remainder is written to disk on the FIRST
+    failed attempt, before the first backoff, which also means a process killed
+    mid retry still leaves the answer behind. The happy path writes nothing.
     """
-    for chunk in split_message(text):
+    chunks = split_message(text)
+    entry_path = None
+    delivered = 0
+
+    def _queue_remainder():
+        """Persist what is still owed, once per call. Idempotent."""
+        nonlocal entry_path
+        if entry_path is None:
+            entry_path = outbox.record(get_user_dir(user_id), user_id, chunks, delivered)
+
+    for chunk in chunks:
+        status = "failed"
         for attempt in range(_SEND_MAX_ATTEMPTS):
             try:
                 await send_fn(chunk)
+                status = "sent"
                 break
             except BadRequest as exc:
-                # Permanent failure, retrying cannot help. This clause MUST
-                # precede NetworkError because BadRequest is a subclass of it.
+                # Permanent failure, retrying cannot help, and neither can
+                # queueing it. This clause MUST precede NetworkError because
+                # BadRequest is a subclass of it.
                 logger.error(
                     "Dropping response chunk for user %s (bad request): %s",
                     user_id, exc
                 )
+                status = "dropped"
                 break
             except NetworkError as exc:
                 # Transient (TimedOut is a NetworkError subclass): the local API
-                # is likely mid-restart. Back off and retry.
+                # is likely mid-restart. Persist first, then back off and retry.
+                _queue_remainder()
                 if attempt == _SEND_MAX_ATTEMPTS - 1:
                     logger.error(
                         "Failed to send response chunk to user %s after %d attempts: %s",
@@ -2079,10 +2114,150 @@ async def send_chunks_with_retry(send_fn, text: str, user_id: int) -> None:
                     break
                 await asyncio.sleep(_SEND_RETRY_DELAY)
             except Exception as exc:
+                # Unclassified: assume it may pass later rather than assume the
+                # reply is disposable.
+                _queue_remainder()
                 logger.error(
                     "Failed to send response chunk to user %s: %s", user_id, exc
                 )
                 break
+
+        if status in ("sent", "dropped"):
+            # "dropped" advances the cursor too: a chunk Telegram refuses
+            # outright must not be re-attempted by the drain forever.
+            delivered += 1
+            if entry_path is not None:
+                outbox.update(entry_path, sent=delivered)
+            continue
+
+        # Still owed after the retries: stop here and leave the rest queued.
+        # Later chunks would arrive out of order if we carried on.
+        break
+
+    if entry_path is not None and delivered >= len(chunks):
+        outbox.clear(entry_path)
+        return True
+    return delivered >= len(chunks) or entry_path is not None
+
+
+def _delayed_reply_header(entry: dict) -> str:
+    """One line telling the user why an answer is arriving late.
+
+    Carries the date as well as the time once the answer is from another day,
+    so a reply held overnight cannot read as a fresh one.
+    """
+    try:
+        created = datetime.fromisoformat(entry["created"])
+    except (KeyError, TypeError, ValueError):
+        return "Delayed reply. Telegram was unreachable when this answer was ready, so it waited on disk."
+    if created.date() == datetime.now().date():
+        written = f"at {created.strftime('%H:%M')}"
+    else:
+        written = f"on {created.strftime('%d %b at %H:%M')}"
+    return (
+        f"Delayed reply, written {written}. Telegram was unreachable at the time, "
+        "so the answer waited on disk instead of being lost."
+    )
+
+
+async def drain_outbox(bot, users_dir: Path | None = None) -> int:
+    """Redeliver replies queued by send_chunks_with_retry.
+
+    Returns the number of entries delivered in full. Called once at startup and
+    then on a repeating sweep, so a reply survives both a bot restart and a
+    Telegram endpoint that comes back on its own.
+    """
+    base = USERS_DIR if users_dir is None else users_dir
+    completed = 0
+    # Outgoing counterpart of handle_message's auth check. An entry only ever
+    # reaches disk for a user who already passed that gate, so this is defence
+    # in depth against a hand-written or stray file addressing a stranger.
+    allowed = get_allowed_users()
+    if not allowed:
+        # An empty allowlist means the registry is unreadable or the install
+        # has not been configured yet, NOT that every queued user is a
+        # stranger. handle_message rejects everyone in that state, so nothing
+        # goes out either, but the queue is left untouched rather than retired:
+        # a missing users.json must not cost anyone a finished answer. Logged
+        # once per sweep, not once per entry, so a long outage cannot flood the
+        # log with the same line.
+        if outbox.pending(base):
+            logger.warning("Outbox drain idle: no allowed users configured, queue held")
+        return 0
+
+    for path, entry in outbox.pending(base):
+        user_id = entry["user_id"]
+
+        if user_id not in allowed:
+            outbox.retire(path, f"user {user_id} is not on the allowlist")
+            continue
+        if _get_user_lock(user_id).locked():
+            # A turn is live for this user: pushing a stale answer now would
+            # interleave it with the fresh one. The next sweep picks it up.
+            continue
+        if not entry["header_sent"] and outbox.age_seconds(entry) > outbox.MAX_AGE_SECONDS:
+            # Age only retires an answer the user was never told about. Once the
+            # "delayed reply" line has gone out we owe them the body, however
+            # late: a promise must not be cancelled by a timer. That leaves
+            # MAX_ATTEMPTS as the only bound on an announced entry.
+            outbox.retire(path, "older than the redelivery window")
+            continue
+        if entry["attempts"] >= outbox.MAX_ATTEMPTS:
+            outbox.retire(path, f"redelivery failed {entry['attempts']} times")
+            continue
+
+        sent = entry["sent"]
+        chunks = entry["chunks"]
+        try:
+            if not entry["header_sent"]:
+                await bot.send_message(chat_id=user_id, text=_delayed_reply_header(entry))
+                outbox.update(path, header_sent=True)
+            while sent < len(chunks):
+                await bot.send_message(chat_id=user_id, text=chunks[sent])
+                sent += 1
+                outbox.update(path, sent=sent)
+        except Exception as exc:
+            outbox.update(path, attempts=entry["attempts"] + 1)
+            logger.warning(
+                "Outbox redelivery for user %s still failing (attempt %d/%d): %s",
+                user_id, entry["attempts"] + 1, outbox.MAX_ATTEMPTS, exc
+            )
+            continue
+
+        outbox.clear(path)
+        # The answer landed, so the "your message was lost" notice would now
+        # contradict it. Safe to drop: this user has no turn in flight (checked
+        # above), so any marker left behind is stale.
+        clear_pending_message(user_id)
+        completed += 1
+        logger.info(
+            "Redelivered queued reply to user %s (%d chunks)",
+            user_id, len(chunks) - entry["sent"]
+        )
+
+    return completed
+
+
+# Reference to the running sweep task. asyncio only holds a weak reference to a
+# task, so without this the loop can be collected and redelivery would quietly
+# stop until the next restart.
+_outbox_sweep_task = None
+
+
+async def _outbox_sweep_loop(bot):
+    """Keep draining while the bot is up.
+
+    A reply can also be freed by the Telegram endpoint recovering on its own,
+    with no restart to trigger the startup drain. Written as a plain asyncio
+    loop to match _health_monitor_loop rather than PTB's JobQueue, which is
+    None whenever PTB was installed without its apscheduler extra.
+    """
+    while True:
+        await asyncio.sleep(OUTBOX_SWEEP_SECONDS)
+        try:
+            await drain_outbox(bot)
+        except Exception as e:
+            logger.error(f"Outbox sweep failed: {e}")
 
 
 # --- Telegram handlers ---
@@ -3521,6 +3696,10 @@ async def _process_media_group_inner(updates, user_id, context, turn=None):
     first_msg_id = updates[0].message.message_id
     save_pending_message(user_id, user_message, first_msg_id)
 
+    # Cleared below unless the reply is genuinely lost. Defaults to True so
+    # every other exit (a /stop cancellation, an error we already reported)
+    # keeps clearing the marker exactly as it did before the outbox existed.
+    reply_is_safe = True
     try:
         try:
             await chat.send_action("typing")
@@ -3535,7 +3714,7 @@ async def _process_media_group_inner(updates, user_id, context, turn=None):
 
         _save_and_send(user_id, user_message, response, session=session, message_id=first_msg_id)
 
-        await send_chunks_with_retry(chat.send_message, response, user_id)
+        reply_is_safe = await send_chunks_with_retry(chat.send_message, response, user_id)
     except Exception as e:
         logger.exception(f"Error processing media group for user {user_id}")
         try:
@@ -3543,7 +3722,11 @@ async def _process_media_group_inner(updates, user_id, context, turn=None):
         except Exception:
             pass
     finally:
-        clear_pending_message(user_id)
+        # Keeping the marker when the reply is neither delivered nor queued is
+        # the last line of defence: the user at least learns the turn was cut
+        # short instead of getting silence.
+        if reply_is_safe:
+            clear_pending_message(user_id)
 
 
 async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3749,6 +3932,10 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
     logger.info(f"From {user_id}: {user_message[:100]}...")
     save_pending_message(user_id, user_message, update.message.message_id)
 
+    # Cleared below unless the reply is genuinely lost. Defaults to True so
+    # every other exit (a /stop cancellation, an error we already reported)
+    # keeps clearing the marker exactly as it did before the outbox existed.
+    reply_is_safe = True
     try:
         try:
             await update.message.chat.send_action("typing")
@@ -3771,7 +3958,9 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
         _save_and_send(user_id, user_message, response, session=session,
                        message_id=update.message.message_id)
 
-        await send_chunks_with_retry(update.message.reply_text, response, user_id)
+        reply_is_safe = await send_chunks_with_retry(
+            update.message.reply_text, response, user_id
+        )
 
         logger.info(f"Responded to {user_id}: {len(response)} chars")
 
@@ -3817,7 +4006,11 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             pass
     finally:
-        clear_pending_message(user_id)
+        # Keeping the marker when the reply is neither delivered nor queued is
+        # the last line of defence: the user at least learns the turn was cut
+        # short instead of getting silence.
+        if reply_is_safe:
+            clear_pending_message(user_id)
 
 
 async def _health_monitor_loop(scheduler):
@@ -5026,6 +5219,18 @@ def main():
         scheduler.set_claude_handler(_locked_call_llm)
         scheduler.start()
         logger.info("Scheduler started with Claude handler")
+
+        # Redeliver finished answers a transient outage kept from landing
+        # (utils/outbox.py). Runs BEFORE recover_pending_messages: a delivered
+        # answer clears that user's marker, so the "your message was lost"
+        # notice never contradicts an answer that just arrived.
+        try:
+            redelivered = await drain_outbox(application.bot)
+            if redelivered:
+                logger.info(f"Outbox drain on startup: {redelivered} queued replies delivered")
+        except Exception as e:
+            logger.error(f"Outbox drain on startup failed: {e}")
+
         await recover_pending_messages(application.bot)
 
         # Publish the "/" slash-command menu shown in Telegram clients. Kept in
@@ -5076,6 +5281,13 @@ def main():
 
         # Start proactive health monitoring (system resources)
         asyncio.create_task(_health_monitor_loop(scheduler))
+
+        # Keep draining the reply outbox. Held in a module-level reference so
+        # the loop is not garbage collected mid-flight, which would silently
+        # leave queued answers on disk until the next restart.
+        global _outbox_sweep_task
+        _outbox_sweep_task = asyncio.create_task(_outbox_sweep_loop(application.bot))
+        logger.info(f"Outbox sweep running every {OUTBOX_SWEEP_SECONDS}s")
 
         # Start the silent-background-process watchdog. Kills any background
         # shell command that produces no output for ~5 minutes so the agent
