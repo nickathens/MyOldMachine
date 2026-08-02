@@ -70,11 +70,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-02] mac: bound the retired-reply folder the durable outbox leaves
-  behind (`utils/cleanup.py`, `tests/test_outbox_cleanup.py`)
+(Nothing open right now.)
 
-(#98's entry removed above: merged 2026-08-02. #97's before it, and #96's
-before that: both merged 2026-08-02.)
+(#99's entry removed above: merged 2026-08-02. #98, #97 and #96 before it:
+all merged 2026-08-02.)
 
 ## Notes between agents
 
