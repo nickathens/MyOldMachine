@@ -36,6 +36,30 @@ SERVICE_LOG_PATTERNS = ("*.launchd.log", "*.systemd.log")
 SERVICE_LOG_MAX_MB = 20
 SERVICE_LOG_KEEP = 5
 
+# Where utils/outbox.py parks a reply it gave up redelivering. Duplicated
+# rather than imported: bot.py's setup_maintenance_jobs runs THIS FILE as a
+# script for the nightly job, so `utils` is not an importable package at that
+# point and a top-level `from utils.outbox import ...` would take the whole
+# cleanup down with a ModuleNotFoundError. tests/test_outbox_cleanup.py pins
+# both names to outbox.py's own constants so the pair cannot drift apart.
+OUTBOX_DIRNAME = "outbox"
+OUTBOX_EXPIRED_DIRNAME = "expired"
+
+# Retired replies are kept far longer than outbox.MAX_AGE_SECONDS (24h), and
+# for the same 30 days cleanup_archived_conversations gives the conversation
+# itself: past that the exchange the reply belonged to is gone too, so there
+# is nothing left to restore it into.
+#
+# Deleting one is still deleting a finished answer, which is what
+# utils/outbox.py exists to prevent, so the loss is already on record before
+# this runs: outbox.retire() logs it at ERROR inside the bot, with logging
+# configured, the moment the drain gives up. The per-file line below only
+# echoes that on the in-process path (/cleanup, /maintenance run cleanup).
+# The nightly job runs this file as a script, where nothing configures
+# logging and the scheduler discards a successful job's output, so there the
+# count in the report is what there is.
+OUTBOX_EXPIRED_MAX_AGE_DAYS = 30
+
 
 def _is_service_log(path: Path) -> bool:
     """True if `path` is a supervisor-owned stdout/stderr log."""
@@ -204,6 +228,59 @@ def cleanup_archived_conversations(max_age_days: int = 30) -> int:
     return removed
 
 
+def cleanup_expired_outbox(max_age_days: int = OUTBOX_EXPIRED_MAX_AGE_DAYS) -> int:
+    """Prune replies utils/outbox.py retired, once they are past the window.
+
+    outbox.retire() MOVES a reply it has given up on into outbox/expired/
+    instead of unlinking it, on purpose. Nothing then emptied that folder, so
+    it grew for the life of the install. This is the bound on it.
+
+    Deliberately narrow: it touches only outbox/expired/ and stale write
+    leftovers, never a live queued reply in outbox/. Those belong to
+    bot.drain_outbox, and ageing them out from here would race a redelivery in
+    flight and destroy the finished answer the whole subsystem exists to save.
+    """
+    if not USERS_DIR.exists():
+        return 0
+
+    now = time.time()
+    max_age_seconds = max_age_days * 86400
+    removed = 0
+
+    for user_dir in USERS_DIR.iterdir():
+        if not user_dir.is_dir():
+            continue
+        outbox_dir = user_dir / OUTBOX_DIRNAME
+        if not outbox_dir.is_dir():
+            continue
+        expired_dir = outbox_dir / OUTBOX_EXPIRED_DIRNAME
+
+        # Note the suffixes. Retired entries are *.json inside expired/ only;
+        # a live *.json in outbox/ is never a target however old it is.
+        targets = list(expired_dir.glob("*.json"))
+        # Half-written entries from a process killed between save_json's temp
+        # write and its rename. Nothing ever reads a .json.tmp, because every
+        # reader globs *.json, so they would otherwise sit there for good.
+        targets += list(outbox_dir.glob("*.json.tmp"))
+        targets += list(expired_dir.glob("*.json.tmp"))
+
+        for f in targets:
+            if not f.is_file():
+                continue
+            try:
+                if (now - f.stat().st_mtime) > max_age_seconds:
+                    f.unlink()
+                    removed += 1
+                    logger.info(
+                        f"Pruned undelivered reply {f.name} "
+                        f"(retired, unread for over {max_age_days} days)"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to remove {f}: {e}")
+
+    return removed
+
+
 def run_cleanup(max_age_days: int = DEFAULT_MAX_AGE_DAYS, dry_run: bool = False) -> str:
     """Run full cleanup and return summary."""
     lines = [f"Cleanup report ({datetime.now():%Y-%m-%d %H:%M})"]
@@ -219,12 +296,17 @@ def run_cleanup(max_age_days: int = DEFAULT_MAX_AGE_DAYS, dry_run: bool = False)
     logs = cleanup_logs()
     temp = cleanup_temp()
     archives = cleanup_archived_conversations()
+    retired_replies = cleanup_expired_outbox()
 
     lines.append(f"  Attachments removed: {attachments} (>{max_age_days} days)")
     lines.append(f"  Service logs rotated: {service_logs}")
     lines.append(f"  Logs truncated: {logs}")
     lines.append(f"  Temp files removed: {temp}")
     lines.append(f"  Archived conversations removed: {archives}")
+    lines.append(
+        f"  Retired undelivered replies removed: {retired_replies} "
+        f"(>{OUTBOX_EXPIRED_MAX_AGE_DAYS} days)"
+    )
 
     return "\n".join(lines)
 

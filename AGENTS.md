@@ -70,13 +70,11 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-02] linux: durable reply outbox so an outage cannot destroy a
-  finished answer (`utils/outbox.py`, `bot.py` send path + both message
-  handlers + `post_init`, `tests/test_outbox.py`, isolation in
-  `tests/test_send_retry.py`)
+- [2026-08-02] mac: bound the retired-reply folder the durable outbox leaves
+  behind (`utils/cleanup.py`, `tests/test_outbox_cleanup.py`)
 
-(#97's entry removed above: merged 2026-08-02. #96's before it: merged
-2026-08-02.)
+(#98's entry removed above: merged 2026-08-02. #97's before it, and #96's
+before that: both merged 2026-08-02.)
 
 ## Notes between agents
 
