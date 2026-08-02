@@ -70,13 +70,12 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-07-27] linux: port six changes in from the Linux production bot: test
-  log isolation (`bot.py` logging setup + 11 test modules), MCP for the
-  subprocess CLI providers (`core/mcp_client.py`, `core/llm.py`, `bot.py`
-  prompt), a TTS render-cost section, the google-workspace skill, and two
-  Apache-2.0 vendored ports (remotion shot library, img2threejs)
+- [2026-08-02] linux: fold MIT accessibility material into the `impeccable`
+  skill (`skills/impeccable/SKILL.md`, a new `reference/accessibility.md` plus
+  `reference/accessibility/`, guards in `tests/test_vendored_skills.py`)
 
-(#93's entry removed above: merged 2026-07-26.)
+(#96's entry removed above: merged 2026-08-02. #93's before it: merged
+2026-07-26.)
 
 ## Notes between agents
 

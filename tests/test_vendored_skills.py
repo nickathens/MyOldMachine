@@ -296,5 +296,163 @@ class RemotionShotcraftPortTests(unittest.TestCase):
         self.assertIn("<Sequence", stomp, "MetricStomp lost its Sequence wrapper")
 
 
+IMPECCABLE = SKILLS / "impeccable"
+ACCESSIBILITY = IMPECCABLE / "reference" / "accessibility"
+# The five files taken byte for byte from upstream, plus the one with a single
+# edited line. NOTICE.md records which is which.
+FOLDED_VERBATIM = [
+    "focus-and-keyboard.md",
+    "semantics-and-aria.md",
+    "screen-readers.md",
+    "hit-areas.md",
+    "motion-and-zoom.md",
+]
+
+
+class ImpeccableAccessibilityFoldTests(unittest.TestCase):
+    """The impeccable skill absorbed MIT material from jakubkrehel/skills.
+
+    Like the remotion port this is a fold-in, not a whole-directory vendor, so
+    nothing about it is self-describing: the attribution lives in one NOTICE
+    file and the material is only ever reached through SKILL.md's reference
+    table. Both are one tidy-up away from disappearing.
+    """
+
+    def test_notice_exists_and_names_the_licence(self):
+        notice = ACCESSIBILITY / "NOTICE.md"
+        self.assertTrue(notice.is_file(), "reference/accessibility/NOTICE.md is missing")
+        text = notice.read_text(errors="replace")
+        for token in ("jakubkrehel", "MIT", "a673333", "Jakub Krehel"):
+            self.assertIn(token, text, f"NOTICE.md lost {token!r}")
+        # MIT is only satisfied if the permission notice itself travels.
+        self.assertIn("Permission is hereby granted", text)
+        self.assertIn("WITHOUT WARRANTY OF ANY KIND", text)
+
+    def test_skill_md_keeps_the_attribution(self):
+        text = (IMPECCABLE / "SKILL.md").read_text(errors="replace")
+        self.assertIn("jakubkrehel/skills", text, "SKILL.md lost the attribution link")
+        self.assertIn("MIT", text, "SKILL.md lost the licence name")
+
+    def test_every_folded_file_is_present(self):
+        for name in FOLDED_VERBATIM + ["forms.md"]:
+            with self.subTest(file=name):
+                self.assertTrue(
+                    (ACCESSIBILITY / name).is_file(),
+                    f"reference/accessibility/{name} is missing",
+                )
+        self.assertTrue(
+            (IMPECCABLE / "reference" / "accessibility.md").is_file(),
+            "reference/accessibility.md, the entry document, is missing",
+        )
+
+    def test_entry_doc_is_reachable_from_skill_md(self):
+        """This skill ships no scripts, so SKILL.md's table is the only way in.
+
+        An unlisted reference doc is never read: the loader only injects the
+        skill's one-line description, and the table is what says which file to
+        open next. Orphaning it costs the whole fold-in with no error anywhere.
+        """
+        text = (IMPECCABLE / "SKILL.md").read_text(errors="replace")
+        self.assertIn(
+            "reference/accessibility.md",
+            text,
+            "SKILL.md no longer points at the accessibility reference doc",
+        )
+
+    def test_no_sibling_skill_pointers_survive(self):
+        """Upstream is seven skills that cross-reference each other by name.
+
+        Only the accessibility one was taken, so a surviving `better-colors` or
+        `better-typography` pointer sends the reader to a skill that does not
+        exist here. Re-pulling upstream reintroduces every one of them.
+        """
+        allowed = {"better-accessibility"}  # the source's own name, in NOTICE.md
+        for md in sorted((IMPECCABLE / "reference").rglob("*.md")):
+            text = md.read_text(errors="replace")
+            if md.name == "NOTICE.md":
+                # The notice lists what was left behind by name, on purpose.
+                continue
+            for found in set(re.findall(r"better-[a-z]+", text)) - allowed:
+                with self.subTest(file=md.name, pointer=found):
+                    self.fail(
+                        f"{md.relative_to(IMPECCABLE)} points at `{found}`, a skill "
+                        "that does not exist here"
+                    )
+
+    def test_entry_doc_has_no_yaml_frontmatter(self):
+        """Upstream ships a `---` block; a re-pull would put it back."""
+        first = (
+            (IMPECCABLE / "reference" / "accessibility.md")
+            .read_text(errors="replace")
+            .lstrip()
+            .splitlines()[0]
+        )
+        self.assertTrue(
+            first.startswith("# "),
+            f"accessibility.md must open with a markdown title, got {first!r}",
+        )
+
+    def test_every_internal_doc_reference_resolves(self):
+        """A backticked or linked `.md` path that is not there is a dead end.
+
+        Nothing reads these files but the model, so a broken pointer produces
+        no error: it produces a confident answer built on a document that was
+        never opened. Three such paths existed in the first draft of NOTICE.md,
+        which is why this guard is here.
+        """
+        checked = 0
+        for md in sorted(IMPECCABLE.rglob("*.md")):
+            text = md.read_text(errors="replace")
+            targets = [
+                t
+                for t in re.findall(r"\[[^\]]*\]\(([^)]+)\)", text)
+                if not t.startswith(("http://", "https://", "#", "mailto:"))
+            ]
+            targets += re.findall(r"`((?:\.\./)*[a-z0-9/-]+\.md)`", text)
+            for target in targets:
+                checked += 1
+                with self.subTest(file=md.name, target=target):
+                    self.assertTrue(
+                        (md.parent / target).resolve().is_file(),
+                        f"{md.relative_to(IMPECCABLE)} points at {target}, "
+                        "which does not exist",
+                    )
+        self.assertGreater(checked, 20, "the reference cross-links look truncated")
+
+    def test_the_reconciliation_section_still_stands(self):
+        """interaction-design.md predates this material and is looser in three
+        places (focus rings, validation timing, hit-area thresholds). The
+        entry doc names all three and says which wins. Without it the skill
+        holds two contradictory answers and neither is marked authoritative.
+        """
+        text = (IMPECCABLE / "reference" / "accessibility.md").read_text(
+            errors="replace"
+        )
+        self.assertIn("interaction-design.md", text)
+        for topic in ("Focus rings", "Validation timing", "Hit areas"):
+            self.assertIn(topic, text, f"the reconciliation lost {topic!r}")
+
+    def test_no_donor_machine_paths_ride_along(self):
+        """MOM ships to strangers, and this skill exists on the donor box too.
+
+        The donor's copy of SKILL.md points at `~/claude-telegram-bot/skills/
+        impeccable/reference/`, an absolute path into a private repo. A future
+        re-sync that copies the file wholesale instead of patching the
+        changeset would ship that path to every stranger who installs MOM.
+        impeccable is deliberately not in PORTED_SKILLS above, because that
+        list also demands a deps.json and this skill is pure markdown with no
+        dependencies, so the guard is repeated here at the right scope.
+        """
+        for md in sorted(IMPECCABLE.rglob("*.md")):
+            text = md.read_text(errors="replace").lower()
+            for marker in DONOR_MARKERS:
+                with self.subTest(file=md.name, marker=marker):
+                    self.assertNotIn(
+                        marker,
+                        text,
+                        f"{md.relative_to(REPO)} names the donor machine",
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()
