@@ -4,6 +4,8 @@ Production-grade frontend design knowledge. Use when building web components, pa
 
 Based on [Impeccable](https://github.com/pbakaus/impeccable) (Apache 2.0, built on Anthropic's frontend-design skill).
 
+The accessibility material is folded in from [better-accessibility](https://github.com/jakubkrehel/skills) (MIT, commit `a673333`). Attribution and licence text: `reference/accessibility/NOTICE.md`.
+
 **When to use:** Any time you're building or modifying HTML/CSS/JS -- websites, landing pages, web apps, email templates, UI components.
 
 **Before using:** Read the relevant reference docs in `skills/impeccable/reference/` for the specific design domain you're working on.
@@ -16,6 +18,7 @@ Read these for deep guidance on specific design domains:
 
 | Document | When to read |
 |----------|-------------|
+| `reference/accessibility.md` | Focus and keyboard, ARIA, forms, screen readers, hit areas, reduced motion, zoom. The floor: where it disagrees with the docs below, it wins |
 | `reference/typography.md` | Font selection, pairing, scales, fluid type, web font loading |
 | `reference/color-and-contrast.md` | OKLCH, palettes, dark mode, tinted neutrals, WCAG contrast |
 | `reference/spatial-design.md` | Spacing systems, grids, visual hierarchy, container queries |
@@ -83,6 +86,16 @@ Choose a clear conceptual direction and execute with precision. Bold maximalism 
 - Design empty states that teach the interface.
 - **DON'T**: Repeat the same information -- redundant headers, intros that restate the heading.
 - **DON'T**: Make every button primary -- hierarchy matters.
+
+### Accessibility
+- Native elements first: `<button>` for actions, `<a href>` for navigation. No ARIA beats bad ARIA.
+- Style `:focus-visible` and prefer the browser's own ring. Every pointer interaction needs a keyboard path.
+- Every control carries a programmatic label and an accessible name. Icon-only buttons get `aria-label`.
+- **DON'T**: `outline: none` without a verified visible replacement.
+- **DON'T**: `<div onClick>` where a button or a link belongs.
+- **DON'T**: Placeholder as the only label, or color as the only status cue.
+- **DON'T**: Positive `tabindex`, or `aria-hidden="true"` on anything focusable.
+- **DON'T**: Block zoom with `user-scalable=no` or `maximum-scale=1`.
 
 ### Responsive
 - Use container queries (@container) for component-level responsiveness.
