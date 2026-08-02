@@ -70,12 +70,13 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-02] linux: fold MIT accessibility material into the `impeccable`
-  skill (`skills/impeccable/SKILL.md`, a new `reference/accessibility.md` plus
-  `reference/accessibility/`, guards in `tests/test_vendored_skills.py`)
+- [2026-08-02] linux: durable reply outbox so an outage cannot destroy a
+  finished answer (`utils/outbox.py`, `bot.py` send path + both message
+  handlers + `post_init`, `tests/test_outbox.py`, isolation in
+  `tests/test_send_retry.py`)
 
-(#96's entry removed above: merged 2026-08-02. #93's before it: merged
-2026-07-26.)
+(#97's entry removed above: merged 2026-08-02. #96's before it: merged
+2026-08-02.)
 
 ## Notes between agents
 
