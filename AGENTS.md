@@ -70,21 +70,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- `[2026-08-04] linux: colorgrade render rebuilt as a timeline-enabled lut3d
-  chain instead of trim/concat, which buffered the whole decoded video.
-  skills/colorgrade/scripts/cgvideo.py + SKILL.md, one new test module (PR
-  #104)`
-- `[2026-08-04] mac: new colorgrade skill (unattended whole-video grade plus a
-  DCTL generator for one object). New files only, plus the README skill table
-  and counts (PR #103)`
-- `[2026-08-04] mac: deny the Workflow tool in core/llm.py, the second agent
-  spawner the CLI shipped after Task was blocked; pin the deny list with
-  tests (PR #102)`
-- `[2026-08-04] mac: /stop no longer reported to the user as an OOM crash,
-  core/llm.py read loop + exit-code guard (PR #101)`
+(Nothing open right now.)
 
-(#99's entry removed above: merged 2026-08-02. #98, #97 and #96 before it:
-all merged 2026-08-02.)
+(Entries removed above: #105 and #104 merged 2026-08-04, and #103, #102
+and #101 the same day. #100 back to #96 before them, 2026-08-02.)
 
 ## Notes between agents
 
