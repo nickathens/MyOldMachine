@@ -110,6 +110,60 @@ class SecretFileReadTests(unittest.TestCase):
         self.assertIn("credential", reason.lower())
 
 
+class ReadFileSecretTests(unittest.TestCase):
+    """H5b -- the read_file tool must refuse the same credential files the
+    shell tool does. Without this, an indirect prompt injection that cannot
+    run `cat .env` (blocked) simply calls read_file('.env') instead and
+    exfiltrates the bot token and every provider key.
+    """
+
+    SECRET_NAMES = [
+        ".env", ".sudo_pass", "mcp_servers.json",
+        "google_credentials.json", "google_token.json", "gmail_token.json",
+    ]
+    # Look-alikes that are NOT the secret and must stay readable.
+    INNOCENT_NAMES = [".env.example", ".environment", "app.env", "notes.json"]
+
+    def test_secret_basenames_are_blocked(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in self.SECRET_NAMES:
+                p = Path(d) / name
+                p.write_text("SECRET=leak\n", encoding="utf-8")
+                with self.subTest(name=name):
+                    out = tools._read_file(str(p))
+                    self.assertIn("Blocked", out, f"{name} was not blocked")
+                    self.assertNotIn("leak", out, f"{name} leaked its contents")
+
+    def test_block_fires_before_existence_check(self):
+        # A non-existent .env must still be refused, not reported as missing:
+        # the refusal must not double as an oracle for which secrets exist.
+        out = tools._read_file("/no/such/dir/.env")
+        self.assertIn("Blocked", out)
+
+    def test_innocent_lookalikes_are_readable(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in self.INNOCENT_NAMES:
+                p = Path(d) / name
+                p.write_text("hello world\n", encoding="utf-8")
+                with self.subTest(name=name):
+                    out = tools._read_file(str(p))
+                    self.assertIn("hello world", out, f"{name} was wrongly blocked")
+
+    def test_symlink_to_secret_is_blocked(self):
+        # A symlink whose target basename is a secret must be caught too.
+        with tempfile.TemporaryDirectory() as d:
+            real = Path(d) / ".env"
+            real.write_text("TOKEN=leak\n", encoding="utf-8")
+            link = Path(d) / "harmless.txt"
+            try:
+                link.symlink_to(real)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable on this platform")
+            out = tools._read_file(str(link))
+            self.assertIn("Blocked", out)
+            self.assertNotIn("leak", out)
+
+
 class EnvStripTests(unittest.TestCase):
     """Medium -- subprocess env strip must catch common secret names."""
 

@@ -915,6 +915,37 @@ def _check_secret_file_read(command: str) -> str | None:
     return None
 
 
+def _is_secret_file_read(path: str) -> str | None:
+    """Block reads of credential files through the read_file tool.
+
+    The shell tool already blocks `cat .env`, `cp ~/.sudo_pass ...` and the like
+    via _check_secret_file_read. read_file reached the same files unguarded, so
+    the exfiltration path that check exists to close (an indirect prompt
+    injection pointing the tool at .env to leak the bot token and every provider
+    key) stayed open through the other tool. Same scope, same threat model,
+    same hardening -- not a containment boundary; the real protection is the
+    files' 0600 perms (see _check_secret_file_read).
+
+    Matches on basename so `.env.example` and `.environment` stay readable, and
+    resolves the path first so a symlink whose target is a secret is caught too.
+    """
+    try:
+        expanded = Path(path).expanduser()
+    except (ValueError, OSError):
+        return None
+    names = {expanded.name}
+    try:
+        names.add(expanded.resolve().name)
+    except (OSError, RuntimeError):
+        pass
+    if names & set(_SECRET_FILE_BASENAMES):
+        return (
+            "Blocked: reading credential files (.env, .sudo_pass, OAuth tokens, "
+            "mcp_servers.json) is not permitted through the tool layer."
+        )
+    return None
+
+
 def _is_write_blocked(path: str) -> str | None:
     """Return a reason string if writing to this path is blocked, else None.
 
@@ -1831,6 +1862,10 @@ def _read_file(path: str) -> str:
     """Read a file's contents."""
     if not path:
         return "Error: No path specified"
+
+    secret_block = _is_secret_file_read(path)
+    if secret_block:
+        return secret_block
 
     p = Path(path).expanduser()
     if not p.exists():
