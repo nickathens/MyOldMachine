@@ -15,6 +15,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -31,6 +32,21 @@ def _make_completed(rc: int, stdout: str = "", stderr: str = ""):
     cp.stdout = stdout
     cp.stderr = stderr
     return cp
+
+
+def _neutralise_app_check(case: unittest.TestCase) -> None:
+    """Stop run_system_update reaching the real out-of-band app check.
+
+    That check talks to Blackmagic's download feed, the Claude release channel
+    and `npm outdated -g`, and with auto-update on it can install things. No
+    test may do any of that as a side effect, so it is stubbed for every test
+    that calls run_system_update; the tests that exercise it patch it again
+    with the result they want.
+    """
+    p = patch.object(su, "_maybe_run_app_update_check",
+                     return_value=su.AppCheckResult())
+    p.start()
+    case.addCleanup(p.stop)
 
 
 class RunCmdSudoOverrideTests(unittest.TestCase):
@@ -269,6 +285,98 @@ class RunSystemUpdateOrchestrationTests(unittest.TestCase):
             p = patch.object(su, attr, Path(self.tmp.name) / name)
             p.start()
             self.addCleanup(p.stop)
+        _neutralise_app_check(self)
+
+    @patch("utils.system_update._maybe_run_app_update_check")
+    @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
+    @patch("utils.system_update._run_pkg_manager_update",
+           return_value=su.PkgUpdateResult("", False))
+    def test_app_check_runs_on_a_quiet_package_night(self, _pkg, _sw, app):
+        # The whole point of the out-of-band check is that these apps are
+        # invisible to brew/apt, so a night with no package updates says
+        # nothing at all about them. It must still run.
+        app.return_value = su.AppCheckResult()
+        su.run_system_update(notify_fn=self.notify)
+        app.assert_called_once()
+
+    @patch("utils.system_update._maybe_run_app_update_check")
+    @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
+    @patch("utils.system_update._run_pkg_manager_update")
+    def test_app_check_skipped_after_a_package_error(self, pkg, _sw, app):
+        pkg.return_value = su.PkgUpdateResult("System update: upgrade failed (apt)", True)
+        su.run_system_update(notify_fn=self.notify)
+        app.assert_not_called()
+
+    @patch("utils.system_update._maybe_run_app_update_check")
+    @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
+    @patch("utils.system_update._run_pkg_manager_update",
+           return_value=su.PkgUpdateResult("", False))
+    def test_installed_app_update_notifies(self, _pkg, _sw, app):
+        app.return_value = su.AppCheckResult(
+            summary="App updates installed: lighthouse 13.4.1.", news=True
+        )
+        result = su.run_system_update(notify_fn=self.notify)
+        self.assertIn("lighthouse 13.4.1", result)
+        self.assertEqual(self.notified, [result])
+
+    @patch("utils.system_update._maybe_run_app_update_check")
+    @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
+    @patch("utils.system_update._run_pkg_manager_update",
+           return_value=su.PkgUpdateResult("", False))
+    def test_waiting_app_reminds_once_then_goes_quiet(self, _pkg, _sw, app):
+        # Resolve can sit a version behind for weeks behind a registration
+        # form. Say it once, then hold off, or the digest gets muted.
+        app.return_value = su.AppCheckResult(
+            summary="1 app update(s) waiting on you: DaVinci Resolve 21.0.2 to 21.0.3.",
+            waiting=("DaVinci Resolve",),
+        )
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 1)
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 1)
+
+    @patch("utils.system_update._maybe_run_app_update_check")
+    @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
+    @patch("utils.system_update._run_pkg_manager_update")
+    def test_cask_and_app_waiting_lists_throttle_separately(self, pkg, _sw, app):
+        # A new cask appearing must not restart the clock on an app that has
+        # been waiting for weeks, and vice versa: they are found by different
+        # checks and move on different schedules.
+        pkg.return_value = su.PkgUpdateResult("pending: libreoffice", False, ("libreoffice",))
+        app.return_value = su.AppCheckResult(
+            summary="waiting: DaVinci Resolve", waiting=("DaVinci Resolve",)
+        )
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 1)
+        # Nothing changed on either side: stay quiet.
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 1)
+        # A new out-of-band app appears — news, even though the casks are the same.
+        app.return_value = su.AppCheckResult(
+            summary="waiting: DaVinci Resolve, surge",
+            waiting=("DaVinci Resolve", "surge"),
+        )
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 2)
+
+    @patch("utils.system_update._maybe_run_app_update_check")
+    @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
+    @patch("utils.system_update._run_pkg_manager_update")
+    def test_legacy_cask_state_still_throttles(self, pkg, _sw, app):
+        # State written before the per-list keys existed: a bare "apps" list
+        # with "last_notified" beside it. Reading it must not re-nag from
+        # scratch on the first night after an upgrade.
+        su.PENDING_APPS_STATE.write_text(
+            json.dumps({
+                "apps": ["libreoffice"],
+                "last_notified": datetime.now().strftime("%Y-%m-%d"),
+            }),
+            encoding="utf-8",
+        )
+        pkg.return_value = su.PkgUpdateResult("pending: libreoffice", False, ("libreoffice",))
+        app.return_value = su.AppCheckResult()
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(self.notified, [])
 
     @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
     @patch("utils.system_update._run_pkg_manager_update")
@@ -420,6 +528,7 @@ class QuietNightIntegrationTests(unittest.TestCase):
             p = patch.object(su, attr, target)
             p.start()
             self.addCleanup(p.stop)
+        _neutralise_app_check(self)
 
     def _shell(self, cmd, **kwargs):
         if "brew outdated --cask --quiet" in cmd:

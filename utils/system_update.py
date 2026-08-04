@@ -24,6 +24,14 @@ BOT_DIR = Path(__file__).parent.parent
 DATA_DIR = BOT_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
 
+# The nightly job runs this file directly (bot.py schedules
+# `python utils/system_update.py`), which puts utils/ on sys.path rather than
+# the repo root, so intra-repo imports need the root added first.
+if str(BOT_DIR) not in sys.path:
+    sys.path.insert(0, str(BOT_DIR))
+
+from utils.app_updates import AppCheckResult, run_app_update_check  # noqa: E402
+
 # Remembers which app updates the user has already been told about, so the
 # nightly reminder repeats weekly instead of every single night.
 PENDING_APPS_STATE = DATA_DIR / "pending_app_updates.json"
@@ -257,22 +265,30 @@ def _load_pending_state() -> dict:
         return {}
 
 
-def _record_pending_notice(casks: tuple[str, ...]) -> None:
-    """Remember that the user has just been told about exactly these apps."""
+def _record_pending_notice(casks: tuple[str, ...], key: str = "apps") -> None:
+    """Remember that the user has just been told about exactly these apps.
+
+    key namespaces one waiting-list from another inside the same state file.
+    Casks and out-of-band apps (Resolve, CLIs) are found by different checks
+    and move on different clocks, so sharing one timestamp would let a new
+    cask silently reset the reminder for a Resolve that has been waiting weeks.
+    """
     try:
+        state = _load_pending_state()
+        state[key] = list(casks)
+        state[f"{key}_last_notified"] = datetime.now().strftime("%Y-%m-%d")
+        # Legacy shape: the cask list used to sit under "apps" with a bare
+        # "last_notified" beside it. Keep writing that so a downgrade of this
+        # file still reads its own state instead of re-nagging from scratch.
+        if key == "apps":
+            state["last_notified"] = state[f"{key}_last_notified"]
         PENDING_APPS_STATE.parent.mkdir(parents=True, exist_ok=True)
-        PENDING_APPS_STATE.write_text(
-            json.dumps({
-                "apps": list(casks),
-                "last_notified": datetime.now().strftime("%Y-%m-%d"),
-            }),
-            encoding="utf-8",
-        )
+        PENDING_APPS_STATE.write_text(json.dumps(state), encoding="utf-8")
     except Exception as e:
         logger.warning(f"pending-apps state not saved: {e}")
 
 
-def _should_remind_pending(casks: tuple[str, ...]) -> bool:
+def _should_remind_pending(casks: tuple[str, ...], key: str = "apps") -> bool:
     """True when a quiet night should still ping the user about waiting apps.
 
     Reminds when the set of waiting apps changed (something new appeared) or
@@ -283,9 +299,11 @@ def _should_remind_pending(casks: tuple[str, ...]) -> bool:
     if not casks:
         return False
     state = _load_pending_state()
-    if set(state.get("apps") or []) != set(casks):
+    if set(state.get(key) or []) != set(casks):
         return True
-    last = state.get("last_notified")
+    last = state.get(f"{key}_last_notified")
+    if not isinstance(last, str) and key == "apps":
+        last = state.get("last_notified")  # state written before keys existed
     if not isinstance(last, str):
         return True
     try:
@@ -493,6 +511,37 @@ def _maybe_run_macos_softwareupdate(log_fn, notify_fn) -> str:
     )
 
 
+def _maybe_run_app_update_check(log_fn):
+    """Check the apps no package manager tracks, and install the safe ones.
+
+    Resolve, Claude Code and the global npm CLIs the skills install are all
+    outside apt/brew, so before this ran nothing on the machine had ever looked
+    at their versions — the nightly job reported "no updates available" on a
+    box carrying four stale CLIs and a stale Resolve (2026-08-04).
+
+    Never propagates: a version check is additive, and a flaky download feed
+    must not fail the night's package upgrade.
+    """
+    try:
+        # sys.path already carries the repo root: the module-level import of
+        # app_updates would have failed at import time otherwise.
+        from utils.maintenance import load_config as _load_maintenance
+        cfg = _load_maintenance()
+    except Exception as e:
+        log_fn(f"app update check skipped: maintenance config load failed: {e}")
+        return AppCheckResult()
+    if not cfg.get("app_update_checks", True):
+        return AppCheckResult()
+    try:
+        return run_app_update_check(
+            auto_update=bool(cfg.get("app_auto_update", True)),
+            log_fn=log_fn,
+        )
+    except Exception as e:
+        log_fn(f"app update check failed: {e}")
+        return AppCheckResult()
+
+
 def run_system_update(notify_fn=None) -> str:
     """
     Run a full system update cycle.
@@ -536,8 +585,13 @@ def run_system_update(notify_fn=None) -> str:
     # after a clean (non-error) outcome — a failing brew shouldn't trigger
     # softwareupdate that night.
     sw_summary = ""
+    apps = AppCheckResult()
     if not pkg.errored:
         sw_summary = _maybe_run_macos_softwareupdate(log_fn=log, notify_fn=notify)
+        # Runs even when the package manager had nothing to do: the whole point
+        # is that these apps are invisible to it, so a quiet brew night says
+        # nothing at all about them.
+        apps = _maybe_run_app_update_check(log_fn=log)
 
     log("=== System update complete ===")
 
@@ -545,28 +599,37 @@ def run_system_update(notify_fn=None) -> str:
         # notify() already fired inside the helper.
         return pkg.summary
 
-    parts = [s for s in (pkg.summary, sw_summary) if s.strip()]
+    parts = [s for s in (pkg.summary, sw_summary, apps.summary) if s.strip()]
     if not parts:
         return "No updates available."
 
     full = " ".join(parts)
 
     # Notify when something material happened. Phrases like "No updates
-    # available." or "All N updates held back" are status-only; "upgraded" or
-    # "installed" indicate the user should know.
-    material = "upgraded" in pkg.summary or "installed" in sw_summary
+    # available." or "All N updates held back" are status-only; "upgraded",
+    # "installed", or an app that actually moved mean the user should know.
+    material = (
+        "upgraded" in pkg.summary
+        or "installed" in sw_summary
+        or apps.news
+    )
 
     # ...but an app waiting on the user's go-ahead also has to reach them. It is
     # never auto-installed, so on a quiet night the old contract logged it and
     # told nobody, and it could sit unseen for days (LibreOffice, 2026-07-25).
-    # Throttled so a standing update reminds weekly, not nightly.
-    remind = not material and _should_remind_pending(pkg.pending_apps)
+    # Throttled so a standing update reminds weekly, not nightly. Casks and
+    # out-of-band apps are throttled apart: Resolve can wait weeks behind a
+    # registration form, and a new cask appearing must not reset its clock.
+    remind_casks = _should_remind_pending(pkg.pending_apps)
+    remind_apps = _should_remind_pending(apps.waiting, key="out_of_band")
+    remind = not material and (remind_casks or remind_apps)
 
     if material or remind:
         notify(full)
-        # Record even on a material night: the digest carries the pending line
-        # too, so that ping starts the clock for the next reminder.
+        # Record even on a material night: the digest carries the pending lines
+        # too, so that ping starts the clock for both next reminders.
         _record_pending_notice(pkg.pending_apps)
+        _record_pending_notice(apps.waiting, key="out_of_band")
 
     return full
 

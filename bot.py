@@ -1206,9 +1206,10 @@ def build_system_prompt(user_id: int) -> str:
         # Maintenance system
         parts.append("### Maintenance:")
         parts.append("The bot runs nightly maintenance automatically (system updates at 4:00 AM, cleanup at 3:30 AM).")
+        parts.append("The 4:00 AM run covers the package manager AND the apps it does not track: DaVinci Resolve, Claude Code, the global npm CLIs the skills install, and Flatpak apps. CLI updates install themselves; applications and major-version jumps are reported for the user to approve.")
         parts.append("If the user wants automatic backups, they need to set a target path:")
         parts.append("  /maintenance backup /path/to/drive")
-        parts.append("Other commands: /maintenance updates on|off, /maintenance cleanup on|off, /maintenance run backup|update|cleanup")
+        parts.append("Other commands: /maintenance updates on|off, /maintenance cleanup on|off, /maintenance apps on|off|report, /maintenance run backup|update|cleanup|apps")
         parts.append("")
 
         # Memory system
@@ -4335,6 +4336,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "  /maintenance cleanup on|off",
             "  /maintenance reaper on|off",
             "  /maintenance reboot on|off",
+            "  /maintenance apps on|off|report",
         ]
         if platform.system() == "Darwin":
             cmd_lines.append("  /maintenance macos-updates on|off")
@@ -4345,6 +4347,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "  /maintenance run update",
             "  /maintenance run cleanup",
             "  /maintenance run reaper",
+            "  /maintenance run apps",
         ]
         report += "\n".join(cmd_lines)
         await update.message.reply_text(report)
@@ -4702,9 +4705,58 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("Usage: /maintenance macos-restart on|off")
         return
 
+    # --- /maintenance apps on|off|report (out-of-band app update checks) ---
+    if subcmd == "apps":
+        if arg.lower() in ("on", "true", "yes", "1"):
+            update_config(app_update_checks=True, app_auto_update=True)
+            await update.message.reply_text(
+                "App update checks enabled. Nightly at 4:00 AM I check the apps no "
+                "package manager tracks (DaVinci Resolve, Claude Code, the npm CLIs "
+                "the skills use) and install the CLI updates that are safe unattended. "
+                "Applications and major-version jumps are reported, never installed."
+            )
+        elif arg.lower() in ("off", "false", "no", "0"):
+            update_config(app_update_checks=False)
+            await update.message.reply_text(
+                "App update checks disabled. Nothing will look at DaVinci Resolve, "
+                "Claude Code or the npm CLIs again."
+            )
+        elif arg.lower() in ("report", "report-only", "check"):
+            update_config(app_update_checks=True, app_auto_update=False)
+            await update.message.reply_text(
+                "App update checks set to report only. I'll tell you what is out of "
+                "date and install nothing until you ask."
+            )
+        else:
+            await update.message.reply_text("Usage: /maintenance apps on|off|report")
+        return
+
     # --- /maintenance run <task> ---
     if subcmd == "run":
         task = arg.lower()
+        if task == "apps":
+            await update.message.reply_text("Checking apps outside the package manager...")
+            try:
+                from utils.app_updates import collect, summarize
+                from utils.maintenance import load_config as _load_maint
+                auto = bool(_load_maint().get("app_auto_update", True))
+                statuses = await asyncio.to_thread(collect, auto)
+                if not statuses:
+                    await update.message.reply_text(
+                        "Nothing installed outside the package manager."
+                    )
+                    return
+                lines = [
+                    f"{s.name}: {s.installed or '?'} -> {s.latest or '?'} ({s.state})"
+                    for s in statuses
+                ]
+                summary = summarize(statuses)
+                if summary:
+                    lines += ["", summary]
+                await update.message.reply_text("\n".join(lines))
+            except Exception as e:
+                await update.message.reply_text(f"App check failed: {e}")
+            return
         if task == "backup":
             config = load_config()
             if not config.get("backup_enabled") or not config.get("backup_path"):
@@ -4745,7 +4797,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("No idle helper apps to close.")
         else:
             await update.message.reply_text(
-                "Usage: /maintenance run backup|update|cleanup|reaper"
+                "Usage: /maintenance run backup|update|cleanup|reaper|apps"
             )
         return
 
