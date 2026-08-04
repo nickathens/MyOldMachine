@@ -1,0 +1,13 @@
+{
+  "check": {
+    "ffmpeg": "ffmpeg -version",
+    "ffprobe": "ffprobe -version",
+    "colorgrade-venv": "test -x $HOME/.venvs/colorgrade/bin/python && $HOME/.venvs/colorgrade/bin/python -c 'import numpy, scipy, scenedetect, PIL'"
+  },
+  "brew": ["ffmpeg"],
+  "apt": ["ffmpeg"],
+  "weight": "medium",
+  "min_ram_gb": 4,
+  "min_disk_gb": 2,
+  "install_note": "Python packages go in their own environment at ~/.venvs/colorgrade, never in the bot's .venv: python3 -m venv ~/.venvs/colorgrade && ~/.venvs/colorgrade/bin/pip install numpy pillow scipy scenedetect opencv-python-headless (about 300 MB). Licences: numpy BSD-3, scipy BSD-3, pillow MIT-CMU, PySceneDetect BSD-3, OpenCV Apache-2.0. All clean for paid client work. The object isolation track additionally wants DaVinci Resolve installed to receive the DCTL, but the DCTL is written and proved with no Resolve involved."
+}

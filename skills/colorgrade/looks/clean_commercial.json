@@ -1,0 +1,16 @@
+{
+  "description": "Punchy, neutral, bright. Corporate and product work. Nothing stylised, just crisp.",
+  "reference": "House default for brand films where the brand colour must stay literal.",
+  "contrast": 1.12,
+  "toe": 0.1,
+  "shoulder": 0.3,
+  "saturation": 1.1,
+  "sat_shadow": 0.92,
+  "sat_highlight": 0.95,
+  "highlight_rolloff": 0.35,
+  "protect_skin": 1.0,
+  "name": "clean_commercial",
+  "gamut_limit": 1.3,
+  "gamut_threshold": 0.8,
+  "gamut_power": 1.2
+}

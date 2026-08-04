@@ -70,6 +70,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+- `[2026-08-04] mac: new colorgrade skill (unattended whole-video grade plus a
+  DCTL generator for one object). New files only, plus the README skill table
+  and counts (PR #103)`
 - `[2026-08-04] mac: deny the Workflow tool in core/llm.py, the second agent
   spawner the CLI shipped after Task was blocked; pin the deny list with
   tests (PR #102)`
