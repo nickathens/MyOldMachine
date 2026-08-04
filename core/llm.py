@@ -631,6 +631,41 @@ def _build_claude_messages(messages: list[Message]) -> list[dict]:
     return result
 
 
+# Tools the CLI must never be able to call inside a bot turn.
+#
+# This is a DENY list and the CLI runs with --dangerously-skip-permissions, so
+# it is the only fence: anything the CLI ships tomorrow is allowed by default.
+# The CLI does not validate these names either -- a bogus entry is accepted in
+# silence (checked against 2.1.217) -- so a typo here reads as protection and
+# gives none. tests/test_disallowed_cli_tools.py pins the set for that reason.
+#
+# The load-bearing entries are the agent spawners below. Everything else is
+# here because it wants an interactive terminal the bot does not have.
+#
+# Task has been denied since 2026-03-06 and the deny worked. Workflow is a
+# SECOND spawner that shipped upstream afterwards and was never added, so it
+# stood open: on 2026-08-04 three Workflow runs put 111 unapproved subagents
+# and ~1.17M output tokens through one afternoon, and the last of them was
+# destroyed by the very turn that reported it -- background runs do not outlive
+# the turn that started them. Fan-out is not a capability this bot can offer
+# honestly: the user cannot watch it, cannot price it, and /stop cannot reach
+# past it. Any future upstream tool that spawns agents belongs in this tuple.
+AGENT_SPAWNING_CLI_TOOLS = ("Task", "Workflow")
+
+DISALLOWED_CLI_TOOLS = (
+    *AGENT_SPAWNING_CLI_TOOLS,
+    "EnterPlanMode",
+    "AskUserQuestion",
+    "Monitor",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ScheduleWakeup",
+    "RemoteTrigger",
+    "PushNotification",
+    "NotebookEdit",
+)
+
+
 class ClaudeCLIProvider(LLMProvider):
     """
     Claude Code CLI provider — the primary provider for MyOldMachine.
@@ -891,7 +926,10 @@ class ClaudeCLIProvider(LLMProvider):
             "--model", self.model,
             "--effort", get_llm_effort(),
             "--dangerously-skip-permissions",
-            "--disallowedTools", "Task,EnterPlanMode,AskUserQuestion,Monitor,EnterWorktree,ExitWorktree,ScheduleWakeup,RemoteTrigger,PushNotification,NotebookEdit",
+            # One comma-joined argument, never one argv entry per tool: the
+            # flag is variadic (<tools...>), so loose names would run on and
+            # swallow whatever followed them.
+            "--disallowedTools", ",".join(DISALLOWED_CLI_TOOLS),
             "--output-format", "stream-json",
             "--verbose",
             *mcp_args,
