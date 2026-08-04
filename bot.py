@@ -4090,7 +4090,7 @@ def _setup_reflection_job(scheduler):
         job_type="command",
         name="nightly-reflection",
         notify=False,
-        command=f"{venv_python} {reflect_script}",
+        command=f"{shlex.quote(venv_python)} {shlex.quote(reflect_script)}",
     )
     logger.info("Scheduled nightly reflection job at 3:00 AM")
 
@@ -4125,7 +4125,7 @@ def _setup_maintenance_jobs(scheduler):
             job_type="command",
             name="nightly-cleanup",
             notify=False,
-            command=f"{venv_python} {cleanup_script}",
+            command=f"{shlex.quote(venv_python)} {shlex.quote(cleanup_script)}",
         )
         logger.info("Scheduled nightly cleanup job at 3:30 AM")
 
@@ -4148,7 +4148,7 @@ def _setup_maintenance_jobs(scheduler):
             job_type="command",
             name="nightly-system-update",
             notify=False,
-            command=f"{venv_python} {update_script}{notify_args}",
+            command=f"{shlex.quote(venv_python)} {shlex.quote(update_script)}{notify_args}",
         )
         logger.info("Scheduled nightly system update job at 4:00 AM")
 
@@ -4175,7 +4175,7 @@ def _setup_maintenance_jobs(scheduler):
             job_type="command",
             name="nightly-backup",
             notify=False,
-            command=f"{venv_python} {backup_script} create{notify_args}",
+            command=f"{shlex.quote(venv_python)} {shlex.quote(backup_script)} create{notify_args}",
         )
         logger.info(f"Scheduled nightly backup job at 2:00 AM -> {config['backup_path']}")
 
@@ -4281,7 +4281,7 @@ def _setup_maintenance_jobs(scheduler):
         if run_at <= datetime.now():
             run_at += timedelta(days=1)
 
-        reboot_cmd = f"{venv_python} {reboot_script}"
+        reboot_cmd = f"{shlex.quote(venv_python)} {shlex.quote(reboot_script)}"
         if admin_id:
             reboot_cmd += f" --user-id {admin_id}"
 
@@ -5002,8 +5002,12 @@ def _configure_claude_hooks():
     Called once at startup if Claude CLI is the active provider.
     """
     settings_file = Path.home() / ".claude" / "settings.json"
-    gate_script = str(BOT_DIR / "utils" / "skill_hook_gate.sh")
-    hooks_script = f"python3 {BOT_DIR / 'utils' / 'skill_hooks.py'}"
+    # Quote the paths: the hook "command" strings are run through a shell by
+    # Claude Code, so an install dir with a space would otherwise split the
+    # path into two words and the hook would never fire. shlex.quote is a no-op
+    # for space-free paths, so the idempotency check below still matches.
+    gate_script = shlex.quote(str(BOT_DIR / "utils" / "skill_hook_gate.sh"))
+    hooks_script = f"python3 {shlex.quote(str(BOT_DIR / 'utils' / 'skill_hooks.py'))}"
 
     # Define the hooks we need
     needed_hooks = {

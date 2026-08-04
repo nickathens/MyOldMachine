@@ -808,6 +808,17 @@ _SECRET_FILE_BASENAMES = (
     "gmail_token.json",
 )
 
+# Case-folded copy for matching. macOS APFS and Windows are case-INSENSITIVE by
+# default, so on those installs `.ENV` opens `.env`: an exact-case comparison is
+# a live bypass of both guards below, not a theoretical one (Path.resolve() does
+# not case-fold, so the symlink fallback in _is_secret_file_read misses it too).
+# Folding costs a false positive only where a distinct file differing solely by
+# case exists on a case-SENSITIVE volume, which is a readable refusal message;
+# the miss it prevents is the bot token and every provider key.
+_SECRET_FILE_BASENAMES_FOLDED = frozenset(
+    name.casefold() for name in _SECRET_FILE_BASENAMES
+)
+
 # Leading commands that read, transform, copy, or transmit a file's contents.
 # (Pure-metadata commands like `ls`/`stat` are intentionally omitted; they
 # don't disclose secrets.)
@@ -889,9 +900,13 @@ def _check_secret_file_read(command: str) -> str | None:
     #    `<.env` (stdin redirect, incl. `$(<.env)` substitution) and `@.env` /
     #    `=@.env` (curl form-file upload). A secret in these positions is never
     #    innocent, so this fires even when no reader verb is present.
+    #    Matched case-insensitively: on a case-insensitive volume `<.ENV` reads
+    #    `.env` (see _SECRET_FILE_BASENAMES_FOLDED).
     for name in _SECRET_FILE_BASENAMES:
         if re.search(
-            rf"[<@]\s*{re.escape(name)}(?:$|[\s'\")>;|&]|\.tmp)", command
+            rf"[<@]\s*{re.escape(name)}(?:$|[\s'\")>;|&]|\.tmp)",
+            command,
+            re.IGNORECASE,
         ):
             return reason
 
@@ -902,16 +917,54 @@ def _check_secret_file_read(command: str) -> str | None:
     #    scratch suffix. This blocks `cat .env`, `grep X ~/.sudo_pass`,
     #    `cp ./.env /tmp` and `python -c "open('.env')"` while leaving
     #    `.env.example` and `.environment` alone.
+    #    Verb and name are both folded: a case-insensitive volume resolves
+    #    `CAT` through PATH to `cat` and `.ENV` to `.env`, so an exact-case
+    #    comparison of either one lets `CAT .ENV` through.
     for segment in _COMMAND_SEGMENT_RE.split(command):
         verb = _leading_verb(segment)
-        if verb is None or verb not in _SECRET_LEAK_COMMANDS:
+        if verb is None or verb.casefold() not in _SECRET_LEAK_COMMANDS:
             continue
         for name in _SECRET_FILE_BASENAMES:
             if re.search(
                 rf"(?:^|[\s=:'\"(/]){re.escape(name)}(?:$|[\s'\")>;|&]|\.tmp)",
                 segment,
+                re.IGNORECASE,
             ):
                 return reason
+    return None
+
+
+def _is_secret_file_read(path: str) -> str | None:
+    """Block reads of credential files through the read_file tool.
+
+    The shell tool already blocks `cat .env`, `cp ~/.sudo_pass ...` and the like
+    via _check_secret_file_read. read_file reached the same files unguarded, so
+    the exfiltration path that check exists to close (an indirect prompt
+    injection pointing the tool at .env to leak the bot token and every provider
+    key) stayed open through the other tool. Same scope, same threat model,
+    same hardening -- not a containment boundary; the real protection is the
+    files' 0600 perms (see _check_secret_file_read).
+
+    Matches on basename so `.env.example` and `.environment` stay readable, and
+    resolves the path first so a symlink whose target is a secret is caught too.
+    The comparison is case-folded because macOS APFS is case-insensitive by
+    default, so `read_file('.ENV')` returns `.env` there; Path.resolve() does not
+    case-fold, so the symlink pass above cannot catch that on its own.
+    """
+    try:
+        expanded = Path(path).expanduser()
+    except (ValueError, OSError):
+        return None
+    names = {expanded.name}
+    try:
+        names.add(expanded.resolve().name)
+    except (OSError, RuntimeError):
+        pass
+    if {name.casefold() for name in names} & _SECRET_FILE_BASENAMES_FOLDED:
+        return (
+            "Blocked: reading credential files (.env, .sudo_pass, OAuth tokens, "
+            "mcp_servers.json) is not permitted through the tool layer."
+        )
     return None
 
 
@@ -1831,6 +1884,10 @@ def _read_file(path: str) -> str:
     """Read a file's contents."""
     if not path:
         return "Error: No path specified"
+
+    secret_block = _is_secret_file_read(path)
+    if secret_block:
+        return secret_block
 
     p = Path(path).expanduser()
     if not p.exists():
