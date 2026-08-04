@@ -351,6 +351,18 @@ def _is_auth_failure(result_text: str, api_error_status) -> bool:
     return any(marker in lowered for marker in _AUTH_ERROR_MARKERS)
 
 
+def _stopped_response(fallback: str, model: str, provider: str) -> LLMResponse:
+    """The reply for a turn the user ended with /stop.
+
+    Shared by the in-loop stop check and the post-loop one so a stop reads the
+    same to the user whichever door the read loop left by.
+    """
+    return LLMResponse(
+        text=f"{fallback}\n\n[Stopped by /stop command]" if fallback else "Task stopped.",
+        model=model, provider=provider, tool_use=True,
+    )
+
+
 def _compose_full_reply(final_result: str, text_blocks: list[str]) -> str:
     """Compose the user-facing reply for a successful turn.
 
@@ -952,15 +964,7 @@ class ClaudeCLIProvider(LLMProvider):
                     fallback = final_result or last_turn or partial_text.strip()
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
-                    if fallback:
-                        return LLMResponse(
-                            text=fallback + "\n\n[Stopped by /stop command]",
-                            model=self.model, provider=self.provider_name, tool_use=True,
-                        )
-                    return LLMResponse(
-                        text="Task stopped.",
-                        model=self.model, provider=self.provider_name, tool_use=True,
-                    )
+                    return _stopped_response(fallback, self.model, self.provider_name)
 
                 # Absolute ceiling: kill the turn even if Claude is producing
                 # activity continuously. Prevents runaway multi-hour sessions.
@@ -1158,6 +1162,30 @@ class ClaudeCLIProvider(LLMProvider):
             await process.wait()
             stderr_bytes = await process.stderr.read()
             stderr_text = stderr_bytes.decode(errors="replace").strip()
+
+            # A /stop almost always lands HERE, not in the loop's stop check.
+            # stop_user() SIGKILLs immediately, but the loop only tests the
+            # flag at the top of an iteration while it is parked in
+            # _read_line_with_timeout, so EOF arrives first and the loop
+            # leaves by the `line == b''` door without ever re-testing.
+            # Claim the stop before the exit-code guard below, which cannot
+            # tell our own SIGKILL from a kernel OOM kill: on 2026-08-04 a
+            # 54-minute turn the user stopped deliberately was reported to
+            # them as "[Hit memory limit]", and every stopped turn carrying
+            # partial output had been misreported the same way.
+            if user_id is not None and user_id in self._stop_requested:
+                logger.info(
+                    f"Claude stop confirmed for user {user_id} after "
+                    f"{int(asyncio.get_running_loop().time() - start_time)}s "
+                    f"(exit {process.returncode})"
+                )
+                if self.on_progress_clear and user_id:
+                    self.on_progress_clear(user_id)
+                last_turn = "\n".join(last_turn_text_blocks).strip()
+                return _stopped_response(
+                    final_result or last_turn or partial_text.strip(),
+                    self.model, self.provider_name,
+                )
 
             # A turn the CLI itself marked failed. This MUST be checked
             # before the exit-code guard below, which requires an empty
@@ -1590,15 +1618,7 @@ class CodexCLIProvider(LLMProvider):
                     fallback = "\n\n".join(agent_message_blocks).strip() or partial_text.strip()
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
-                    if fallback:
-                        return LLMResponse(
-                            text=fallback + "\n\n[Stopped by /stop command]",
-                            model=self.model, provider=self.provider_name, tool_use=True,
-                        )
-                    return LLMResponse(
-                        text="Task stopped.",
-                        model=self.model, provider=self.provider_name, tool_use=True,
-                    )
+                    return _stopped_response(fallback, self.model, self.provider_name)
 
                 if elapsed > self.ABSOLUTE_TIMEOUT:
                     logger.warning(
@@ -1791,6 +1811,21 @@ class CodexCLIProvider(LLMProvider):
             await process.wait()
             stderr_bytes = await process.stderr.read()
             stderr_text = stderr_bytes.decode(errors="replace").strip()
+
+            # Same EOF-beats-the-flag race as the Claude provider above: claim
+            # the stop before the exit-code guard reads our own SIGKILL as OOM.
+            if user_id is not None and user_id in self._stop_requested:
+                logger.info(
+                    f"Codex stop confirmed for user {user_id} after "
+                    f"{int(asyncio.get_running_loop().time() - start_time)}s "
+                    f"(exit {process.returncode})"
+                )
+                if self.on_progress_clear and user_id:
+                    self.on_progress_clear(user_id)
+                return _stopped_response(
+                    "\n\n".join(agent_message_blocks).strip() or partial_text.strip(),
+                    self.model, self.provider_name,
+                )
 
             if process.returncode != 0 and not agent_message_blocks:
                 logger.error(f"Codex error for user {user_id} (exit {process.returncode}): {stderr_text}")
