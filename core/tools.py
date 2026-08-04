@@ -975,10 +975,23 @@ def _is_write_blocked(path: str) -> str | None:
     directory separator. A naive ``startswith`` would accept ``/etc/passwd-foo``
     against blocked entry ``/etc/passwd``; this version requires the next char
     after the prefix to be ``/`` so that only true children are blocked.
+
+    The comparison is case-folded, for the same reason the credential-read
+    guard folds (see _is_secret_file_read): macOS APFS and Windows are
+    case-INSENSITIVE by default, so there ``write_file('.ENV')`` lands on
+    ``.env`` and ``BOT.PY`` on ``bot.py``. Path.resolve() does not case-fold,
+    so an exact-case compare of the resolved path lets an uppercase spelling
+    clobber a protected file (verified live: ".ENV" passed while ".env" was
+    blocked). Folding costs a false positive only where a distinct file
+    differing solely by case from a protected system/bot path exists on a
+    case-SENSITIVE volume, which is a readable refusal, and every blocked entry
+    is a path nobody writes a case-variant of by accident; the miss it prevents
+    is overwriting bot.py or the credential file.
     """
-    resolved = str(Path(path).expanduser().resolve())
+    resolved = str(Path(path).expanduser().resolve()).casefold()
     for blocked, anchor in _WRITE_BLOCK_ANCHOR_PAIRS:
-        if resolved == anchor or resolved.startswith(anchor + "/"):
+        anchor_folded = anchor.casefold()
+        if resolved == anchor_folded or resolved.startswith(anchor_folded + "/"):
             return f"Blocked: cannot write to protected path: {blocked}"
     return None
 
