@@ -70,7 +70,11 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(Nothing open right now.)
+- `[2026-08-04] mac: deny the Workflow tool in core/llm.py, the second agent
+  spawner the CLI shipped after Task was blocked; pin the deny list with
+  tests (PR #102)`
+- `[2026-08-04] mac: /stop no longer reported to the user as an OOM crash,
+  core/llm.py read loop + exit-code guard (PR #101)`
 
 (#99's entry removed above: merged 2026-08-02. #98, #97 and #96 before it:
 all merged 2026-08-02.)
