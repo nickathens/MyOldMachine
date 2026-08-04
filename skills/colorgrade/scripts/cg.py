@@ -39,7 +39,7 @@ def log(msg):
 
 
 def contact_sheet(media, shots, lut_paths, out_path, cols=4, tile_w=420):
-    """One tile per shot, ungraded on top of graded. What Nick actually looks at."""
+    """One tile per shot, ungraded on top of graded. The sheet a human eyeballs to sign off the grade."""
     from PIL import Image, ImageDraw
 
     tiles = []
