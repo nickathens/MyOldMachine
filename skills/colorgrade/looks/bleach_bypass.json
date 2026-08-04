@@ -1,0 +1,27 @@
+{
+  "description": "Silver retained. Hard contrast, drained colour, metallic highlights. Grit and war films.",
+  "reference": "Photochemical bleach bypass skips the bleach so silver stays with the dye: contrast up, saturation down.",
+  "contrast": 1.45,
+  "toe": 0.05,
+  "shoulder": 0.2,
+  "saturation": 0.55,
+  "sat_shadow": 0.55,
+  "sat_highlight": 0.45,
+  "crosstalk": 0.06,
+  "shadow_tint": [
+    -0.04,
+    0.0,
+    0.06
+  ],
+  "highlight_tint": [
+    0.04,
+    0.04,
+    0.03
+  ],
+  "highlight_rolloff": 0.2,
+  "protect_skin": 0.6,
+  "name": "bleach_bypass",
+  "gamut_limit": 1.6,
+  "gamut_threshold": 0.8,
+  "gamut_power": 1.2
+}

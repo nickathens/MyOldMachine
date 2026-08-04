@@ -1,0 +1,43 @@
+{
+  "description": "Kodak Vision print film 2383. Dense blacks, gentle highlight rolloff, warm mids, dye crosstalk.",
+  "reference": "Kodak VISION Color Print Film 2383/3383 data sheet: high D-max giving improved black on projection, neutral highlight toe, absorber dyes controlling intragrain scatter.",
+  "contrast": 1.18,
+  "toe": 0.22,
+  "shoulder": 0.55,
+  "saturation": 1.06,
+  "sat_shadow": 0.72,
+  "sat_highlight": 0.8,
+  "crosstalk": 0.035,
+  "shadow_tint": [
+    -0.1,
+    -0.02,
+    0.14
+  ],
+  "highlight_tint": [
+    0.1,
+    0.03,
+    -0.1
+  ],
+  "tint_falloff": 2.2,
+  "highlight_rolloff": 0.55,
+  "black_offset": 0.004,
+  "hue_shifts": [
+    {
+      "centre": 210,
+      "width": 55,
+      "shift": -6,
+      "sat": 0.94
+    },
+    {
+      "centre": 110,
+      "width": 50,
+      "shift": 8,
+      "sat": 0.9
+    }
+  ],
+  "protect_skin": 1.0,
+  "name": "kodak2383",
+  "gamut_limit": 2.0,
+  "gamut_threshold": 0.8,
+  "gamut_power": 1.2
+}

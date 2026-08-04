@@ -1,0 +1,141 @@
+// LensIsolate.dctl
+//
+// Spatially gated hue rotation. A LUT maps colour to colour and has no idea
+// where a pixel sits, so it cannot carry a selection. A DCTL is handed p_X and
+// p_Y, so it can.
+//
+// Three gates, multiplied:
+//   hue        four handle qualifier band, same shape as a Resolve qualifier
+//   sat / val  floors with soft ramps, keeps the gate off flat grey
+//   window     soft edged ellipse, the spatial constraint a LUT cannot carry
+//
+// Apply through Color page > OpenFX > ResolveFX Color > DCTL, with this file in
+// the Resolve LUT directory. Sliders only appear on that route.
+//
+// Deliberately conservative: every construct here appears in Blackmagic's own
+// sample DCTLs. No textures passed to helpers, no macros, no alpha output. An
+// earlier version generated its matte on p_A and read neighbouring pixels for a
+// flatness gate, and Resolve refused to build it.
+
+DEFINE_UI_PARAMS(hueLowSoft, Hue Low Soft, DCTLUI_SLIDER_FLOAT, 182.0, 0.0, 360.0, 0.5)
+DEFINE_UI_PARAMS(hueLow, Hue Low, DCTLUI_SLIDER_FLOAT, 189.0, 0.0, 360.0, 0.5)
+DEFINE_UI_PARAMS(hueHigh, Hue High, DCTLUI_SLIDER_FLOAT, 205.0, 0.0, 360.0, 0.5)
+DEFINE_UI_PARAMS(hueHighSoft, Hue High Soft, DCTLUI_SLIDER_FLOAT, 216.0, 0.0, 360.0, 0.5)
+
+DEFINE_UI_PARAMS(satLo, Sat Floor, DCTLUI_SLIDER_FLOAT, 0.12, 0.0, 1.0, 0.01)
+DEFINE_UI_PARAMS(satHi, Sat Full, DCTLUI_SLIDER_FLOAT, 0.22, 0.0, 1.0, 0.01)
+DEFINE_UI_PARAMS(valLo, Value Floor, DCTLUI_SLIDER_FLOAT, 0.12, 0.0, 1.0, 0.01)
+DEFINE_UI_PARAMS(valHi, Value Full, DCTLUI_SLIDER_FLOAT, 0.22, 0.0, 1.0, 0.01)
+
+DEFINE_UI_PARAMS(winX, Window X, DCTLUI_SLIDER_FLOAT, 0.877, 0.0, 1.0, 0.001)
+DEFINE_UI_PARAMS(winY, Window Y, DCTLUI_SLIDER_FLOAT, 0.745, 0.0, 1.0, 0.001)
+DEFINE_UI_PARAMS(winRX, Window Width, DCTLUI_SLIDER_FLOAT, 0.085, 0.0, 2.0, 0.001)
+DEFINE_UI_PARAMS(winRY, Window Height, DCTLUI_SLIDER_FLOAT, 0.145, 0.0, 2.0, 0.001)
+DEFINE_UI_PARAMS(winSoft, Window Softness, DCTLUI_SLIDER_FLOAT, 0.25, 0.0, 1.0, 0.001)
+
+DEFINE_UI_PARAMS(hueShift, Hue Shift, DCTLUI_SLIDER_FLOAT, -19.0, -180.0, 180.0, 0.5)
+DEFINE_UI_PARAMS(satGain, Sat Gain, DCTLUI_SLIDER_FLOAT, 1.0, 0.0, 2.0, 0.01)
+DEFINE_UI_PARAMS(showMatte, Show Matte, DCTLUI_CHECK_BOX, 0)
+
+// Linear ramp from 0 at p_Lo to 1 at p_Hi. Same job as smoothStep in
+// Blackmagic's AlphaCircularWindow sample, kept linear so the four handles read
+// like a Resolve qualifier.
+__DEVICE__ float ramp(float p_Val, float p_Lo, float p_Hi)
+{
+    if (p_Hi == p_Lo)
+    {
+        return (p_Val >= p_Hi) ? 1.0f : 0.0f;
+    }
+    return _saturatef((p_Val - p_Lo) / (p_Hi - p_Lo));
+}
+
+__DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, float p_R, float p_G, float p_B)
+{
+    // RGB to HSV, inlined. A helper returning float3 is not demonstrated in any
+    // shipped sample, so it stays out of the file.
+    const float mx = _fmaxf(p_R, _fmaxf(p_G, p_B));
+    const float mn = _fminf(p_R, _fminf(p_G, p_B));
+    const float d = mx - mn;
+
+    float h = 0.0f;
+    if (d > 0.000001f)
+    {
+        if (mx == p_R)
+        {
+            h = 60.0f * _fmod(((p_G - p_B) / d) + 6.0f, 6.0f);
+        }
+        else if (mx == p_G)
+        {
+            h = 60.0f * (((p_B - p_R) / d) + 2.0f);
+        }
+        else
+        {
+            h = 60.0f * (((p_R - p_G) / d) + 4.0f);
+        }
+    }
+    const float s = (mx > 0.000001f) ? (d / mx) : 0.0f;
+    const float v = mx;
+
+    // hue: four handle qualifier band
+    float m = _fminf(ramp(h, hueLowSoft, hueLow), 1.0f - ramp(h, hueHigh, hueHighSoft));
+
+    // saturation and value floors
+    m = m * ramp(s, satLo, satHi);
+    m = m * ramp(v, valLo, valHi);
+
+    // spatial window: the thing a LUT structurally cannot carry
+    const float nx = (p_X + 0.5f) / p_Width;
+    const float ny = (p_Y + 0.5f) / p_Height;
+    const float ex = (nx - winX) / _fmaxf(winRX, 0.0001f);
+    const float ey = (ny - winY) / _fmaxf(winRY, 0.0001f);
+    const float dist = _hypotf(ex, ey);
+    m = m * (1.0f - ramp(dist, 1.0f - winSoft, 1.0f + winSoft));
+
+    if (showMatte)
+    {
+        return make_float3(m, m, m);
+    }
+
+    // HSV back to RGB, with the shift weighted by the matte
+    const float h2 = _fmod(h + (hueShift * m) + 360.0f, 360.0f);
+    const float s2 = _saturatef(s * (1.0f + ((satGain - 1.0f) * m)));
+    const float c = v * s2;
+    const float x = c * (1.0f - _fabs(_fmod(h2 / 60.0f, 2.0f) - 1.0f));
+    const float base = v - c;
+
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    if (h2 < 60.0f)
+    {
+        r = c;
+        g = x;
+    }
+    else if (h2 < 120.0f)
+    {
+        r = x;
+        g = c;
+    }
+    else if (h2 < 180.0f)
+    {
+        g = c;
+        b = x;
+    }
+    else if (h2 < 240.0f)
+    {
+        g = x;
+        b = c;
+    }
+    else if (h2 < 300.0f)
+    {
+        r = x;
+        b = c;
+    }
+    else
+    {
+        r = c;
+        b = x;
+    }
+
+    return make_float3(r + base, g + base, b + base);
+}

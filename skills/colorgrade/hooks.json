@@ -1,0 +1,8 @@
+{
+  "pre": {
+    "min_ram_mb": 4096
+  },
+  "stop": {
+    "clean_patterns": ["/tmp/cg_groundtruth"]
+  }
+}

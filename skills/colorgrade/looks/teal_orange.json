@@ -1,0 +1,41 @@
+{
+  "description": "The commercial standard. Shadows to teal, skin held on the orange line, everything else pulled apart.",
+  "reference": "Qualifier plus complementary split toning. Skin is explicitly protected so the move never drags a face.",
+  "contrast": 1.2,
+  "toe": 0.15,
+  "shoulder": 0.4,
+  "saturation": 1.12,
+  "sat_shadow": 0.85,
+  "sat_highlight": 0.9,
+  "shadow_tint": [
+    -0.22,
+    0.02,
+    0.24
+  ],
+  "highlight_tint": [
+    0.16,
+    0.06,
+    -0.14
+  ],
+  "tint_falloff": 1.8,
+  "highlight_rolloff": 0.4,
+  "hue_shifts": [
+    {
+      "centre": 200,
+      "width": 60,
+      "shift": -10,
+      "sat": 1.18
+    },
+    {
+      "centre": 240,
+      "width": 50,
+      "shift": -14,
+      "sat": 1.1
+    }
+  ],
+  "protect_skin": 1.0,
+  "name": "teal_orange",
+  "gamut_limit": 2.0,
+  "gamut_threshold": 0.8,
+  "gamut_power": 1.2
+}

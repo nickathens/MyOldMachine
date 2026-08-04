@@ -1,0 +1,28 @@
+{
+  "description": "Golden hour. Warm highlights, open shadows, high roll off. Lifestyle and travel.",
+  "reference": "Warm gain on the top end with a long shoulder so skies bloom rather than clip.",
+  "contrast": 1.1,
+  "toe": 0.25,
+  "shoulder": 0.6,
+  "saturation": 1.08,
+  "sat_shadow": 0.8,
+  "sat_highlight": 0.88,
+  "crosstalk": 0.025,
+  "shadow_tint": [
+    -0.06,
+    -0.02,
+    0.1
+  ],
+  "highlight_tint": [
+    0.2,
+    0.1,
+    -0.16
+  ],
+  "tint_falloff": 2.4,
+  "highlight_rolloff": 0.6,
+  "protect_skin": 1.0,
+  "name": "sunlit",
+  "gamut_limit": 1.3,
+  "gamut_threshold": 0.8,
+  "gamut_power": 1.2
+}

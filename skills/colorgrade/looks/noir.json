@@ -1,0 +1,26 @@
+{
+  "description": "Hard black and white with a cold breath of colour left in. Thriller and title sequences.",
+  "reference": "Near monochrome: chroma pulled almost out, contrast high, shadows cooled.",
+  "contrast": 1.55,
+  "toe": 0.05,
+  "shoulder": 0.25,
+  "saturation": 0.18,
+  "sat_shadow": 0.3,
+  "sat_highlight": 0.25,
+  "shadow_tint": [
+    -0.1,
+    -0.04,
+    0.12
+  ],
+  "highlight_tint": [
+    0.02,
+    0.02,
+    0.06
+  ],
+  "highlight_rolloff": 0.25,
+  "protect_skin": 0.0,
+  "name": "noir",
+  "gamut_limit": 1.6,
+  "gamut_threshold": 0.8,
+  "gamut_power": 1.2
+}
