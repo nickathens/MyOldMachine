@@ -549,6 +549,22 @@ Alerts have a 4 hour cooldown, so you will not get spammed. Check manually anyti
 
 An admin can turn on a nightly chain from `/maintenance`: backup, reflection, cleanup, system update, a fresh system probe, a health check, and an optional reboot slotted after the whole chain. Each step is opt in, and the reboot refuses to run unless it can confirm the bot will come back on boot (an enabled systemd service on Linux, or a boot service or auto login on macOS), so it never strands the machine at a login screen.
 
+### Apps the package manager cannot see
+
+The system update step covers whatever apt, dnf or brew knows about. Several apps a workstation is meant to have sit outside that entirely, so nothing was ever looking at them: DaVinci Resolve, whose Homebrew cask was retired (the `davinci-resolve` skill ships its own installer), Claude Code, which installs a native build under your home directory, the global npm CLIs that skills install on demand (`mermaid-cli`, `higgsfield`, `lighthouse`, `surge`, `afterwriting`, `gws`), and Flatpak apps on Linux, which is where `install/compat.py` puts Blender, GIMP, Inkscape, LibreOffice and Chromium when a distro's own packages are too old.
+
+`utils/app_updates.py` checks all of them nightly and reports in the same digest. It installs only CLI updates, and only when the leading version number does not move: a major bump is reported for a human, because under semver that is a promise something breaks. Applications are never installed unattended whatever the setting says, since a 3.5 GB package behind a registration form is not something to start at 4am, and replacing an app under someone with a project open loses their work.
+
+```bash
+/maintenance apps on          # check nightly, install safe CLI updates
+/maintenance apps report      # check nightly, install nothing
+/maintenance apps off
+/maintenance run apps         # check right now
+python utils/app_updates.py [--update]
+```
+
+Apps waiting on a human are reminded weekly rather than nightly, on their own clock, separate from the Homebrew casks: a new cask appearing must not reset the reminder for a Resolve that has been waiting a fortnight.
+
 ## Prompt evaluation
 
 A built in testing framework verifies system prompt behavior across providers. It catches regressions when you change prompts, runs locally, and sends nothing off the machine.

@@ -49,6 +49,17 @@ DEFAULT_CONFIG = {
     # Auto-restart if any update requires it. Off by default so the nightly
     # job never surprise-reboots a workstation. Ignored unless macos_system_updates is on.
     "macos_system_updates_restart": False,
+    # Also check the apps no package manager tracks: DaVinci Resolve (Blackmagic
+    # retired the Homebrew cask), Claude Code (native install), the global npm
+    # CLIs the skills install, and Flatpak apps on Linux. On by default and
+    # read-only in itself — before this existed nothing on the machine had ever
+    # looked at any of their versions.
+    "app_update_checks": True,
+    # Whether that check may install what it finds. Deliberately narrow: only
+    # CLIs, and only when the leading version number does not move (a major
+    # bump is reported for a human instead). GUI applications are never
+    # installed unattended whatever this says — see app_updates.AUTO_INSTALLABLE.
+    "app_auto_update": True,
     # Close idle, orphaned heavyweight helper apps (LibreOffice, GIMP, Inkscape,
     # Blender) that skills spawn headless and leave resident. On by default: the
     # process reaper only touches an app that is BOTH older than the window below
@@ -116,6 +127,15 @@ def get_status_report() -> str:
             lines.append(f"  macOS softwareupdate: ON{restart_note}")
         else:
             lines.append("  macOS softwareupdate: OFF (Apple security responses still auto-install)")
+
+    # Apps outside the package manager (Resolve, Claude Code, npm CLIs, Flatpak)
+    if config.get("app_update_checks", True):
+        if config.get("app_auto_update", True):
+            lines.append("App update checks: ON (nightly, installs CLI updates)")
+        else:
+            lines.append("App update checks: ON (nightly, report only)")
+    else:
+        lines.append("App update checks: OFF")
 
     # Cleanup
     if config.get("cleanup"):
