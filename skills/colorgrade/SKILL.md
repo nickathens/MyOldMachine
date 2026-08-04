@@ -55,6 +55,13 @@ That one line does all of this:
 9. renders in a single decode and a single encode, audio copied through
 10. writes a contact sheet, a report, and the LUTs
 
+Step 9 is one straight chain of lut3d filters, each switched on over its own
+frame range, so peak memory scales with the frame and not with the runtime: a
+feature costs the same as a trailer. Measured on a 45s 2560x720 piece with 30
+shots, 0.63 GB peak. Size any memory cap by resolution, and remember that a
+service unit with `OOMPolicy=stop` takes the whole bot down when one child
+breaches the cap, so a long grade is worth running in its own scope.
+
 Look first, then decide:
 
 ```bash

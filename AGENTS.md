@@ -70,6 +70,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+- `[2026-08-04] linux: colorgrade render rebuilt as a timeline-enabled lut3d
+  chain instead of trim/concat, which buffered the whole decoded video.
+  skills/colorgrade/scripts/cgvideo.py + SKILL.md, one new test module (PR
+  #104)`
 - `[2026-08-04] mac: new colorgrade skill (unattended whole-video grade plus a
   DCTL generator for one object). New files only, plus the README skill table
   and counts (PR #103)`
