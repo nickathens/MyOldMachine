@@ -117,11 +117,17 @@ class AppStatus(NamedTuple):
         return self.state in ("outdated", "updated", "failed")
 
 
-def _run(cmd: list[str], timeout: int = 60) -> tuple[int, str]:
-    """Run a command with no shell. Returns (returncode, stdout+stderr)."""
+def _run(cmd: list[str], timeout: int = 60, merge_stderr: bool = True) -> tuple[int, str]:
+    """Run a command with no shell. Returns (returncode, stdout+stderr).
+
+    merge_stderr=False returns stdout alone. Callers that *parse* the output
+    need that: a tool which prints a warning to stderr would otherwise corrupt
+    its own JSON, and the parse failure reads as "nothing to report".
+    """
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.returncode, (r.stdout + r.stderr).strip()
+        out = (r.stdout + r.stderr) if merge_stderr else r.stdout
+        return r.returncode, out.strip()
     except (subprocess.TimeoutExpired, OSError) as e:
         return 1, str(e)
 
@@ -357,10 +363,18 @@ def _npm_outdated_global() -> dict:
 
     npm exits 1 when anything is outdated, which is the case we care about, so
     the return code is not a usable success signal — the JSON is.
+
+    stdout only, deliberately. npm writes its warnings to stderr and keeps the
+    JSON on stdout, so folding the two together appends the warning text to the
+    document and the parse fails. Reproduced on a Linux box with npm 10.8.2:
+    one `npm warn config` line turned a correct report of two stale CLIs into
+    an empty one, silently — the exact shape of failure this module exists to
+    remove.
     """
     if not shutil.which("npm"):
         return {}
-    _rc, out = _run(["npm", "outdated", "-g", "--json"], timeout=180)
+    _rc, out = _run(["npm", "outdated", "-g", "--json"], timeout=180,
+                    merge_stderr=False)
     if not out:
         return {}
     try:

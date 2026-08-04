@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -306,6 +307,56 @@ class NpmCliTests(unittest.TestCase):
     @patch("utils.app_updates._run", return_value=(0, "npm WARN config chatter"))
     def test_non_json_chatter_is_not_parsed_as_packages(self, _run, _which):
         self.assertEqual(au._npm_outdated_global(), {})
+
+    # -- npm keeps its warnings on stderr and its JSON on stdout ------------
+    # Patched at subprocess.run rather than at _run, because the bug being
+    # held here lives in how _run itself joins the two streams. Reproduced on
+    # a Linux box with npm 10.8.2 (2026-08-04): a single `npm warn config`
+    # line turned a correct report of two stale CLIs into an empty one.
+
+    @staticmethod
+    def _completed(stdout: str, stderr: str, rc: int = 1):
+        return subprocess.CompletedProcess(
+            args=["npm"], returncode=rc, stdout=stdout, stderr=stderr,
+        )
+
+    @patch("utils.app_updates.shutil.which", return_value="/usr/bin/npm")
+    @patch("utils.app_updates.subprocess.run")
+    def test_a_warning_on_stderr_does_not_erase_the_report(self, run, _which):
+        run.return_value = self._completed(
+            stdout=json.dumps({"surge": {"current": "0.27.3", "latest": "0.41.2"}}),
+            stderr="npm warn config production Use `--omit=dev` instead.\n",
+        )
+        self.assertIn("surge", au._npm_outdated_global())
+
+    @patch("utils.app_updates.shutil.which", return_value="/usr/bin/npm")
+    @patch("utils.app_updates.subprocess.run")
+    def test_a_warning_on_stderr_still_reaches_check_npm_clis(self, run, _which):
+        run.return_value = self._completed(
+            stdout=json.dumps({"surge": {"current": "0.27.3", "latest": "0.41.2"}}),
+            stderr="npm warn config production Use `--omit=dev` instead.\n",
+        )
+        (s,) = au.check_npm_clis(auto_update=False)
+        self.assertEqual((s.name, s.installed, s.latest, s.state),
+                         ("surge", "0.27.3", "0.41.2", "outdated"))
+
+    @patch("utils.app_updates.shutil.which", return_value="/usr/bin/npm")
+    @patch("utils.app_updates.subprocess.run")
+    def test_warnings_alone_are_still_not_packages(self, run, _which):
+        # The other half of the same seam: dropping stderr must not turn
+        # chatter into a report either. Empty stdout stays empty.
+        run.return_value = self._completed(
+            stdout="", stderr="npm warn config production\n", rc=0,
+        )
+        self.assertEqual(au._npm_outdated_global(), {})
+
+    @patch("utils.app_updates.subprocess.run")
+    def test_merged_streams_remain_the_default(self, run):
+        # Everything else in this module reads human-facing output, where a
+        # tool's error text on stderr is the useful part of the answer.
+        run.return_value = self._completed(stdout="out", stderr="err", rc=0)
+        self.assertEqual(au._run(["x"]), (0, "outerr"))
+        self.assertEqual(au._run(["x"], merge_stderr=False), (0, "out"))
 
 
 class FlatpakTests(unittest.TestCase):
