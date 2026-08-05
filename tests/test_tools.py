@@ -289,6 +289,61 @@ class CaseInsensitiveWriteBlockTests(unittest.TestCase):
                     f"expected allowed: {path!r}",
                 )
 
+    def test_mixed_case_anchor_still_protects_its_own_path(self):
+        """The anchor half of the fold, pinned independently of this machine.
+
+        Both sides of the compare must fold. The tests above can only prove
+        the candidate half, because they read anchors off the running install
+        and every path in BLOCKED_WRITE_PATHS is lowercase on a Linux runner.
+
+        The anchor half matters more than it looks. BLOCKED_WRITE_PATHS carries
+        the bot's own install path, and macOS capitalizes the home directory by
+        default (/Users/<Name>/...). Fold the candidate only, and a capitalized
+        anchor stops matching even its own real spelling: bot.py and .env
+        become writable in PLAIN LOWERCASE, i.e. the guard is gone rather than
+        merely leaky. Verified on a case-insensitive volume: with the anchor
+        fold removed and the tree installed under a capitalized path, all 11
+        protected spellings came back ALLOWED.
+
+        So the anchor is supplied here rather than read off the machine, which
+        makes the assertion hold on a lowercase Linux runner too.
+        """
+        for anchor, candidates in (
+            (
+                "/Users/Example/MyOldMachine/bot.py",
+                (
+                    "/Users/Example/MyOldMachine/bot.py",   # the real spelling
+                    "/users/example/myoldmachine/bot.py",
+                    "/Users/Example/MyOldMachine/BOT.PY",
+                ),
+            ),
+            (
+                "/Users/Example/MyOldMachine/core",         # directory entry
+                (
+                    "/Users/Example/MyOldMachine/core/session.py",
+                    "/users/example/myoldmachine/core/session.py",
+                    "/Users/Example/MyOldMachine/CORE/session.py",
+                ),
+            ),
+        ):
+            with patch.object(tools, "_WRITE_BLOCK_ANCHOR_PAIRS", [(anchor, anchor)]):
+                for candidate in candidates:
+                    with self.subTest(anchor=anchor, path=candidate):
+                        self.assertIsNotNone(
+                            tools._is_write_blocked(candidate),
+                            f"expected blocked: {candidate!r}",
+                        )
+                # and folding must still not widen the match
+                for allowed in (
+                    "/Users/Example/MyOldMachine/bot.py.bak",
+                    "/users/example/myoldmachine-fork/bot.py",
+                ):
+                    with self.subTest(anchor=anchor, path=allowed):
+                        self.assertIsNone(
+                            tools._is_write_blocked(allowed),
+                            f"expected allowed: {allowed!r}",
+                        )
+
 
 class CheckRiskyCommandTests(unittest.TestCase):
     """Risky-but-allowed commands surface warnings for the LLM."""
