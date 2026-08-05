@@ -230,6 +230,121 @@ class IsWriteBlockedTests(unittest.TestCase):
         self.assertIsNone(tools._is_write_blocked("/private/etc/passwd-foo"))
 
 
+class CaseInsensitiveWriteBlockTests(unittest.TestCase):
+    """The write guard must fold case, same as the credential-read guard.
+
+    macOS APFS and Windows are case-INSENSITIVE by default, so there
+    write_file('.ENV') lands on .env and 'BOT.PY' on bot.py. Path.resolve()
+    does not case-fold, so an exact-case compare of the resolved path let an
+    uppercase spelling clobber a protected file. Reproduced live on a
+    case-insensitive volume before this class existed: _is_write_blocked('.ENV')
+    returned None while '.env' was blocked, i.e. bot.py and the credential file
+    were writable through an uppercase spelling.
+
+    These assertions are filesystem-independent on purpose -- they pin the
+    guard's decision, not the platform's, so they fail on Linux CI too if the
+    folding is removed.
+    """
+
+    def test_system_paths_blocked_in_any_case(self):
+        for path in (
+            "/etc/PASSWD", "/ETC/passwd", "/etc/Shadow",
+            "/BOOT/grub/grub.cfg", "/etc/SUDOERS.D/myrule",
+            "/var/spool/CRON/root",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNotNone(
+                    tools._is_write_blocked(path),
+                    f"expected blocked: {path!r}",
+                )
+
+    def test_bot_core_files_blocked_in_any_case(self):
+        # The live exploit: the bot's own .env / bot.py / core, clobbered via an
+        # uppercase spelling. Built from the real blocklist so it tracks the
+        # bot's actual install path rather than hard-coding it.
+        for blocked in tools.BLOCKED_WRITE_PATHS:
+            entry = blocked.rstrip("/")
+            if entry.startswith(("/etc", "/boot", "/var")):
+                continue  # system paths covered above
+            component = Path(entry)
+            upper = str(component.parent / component.name.upper())
+            if upper == entry:
+                continue  # no letters to vary (defensive)
+            with self.subTest(path=upper):
+                self.assertIsNotNone(
+                    tools._is_write_blocked(upper),
+                    f"expected blocked: {upper!r}",
+                )
+
+    def test_case_varied_lookalikes_still_allowed(self):
+        # Folding must not widen the match: these differ from any protected
+        # path by more than case, and blocking them would break real work.
+        for path in (
+            "/etc/PASSWD-FOO", "/etc/HOSTS-BACKUP",
+            "/BOOTLOADER.cfg", "/etc/CRONTAB.bak",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(
+                    tools._is_write_blocked(path),
+                    f"expected allowed: {path!r}",
+                )
+
+    def test_mixed_case_anchor_still_protects_its_own_path(self):
+        """The anchor half of the fold, pinned independently of this machine.
+
+        Both sides of the compare must fold. The tests above can only prove
+        the candidate half, because they read anchors off the running install
+        and every path in BLOCKED_WRITE_PATHS is lowercase on a Linux runner.
+
+        The anchor half matters more than it looks. BLOCKED_WRITE_PATHS carries
+        the bot's own install path, and macOS capitalizes the home directory by
+        default (/Users/<Name>/...). Fold the candidate only, and a capitalized
+        anchor stops matching even its own real spelling: bot.py and .env
+        become writable in PLAIN LOWERCASE, i.e. the guard is gone rather than
+        merely leaky. Verified on a case-insensitive volume: with the anchor
+        fold removed and the tree installed under a capitalized path, all 11
+        protected spellings came back ALLOWED.
+
+        So the anchor is supplied here rather than read off the machine, which
+        makes the assertion hold on a lowercase Linux runner too.
+        """
+        for anchor, candidates in (
+            (
+                "/Users/Example/MyOldMachine/bot.py",
+                (
+                    "/Users/Example/MyOldMachine/bot.py",   # the real spelling
+                    "/users/example/myoldmachine/bot.py",
+                    "/Users/Example/MyOldMachine/BOT.PY",
+                ),
+            ),
+            (
+                "/Users/Example/MyOldMachine/core",         # directory entry
+                (
+                    "/Users/Example/MyOldMachine/core/session.py",
+                    "/users/example/myoldmachine/core/session.py",
+                    "/Users/Example/MyOldMachine/CORE/session.py",
+                ),
+            ),
+        ):
+            with patch.object(tools, "_WRITE_BLOCK_ANCHOR_PAIRS", [(anchor, anchor)]):
+                for candidate in candidates:
+                    with self.subTest(anchor=anchor, path=candidate):
+                        self.assertIsNotNone(
+                            tools._is_write_blocked(candidate),
+                            f"expected blocked: {candidate!r}",
+                        )
+                # and folding must still not widen the match
+                for allowed in (
+                    "/Users/Example/MyOldMachine/bot.py.bak",
+                    "/users/example/myoldmachine-fork/bot.py",
+                ):
+                    with self.subTest(anchor=anchor, path=allowed):
+                        self.assertIsNone(
+                            tools._is_write_blocked(allowed),
+                            f"expected allowed: {allowed!r}",
+                        )
+
+
 class CheckRiskyCommandTests(unittest.TestCase):
     """Risky-but-allowed commands surface warnings for the LLM."""
 
