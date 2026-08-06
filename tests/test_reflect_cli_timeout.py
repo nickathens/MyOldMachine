@@ -57,7 +57,9 @@ class CliTimeoutBudgetTests(unittest.TestCase):
                    return_value=_cli_result()) as mock_run:
             reflect._call_claude_cli("prompt")
 
-        self.assertEqual(mock_run.call_args.kwargs["timeout"],
+        # .get, not [], so a dropped kwarg fails with a readable assertion
+        # instead of a KeyError that reads like a broken test.
+        self.assertEqual(mock_run.call_args.kwargs.get("timeout"),
                          reflect.CLAUDE_CLI_TIMEOUT_SEC)
 
     def test_call_closes_stdin(self):
@@ -66,7 +68,7 @@ class CliTimeoutBudgetTests(unittest.TestCase):
                    return_value=_cli_result()) as mock_run:
             reflect._call_claude_cli("prompt")
 
-        self.assertEqual(mock_run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(mock_run.call_args.kwargs.get("stdin"), subprocess.DEVNULL)
 
     def test_timeout_message_reports_the_real_budget(self):
         """The admin alert quotes this string; a stale literal misreports the cause."""
