@@ -63,6 +63,17 @@ LOG_FILE = DATA_DIR / "logs" / "reflection.log"
 # Importance threshold: sum of importance scores must exceed this to trigger reflection
 DEFAULT_THRESHOLD = 16
 
+# How long a single Claude CLI call may run. Phase 2 is the long pole: it feeds
+# the whole person model back in and asks for a full rewrite. Measured on this
+# machine with claude-opus-5 over a 32k-char prompt, three consecutive runs took
+# 120.1s, 123.6s and 128.2s and all returned complete output. The previous 120s
+# ceiling sat *inside* that spread, so a Phase 2 call was killed a moment before
+# it returned roughly as often as not — and because a timeout looks identical to
+# a 0-byte return, the retry ladder below just repeated the same near-miss until
+# the budget ran out. 300s keeps better than 2x headroom over the measured worst
+# case while still bounding the ladder at ~21 min per user.
+CLAUDE_CLI_TIMEOUT_SEC = 300
+
 # Phase 2 dual-budget retry caps. Two failure modes get distinct budgets:
 # - 0-byte returns: transient model burp, deserve generous retries with backoff
 # - Non-empty unparseable returns: real format issue, fewer retries before giving up
@@ -419,7 +430,12 @@ def _call_claude_cli(prompt: str) -> str:
             cli_model = "claude-sonnet-5"
         result = subprocess.run(
             ["claude", "-p", prompt, "--model", cli_model],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=CLAUDE_CLI_TIMEOUT_SEC,
+            # Nightly runs inherit the scheduler's stdin, which is neither a
+            # terminal nor a closed pipe, so the CLI spends its first 3s waiting
+            # for piped input that never arrives ("no stdin data received in 3s").
+            # Closing it explicitly hands those seconds back to the model.
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0 and result.stdout.strip():
             out = result.stdout.strip()
@@ -437,7 +453,7 @@ def _call_claude_cli(prompt: str) -> str:
         log(_record_provider_error(
             f"Claude CLI failed: exit={result.returncode}: {detail[:300]}"))
     except subprocess.TimeoutExpired:
-        log(_record_provider_error("Claude CLI timed out (120s)"))
+        log(_record_provider_error(f"Claude CLI timed out ({CLAUDE_CLI_TIMEOUT_SEC}s)"))
     except Exception as e:
         log(_record_provider_error(f"Claude CLI error: {e}"))
     return ""
