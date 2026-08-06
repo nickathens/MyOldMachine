@@ -83,15 +83,23 @@ PHASE2_RETRY_BACKOFF_SEC = 30
 
 
 def log(msg: str):
-    """Append to reflection log."""
+    """Append to reflection log.
+
+    Under MOM_TEST the file write is skipped, the same gate bot.py uses for
+    bot.log. Tests drive this module's failure paths on purpose, and their
+    synthetic 0-byte returns and unparseable output are indistinguishable from
+    the real thing once they are in the file an operator reads to find out why
+    last night's reflection failed.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"{timestamp} | REFLECT | {msg}"
-    try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(log_entry + "\n")
-    except Exception:
-        pass
+    if not os.environ.get("MOM_TEST"):
+        try:
+            LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(log_entry + "\n")
+        except Exception:
+            pass
     print(msg)
 
 

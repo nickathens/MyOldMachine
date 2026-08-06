@@ -10,6 +10,7 @@ return so the retry ladder just repeated the near-miss.
 These tests pin the three things that fix has to keep true.
 """
 import itertools
+import os
 import subprocess
 import sys
 import unittest
@@ -19,6 +20,8 @@ from unittest.mock import MagicMock, patch
 # Make MOM utils importable without spinning up the bot
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep synthetic output out of the real reflection.log
 
 from core.scheduler import DEFAULT_COMMAND_TIMEOUT
 from utils import reflect
