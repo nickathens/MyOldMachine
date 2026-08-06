@@ -5,6 +5,7 @@ on the very first failure. The retry loop distinguishes:
   - 0-byte returns from the provider chain (empty budget, 4 retries)
   - Non-empty but unparseable returns (format budget, 2 retries)
 """
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +14,8 @@ from unittest.mock import MagicMock, patch
 # Make MOM utils importable without spinning up the bot
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep synthetic output out of the real reflection.log
 
 from utils import reflect
 

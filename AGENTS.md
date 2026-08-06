@@ -72,6 +72,9 @@ provider.
 
 - [2026-08-06] mac: raise the reflection CLI budget above the measured Phase 2
   runtime, `utils/reflect.py` (PR #109)
+- [2026-08-06] linux: bound the whole reflection run against the scheduler's
+  command timeout, and keep synthetic test output out of `reflection.log`,
+  `utils/reflect.py` (PR #110)
 
 (Entries removed above: #105 and #104 merged 2026-08-04, and #103, #102
 and #101 the same day. #100 back to #96 before them, 2026-08-02.)

@@ -81,18 +81,122 @@ PHASE2_MAX_EMPTY_RETRIES = 4
 PHASE2_MAX_FORMAT_RETRIES = 2
 PHASE2_RETRY_BACKOFF_SEC = 30
 
+# ─── Time budget ───────────────────────────────────────────────────
+# Per-call timeouts do not bound the run. The empty and format budgets above
+# are independent, so a mixed failure sequence spends both: driven end to end
+# rather than derived, the ladder reaches 5 attempts and 4 backoffs, and Phase 1
+# is charged on top of that with no retry of its own. Measured worst case per
+# user at CLAUDE_CLI_TIMEOUT_SEC=300:
+#
+#     CLI only (no API key)      1920s = 32 min
+#     CLI + a 120s API fallback  2520s = 42 min
+#     CLI + a 300s ollama        3420s = 57 min
+#
+# against a scheduler that SIGTERMs the whole command at
+# core.scheduler.DEFAULT_COMMAND_TIMEOUT (1800s), and main() reflects users in
+# sequence inside that one command, so the cost multiplies by user count while
+# the ceiling does not move. Every shape above is over the line, single-user
+# included. A kill lands wherever it lands, including part-way through
+# set_model(), so the ladder has to stop itself rather than be stopped.
+#
+# 1740s leaves that 1800s ceiling a 60s tail for the writes that follow the last
+# call and for the admin alert (a 30s subprocess). tests/test_reflect_budget.py
+# fails if this ever climbs above the scheduler's own ceiling.
+REFLECT_BUDGET_SEC = 1740
+
+# Below this much remaining, start nothing new. Sized off this file's own
+# measured Phase 2 runtime (120.1s, 123.6s, 128.2s over a 32k-char prompt): a
+# call handed less than its worst observed clean run cannot finish, and burning
+# the tail on it only guarantees the deadline is crossed with nothing to show.
+MIN_USEFUL_SLICE_SEC = 150
+
+# Monotonic deadlines, armed by main(). _PROCESS_DEADLINE bounds the whole
+# command; _DEADLINE bounds the user currently being reflected on and never
+# outlives it. None means no budget (direct import from bot.py for the intro
+# reflection, or an ad-hoc call), which preserves the pre-budget behaviour.
+_PROCESS_DEADLINE = None
+_DEADLINE = None
+
+
+def arm_budget(seconds: int = REFLECT_BUDGET_SEC):
+    """Start the process-wide clock. seconds <= 0 disarms (unlimited)."""
+    global _PROCESS_DEADLINE, _DEADLINE
+    _PROCESS_DEADLINE = None if seconds <= 0 else time.monotonic() + seconds
+    _DEADLINE = _PROCESS_DEADLINE
+    return _PROCESS_DEADLINE
+
+
+def arm_user_slice(users_left: int):
+    """Give the next user a fair share of what is left of the process budget.
+
+    One MOM install serves several Telegram users and main() reflects them in
+    sequence inside one scheduler command, so without this the first user's worst
+    night eats the whole budget and everyone behind them is skipped. Self
+    balancing: a user who finishes fast hands the remainder back to the next one.
+    """
+    global _DEADLINE
+    if _PROCESS_DEADLINE is None:
+        _DEADLINE = None
+        return None
+    left = _PROCESS_DEADLINE - time.monotonic()
+    share = left / max(1, users_left)
+    _DEADLINE = time.monotonic() + share
+    return _DEADLINE
+
+
+def budget_remaining() -> float:
+    """Seconds left for the current user. inf when no budget is armed."""
+    if _DEADLINE is None:
+        return float("inf")
+    return _DEADLINE - time.monotonic()
+
+
+def process_remaining() -> float:
+    """Seconds left in the whole-run budget. inf when no budget is armed."""
+    if _PROCESS_DEADLINE is None:
+        return float("inf")
+    return _PROCESS_DEADLINE - time.monotonic()
+
+
+def _call_timeout(default: float) -> float:
+    """Clamp one call's timeout to what is left, so it cannot outlive the run."""
+    return min(default, budget_remaining())
+
 
 def log(msg: str):
-    """Append to reflection log."""
+    """Append to reflection log.
+
+    Under MOM_TEST the file write is skipped, the same gate bot.py uses for
+    bot.log. Tests drive this module's failure paths on purpose, and their
+    synthetic 0-byte returns and unparseable output are indistinguishable from
+    the real thing once they are in the file an operator reads to find out why
+    last night's reflection failed.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"{timestamp} | REFLECT | {msg}"
-    try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(log_entry + "\n")
-    except Exception:
-        pass
+    if not os.environ.get("MOM_TEST"):
+        try:
+            LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(log_entry + "\n")
+        except Exception:
+            pass
     print(msg)
+
+
+def _budget_backoff(seconds: int, why: str = "") -> bool:
+    """Sleep before a retry, unless the budget cannot afford the retry itself.
+
+    Returns False when sleeping would leave too little time to run the call the
+    sleep exists for: give up now rather than spend the tail waiting for an
+    attempt that will be refused on arrival.
+    """
+    if budget_remaining() - seconds < MIN_USEFUL_SLICE_SEC:
+        log("    not enough budget left to back off and retry, giving up")
+        return False
+    log(f"    {why}backing off {seconds}s before retry...")
+    time.sleep(seconds)
+    return True
 
 
 # ─── Observation Parsing ───────────────────────────────────────────
@@ -421,6 +525,12 @@ def _call_claude_cli(prompt: str) -> str:
         # fallback path on every call, not an event worth a log line.
         _record_provider_error("Claude CLI not installed (claude not on PATH)")
         return ""
+    call_timeout = _call_timeout(CLAUDE_CLI_TIMEOUT_SEC)
+    if call_timeout < MIN_USEFUL_SLICE_SEC:
+        log(_record_provider_error(
+            f"Claude CLI not started: {budget_remaining():.0f}s left in the run "
+            f"budget, less than the {MIN_USEFUL_SLICE_SEC}s a call needs to finish"))
+        return ""
     try:
         # Use the configured model if it's a Claude model, otherwise use default
         configured_model = get_llm_model()
@@ -430,7 +540,7 @@ def _call_claude_cli(prompt: str) -> str:
             cli_model = "claude-sonnet-5"
         result = subprocess.run(
             ["claude", "-p", prompt, "--model", cli_model],
-            capture_output=True, text=True, timeout=CLAUDE_CLI_TIMEOUT_SEC,
+            capture_output=True, text=True, timeout=call_timeout,
             # Nightly runs inherit the scheduler's stdin, which is neither a
             # terminal nor a closed pipe, so the CLI spends its first 3s waiting
             # for piped input that never arrives ("no stdin data received in 3s").
@@ -453,7 +563,7 @@ def _call_claude_cli(prompt: str) -> str:
         log(_record_provider_error(
             f"Claude CLI failed: exit={result.returncode}: {detail[:300]}"))
     except subprocess.TimeoutExpired:
-        log(_record_provider_error(f"Claude CLI timed out ({CLAUDE_CLI_TIMEOUT_SEC}s)"))
+        log(_record_provider_error(f"Claude CLI timed out ({call_timeout:.0f}s)"))
     except Exception as e:
         log(_record_provider_error(f"Claude CLI error: {e}"))
     return ""
@@ -493,6 +603,15 @@ def _call_api(prompt: str) -> str:
             _record_provider_error(f"Provider '{provider}' has no API fallback for reflection")
         return ""
 
+    # The API runs *after* the CLI on the same attempt, so its timeout is charged
+    # on top of the CLI's. Clamping it to what is left is what stops one attempt
+    # costing both budgets in full.
+    if budget_remaining() < MIN_USEFUL_SLICE_SEC:
+        log(_record_provider_error(
+            f"{provider} API not called: {budget_remaining():.0f}s left in the run "
+            f"budget, less than the {MIN_USEFUL_SLICE_SEC}s a call needs to finish"))
+        return ""
+
     try:
         if provider in ("ollama", "ollama-cloud"):
             base_url = get_ollama_base_url()
@@ -510,7 +629,7 @@ def _call_api(prompt: str) -> str:
                     {"role": "user", "content": prompt},
                 ],
             }
-            with httpx.Client(timeout=300.0) as client:
+            with httpx.Client(timeout=_call_timeout(300.0)) as client:
                 resp = client.post(url, headers=headers, json=body)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -529,7 +648,7 @@ def _call_api(prompt: str) -> str:
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                 "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.3},
             }
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=_call_timeout(120.0)) as client:
                 resp = client.post(url, headers={"x-goog-api-key": api_key}, json=body)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -543,7 +662,7 @@ def _call_api(prompt: str) -> str:
             return ""
 
         elif provider == "claude-api":
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=_call_timeout(120.0)) as client:
                 resp = client.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={
@@ -601,7 +720,7 @@ def _call_api(prompt: str) -> str:
             if not rejects_temperature:
                 body["temperature"] = 0.3
 
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=_call_timeout(120.0)) as client:
                 resp = client.post(url, headers=headers, json=body)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -650,6 +769,7 @@ def _run_phase2_with_retry(prompt: str, mm) -> tuple:
     empty_count = 0
     format_count = 0
     attempt = 0
+    budget_break = False
 
     # Clear per-run, so a failure recorded while reflecting on one user is never
     # reported as the cause of the next user's failure.
@@ -665,8 +785,9 @@ def _run_phase2_with_retry(prompt: str, mm) -> tuple:
                 f"(empty {empty_count}/{PHASE2_MAX_EMPTY_RETRIES}, "
                 f"format {format_count}/{PHASE2_MAX_FORMAT_RETRIES})")
             if empty_count < PHASE2_MAX_EMPTY_RETRIES:
-                log(f"    transient burp — backing off {PHASE2_RETRY_BACKOFF_SEC}s before retry...")
-                time.sleep(PHASE2_RETRY_BACKOFF_SEC)
+                if not _budget_backoff(PHASE2_RETRY_BACKOFF_SEC, "transient burp — "):
+                    budget_break = True
+                    break
             continue
 
         model_content, summary = mm.parse_reflection_output(output)
@@ -685,8 +806,23 @@ def _run_phase2_with_retry(prompt: str, mm) -> tuple:
         log(f"    output[:500]: {output[:500]}")
 
         if format_count < PHASE2_MAX_FORMAT_RETRIES:
-            log(f"    backing off {PHASE2_RETRY_BACKOFF_SEC}s before retry...")
-            time.sleep(PHASE2_RETRY_BACKOFF_SEC)
+            if not _budget_backoff(PHASE2_RETRY_BACKOFF_SEC):
+                budget_break = True
+                break
+
+    # A ladder cut short by the clock did not exhaust either retry budget, so
+    # naming one of them as the cause would send the operator after the wrong
+    # thing. The counter exits below are untouched: when the `while` condition
+    # ends the loop normally, one counter is always at its cap.
+    if budget_break:
+        msg = (f"Phase 2 stopped after {attempt} attempt(s): the run budget ran out "
+               f"before another retry could finish")
+        log(f"  {msg}")
+        if not _recorded_provider_error():
+            # Only when nothing else failed: a real cause already on record (an
+            # expired login, a rejected key) is more actionable than the clock.
+            _record_provider_error(msg)
+        return "", "", "no_llm"
 
     if empty_count >= PHASE2_MAX_EMPTY_RETRIES:
         log(f"  Phase 2 gave up: {empty_count} total 0-byte returns from providers")
@@ -1178,11 +1314,16 @@ def main():
     parser.add_argument("--user", type=int, help="Reflect on one user only")
     parser.add_argument("--threshold", type=int, default=DEFAULT_THRESHOLD,
                         help=f"Importance threshold to trigger reflection (default: {DEFAULT_THRESHOLD})")
+    parser.add_argument("--budget", type=int, default=REFLECT_BUDGET_SEC,
+                        help=f"Wall-clock seconds for the whole run, 0 for unlimited "
+                             f"(default: {REFLECT_BUDGET_SEC}). Must stay under the "
+                             f"scheduler's command timeout, which is 1800s.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
     mm = MemoryManager(DATA_DIR)
 
+    arm_budget(args.budget)
     log("=== Nightly Reflection Started ===")
 
     _warn_if_login_expiring(dry=args.dry)
@@ -1194,7 +1335,20 @@ def main():
     else:
         users = mm.get_all_users()
 
-    for user_id in sorted(users):
+    queue = sorted(users)
+    for i, user_id in enumerate(queue):
+        left = process_remaining()
+        if left < MIN_USEFUL_SLICE_SEC:
+            # Users share one process budget because the scheduler's kill is per
+            # command. Being skipped with an alert beats the whole command being
+            # SIGTERMed part-way through writing someone's model.
+            log(f"ERROR: skipping user {user_id}, only {left:.0f}s left in the "
+                f"{args.budget}s run budget")
+            results.append({"user_id": user_id, "status": "no_llm",
+                            "reason": f"run budget exhausted "
+                                      f"({left:.0f}s left of {args.budget}s)"})
+            continue
+        arm_user_slice(len(queue) - i)
         result = run_reflection(mm, user_id, args.dry, args.threshold)
         results.append(result)
 

@@ -15,6 +15,7 @@ Plus the hardening that prevents a repeat: warn while the login still works,
 keying off the REFRESH token (the clock that forces a human back to the
 machine), not the access token (which refreshes itself).
 """
+import os
 import json
 import sys
 import tempfile
@@ -27,6 +28,8 @@ from unittest.mock import MagicMock, patch
 # Make MOM utils importable without spinning up the bot
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep synthetic output out of the real reflection.log
 
 from utils import reflect
 from utils.claude_login_check import read_login_state, warning_message

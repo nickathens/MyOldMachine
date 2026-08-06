@@ -9,6 +9,7 @@ could not answer (it never failed over to the API provider). These tests cover:
   - _call_claude_cli returns "" (not the cap text) when the CLI is capped
   - the phase-2 provider chain fails over to the API when the CLI is capped
 """
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -17,6 +18,8 @@ from unittest.mock import MagicMock, patch
 # Make MOM utils importable without spinning up the bot
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep synthetic output out of the real reflection.log
 
 from utils import reflect
 
