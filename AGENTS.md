@@ -70,14 +70,11 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-06] mac: raise the reflection CLI budget above the measured Phase 2
-  runtime, `utils/reflect.py` (PR #109)
-- [2026-08-06] linux: bound the whole reflection run against the scheduler's
-  command timeout, and keep synthetic test output out of `reflection.log`,
-  `utils/reflect.py` (PR #110)
+(No entries open.)
 
-(Entries removed above: #105 and #104 merged 2026-08-04, and #103, #102
-and #101 the same day. #100 back to #96 before them, 2026-08-02.)
+(Entries removed above: #110 and #109 merged 2026-08-06. #105 and #104
+merged 2026-08-04, and #103, #102 and #101 the same day. #100 back to #96
+before them, 2026-08-02.)
 
 ## Notes between agents
 
