@@ -1,10 +1,36 @@
 # Soul Cast (Higgsfield)
 
-Covers: soul-cast (Soul Cast)
+Covers: `soul-cast` (Soul Cast)
+
+---
+
+## This is an image model, not a video model **[live 2026-08-07]**
+
+The live catalog reports `soul_cast` as **type `image`**. It has no `duration`, no `start_image` and
+no video parameters at all. Its full parameter list is `aspect_ratio` (required, and **16:9 is the
+only permitted value**), `budget` (integer, default 50) and `prompt`.
+
+Until 2026-08-07 the wrapper carried `soul-cast` in the **video** alias table, so a generation would
+have written its stills into a file named `.mp4`. It now resolves as an image model. Call it as one:
+
+```bash
+python skills/image-gen/scripts/generate.py "..." -m soul-cast -a 16:9 -o /tmp/cast.png
+```
+
+**Cost [live]:** 0.12 credits, and the quote does not move with `budget` (10, 50 and 100 all quote
+the same). It is effectively free to run, which fits a casting-sheet tool rather than a renderer.
+
+The prompt advice below was written for a video model and its **identity and wardrobe technique
+still applies to the stills**, but ignore anything about motion, performance beats or facial
+animation until someone re-tests what this model actually returns. Flagged rather than deleted so
+the useful half is not lost.
+
+---
 
 ## Prompt Style
 
-Character-driven video direction. Soul Cast specializes in character consistency across video generations. Lead with identity, follow with action and scene.
+Character-driven casting direction. Soul Cast specializes in character consistency. Lead with
+identity, follow with scene.
 
 ## Optimal Length
 

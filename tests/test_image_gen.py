@@ -228,6 +228,93 @@ class TestMiniMaxH3(unittest.TestCase):
         self.assertIn("10", cmd)
 
 
+class TestVideoCatalogAccuracy(unittest.TestCase):
+    """The wrapper's video tables have to match what the live API actually accepts.
+
+    Measured against `higgsfield model get` / `generate cost` on CLI 1.1.20,
+    2026-08-07. These are regression pins for bugs that were live in the wrapper,
+    not restatements of vendor documentation.
+    """
+
+    def test_new_video_models_resolve(self):
+        for alias, job in (
+            ("flux-video", "flux_3_video"),
+            ("flux3-video", "flux_3_video"),
+            ("grok-video1.5", "grok_video_v15"),
+            ("happy-horse", "happy_horse_video"),
+            ("seedance2.5", "seedance_2_5"),
+        ):
+            self.assertEqual(generate.resolve_model(alias, "video"), job)
+
+    def test_soul_cast_is_an_image_model(self):
+        # Live catalog reports type=image: no duration, no start_image, and a
+        # required 16:9. It sat in the video table and wrote stills into a .mp4.
+        self.assertEqual(generate.resolve_model("soul-cast", "image"), "soul_cast")
+        self.assertNotIn("soul-cast", generate.VIDEO_MODEL_ALIASES)
+
+    def test_every_video_alias_has_duration_info(self):
+        for job in set(generate.VIDEO_MODEL_ALIASES.values()):
+            self.assertIn(job, generate.VIDEO_DURATIONS, msg=f"{job} has no duration entry")
+
+    def test_measured_duration_bounds(self):
+        # Each of these was wrong in the wrapper until the 2026-08-07 sweep; the
+        # numbers are the validator's own rejection messages.
+        for job, lo, hi in (
+            ("seedance_2_0", 4, 15),        # advertised 5-30
+            ("seedance_2_0_mini", 4, 15),   # advertised 5-30
+            ("wan2_7", 2, 15),              # advertised 3-15
+            ("cinematic_studio_video_v2", 3, 12),  # advertised 3-10
+            ("flux_3_video", 5, 20),
+            ("grok_video_v15", 2, 15),
+            ("happy_horse_video", 3, 15),
+            ("seedance_2_5", 5, 30),
+        ):
+            dur = generate.VIDEO_DURATIONS[job]
+            self.assertEqual((dur["min"], dur["max"]), (lo, hi), msg=job)
+
+    def test_variant_not_model_is_the_param_name(self):
+        # `--model` is rejected outright: "Unknown params: model".
+        for job in ("veo3", "veo3_1", "minimax_hailuo"):
+            params = generate.MODEL_PARAMS[job]
+            self.assertIn("variant", params, msg=f"{job} should expose `variant`")
+            self.assertNotIn("model", params, msg=f"{job} still exposes `model`")
+
+    @patch("subprocess.run")
+    def test_aspect_ratio_withheld_from_models_that_reject_it(self, mock_run):
+        # hailuo and grok_video_v15 have no aspect_ratio param at all; sending it
+        # is a hard rejection, which broke every hailuo cost check.
+        mock_run.return_value = _proc(1, "", "boom")
+        for alias in ("hailuo", "grok-video1.5"):
+            mock_run.reset_mock()
+            generate.generate_video("a shot", "/tmp/out.mp4", model=alias, aspect_ratio="9:16")
+            self.assertNotIn("--aspect_ratio", mock_run.call_args[0][0], msg=alias)
+
+    @patch("subprocess.run")
+    def test_aspect_ratio_still_sent_for_normal_models(self, mock_run):
+        mock_run.return_value = _proc(1, "", "boom")
+        generate.generate_video("a shot", "/tmp/out.mp4", model="kling", aspect_ratio="9:16")
+        self.assertIn("--aspect_ratio", mock_run.call_args[0][0])
+
+    @patch("subprocess.run")
+    def test_hailuo_variant_is_sent_explicitly(self, mock_run):
+        # The API prints minimax-2.3 as the default but does not apply it: a
+        # prompt-only call fails its own CEL rule demanding a start/end image.
+        mock_run.return_value = _proc(1, "", "boom")
+        generate.generate_video("a shot", "/tmp/out.mp4", model="hailuo")
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--variant", cmd)
+        self.assertIn("minimax-2.3", cmd)
+
+    @patch("subprocess.run")
+    def test_explicit_variant_overrides_the_injected_default(self, mock_run):
+        mock_run.return_value = _proc(1, "", "boom")
+        generate.generate_video("a shot", "/tmp/out.mp4", model="hailuo",
+                                extra_params={"variant": "minimax-fast"})
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("minimax-fast", cmd)
+        self.assertEqual(cmd.count("--variant"), 1)
+
+
 class TestGuideMapping(unittest.TestCase):
     """Every guide file named in the SKILL.md mapping table has to exist.
 
@@ -264,6 +351,42 @@ class TestGuideMapping(unittest.TestCase):
         self.assertIn("minimax-h3.md", guides)
         for guide in sorted(guides):
             self.assertTrue((self.MODELS_DIR / guide).is_file(), msg=f"bot.py routes to missing guide {guide}")
+
+    def _bot_guide_aliases(self):
+        import re
+        block = re.search(r"_MODEL_GUIDES = \{(.*?)\n\s*\}", (ROOT / "bot.py").read_text(encoding="utf-8"), re.S)
+        self.assertIsNotNone(block, "could not find _MODEL_GUIDES in bot.py")
+        return set(re.findall(r'"([a-z0-9.\-]+)":\s*(?:"|\()', block.group(1)))
+
+    def test_every_video_alias_is_routed_by_bot(self):
+        """A new alias with no guide entry falls back to nano-banana.md silently.
+
+        The existing tests only check the other direction (that a named guide
+        exists on disk), so adding a model without wiring it produced a still
+        image guide for a video model and nothing failed. That is how `h3`
+        shipped unrouted in #115.
+        """
+        routed = self._bot_guide_aliases()
+        missing = sorted(set(generate.VIDEO_MODEL_ALIASES) - routed)
+        self.assertEqual(missing, [], msg=f"video aliases with no guide in bot.py: {missing}")
+
+    def test_every_video_alias_is_in_the_skill_table(self):
+        """Scoped to the mapping table only.
+
+        A whole-file search passes on an alias that appears anywhere else in
+        SKILL.md, e.g. in the cost table, which makes the guard vacuous.
+        """
+        import re
+        text = self.SKILL_MD.read_text(encoding="utf-8")
+        section = re.search(r"### Guide file mapping\n(.*?)\n###", text, re.S)
+        self.assertIsNotNone(section, "could not find the guide mapping table in SKILL.md")
+        # Left-hand column only: the aliases, not the guide filenames.
+        listed = set()
+        for row in re.findall(r"^\|([^|]+)\|[^|]+\|$", section.group(1), re.M):
+            listed.update(a.strip().strip("`") for a in row.split(","))
+        missing = sorted(a for a in generate.VIDEO_MODEL_ALIASES
+                         if not any(a == e or e.startswith(f"{a} ") for e in listed))
+        self.assertEqual(missing, [], msg=f"video aliases absent from the SKILL.md mapping table: {missing}")
 
 
 class TestGenerateJob(unittest.TestCase):

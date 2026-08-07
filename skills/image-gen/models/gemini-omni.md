@@ -31,7 +31,7 @@ who remembers the last take. The value lives in turns 2, 3 and 4 — not in turn
 | Resolution | 720p, 24 fps | 720p native; platform offers 1080p upscale as post |
 | Aspect | 16:9 (default), 9:16 | 16:9, 9:16 (platform also advertises 1:1, 4:5) |
 | Audio | generated natively, in-pass | same |
-| Cost | per Google plan/API | **~24 credits** — the second-priciest video model in the catalog |
+| Cost | per Google plan/API | **3.0 credits/s**: 12 at 4 s, 18 at 6 s, **24 at 8 s** |
 | Multi-turn editing | **yes** (`previous_interaction_id`) | **no — not exposed by our wrapper** |
 | Watermark | SynthID, always on, not optional | same |
 
@@ -235,9 +235,15 @@ browser app or through the API. It decides *how* a job gets done, not *whether*.
 
 ## Cost discipline
 
-~24 credits a clip on Higgsfield puts it above Seedance 2.0 (22) and level with the cinematic
-tier. Always `--cost` first. Given no multi-turn on that route, a bad roll is a full 24 credits
-wasted, so the opening prompt has to carry all six slots.
+**Corrected 2026-08-07.** This section previously called Omni Flash "the second-priciest video model
+in the catalog" and said 24 credits "puts it above Seedance 2.0 (22)". That compared an 8 s Gemini
+clip against a 5 s Seedance clip. Per second, Gemini is **3.0 credits/s** and Seedance 2.0 is
+**4.5 credits/s**, so Seedance is the dearer of the two, and Gemini sits mid-table: cheaper than
+`h3` (4.0), `seedance` (4.5), `cinematic3` (5.0), `flux-video` (5.5) and `seedance2.5` (6.5),
+dearer than `veo3.1` (2.75), `happy-horse` (2.5) and `kling` (2.0).
+
+A full 8 s roll is still 24 credits, and with no multi-turn editing on this route a bad roll is
+24 credits wasted, so the opening prompt has to carry all six slots. Always `--cost` first.
 
 ```bash
 python skills/image-gen/scripts/generate.py "<prompt>" --video -m gemini --cost

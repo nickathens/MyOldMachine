@@ -1,6 +1,30 @@
 # Grok Video (xAI)
 
-Covers: grok-video (Grok Video)
+Covers: `grok-video` (Grok Video)
+
+**Grok Imagine Video 1.5 is a separate, newer model** with a different engine, different limits and
+no aspect ratio control. It has its own guide, `grok-video-1-5.md`. Use `grok-video1.5` for that one.
+
+---
+
+## Hard specs **[live 2026-08-07]**
+
+| | |
+|---|---|
+| Duration | **1 to 15 s**, integer seconds |
+| Aspect | 16:9, 9:16, 1:1 |
+| Start image | yes |
+| End image / references | none |
+| Resolution | not exposed |
+| Cost | **1.5 credits/s** (1.5 for 1 s, 7.5 for 5 s, 22.5 for 15 s) |
+
+At 1.5 credits a second and a **1 second floor**, this is the cheapest way on the whole route to test
+a motion idea: a one second probe costs 1.5 credits. Use it to sanity check movement before paying
+4.5 a second for `grok-video1.5`, which is the same family with better audio and photorealism.
+
+Verified rejection **[live]**: `--duration 16` gives "Input should be less than or equal to 15".
+
+---
 
 ## Prompt Style
 

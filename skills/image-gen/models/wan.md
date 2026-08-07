@@ -1,6 +1,32 @@
 # Wan (Alibaba)
 
-Covers: wan (Wan 2.7), wan2.6 (Wan 2.6)
+Covers: `wan` (Wan 2.7), `wan2.6` (Wan 2.6)
+
+---
+
+## Hard specs **[live 2026-08-07]**
+
+| | `wan` (2.7) | `wan2.6` |
+|---|---|---|
+| Duration | **2 to 15 s** | **5 / 10 / 15 s only** |
+| Aspect | 16:9, 9:16, 1:1, 4:3, 3:4 | 16:9, 9:16, 1:1 |
+| Resolution | 720p (default), 1080p | `quality`: 720p (default), 1080p |
+| Start / end image | **yes, both** | no |
+| References | audio only, **1 max** | image, video, audio |
+| Cost | **1.5 credits/s** 720p, 2.5/s 1080p | **2.6 credits/s** 720p, 4.0/s 1080p |
+
+**Corrected 2026-08-07:** the wrapper advertised a 3 s floor for `wan`. The validator accepts **2 s**
+(3 credits), so very short cutaways are available and were previously blocked by our own table.
+
+`wan` is the cheapest model on the route that offers **both a start and an end frame** at
+1.5 credits a second, which makes it the default choice for keyframed transitions on a budget.
+`kling` also keyframes but costs 2.0/s, and `veo3-lite` keyframes at 1.0/s but locks you to 8 s when
+both frames are set.
+
+Live rules the API enforces: on `wan`, `end_image` requires `start_image`, and at most one audio
+reference. On `wan2.6`, reference-to-video with `video_references` supports **only 5 or 10 s**, not 15.
+
+---
 
 ## Prompt Style
 

@@ -336,6 +336,34 @@ When a media generation request comes from a structured source (Mini App, script
 | kling-turbo | `kling-video.md` |
 | gemini (video) | `gemini-omni.md` |
 | cinematic3.5 | `cinematic-video.md` |
+| seedance2.5 | `seedance-2-5.md` |
+| flux-video, flux3-video | `flux-3-video.md` |
+| grok-video1.5 | `grok-video-1-5.md` |
+| happy-horse | `happy-horse.md` |
+
+### Video model cost, measured **[live 2026-08-07]**
+
+Per second, at each model's default quality. Use this to pick a drafting model and a delivery model
+rather than paying flagship rates to find a shot. Always confirm with `--cost` before generating.
+
+| Credits/s | Models |
+|---|---|
+| 1.0 | `veo3-lite`, `hailuo` |
+| 1.2 | `seedance1.5` |
+| 1.5 | `kling-turbo`, `wan`, `grok-video`, `cinematic-v2` |
+| 2.0 | `kling`, `kling2.6` |
+| 2.5 | `happy-horse`, `seedance-mini` |
+| 2.6 | `wan2.6` |
+| 2.75 | `veo3.1` |
+| 3.0 | `gemini` |
+| 4.0 | `h3` |
+| 4.5 | `seedance`, `grok-video1.5` |
+| 5.0 | `cinematic3`, `cinematic3.5`, `marketing` |
+| 5.5 | `flux-video` |
+| 6.5 | `seedance2.5` |
+
+`veo3` is priced per clip, not per second: 22 flat on `veo-3-fast`, 58 on `veo-3-preview`.
+Quality steps cost extra on top: `kling` 4k is 6.0/s, `seedance` 4k is 22/s, `cinematic3` 4k is 24/s.
 
 **3D and audio models** (`tripo`, `text-to-3d`, `image-to-3d`, `music`, `speech`) have no prompt-refinement guide yet. Use the model's own `--cost` output and parameter list until one is written.
 

@@ -1,6 +1,58 @@
 # Hailuo (Minimax)
 
-Covers: hailuo (Minimax Hailuo)
+Covers: `hailuo` (`minimax_hailuo`)
+
+Not the same model as `h3` / `hailuo3` (MiniMax H3), which is a newer, structured-field model with
+its own guide (`minimax-h3.md`). This one wants narrative prose. Do not mix the two styles.
+
+---
+
+## Hard specs **[live 2026-08-07]**
+
+| | |
+|---|---|
+| Duration | **6 or 10 s only** (preset, not a slider) |
+| Variants | `minimax`, `minimax-fast`, `minimax-2.3` (default), `minimax-2.3-fast` |
+| Resolution | 512 / 768 / 1080 on paper, **768 in practice, see below** |
+| Aspect ratio | **no `aspect_ratio` param at all** |
+| Keyframes | `start_image`, `end_image`, variant dependent |
+| Cost | **6 credits for 6 s** on `minimax-2.3`, 4 on `minimax-2.3-fast` |
+
+At roughly 1 credit a second this is one of the cheapest video models on the route, which makes it a
+genuinely good place to block out a shot before committing to `h3`, `seedance2.5` or `flux-video`.
+
+### Two traps, both fixed in the wrapper on 2026-08-07
+
+**1. The variant has to go on the wire.** `model get` prints `minimax-2.3` as the default, but the
+API does not apply it. Every prompt-only call was rejected with "start_image or end_image is
+required unless variant is 'minimax-2.3'". The wrapper now sends `--variant minimax-2.3`
+explicitly. If you call the CLI by hand, you must pass it too.
+
+**2. The flag is `--variant`, not `--model`.** This guide and the wrapper previously documented
+`model`. `--model` is rejected outright with "Unknown params: model". Same correction applies to
+`veo3` and `veo3.1`.
+
+Also fixed: the wrapper used to send `--aspect_ratio` to this model, which has no such parameter, so
+**every cost check failed** with "Unknown params: aspect_ratio". Framing comes from the start image.
+
+### Resolution is unreachable, and that is upstream
+
+`resolution` accepts `512`, `768` or `1080`, and **no spelling of it works through the CLI**.
+Bare digits are sent as a number and rejected with "resolution should be string, got number"; a
+quoted value is passed through with its quotes and rejected with "allowed: 512,768,1080". The model
+is pinned to its 768 default until Higgsfield fixes the CLI. Verified across four forms.
+
+### Variant rules the API enforces **[live]**
+
+- `start_image` or `end_image` is **required** unless the variant is `minimax-2.3`.
+- `end_image` is **not supported** on `minimax-2.3` or `minimax-2.3-fast`.
+- Resolution 512 is incompatible with `end_image`, and unsupported on either 2.3 variant.
+- Resolution 1080 is not available at 10 s.
+
+Net effect: `minimax-2.3` is the only text-to-video variant, and it cannot do keyframed endings. For
+a last-frame transition you need an older variant plus a start image, at 6 credits for 6 s.
+
+---
 
 ## Prompt Style
 

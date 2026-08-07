@@ -57,6 +57,10 @@ MODEL_ALIASES = {
     "recraft": "recraft_v4_1",
     "nano-lite": "nano_banana_2_lite",
     "soul-cinema": "soul_cinema_studio",
+    # `soul_cast` reports type=image on the live catalog and takes aspect_ratio +
+    # budget + prompt, no duration. It sat in VIDEO_MODEL_ALIASES until 2026-08-07,
+    # which wrote its stills into a .mp4 container.
+    "soul-cast": "soul_cast",
 }
 
 DEFAULT_MODEL = "nano_banana_flash"
@@ -76,7 +80,6 @@ VIDEO_MODEL_ALIASES = {
     "hailuo": "minimax_hailuo",
     "wan": "wan2_7",
     "wan2.6": "wan2_6",
-    "soul-cast": "soul_cast",
     "marketing": "marketing_studio_video",
     # --- new video models from the live catalog ---
     "seedance-mini": "seedance_2_0_mini",
@@ -87,6 +90,25 @@ VIDEO_MODEL_ALIASES = {
     # which stays in the catalog and wants a completely different prompt style.
     "h3": "minimax_h3",
     "hailuo3": "minimax_h3",
+    # --- video models added 2026-08-07 after a full catalog sweep ---
+    "flux-video": "flux_3_video",
+    "flux3-video": "flux_3_video",
+    "grok-video1.5": "grok_video_v15",
+    "happy-horse": "happy_horse_video",
+    "seedance2.5": "seedance_2_5",
+}
+
+# Video models whose live schema has no `aspect_ratio` param at all. Sending it
+# is a hard rejection ("Unknown params: aspect_ratio"), which broke every cost
+# check on `hailuo` because main() defaults video to 16:9. Measured 2026-08-07.
+NO_ASPECT_RATIO_MODELS = {"minimax_hailuo", "grok_video_v15"}
+
+# Params the API refuses to default for you: omitting them fails the model's own
+# CEL rules even though `model get` prints a default. `minimax_hailuo` rejects
+# every prompt-only call with "start_image or end_image is required unless
+# variant is 'minimax-2.3'", so the variant has to go on the wire explicitly.
+REQUIRED_DEFAULTS = {
+    "minimax_hailuo": {"variant": "minimax-2.3"},
 }
 
 # --- new modalities: output is a mesh / an audio file, not jpg/mp4 ---
@@ -138,19 +160,20 @@ VIDEO_DURATIONS = {
     "veo3": None,
     "veo3_1": {"type": "preset", "default": 8, "options": [4, 6, 8]},
     "veo3_1_lite": {"type": "preset", "default": 8, "options": [4, 6, 8]},
-    "seedance_2_0": {"type": "slider", "default": 5, "min": 5, "max": 30},
+    # Bounds below are the validator's own numbers, read off the rejection
+    # messages from `generate cost` on 2026-08-07, not the vendor's docs.
+    "seedance_2_0": {"type": "slider", "default": 5, "min": 4, "max": 15},
     "seedance1_5": {"type": "preset", "default": 4, "options": [4, 8, 12]},
     "minimax_hailuo": {"type": "preset", "default": 6, "options": [6, 10]},
-    "wan2_7": {"type": "slider", "default": 5, "min": 3, "max": 15},
+    "wan2_7": {"type": "slider", "default": 5, "min": 2, "max": 15},
     "wan2_6": {"type": "preset", "default": 5, "options": [5, 10, 15]},
     "grok_video": {"type": "slider", "default": 5, "min": 1, "max": 15},
-    "soul_cast": None,
     "cinematic_studio_3_0": {"type": "slider", "default": 5, "min": 5, "max": 20},
     "cinematic_studio_video": {"type": "preset", "default": 5, "options": [5, 10]},
-    "cinematic_studio_video_v2": {"type": "slider", "default": 5, "min": 3, "max": 10},
+    "cinematic_studio_video_v2": {"type": "slider", "default": 5, "min": 3, "max": 12},
     "marketing_studio_video": {"type": "slider", "default": 15, "min": 5, "max": 60},
     # --- new video/audio models ---
-    "seedance_2_0_mini": {"type": "slider", "default": 5, "min": 5, "max": 30},
+    "seedance_2_0_mini": {"type": "slider", "default": 5, "min": 4, "max": 15},
     "kling3_0_turbo": {"type": "slider", "default": 5, "min": 3, "max": 15},
     "gemini_omni": {"type": "preset", "default": 8, "options": [4, 6, 8]},
     # MiniMax documents a 4s floor; the Higgsfield route rejects anything under 5
@@ -158,6 +181,11 @@ VIDEO_DURATIONS = {
     "minimax_h3": {"type": "slider", "default": 5, "min": 5, "max": 15},
     "cinematic_studio_video_3_5": {"type": "slider", "default": 15, "min": 5, "max": 20},
     "sonilo_music": {"type": "slider", "default": 10, "min": 5, "max": 60},
+    # --- added 2026-08-07 ---
+    "flux_3_video": {"type": "slider", "default": 5, "min": 5, "max": 20},
+    "grok_video_v15": {"type": "slider", "default": 5, "min": 2, "max": 15},
+    "happy_horse_video": {"type": "slider", "default": 5, "min": 3, "max": 15},
+    "seedance_2_5": {"type": "slider", "default": 5, "min": 5, "max": 30},
 }
 
 MODEL_PARAMS = {
@@ -175,21 +203,32 @@ MODEL_PARAMS = {
         "sound": {"options": ["on", "off"], "default": "on"},
     },
     "kling2_6": {"sound": {"type": "bool", "default": True}},
-    "veo3": {"model": {"options": ["veo-3-preview", "veo-3-fast"], "default": "veo-3-fast"}},
+    # The flag is `variant`, not `model`: `--model` is rejected outright with
+    # "Unknown params: model". Verified on veo3, veo3_1 and minimax_hailuo.
+    "veo3": {"variant": {"options": ["veo-3-preview", "veo-3-fast"], "default": "veo-3-fast"}},
     "veo3_1": {
-        "model": {"options": ["veo-3-1-preview", "veo-3-1-fast"], "default": "veo-3-1-fast"},
+        "variant": {"options": ["veo-3-1-preview", "veo-3-1-fast"], "default": "veo-3-1-fast"},
         "quality": {"options": ["basic", "high", "ultra"], "default": "basic"},
     },
     "veo3_1_lite": {"generate_audio": {"type": "bool", "default": False}},
     "seedance_2_0": {
         "mode": {"options": ["std", "fast"], "default": "std"},
         "genre": {"options": ["auto", "action", "horror", "comedy", "noir", "drama", "epic"], "default": "auto"},
-        "resolution": {"options": ["480p", "720p", "1080p"], "default": "720p"},
+        # `fast` covers 480p/720p only; 1080p and 4k need mode `std`.
+        "resolution": {"options": ["480p", "720p", "1080p", "4k"], "default": "720p"},
+        "bitrate_mode": {"options": ["standard", "high"], "default": "standard"},
+        "generate_audio": {"type": "bool", "default": True},
     },
-    "seedance1_5": {"resolution": {"options": ["480p", "720p", "1080p"], "default": "720p"}},
+    "seedance1_5": {
+        "resolution": {"options": ["480p", "720p", "1080p"], "default": "720p"},
+        "generate_audio": {"type": "bool", "default": True},
+    },
     "minimax_hailuo": {
-        "model": {"options": ["minimax", "minimax-fast", "minimax-2.3", "minimax-2.3-fast"], "default": "minimax-2.3"},
-        "resolution": {"options": ["512", "768", "1080"], "default": "768"},
+        "variant": {"options": ["minimax", "minimax-fast", "minimax-2.3", "minimax-2.3-fast"], "default": "minimax-2.3"},
+        # `resolution` is unreachable through the CLI: bare digits are sent as a
+        # number ("resolution should be string"), and a quoted value is sent with
+        # the quotes ("allowed: 512,768,1080"). No spelling works, so the model is
+        # pinned to its 768 default. Upstream CLI bug, measured 2026-08-07.
     },
     "wan2_7": {"resolution": {"options": ["720p", "1080p"], "default": "720p"}},
     "wan2_6": {"quality": {"options": ["720p", "1080p"], "default": "720p"}},
@@ -223,8 +262,26 @@ MODEL_PARAMS = {
     "seedance_2_0_mini": {
         "genre": {"options": ["auto", "action", "horror", "comedy", "noir", "drama", "epic"], "default": "auto"},
         "resolution": {"options": ["480p", "720p"], "default": "720p"},
-        "bitrate_mode": {"options": ["standard", "high"], "default": "high"},
+        "bitrate_mode": {"options": ["standard", "high"], "default": "standard"},
         "generate_audio": {"type": "bool", "default": True},
+    },
+    # --- added 2026-08-07 ---
+    "flux_3_video": {
+        "resolution": {"options": ["720p", "1080p"], "default": "720p"},
+        "generate_audio": {"type": "bool", "default": True},
+    },
+    "grok_video_v15": {
+        # 1080p is refused whenever reference media is attached.
+        "resolution": {"options": ["480p", "720p", "1080p"], "default": "720p"},
+    },
+    "happy_horse_video": {
+        "resolution": {"options": ["720p", "1080p"], "default": "720p"},
+    },
+    "seedance_2_5": {
+        "mode": {"options": ["t2v", "omni_reference", "video_edit", "video_extension"], "default": "t2v"},
+        "resolution": {"options": ["480p", "720p"], "default": "720p"},
+        "generate_audio": {"type": "bool", "default": True},
+        "extension_mode": {"options": ["backward", "forward"], "default": None},
     },
     "kling3_0_turbo": {"resolution": {"options": ["720p", "1080p"], "default": "720p"}},
     "cinematic_studio_video_3_5": {
@@ -295,12 +352,15 @@ def estimate_cost(model: str, prompt: str = "test", aspect_ratio: str | None = N
                    kind: str = "image", extra_params: dict | None = None) -> dict:
     resolved = resolve_model(model, kind)
     cmd = ["higgsfield", "generate", "cost", resolved, "--prompt", prompt, "--json"]
-    if aspect_ratio:
+    if aspect_ratio and resolved not in NO_ASPECT_RATIO_MODELS:
         cmd.extend(["--aspect_ratio", aspect_ratio])
     if resolution and resolution != "2k":
         cmd.extend(["--resolution", resolution])
     if duration is not None and (kind == "video" or resolved == "sonilo_music"):
         cmd.extend(["--duration", str(duration)])
+    for k, v in REQUIRED_DEFAULTS.get(resolved, {}).items():
+        if not (extra_params or {}).get(k):
+            cmd.extend([f"--{k}", str(v)])
     if extra_params:
         for k, v in extra_params.items():
             if v is not None and v != "":
@@ -435,12 +495,16 @@ def generate_video(
         "--json",
     ]
 
-    if aspect_ratio and aspect_ratio != "16:9":
+    if aspect_ratio and aspect_ratio != "16:9" and resolved not in NO_ASPECT_RATIO_MODELS:
         cmd.extend(["--aspect_ratio", aspect_ratio])
 
     dur_info = VIDEO_DURATIONS.get(resolved)
     if duration and dur_info:
         cmd.extend(["--duration", str(duration)])
+
+    for k, v in REQUIRED_DEFAULTS.get(resolved, {}).items():
+        if not (extra_params or {}).get(k):
+            cmd.extend([f"--{k}", str(v)])
 
     if ref_image:
         cmd.extend(["--image", ref_image])

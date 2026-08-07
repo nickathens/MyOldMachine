@@ -1,6 +1,36 @@
 # Kling (Kuaishou)
 
-Covers: kling (Kling 3.0), kling2.6 (Kling 2.6)
+Covers: `kling` (Kling 3.0), `kling2.6` (Kling 2.6), `kling-turbo` (Kling 3.0 Turbo)
+
+---
+
+## Hard specs **[live 2026-08-07]**
+
+| | `kling` | `kling2.6` | `kling-turbo` |
+|---|---|---|---|
+| Duration | **3 to 15 s** | **5 or 10 s only** | **3 to 15 s** |
+| Aspect | 16:9, 9:16, 1:1 | 16:9, 9:16, 1:1 | 16:9, 9:16, 1:1 |
+| Start image | yes | yes | yes |
+| End image | **yes** | no | no |
+| Mode | `std` (default), `pro`, `4k` | none | none |
+| Resolution | via mode | none | 720p (default), 1080p |
+| Sound | `on` / `off` string | boolean, default true | none |
+| Cost | **2.0 credits/s** std, 2.5/s pro, **6.0/s 4k** | **2.0 credits/s** | **1.5 credits/s** 720p, 2.0/s 1080p |
+
+`kling-turbo` was previously routed to this guide but never described in it. It is the cheapest of
+the three at 1.5 credits a second, has no `end_image`, and is the right place to block out a Kling
+shot before committing to `kling` for the keyframed version.
+
+Kling 3.0's `4k` mode is **three times** the price of `std` (30 credits for 5 s against 10). It is a
+delivery setting, never a drafting one.
+
+Verified rejections **[live]**: `--duration 2` on `kling` and `kling-turbo` gives "Input should be
+greater than or equal to 3"; `--duration 16` gives "less than or equal to 15".
+
+**Kling is the camera specialist on this route.** When a shot lives or dies on a precise, motivated
+camera move, this family beats `happy-horse`, `seedance` and `h3`. That is what to spend on here.
+
+---
 
 ## Prompt Style
 
