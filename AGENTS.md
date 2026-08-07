@@ -71,7 +71,7 @@ provider.
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
 - [2026-08-07] linux: review the tool CLI 2.1.224 added and make the live tool
-  probe deterministic, `tests/test_disallowed_cli_tools.py` (PR #112)
+  probe deterministic, `tests/test_disallowed_cli_tools.py` (PR #113)
 
 (Entries removed above: #110 and #109 merged 2026-08-06. #105 and #104
 merged 2026-08-04, and #103, #102 and #101 the same day. #100 back to #96
