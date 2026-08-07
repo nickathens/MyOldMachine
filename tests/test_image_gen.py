@@ -197,6 +197,75 @@ class TestNewModalities(unittest.TestCase):
             self.assertIn(p, params)
 
 
+class TestMiniMaxH3(unittest.TestCase):
+    """MiniMax H3 (Hailuo 3.0) is a separate model from the older Minimax Hailuo.
+
+    Both live in the catalog at once, and they want opposite prompt styles, so the
+    aliases must not collapse into each other.
+    """
+
+    def test_h3_aliases_resolve(self):
+        for alias in ("h3", "hailuo3"):
+            self.assertEqual(generate.resolve_model(alias, "video"), "minimax_h3")
+
+    def test_old_hailuo_alias_unchanged(self):
+        self.assertEqual(generate.resolve_model("hailuo", "video"), "minimax_hailuo")
+
+    def test_duration_floor_is_five_not_four(self):
+        # MiniMax's own docs say 4s; the Higgsfield route rejects anything under 5.
+        dur = generate.VIDEO_DURATIONS["minimax_h3"]
+        self.assertEqual(dur["min"], 5)
+        self.assertEqual(dur["max"], 15)
+        self.assertEqual(dur["default"], 5)
+
+    @patch("subprocess.run")
+    def test_duration_is_sent_for_h3(self, mock_run):
+        mock_run.return_value = _proc(1, "", "boom")
+        generate.generate_video("a shot", "/tmp/out.mp4", model="h3", duration=10)
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("minimax_h3", cmd)
+        self.assertIn("--duration", cmd)
+        self.assertIn("10", cmd)
+
+
+class TestGuideMapping(unittest.TestCase):
+    """Every guide file named in the SKILL.md mapping table has to exist.
+
+    The mapping is what the prompt-refinement step reads before any paid
+    generation, so a stale filename there silently skips refinement.
+    """
+
+    MODELS_DIR = ROOT / "skills" / "image-gen" / "models"
+    SKILL_MD = ROOT / "skills" / "image-gen" / "SKILL.md"
+
+    def test_mapped_guides_exist(self):
+        import re
+        text = self.SKILL_MD.read_text(encoding="utf-8")
+        named = set(re.findall(r"`([a-z0-9\-]+\.md)`", text))
+        self.assertIn("minimax-h3.md", named)
+        for guide in sorted(named):
+            self.assertTrue((self.MODELS_DIR / guide).is_file(), msg=f"{guide} named in SKILL.md but missing")
+
+    def test_h3_guide_is_mapped(self):
+        text = self.SKILL_MD.read_text(encoding="utf-8")
+        self.assertIn("minimax-h3.md", text)
+        self.assertIn("| `h3`, `hailuo3` |", text)
+
+    def test_bot_router_points_at_real_guides(self):
+        """bot.py routes a Mini App model to a guide file before refining.
+
+        A name in there that no longer exists on disk sends the refinement step
+        to a missing file. `gemini` pointed at `veo.md` for days that way.
+        """
+        import re
+        block = re.search(r"_MODEL_GUIDES = \{(.*?)\n\s*\}", (ROOT / "bot.py").read_text(encoding="utf-8"), re.S)
+        self.assertIsNotNone(block, "could not find _MODEL_GUIDES in bot.py")
+        guides = set(re.findall(r'"([a-z0-9\-]+\.md)"', block.group(1)))
+        self.assertIn("minimax-h3.md", guides)
+        for guide in sorted(guides):
+            self.assertTrue((self.MODELS_DIR / guide).is_file(), msg=f"bot.py routes to missing guide {guide}")
+
+
 class TestGenerateJob(unittest.TestCase):
     """generate_job (3D/audio) create -> wait -> download path, fully mocked."""
 

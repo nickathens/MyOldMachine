@@ -72,14 +72,32 @@ The venv Python is at `<BOT_DIR>/data/mempalace/venv/bin/python`.
 
 ## Daily Sync
 
-Schedule a daily job per user so each palace stays current:
+Schedule a daily job per user so each palace stays current.
+
+Note: `scheduler_cli.py add` exposes only `--type reminder|agent`. The engine
+supports `command` jobs (that is how the nightly maintenance jobs run) but the
+CLI has no `--command` flag, so register them the way bot.py does, by writing
+job meta directly. The bot's sync loop arms them within ~60s:
 
 ```
-<BOT_VENV_PYTHON> <SCHEDULER_CLI> add --user <USER_TID> --at "03:30" \
-    --type command \
-    --command "<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_sync.py --user-dir <USER_DIR>" \
-    --repeat daily --name "MemPalace daily sync" --no-notify
+<BOT_VENV_PYTHON> -c '
+import uuid
+from datetime import datetime, timedelta
+from core.scheduler import _save_meta
+run_at = datetime.now().replace(hour=3, minute=15, second=0, microsecond=0)
+if run_at <= datetime.now(): run_at += timedelta(days=1)
+_save_meta(job_id=uuid.uuid4().hex, user_id=<ADMIN_TID>,
+           message="MemPalace daily sync", job_type="command",
+           name="mempalace-sync-<who>", notify=False,
+           command="<MEMPALACE_PYTHON> <BOT_DIR>/skills/mempalace/scripts/mempalace_sync.py --user-dir <USER_DIR>",
+           repeat="daily", run_at=run_at, raw_at="03:15", timeout_seconds=1800)
+'
 ```
+
+One job per user, each pointed at that user's own dir. Own them under the admin
+id with `notify=False`, matching the other nightly system jobs, so they do not
+appear in a regular user's reminder list. Verify with `scheduler_cli.py list`
+and check `apscheduler_jobs` in `data/scheduler/scheduler.db` for the job id.
 
 Manual sync:
 

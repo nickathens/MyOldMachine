@@ -83,6 +83,10 @@ VIDEO_MODEL_ALIASES = {
     "kling-turbo": "kling3_0_turbo",
     "gemini": "gemini_omni",
     "cinematic3.5": "cinematic_studio_video_3_5",
+    # MiniMax H3 (Hailuo 3.0). Distinct model from `hailuo` (minimax_hailuo),
+    # which stays in the catalog and wants a completely different prompt style.
+    "h3": "minimax_h3",
+    "hailuo3": "minimax_h3",
 }
 
 # --- new modalities: output is a mesh / an audio file, not jpg/mp4 ---
@@ -149,6 +153,9 @@ VIDEO_DURATIONS = {
     "seedance_2_0_mini": {"type": "slider", "default": 5, "min": 5, "max": 30},
     "kling3_0_turbo": {"type": "slider", "default": 5, "min": 3, "max": 15},
     "gemini_omni": {"type": "preset", "default": 8, "options": [4, 6, 8]},
+    # MiniMax documents a 4s floor; the Higgsfield route rejects anything under 5
+    # ("Input should be greater than or equal to 5"), measured 2026-08-07.
+    "minimax_h3": {"type": "slider", "default": 5, "min": 5, "max": 15},
     "cinematic_studio_video_3_5": {"type": "slider", "default": 15, "min": 5, "max": 20},
     "sonilo_music": {"type": "slider", "default": 10, "min": 5, "max": 60},
 }
@@ -349,11 +356,14 @@ def generate_higgsfield(
                     cmd.extend([f"--{k}", str(v)])
 
     try:
+        # 180s was too short for nano-pro at 2k: the CLI was killed while the paid
+        # job was still running, so the job completed and charged but this function
+        # reported failure and the caller silently fell back to the free model.
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=900,
         )
 
         if result.returncode != 0:
@@ -395,7 +405,7 @@ def generate_higgsfield(
         return result_data
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "path": "", "error": "Generation timed out (180s)"}
+        return {"success": False, "path": "", "error": "Generation timed out (900s). The job may still have run and been charged — check: higgsfield generate list"}
     except json.JSONDecodeError:
         return {"success": False, "path": "", "error": f"Invalid JSON from CLI: {result.stdout[:300]}"}
     except Exception as e:

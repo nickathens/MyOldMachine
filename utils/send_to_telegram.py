@@ -69,6 +69,7 @@ def main():
     parser.add_argument("--photo", type=str)
     parser.add_argument("--video", type=str)
     parser.add_argument("--document", type=str)
+    parser.add_argument("--voice", type=str, help="OGG/Opus voice note")
     parser.add_argument("--caption", type=str)
     args = parser.parse_args()
 
@@ -85,9 +86,11 @@ def main():
         print(f"Video sent: {send_file(token, args.user, 'sendVideo', 'video', args.video, args.caption)}")
     if args.document:
         print(f"Document sent: {send_file(token, args.user, 'sendDocument', 'document', args.document, args.caption)}")
+    if args.voice:
+        print(f"Voice sent: {send_file(token, args.user, 'sendVoice', 'voice', args.voice, args.caption)}")
 
-    if not any([args.message, args.photo, args.video, args.document]):
-        print("Error: No content specified. Use --message, --photo, --video, or --document")
+    if not any([args.message, args.photo, args.video, args.document, args.voice]):
+        print("Error: No content specified. Use --message, --photo, --video, --document, or --voice")
         sys.exit(1)
 
 

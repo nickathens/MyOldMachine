@@ -270,6 +270,7 @@ python skills/image-gen/scripts/generate.py --balance
 | `cinematic-video` | Cinematic Studio Video V2 | Stylized video |
 | `grok-video` | Grok Video | Creative, distinctive |
 | `hailuo` | Minimax Hailuo | Fast, reliable |
+| `h3`, `hailuo3` | MiniMax H3 (Hailuo 3.0) | 2K + native audio; structured prompt format, priciest in the catalog |
 | `wan` | Wan 2.7 | Latest Wan model |
 | `wan2.6` | Wan 2.6 | Previous gen |
 | `soul-cast` | Soul Cast | Character-consistent video |
@@ -292,7 +293,7 @@ python skills/image-gen/scripts/generate.py --balance
 | Image mid | 2 | nano-pro, cinematic, flux, seedream, kling |
 | Image expensive | 7 | gpt, hazel |
 | Image free | 0 | Pollinations (`--backend pollinations`) |
-| Video | 7-25 | kling-turbo (7), kling (10), seedance-mini (12), seedance (22), veo3.1 (22), gemini (24), cinematic3 (25), cinematic3.5 (25) |
+| Video | 7-60 | kling-turbo (7), kling (10), seedance-mini (12), seedance (22), veo3.1 (22), gemini (24), cinematic3 (25), cinematic3.5 (25), h3 (20 at the 5s minimum, 4/second, 60 at 15s) |
 | 3D | 5 | text-to-3d, image-to-3d |
 | Audio | 1 | music, speech |
 
@@ -325,6 +326,7 @@ When a media generation request comes from a structured source (Mini App, script
 | seedance, seedance1.5 | `seedance.md` |
 | cinematic3, cinematic-video, cinematic-v2 | `cinematic-video.md` |
 | hailuo | `hailuo.md` |
+| h3, hailuo3 | `minimax-h3.md` |
 | wan, wan2.6 | `wan.md` |
 | soul-cast | `soul-cast.md` |
 | marketing | `marketing-studio.md` |
@@ -332,7 +334,7 @@ When a media generation request comes from a structured source (Mini App, script
 | soul-cinema | `soul.md` |
 | seedance-mini | `seedance.md` |
 | kling-turbo | `kling-video.md` |
-| gemini (video) | `veo.md` |
+| gemini (video) | `gemini-omni.md` |
 | cinematic3.5 | `cinematic-video.md` |
 
 **3D and audio models** (`tripo`, `text-to-3d`, `image-to-3d`, `music`, `speech`) have no prompt-refinement guide yet. Use the model's own `--cost` output and parameter list until one is written.

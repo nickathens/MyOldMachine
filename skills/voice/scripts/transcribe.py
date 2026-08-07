@@ -44,6 +44,29 @@ SAFE_MODELS = {
 
 USAGE = "Usage: python transcribe.py <audio_file> [--language LANG] [--model NAME]"
 
+# Warm listening engine (data/stt/stt_daemon.py): Whisper large-v3-turbo held
+# resident on the Apple GPU behind a local socket, ~1s per clip vs 5-30s for
+# the cold CPU path below. hear.py is stdlib-only, auto-starts the daemon, and
+# works under any python. Used whenever the caller does not force a --model;
+# any failure falls through to the legacy CPU path unchanged.
+HEAR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                    "..", "..", "..", "data", "stt", "hear.py")
+
+
+def _try_warm_engine(audio_path, language):
+    if not os.path.isfile(HEAR):
+        return None
+    cmd = [sys.executable, HEAR, os.path.abspath(audio_path)]
+    if language:
+        cmd += ["--language", language]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0 and proc.stdout.strip():
+        return proc.stdout.strip()
+    return None
+
 
 def _parse_args(argv):
     """Return (audio_path, language, model) from argv."""
@@ -110,6 +133,14 @@ def main(argv=None):
         sys.exit(1)
 
     audio_path, language, model = _parse_args(argv)
+
+    # Fast path: the warm GPU listening engine, unless the caller explicitly
+    # asked for a specific legacy model.
+    if "--model" not in argv:
+        text = _try_warm_engine(audio_path, language)
+        if text is not None:
+            print(text)
+            return
 
     # Re-exec inside the memory-capped scope unless we are already in it.
     if os.environ.get("WHISPER_ISOLATED") != "1":
