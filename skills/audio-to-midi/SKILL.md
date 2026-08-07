@@ -31,7 +31,11 @@ Works best with:
 
 ## Notes
 
-- First run downloads the model
+- The model ships inside the basic-pitch wheel, in four builds: TensorFlow,
+  ONNX, CoreML and TFLite. The script prefers the ONNX build when onnxruntime
+  is installed, because basic-pitch's own default is the TensorFlow SavedModel
+  and TensorFlow 2.16 dropped the format it was saved in. If neither loads,
+  install onnxruntime: `pip install onnxruntime`
 - Processing runs on CPU (may take 30-60 seconds per minute of audio)
 - Output MIDI can be imported into any DAW
 - For polyphonic content, some notes may be missed
