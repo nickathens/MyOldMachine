@@ -2,6 +2,29 @@
 
 Speech-to-text transcription using Whisper. Part of the Voice Mode pipeline (voice in, voice out).
 
+## FAST PATH (default — use this)
+
+A warm listening engine (`data/stt/stt_daemon.py`, launchd-managed as
+`com.coocoo.stt-whisper`, port 8779) holds Whisper **large-v3-turbo** resident
+on the Apple GPU. A voice note transcribes in **~1 second**; no model load, no
+CPU fallback, better accuracy than the old `medium` (incl. Greek).
+
+```bash
+/usr/bin/python3 data/stt/hear.py <audio_file>              # ~1s, prints transcript
+/usr/bin/python3 data/stt/hear.py <audio_file> --language el
+```
+
+`transcribe.py` (below) now routes through this engine automatically and only
+falls back to the legacy CPU path if the engine is unreachable. For the lowest
+latency call `hear.py` directly.
+
+**Full fast voice exchange** (message → reply, the whole loop):
+1. `hear.py <ogg>` — ~1s
+2. compose a SHORT reply
+3. `/usr/bin/python3 data/chatterbox/say.py --text "..." --send-to <user_id>` — speaks in the warm Attenborough voice AND delivers the Telegram voice note in one command (~5s for a short line)
+
+## Legacy path (fallback)
+
 ## Voice Mode
 
 When a user sends a voice message, the bot automatically:
