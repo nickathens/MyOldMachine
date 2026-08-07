@@ -3847,7 +3847,10 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                 # newer Higgsfield models: route each to its closest guide family
                 "recraft": "nano-banana.md", "nano-lite": "nano-banana.md", "soul-cinema": "soul.md",
                 "seedance-mini": "seedance.md", "kling-turbo": "kling-video.md",
-                "gemini": "veo.md", "cinematic3.5": "cinematic-video.md",
+                "gemini": "gemini-omni.md", "cinematic3.5": "cinematic-video.md",
+                # MiniMax H3 is a different model from `hailuo` and wants a
+                # structured field format, so it gets its own guide, not hailuo.md.
+                "h3": "minimax-h3.md", "hailuo3": "minimax-h3.md",
             }
             guide_file = _MODEL_GUIDES.get(mg_model, "nano-banana.md")
             guide_path = f"skills/image-gen/models/{guide_file}"
