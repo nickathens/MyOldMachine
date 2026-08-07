@@ -3851,6 +3851,13 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                 # MiniMax H3 is a different model from `hailuo` and wants a
                 # structured field format, so it gets its own guide, not hailuo.md.
                 "h3": "minimax-h3.md", "hailuo3": "minimax-h3.md",
+                # Added 2026-08-07. Each is a distinct model from the family it
+                # shares a name with, with its own limits and prompt grammar, so
+                # none of them route to the older sibling's guide.
+                "seedance2.5": "seedance-2-5.md",
+                "flux-video": "flux-3-video.md", "flux3-video": "flux-3-video.md",
+                "grok-video1.5": "grok-video-1-5.md",
+                "happy-horse": "happy-horse.md",
             }
             guide_file = _MODEL_GUIDES.get(mg_model, "nano-banana.md")
             guide_path = f"skills/image-gen/models/{guide_file}"

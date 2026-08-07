@@ -1,6 +1,40 @@
 # Marketing Studio Video (Higgsfield)
 
-Covers: marketing (Marketing Studio Video)
+Covers: `marketing` (Marketing Studio Video)
+
+---
+
+## Hard specs **[live 2026-08-07]**
+
+| | |
+|---|---|
+| Duration | 15 s default, **5 s and up** (see the caution below) |
+| Aspect | **9:16 by default**, plus 21:9, 16:9, 4:3, 1:1, 3:4, auto |
+| Resolution | 480p, 720p (default), 1080p |
+| Audio | `generate_audio`, **off by default** |
+| Modes | `ugc`, `ugc_how_to`, `ugc_unboxing`, `product_showcase`, `product_review`, `tv_spot`, `wild_card`, `ugc_virtual_try_on`, `virtual_try_on` |
+| Cost | **5.0 credits/s** at 720p, 10 credits/s at 1080p |
+
+Measured: 75 credits for the 15 s default, 150 for 30 s, 300 for 60 s at 720p. Linear.
+
+**This is the longest-form model on the route** and the only one that reaches a full 60 second spot
+in one pass, which is why it is priced like the cinematic tier rather than the drafting tier.
+
+It is also the only video model that **defaults to 9:16**, not 16:9, which follows from its UGC
+purpose. Set the aspect explicitly if you want landscape.
+
+**Caution: the cost endpoint does not bound the duration.** Quoting 300 seconds returns a price
+(1500 credits) instead of an error, unlike most models here, which reject out-of-range values
+outright. The same is true of `cinematic3` and `cinematic3.5`. A successful quote from this model
+proves the arithmetic, not that generation will accept the length.
+
+Beyond the prompt, this model takes structured commercial inputs the wrapper does not expose:
+`product_ids`, `web_product_ids`, `avatar_ids`, `hook_id`, `setting_id`, `storyboard_id` and
+`ad_reference_id`. Two rules the API enforces: `ad_reference_id` cannot be combined with `hook_id`
+or `setting_id`, and `product_ids` and `web_product_ids` cannot both be set. Reach those through the
+`higgsfield marketing-studio` command directly.
+
+---
 
 ## Prompt Style
 

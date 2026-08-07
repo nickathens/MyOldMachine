@@ -1,6 +1,45 @@
 # Seedance (ByteDance)
 
-Covers: seedance (Seedance 2.0), seedance1.5 (Seedance 1.5)
+Covers: `seedance` (Seedance 2.0), `seedance1.5` (Seedance 1.5 Pro), `seedance-mini` (Seedance 2.0 Mini)
+
+**Seedance 2.5 is a different model with a different prompt grammar** and has its own guide,
+`seedance-2-5.md`. The long multi-beat timeline blocks below are right for 2.0 and wrong for 2.5.
+
+---
+
+## Hard specs **[live 2026-08-07]**
+
+| | `seedance` (2.0) | `seedance1.5` | `seedance-mini` |
+|---|---|---|---|
+| Duration | **4 to 15 s** | **4 / 8 / 12 s only** | **4 to 15 s** |
+| Resolution | 480p, 720p, **1080p, 4k** | 480p, 720p, 1080p | 480p, 720p |
+| Mode | `std` (default), `fast` | none | none |
+| Genre | auto, action, horror, comedy, noir, drama, epic | none | same as 2.0 |
+| Start / end image | yes, `end_image` needs `start_image` | yes, same rule | yes |
+| References | image, video, audio | none | image, video, audio |
+| Audio | `generate_audio`, default on | default on | default on |
+| Cost at 720p | **4.5 credits/s** | **1.2 credits/s** | **2.5 credits/s** |
+
+Other measured prices: `seedance` is 9 credits/s at 1080p, **22 credits/s at 4k**, and 3.5 credits/s
+in `fast` mode. `seedance1.5` is 0.6 credits/s at 480p and 3.0 at 1080p. `seedance-mini` is
+1.0 credit/s at 480p.
+
+**Corrected 2026-08-07:** the wrapper previously advertised 5 to 30 s for `seedance` and
+`seedance-mini`. The validator's real range for both is **4 to 15 s**. Anything from 16 s up was
+being offered and would have failed at generation time.
+
+`seedance1.5` at 1.2 credits a second is the second cheapest video model on the whole route, behind
+only `veo3-lite`. It is the correct place to find a Seedance shot before paying for 2.0.
+
+Live rules the API enforces on 2.0 and Mini: at most 9 image references counting start and end
+frames; at most 3 video and 3 audio references; **12 reference files total**; audio references need
+at least one image, video, start or end frame alongside them. On 2.0 only: **mode `fast` supports
+480p and 720p only**, so 1080p and 4k require `std`.
+
+Verified rejections **[live]**: `--duration 3` gives "Input should be greater than or equal to 4";
+`--duration 16` gives "less than or equal to 15".
+
+---
 
 ## The Master Rule
 

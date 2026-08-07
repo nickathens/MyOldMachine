@@ -56,11 +56,24 @@ structured form is our job, and that is what this file is for.
 | Open weights | yes, MiniMax H3 Community License | n/a |
 
 **Cost, measured, not estimated [live]:** 5 s = 20 credits, 6 s = 24, 10 s = 40, 15 s = 60. Exactly
-4 credits a second with no discount for length. That makes H3 **the most expensive video model in
-this catalog** — a 15 s clip costs more than twice a Cinematic Studio 3.5 clip (25) and nearly three
-times a Kling 3.0 (10). There is no 768p draft tier on this route, so **every roll is a full-price
-2K roll.** Block the idea out on `kling-turbo` (7) or `seedance-mini` (12) and bring only the
-settled shot here.
+4 credits a second with no discount for length.
+
+That puts H3 in the **upper middle** of the catalog, not at the top. Corrected 2026-08-07 after a
+full sweep: the earlier version of this line called H3 the most expensive video model here, which
+was wrong. It compared a 15 s H3 clip against other models quoted at 5 s. Per second, at each
+model's own default quality, H3 is eighth:
+
+| Model | Credits/s | | Model | Credits/s |
+|---|---|---|---|---|
+| `seedance2.5` | 6.5 | | **`h3`** | **4.0** |
+| `flux-video` | 5.5 | | `gemini` | 3.0 |
+| `cinematic3`, `cinematic3.5`, `marketing` | 5.0 | | `veo3.1` | 2.75 |
+| `seedance`, `grok-video1.5` | 4.5 | | `happy-horse`, `seedance-mini` | 2.5 |
+
+What is still true, and is the real constraint: **there is no 768p draft tier on this route, so
+every roll is a full-price 2K roll.** Models below it in that table mostly have a cheap resolution
+step; H3 does not. Block the idea out on `kling-turbo` (7.5 for 5 s) or `seedance-mini` (12.5) and
+bring only the settled shot here.
 
 Verified rejections **[live]**: `--duration 4` and `--duration 3` are refused with "Input should be
 greater than or equal to 5"; `--duration 16` with "less than or equal to 15".
