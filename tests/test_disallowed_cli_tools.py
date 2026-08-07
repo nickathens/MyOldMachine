@@ -31,6 +31,15 @@ got -- no model involved, no guessing. Measured while writing these tests:
 29 tools with no deny list (Task and Workflow both present), 20 with the deny
 list applied (both gone).
 
+It has since done its job twice, both on 2026-08-07 against CLI 2.1.224:
+
+  - It caught ListAgents, a 21st built-in nobody had reviewed. Reviewed and
+    allowed, with what it actually reaches written down beside the set.
+  - It was itself indeterminate. The probe attached whatever MCP servers the
+    operator has, so a network handshake decided whether three MCP-gated
+    built-ins appeared, and the module passed or failed by luck. It now
+    measures upstream surface alone.
+
 Run: python3 -m unittest tests.test_disallowed_cli_tools  (from repo root)
 """
 from __future__ import annotations
@@ -69,14 +78,72 @@ REVIEWED_DENY_SET = frozenset({
 # stream-json`. The live probe fails on anything outside this set, because an
 # unrecognised tool is exactly how Workflow arrived. Reviewing a newcomer means
 # deciding whether it spawns agents, then either denying it or listing it here.
+#
+# ListAgents joined in CLI 2.1.224 and this module's probe caught it, which is
+# what the probe is for. Reviewed by running it, not by reading its name --
+# the measurement is written out below the MCP-gated set.
 REVIEWED_ALLOWED_TOOLS = frozenset({
     "Bash", "Edit", "Read", "Write", "Skill", "ToolSearch", "ReportFindings",
-    "WebFetch", "WebSearch", "SendMessage", "DesignSync",
+    "WebFetch", "WebSearch", "SendMessage", "ListAgents", "DesignSync",
     "CronCreate", "CronDelete", "CronList",
     "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
 })
 
+# Built-ins that exist only once an MCP server has attached. They carry no
+# mcp__ prefix, so the filter in the live probe cannot see them, and whether
+# they reach a given turn depends on a remote handshake beating the init event.
+# Measured on Linux with CLI 2.1.224 against this repo: 3 probes in 5 attached
+# 27 MCP tools and these three, 2 attached none. The probe passes
+# --strict-mcp-config so it no longer flaps; these stay listed so a run WITHOUT
+# that flag is still a pass rather than a failure in the other direction. They
+# are MCP resource accessors, reviewed and not spawners.
+MCP_GATED_ALLOWED_TOOLS = frozenset({
+    "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool",
+})
+
+# What ListAgents actually does here, measured on 2026-08-07 with CLI 2.1.224
+# rather than inferred from the name:
+#
+#   - It ENUMERATES. Its schema, read out of the CLI itself, says it lists the
+#     agents SendMessage can reach: in-process subagents, other local Claude
+#     sessions on this machine, cloud sessions, remote bridges. It starts
+#     nothing, so it cannot breach the one-agent constraint Task and Workflow
+#     would, and it does not belong on a deny list that means "spawns agents".
+#   - The directory is NOT empty on a machine running this bot. A spawned
+#     `claude -p` turn listed the bot's own live session, and two spawned turns
+#     in the same working directory listed each other.
+#   - SendMessage really delivers to what ListAgents finds. Proven between two
+#     throwaway sessions, neither of them the bot's: the sender was refused on
+#     the bare name, re-sent with the ref the refusal disclosed, and the
+#     receiver reported the sentinel string back. Transport is a unix socket
+#     under /run/user/<uid>/cc-socks/, and that directory is mode 0700, so the
+#     reach is bounded by the OS user, not by the Telegram user.
+#
+# The consequence for THIS repo is the one worth writing down: the soft
+# multi-user model puts every Telegram user on one OS account, so peer
+# messaging is inside that boundary, not outside it. `session_guard` and the
+# per-user directories are not a fence against it. Whether the CLI providers
+# should be handed SendMessage and ListAgents at all is a deliberate decision
+# about what the deny list means, not a drift fix, so it is deliberately NOT
+# made here -- this module records the measurement so the decision is made with
+# it rather than without it.
+
 LIVE_PROBE_TIMEOUT = 45
+
+
+def _reviewed_allowed() -> set:
+    """Every built-in that has been looked at and let through."""
+    return set(REVIEWED_ALLOWED_TOOLS | MCP_GATED_ALLOWED_TOOLS)
+
+
+def _newcomers(tools) -> set:
+    """Built-ins in a live tool list that nobody has reviewed.
+
+    Separate from the live test so it can be exercised on a runner with no
+    CLI and no login, which is every CI run.
+    """
+    builtin = {t for t in tools if not t.startswith("mcp__")}
+    return builtin - _reviewed_allowed()
 
 
 class _Stdin:
@@ -242,6 +309,89 @@ class ReviewedSetCanaryTests(ArgvTestBase):
     def test_what_ships_matches_what_was_reviewed(self):
         self.assertEqual(REVIEWED_DENY_SET, self._denied(self._argv()))
 
+    def test_nothing_is_both_denied_and_allowed(self):
+        # A name in both sets means the live probe would go quiet about a tool
+        # the deny list is meant to remove.
+        overlap = set(llm.DISALLOWED_CLI_TOOLS) & _reviewed_allowed()
+        self.assertEqual(set(), overlap)
+
+    def test_no_spawner_sits_in_the_reviewed_allowed_set(self):
+        # The failure mode this guards: reviewing a spawner INTO the allowed
+        # set to make a failing probe go green. That would turn the only check
+        # that can see a new Workflow into a rubber stamp.
+        for tool in llm.AGENT_SPAWNING_CLI_TOOLS:
+            with self.subTest(tool=tool):
+                self.assertNotIn(tool, _reviewed_allowed())
+
+
+class ProbeShapeTests(unittest.TestCase):
+    """The probe must measure upstream surface, not the operator's config."""
+
+    def test_probe_attaches_no_mcp_servers(self):
+        cmd = _probe_cmd("/usr/bin/env")
+        self.assertIn("--strict-mcp-config", cmd)
+        # strict ALONE is what empties the list. With a --mcp-config beside it
+        # the turn gets exactly that file, and the probe would be measuring
+        # configuration again.
+        self.assertNotIn("--mcp-config", cmd)
+
+    def test_probe_still_applies_the_deny_list(self):
+        cmd = _probe_cmd("/usr/bin/env")
+        self.assertIn(DENY_FLAG, cmd)
+        value = cmd[cmd.index(DENY_FLAG) + 1]
+        self.assertEqual(set(llm.DISALLOWED_CLI_TOOLS), set(value.split(",")))
+
+    def test_probe_reads_the_prompt_from_stdin(self):
+        # Same rule as the real command: prompt text on argv is reaped by the
+        # process sweepers on the Linux side.
+        self.assertEqual("-", _probe_cmd("/usr/bin/env")[-1])
+
+
+class NewcomerFilterTests(unittest.TestCase):
+    """The live probe's judgement, run on a machine with no CLI at all.
+
+    On CI there is no binary and no login, so the live class skips and every
+    name in the reviewed sets goes unexercised. These feed it tool lists
+    directly instead.
+    """
+
+    def test_a_reviewed_tool_is_not_a_newcomer(self):
+        self.assertEqual(set(), _newcomers(sorted(REVIEWED_ALLOWED_TOOLS)))
+
+    def test_mcp_prefixed_tools_are_ignored(self):
+        self.assertEqual(set(), _newcomers(["mcp__figma__get_file", "Bash"]))
+
+    def test_mcp_gated_builtins_are_not_newcomers(self):
+        # They carry no mcp__ prefix, so only the by-name subtraction spares
+        # them. Dropping that set is what this catches.
+        self.assertEqual(set(), _newcomers(sorted(MCP_GATED_ALLOWED_TOOLS)))
+
+    def test_an_unknown_builtin_is_a_newcomer(self):
+        # The whole point: ListAgents looked exactly like this on 2026-08-07.
+        self.assertEqual({"SomeNewTool"}, _newcomers(["Bash", "SomeNewTool"]))
+
+
+def _probe_cmd(binary: str) -> list:
+    """The probe's command line. Separate so a test can pin its shape.
+
+    --strict-mcp-config with no --mcp-config beside it attaches zero MCP
+    servers, and that is what makes this probe deterministic. Without it the
+    CLI attaches whatever the operator has configured, including account-level
+    connectors that are fetched over the network, and three built-ins appear
+    or not depending on whether that handshake beats the init event. Measured
+    on Linux with CLI 2.1.224: 3 runs in 5 came back with 27 MCP tools and
+    three extra built-ins, 2 came back with none. This module is here to catch
+    an upstream tool nobody has reviewed, so it measures upstream surface
+    alone; the operator's own servers are their configuration, not new surface.
+    """
+    return [
+        binary, "-p",
+        "--output-format", "stream-json", "--verbose",
+        "--strict-mcp-config",  # zero MCP servers; see docstring
+        DENY_FLAG, ",".join(llm.DISALLOWED_CLI_TOOLS),
+        "-",
+    ]
+
 
 def _probe_live_tool_list() -> list:
     """Ask the real CLI which tools a bot turn gets. Returns None if it cannot.
@@ -253,12 +403,7 @@ def _probe_live_tool_list() -> list:
     binary = llm.ClaudeCLIProvider("claude-sonnet-4-6", api_key="")._cli_binary
     if not binary or not Path(binary).exists():
         return None
-    cmd = [
-        binary, "-p",
-        "--output-format", "stream-json", "--verbose",
-        DENY_FLAG, ",".join(llm.DISALLOWED_CLI_TOOLS),
-        "-",
-    ]
+    cmd = _probe_cmd(binary)
     try:
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -327,9 +472,7 @@ class LiveToolInventoryTests(unittest.TestCase):
                 )
 
     def test_no_unreviewed_tool_reaches_a_bot_turn(self):
-        # MCP servers are the user's own config, not upstream surface.
-        builtin = {t for t in self.tools if not t.startswith("mcp__")}
-        newcomers = builtin - REVIEWED_ALLOWED_TOOLS
+        newcomers = _newcomers(self.tools)
         self.assertEqual(
             set(), newcomers,
             f"The CLI is handing bot turns {sorted(newcomers)}, which nobody "
