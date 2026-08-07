@@ -87,6 +87,89 @@ def main():
     check("compression never returns a negative", bool(np.all(gc >= -1e-6)),
           f"min {float(gc.min()):.4f}")
 
+    # ---- the shoulder and toe must actually bound the signal --------------
+    # They did not. The old form lerped the compressed curve against the
+    # identity, so at highlight_rolloff 0.35 the output passed 1.0 for any
+    # input above 1.034 and reached 2.95 at input 4.0, and every look in the
+    # library ships a value between 0.2 and 0.6. These two checks are the whole
+    # point of the parameter, so they are asserted rather than assumed.
+    over = np.linspace(0.0, 4.0, 4001, dtype=np.float32)
+    worst, worst_a = 0.0, None
+    for a in np.linspace(0.02, 1.0, 50):
+        m = float(C._soft_shoulder(over, float(a), knee=0.80).max())
+        if m > worst:
+            worst, worst_a = m, float(a)
+    check("the shoulder is bounded by 1 at every amount", worst <= 1.0 + 1e-6,
+          f"worst {worst:.6f} at amount {worst_a:.2f}, inputs to 4.0")
+
+    under = np.linspace(-2.0, 1.0, 3001, dtype=np.float32)
+    worst, worst_a = np.inf, 0.0
+    for a in np.linspace(0.02, 1.0, 50):
+        m = float(C._soft_toe(under, float(a), knee=0.25).min())
+        if m < worst:
+            worst, worst_a = m, float(a)
+    check("the toe is bounded by 0 at every amount", worst >= -1e-6,
+          f"worst {worst:.6f} at amount {worst_a:.2f}, inputs to -2.0")
+
+    # amount 1.0 must still be the curve the looks were authored against
+    ref = 0.80 + 0.20 * (1.0 - np.exp(-np.maximum(over - 0.80, 0.0) / 0.20))
+    ref = np.where(over > 0.80, ref, over)
+    e = float(np.abs(C._soft_shoulder(over, 1.0, knee=0.80) - ref).max())
+    check("amount 1.0 reproduces the original curve exactly", e < 1e-6,
+          f"max deviation {e:.2e}")
+
+    # and the rolloff must stop the display chain pinning at white
+    dense = np.linspace(0, 1, 65, dtype=np.float32)
+    cube = np.stack(np.meshgrid(dense, dense, dense, indexing="ij"), axis=-1).reshape(-1, 3)
+    for name in sorted(os.path.basename(p)[:-5] for p in glob.glob(LOOKS + "/*.json")):
+        look = C.load_look(name, LOOKS)
+        if look.highlight_rolloff <= 0:
+            continue
+        code = C.lin_to_code(np.maximum(C.apply_look(C.code_to_lin(cube), look), 0.0))
+        if look.black_offset:
+            code = code * (1.0 - look.black_offset) + look.black_offset
+        rolled = C._soft_shoulder(code, look.highlight_rolloff, knee=0.80)
+        check(f"  {name} rolloff leaves headroom rather than clipping",
+              float(rolled.max()) <= 1.0 + 1e-6,
+              f"peak {float(rolled.max()):.6f} at rolloff {look.highlight_rolloff}")
+
+    # ---- hue_shifts gate and rotation must live in the same space ---------
+    # The gate was HSV and the rotation Lab, in one call, with nothing naming
+    # either. A centre measured in Lab then selected nothing and the shift was
+    # silently inert. On a real job four holds did nothing and printed numbers
+    # identical to no holds at all.
+    teal = C.code_to_lin(np.array([[[0.05, 0.42, 0.45]]], dtype=np.float32))
+    centre = float(C.lab_hue(teal)[0, 0])
+    start = float(C.lab_hue(teal)[0, 0])
+    ent = {"centre": centre, "width": 20.0, "shift": 25.0}
+    moved_hsv = float(C.lab_hue(C.apply_look(teal, C.Look(hue_shifts=[dict(ent)])))[0, 0]) - start
+    moved_lab = float(C.lab_hue(
+        C.apply_look(teal, C.Look(hue_shifts=[dict(ent, space="lab")])))[0, 0]) - start
+    check("a Lab centre gated in Lab rotates by what it asked for",
+          abs(moved_lab - 25.0) < 0.05, f"asked 25.0, got {moved_lab:+.3f} deg")
+    check("the same entry gated in HSV is inert, which is the trap",
+          abs(moved_hsv) < 0.5, f"{moved_hsv:+.3f} deg")
+
+    try:
+        C.apply_look(teal, C.Look(hue_shifts=[{"centre": 0.0, "space": "hcl"}]))
+        check("an unknown hue_shift space is refused", False, "it was accepted")
+    except ValueError:
+        check("an unknown hue_shift space is refused", True)
+
+    # looks in the library carry no space key and must keep their HSV gate
+    worst = 0.0
+    for name in sorted(os.path.basename(p)[:-5] for p in glob.glob(LOOKS + "/*.json")):
+        look = C.load_look(name, LOOKS)
+        if not look.hue_shifts:
+            continue
+        explicit = C.Look(**{**look.__dict__,
+                             "hue_shifts": [dict(x, space="hsv") for x in look.hue_shifts]})
+        a = C.apply_look(C.code_to_lin(pts), look)
+        b = C.apply_look(C.code_to_lin(pts), explicit)
+        worst = max(worst, float(np.abs(a - b).max()))
+    check("the library looks default to the HSV gate they were authored in",
+          worst == 0.0, f"worst difference {worst:.2e}")
+
     # ---- LUT bake ------------------------------------------------------
     # Error is in dE2000 because the raw code level error piles up in the
     # deepest shadows, where it is not visible. See lut_bake_error in cg.py.

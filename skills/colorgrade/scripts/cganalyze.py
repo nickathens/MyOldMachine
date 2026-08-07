@@ -111,7 +111,7 @@ def shades_of_grey(lin, p=6.0):
     world style estimator assumes the average of the scene should be neutral.
     On a shot that is genuinely dominated by one colour, that assumption is
     false and the estimate is the subject, not the light. Measured on the
-    Allwyn corporate film: shots built on the brand yellow were read as
+    a corporate brand film: shots built on the brand yellow were read as
     yellow lit, and correcting them turned the brand colour green. Use
     neutral_illuminant instead, which only looks at pixels that had a chance
     of being neutral in the first place.
@@ -175,9 +175,9 @@ def flatness(frames, tol=0.5 / 255.0):
     frame. Used to decide whether the colour in a shot is the light or is the
     design, because a brand fill must never be white balanced.
 
-    Calibrated on real files rather than picked: Allwyn brand motion graphics
-    read 0.26 to 0.72, the live action lottery shop inside the same film reads
-    0.09, and AI generated footage reads 0.10 to 0.17. The tolerance matters,
+    Calibrated on real files rather than picked: brand motion graphics on a
+    corporate film read 0.26 to 0.72, the live action interior inside the same
+    film reads 0.09, and AI generated footage reads 0.10 to 0.17. The tolerance matters,
     at 1.5 code levels compression smoothing pushes camera footage up to 0.35
     and the separation disappears.
     """
