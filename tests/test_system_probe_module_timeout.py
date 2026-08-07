@@ -17,10 +17,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.system_probe import _check_python_module
+from core.system_probe import _MODULE_IMPORT_TIMEOUTS, _check_python_module
 
 # Longer than the first import budget, shorter than the retry's.
 FIRST_IMPORT_SLEEP = 8
+
+# The slowest real import measured on an install, in seconds. realesrgan
+# (PyTorch) takes 9.5s in a fresh subprocess on the Linux box, back to back,
+# with every dylib already in the page cache -- so that is a floor, not a cold
+# worst case. The retry only fixes anything if its budget clears imports of
+# that class with room to spare on a loaded or cold machine.
+SLOWEST_REAL_IMPORT = 10
 
 
 class ModuleImportTimeoutTest(unittest.TestCase):
@@ -60,6 +67,46 @@ class ModuleImportTimeoutTest(unittest.TestCase):
             "a module that imports slowly once must not be reported missing",
         )
         self.assertTrue(marker.exists(), "the cold import should have run")
+
+    def test_import_slow_on_every_attempt_still_reads_as_present(self):
+        """Not every slow import is instant the second time round.
+
+        The cold-then-warm module above sleeps once and returns immediately
+        after, so it passes even if the retry is handed the same small budget
+        as the first attempt. That is not the shape of the real modules: each
+        attempt is a fresh interpreter that redoes the whole import, and only
+        the page cache is warm, so realesrgan costs its 9.5s every time. Such
+        a module survives only if the retry budget is genuinely larger.
+
+        Scaled down from the shipped (5, 30) so the suite does not pay 13s for
+        it; the shipped values are pinned by the test below instead.
+        """
+        self._write_module("alwaysslowmod", "import time\ntime.sleep(1)\n")
+
+        with patch("core.system_probe._MODULE_IMPORT_TIMEOUTS", (0.3, 5)):
+            self.assertTrue(
+                _check_python_module("alwaysslowmod"),
+                "the retry must run on its own, larger budget",
+            )
+
+    def test_retry_budget_clears_the_slowest_real_import(self):
+        """The shipped budgets, not a scaled stand-in for them.
+
+        Every other test here patches or sidesteps the constant, so shrinking
+        the retry back towards the first attempt passes all of them while
+        putting realesrgan straight back over the cut-off. Pin the margin the
+        measurements ask for.
+        """
+        first, retry = _MODULE_IMPORT_TIMEOUTS[0], _MODULE_IMPORT_TIMEOUTS[-1]
+
+        self.assertGreater(
+            retry, first, "a retry on the same budget is not a retry",
+        )
+        self.assertGreaterEqual(
+            retry, 2 * SLOWEST_REAL_IMPORT,
+            f"the retry budget must clear a {SLOWEST_REAL_IMPORT}s import with "
+            "margin for a cold or loaded machine",
+        )
 
     def test_missing_module_fails_fast_without_paying_the_retry(self):
         """No import budget is spent on a module that is genuinely absent."""
