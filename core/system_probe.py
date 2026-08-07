@@ -148,16 +148,32 @@ def _check_binary(name: str, aliases: list = None) -> dict:
     return {"available": True, "path": path, "version": version}
 
 
+# Import budgets in seconds: a quick first pass, then one generous retry.
+#
+# A slow import is not a missing one. The heavyweight modules (basic_pitch pulls
+# in TensorFlow, realesrgan pulls in PyTorch) load hundreds of megabytes of
+# shared libraries, and macOS re-validates each one's signature the first time it
+# is mapped after a reboot. On 2026-08-07 that pushed both past a flat 5s cut-off
+# mid-load, and the nightly sanity check reported two healthy skills as degraded.
+# An absent module raises ImportError immediately, so only slow imports ever hit
+# the timeout: give those one warm retry before calling the module missing.
+_MODULE_IMPORT_TIMEOUTS = (5, 30)
+
+
 def _check_python_module(module: str) -> bool:
     """Check if a Python module is importable in the current venv."""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", f"import {module}"],
-            capture_output=True, text=True, timeout=5,
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
+    for timeout in _MODULE_IMPORT_TIMEOUTS:
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", f"import {module}"],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            continue
+        except FileNotFoundError:
+            return False
+    return False
 
 
 def _detect_package_manager() -> str:
