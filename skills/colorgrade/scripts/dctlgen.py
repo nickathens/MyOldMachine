@@ -153,7 +153,7 @@ def fill_inside_window(h, s, v, p, hue_tol=32.0):
 
     # Loosen SATURATION, hold VALUE. The pale interior of a glassy object is
     # desaturated but still bright, so dropping the saturation floor claims it.
-    # Dropping the value floor as well is what let the dark denim behind the
+    # Dropping the value floor as well is what let the dark denim behind
     # a glass lens into the matte, because denim shares the blue band and only
     # brightness told them apart. The value gate stays where the seed region
     # put it for exactly that reason.
