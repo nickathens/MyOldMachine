@@ -253,5 +253,61 @@ class UpdatePermissionTests(unittest.TestCase):
         self.assertEqual(state["status"], "active")
 
 
+class StatusFieldGuardTests(unittest.TestCase):
+    """The status field holds a state word, never a progress note.
+
+    A long delivery note written here once made a live project unrecognisable
+    to every consumer that reads the status, so it silently left the assistant's
+    active-projects context. Notes belong in next_steps.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.pm = _load(self.tmp)
+        self.pm.create_project("Foo", "s", str(self.tmp / "f"), user_id=111)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _status(self):
+        return json.loads(
+            (self.pm.PROJECTS_DIR / "foo" / "state.json").read_text()
+        )["status"]
+
+    def test_progress_note_is_refused(self):
+        note = (
+            "DAVINCI RESOLVE PROJECTS BUILT AND DELIVERED (2026-08-07). Native "
+            ".drp for both graded films now live, one folder per film, each with "
+            "the .drp, an fcpxml, and the per-shot 65-point .cube LUTs."
+        )
+        with patch.object(self.pm, "_is_admin", return_value=False):
+            with self.assertRaises(SystemExit):
+                self.pm.update_project("foo", user_id=111, status=note)
+        self.assertEqual(self._status(), "in_progress", "status must be untouched")
+
+    def test_multiline_status_is_refused(self):
+        with patch.object(self.pm, "_is_admin", return_value=False):
+            with self.assertRaises(SystemExit):
+                self.pm.update_project("foo", user_id=111, status="done\nshipped it")
+        self.assertEqual(self._status(), "in_progress")
+
+    def test_ordinary_state_words_are_accepted(self):
+        for word in ("in_progress", "live", "archived", "on_hold", "done"):
+            with patch.object(self.pm, "_is_admin", return_value=False):
+                self.pm.update_project("foo", user_id=111, status=word)
+            self.assertEqual(self._status(), word)
+
+    def test_refused_status_does_not_block_the_next_step(self):
+        """A rejected status must not take a legitimate note down with it."""
+        with patch.object(self.pm, "_is_admin", return_value=False):
+            self.pm.update_project("foo", user_id=111, next_step="Send the LUTs")
+        state = json.loads(
+            (self.pm.PROJECTS_DIR / "foo" / "state.json").read_text()
+        )
+        self.assertIn("Send the LUTs", state["next_steps"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -514,9 +514,14 @@ class SessionManager:
         def run_compaction_background():
             try:
                 from core.config import get_background_model
+                from core.credentials import claude_cli_env
                 result = subprocess.run(
                     ["claude", "-p", "--model", get_background_model(), prompt],
-                    capture_output=True, text=True, timeout=120
+                    capture_output=True, text=True, timeout=120,
+                    # Without the subscription token this exits 1 with "Not
+                    # logged in" and the only trace is a "returned no output"
+                    # warning, so compaction died silently for two days.
+                    env=claude_cli_env(),
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     new_summary = result.stdout.strip()
@@ -527,7 +532,13 @@ class SessionManager:
                     })
                     logger.info(f"Background compaction complete: {batch_size} messages summarized")
                 else:
-                    logger.warning(f"Compaction returned no output (exit {result.returncode})")
+                    # The CLI writes WHY it failed to stdout and leaves stderr
+                    # for unrelated warnings, so a message logged without it
+                    # names no cause: sixteen consecutive "no output" lines said
+                    # nothing about the missing login behind every one of them.
+                    detail = (result.stdout or "").strip() or (result.stderr or "").strip() or "no output"
+                    logger.warning(
+                        f"Compaction returned no output (exit {result.returncode}): {detail[:300]}")
             except subprocess.TimeoutExpired:
                 logger.error("Background compaction timed out")
             except Exception as e:

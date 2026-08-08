@@ -56,6 +56,7 @@ load_dotenv(BOT_DIR / ".env")
 
 from core.memory import MemoryManager
 from core.config import DATA_DIR, get_llm_provider, get_llm_model, get_llm_api_key, get_ollama_base_url
+from core.credentials import claude_cli_env
 
 logger = logging.getLogger(__name__)
 LOG_FILE = DATA_DIR / "logs" / "reflection.log"
@@ -310,8 +311,10 @@ def route_project_observations(records: list, mm: MemoryManager, user_id: int) -
     routed = []
     remaining = []
 
-    # Check if projects dir exists for this user
-    projects_dir = mm._user_dir(user_id) / "projects"
+    # Projects live in the shared memory tree (data/memory/projects/<slug>),
+    # NOT under the per-user people directory. Visibility is enforced by the
+    # `owner` field on each project, not by the path.
+    projects_dir = mm.memory_dir / "projects"
 
     for record in records:
         if record["project"]:
@@ -323,18 +326,37 @@ def route_project_observations(records: list, mm: MemoryManager, user_id: int) -
                 continue
             state_file = projects_dir / project_slug / "state.json"
 
-            if state_file.exists():
-                _append_lesson_to_project(state_file, record)
-                routed.append(record)
-                log(f"  Routed observation to project '{project_slug}': {record['content'][:80]}")
-            else:
+            if not state_file.exists():
                 # Project doesn't exist — keep in model reflection
                 log(f"  WARNING: Project '{project_slug}' not found, keeping in model pool")
                 remaining.append(record)
+            elif not _project_visible_to(state_file, user_id):
+                # Another user's private project — never write into it
+                log(f"  WARNING: Project '{project_slug}' is private to another user, "
+                    f"keeping in model pool")
+                remaining.append(record)
+            else:
+                _append_lesson_to_project(state_file, record)
+                routed.append(record)
+                log(f"  Routed observation to project '{project_slug}': {record['content'][:80]}")
         else:
             remaining.append(record)
 
     return routed, remaining
+
+
+def _project_visible_to(state_file: Path, user_id: int) -> bool:
+    """True if this user may read and write the project's lessons.
+
+    Shared projects (and legacy ones with no owner) are visible to everyone;
+    a private project is visible only to its owner.
+    """
+    try:
+        with open(state_file, encoding="utf-8") as f:
+            owner = json.load(f).get("owner") or "shared"
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return False
+    return owner == "shared" or str(owner) == str(user_id)
 
 
 def _append_lesson_to_project(state_file: Path, record: dict):
@@ -546,6 +568,11 @@ def _call_claude_cli(prompt: str) -> str:
             # for piped input that never arrives ("no stdin data received in 3s").
             # Closing it explicitly hands those seconds back to the model.
             stdin=subprocess.DEVNULL,
+            # The scheduler's environment carries no login. Inheriting it used
+            # to work only because the CLI fell back to the /login credential
+            # file; that file is gone now that the subscription token replaced
+            # it, so without this the nightly run dies "Not logged in".
+            env=claude_cli_env(),
         )
         if result.returncode == 0 and result.stdout.strip():
             out = result.stdout.strip()

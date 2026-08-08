@@ -614,6 +614,26 @@ MAX_CONTEXT_MESSAGES = 40
 # ~20k tokens leaves room for the model's response and internal overhead.
 PROMPT_CHAR_BUDGET = 80000
 
+# Project statuses that mean the work is over. Anything else — "in_progress",
+# "live", a free-text progress note — counts as active and stays in context.
+FINISHED_PROJECT_STATUSES = {
+    "archived", "done", "complete", "completed", "cancelled", "canceled",
+}
+
+# Statuses that plainly mean the work is live. These fill the context slots
+# first. Widening FINISHED_PROJECT_STATUSES alone cannot protect them: the
+# block is capped, so a status nobody anticipated ("shipped", "parked", a note)
+# would otherwise compete for those slots on equal terms and evict a live job
+# on nothing but alphabetical order. Anything absent from BOTH sets is still
+# shown — it just cannot take a slot a live project needed.
+ACTIVE_PROJECT_STATUSES = {
+    "in_progress", "in progress", "active", "live", "ongoing", "wip",
+}
+
+# How many projects the context block carries before it starts costing more
+# than it is worth.
+MAX_CONTEXT_PROJECTS = 8
+
 # Health check interval (seconds)
 _HEALTH_CHECK_INTERVAL = 4 * 3600  # 4 hours
 # Delay the very first health check well past the post-boot storm so the first
@@ -1269,13 +1289,13 @@ def build_system_prompt(user_id: int) -> str:
             parts.append(ctx_text)
             parts.append("")
 
-    # Active projects from memory (cap at 8 to prevent context bloat).
+    # Active projects from memory (capped at MAX_CONTEXT_PROJECTS to prevent
+    # context bloat).
     # Per-user ownership: each project has an `owner` field — "shared" or a
     # user ID. Missing owner is treated as "shared" for legacy state.
     projects_dir = memory_dir / "projects"
     if projects_dir.exists():
-        project_lines = []
-        project_count = 0
+        candidates = []
         for pdir in sorted(projects_dir.iterdir()):
             if not pdir.is_dir():
                 continue
@@ -1285,30 +1305,38 @@ def build_system_prompt(user_id: int) -> str:
             try:
                 with open(state_file, encoding="utf-8") as f:
                     state = json.load(f)
-                if state.get("status") != "in_progress":
-                    continue
-                owner = state.get("owner") or "shared"
-                if owner != "shared" and str(owner) != str(user_id):
-                    continue
-                if project_count >= 8:
-                    break
-                project_count += 1
-                block = []
-                visibility = "shared" if owner == "shared" else "private"
-                block.append(f"\n**{state.get('name', 'Unknown')}** [{visibility}]")
-                block.append(f"  Location: {state.get('location', 'unknown')}")
-                if state.get("summary"):
-                    block.append(f"  Summary: {state['summary']}")
-                if state.get("next_steps"):
-                    for step in state["next_steps"][:3]:
-                        block.append(f"  - {step}")
-                block_text = "\n".join(block)
-                # Cap per-project block at 1500 chars
-                if len(block_text) > 1500:
-                    block_text = block_text[:1400] + "\n  [... truncated]"
-                project_lines.append(block_text)
             except (json.JSONDecodeError, KeyError):
                 continue
+            # Treat every project as active unless its status says it is
+            # finished. Matching "in_progress" exactly used to silently
+            # drop live projects whose status held any other wording.
+            status = str(state.get("status") or "").strip().lower()
+            if status in FINISHED_PROJECT_STATUSES:
+                continue
+            owner = state.get("owner") or "shared"
+            if owner != "shared" and str(owner) != str(user_id):
+                continue
+            candidates.append((status not in ACTIVE_PROJECT_STATUSES, state, owner))
+        # Recognised-live first, everything else after. The sort is stable, so
+        # alphabetical order survives inside each tier and the only thing that
+        # moves is an unrecognised status giving up a slot to a live job.
+        candidates.sort(key=lambda c: c[0])
+        project_lines = []
+        for _tier, state, owner in candidates[:MAX_CONTEXT_PROJECTS]:
+            block = []
+            visibility = "shared" if owner == "shared" else "private"
+            block.append(f"\n**{state.get('name', 'Unknown')}** [{visibility}]")
+            block.append(f"  Location: {state.get('location', 'unknown')}")
+            if state.get("summary"):
+                block.append(f"  Summary: {state['summary']}")
+            if state.get("next_steps"):
+                for step in state["next_steps"][:3]:
+                    block.append(f"  - {step}")
+            block_text = "\n".join(block)
+            # Cap per-project block at 1500 chars
+            if len(block_text) > 1500:
+                block_text = block_text[:1400] + "\n  [... truncated]"
+            project_lines.append(block_text)
         if project_lines:
             parts.append("### Active Projects:")
             parts.extend(project_lines)

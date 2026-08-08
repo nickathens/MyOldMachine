@@ -17,6 +17,7 @@ keyring package — keeps the bot's runtime dependencies unchanged.
 """
 from __future__ import annotations
 
+import os
 import platform
 import re
 import subprocess
@@ -220,3 +221,81 @@ def _parse_dump(text: str) -> list[CredentialRef]:
     flush()
     refs.sort(key=lambda r: (r.service, r.account))
     return refs
+
+
+# --- Claude CLI subscription token -------------------------------------------
+#
+# Service name of the macOS keychain item holding the long-lived token created
+# once by an admin via `claude setup-token`. It lives here, not next to a single
+# caller, because EVERY local `claude` subprocess needs it: the credential store
+# it replaced (`~/.claude/.credentials.json` plus the `Claude Code-credentials`
+# keychain item) is gone, so a call site that forgets the token has no fallback
+# left and dies with "Not logged in - Please run /login". That is exactly how
+# the nightly reflection and background compaction went dark on 2026-08-07,
+# months after the token itself was working: the injection had been wired into
+# the interactive turn path only.
+_OAUTH_TOKEN_KEYCHAIN_SERVICE = "mom-claude-oauth"
+# Cached only after a non-empty token has been read, so a transient keychain
+# error at startup retries instead of stranding a stored token for the process
+# lifetime.
+_oauth_token_cache = ""
+
+
+def read_claude_oauth_token() -> str:
+    """Return the long-lived ``claude setup-token`` value, or "" if none.
+
+    Injected into every Claude CLI subprocess as ``CLAUDE_CODE_OAUTH_TOKEN``,
+    this token outranks and bypasses the ``/login`` keychain+file credential
+    store (per Claude Code's documented auth precedence), so the CLI stops
+    reading the rotating per-store credentials behind the recurring daily
+    re-login outage.
+
+    Read through the ``security`` binary and cached for the process lifetime
+    once a non-empty value is found -- a token rotation is a yearly, restart-
+    gated event. A failed or empty read is never cached, so a transient error
+    simply retries on the next call. Returns "" off macOS or when no token is
+    stored, leaving any remaining credential chain untouched.
+    """
+    global _oauth_token_cache
+    if _oauth_token_cache:
+        return _oauth_token_cache
+    if platform.system() != "Darwin":
+        return ""
+    try:
+        proc = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", _OAUTH_TOKEN_KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:  # e.g. exit 44 == item not found
+        return ""
+    token = (proc.stdout or "").strip()
+    if token:
+        _oauth_token_cache = token
+    return token
+
+
+def claude_cli_env(base: dict | None = None) -> dict:
+    """Return an environment for a local ``claude`` CLI subprocess.
+
+    For the plain call sites -- ones that today inherit the parent environment
+    and pass no ``env=`` at all. It only ADDS the token, never removes anything,
+    so it is safe to drop into an existing ``subprocess.run`` without auditing
+    what that process needed from its inherited environment.
+
+    Turns that run untrusted-adjacent work should keep using the hardened
+    builder in ``core.tools.build_cli_env`` instead; that one scrubs the
+    environment and needs the token handed to it explicitly, because the name
+    ends in ``_TOKEN`` and its own pattern scrub would otherwise strip it.
+
+    An operator override already in the environment wins over the stored token,
+    matching the interactive turn path.
+    """
+    env = dict(os.environ if base is None else base)
+    if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        token = read_claude_oauth_token()
+        if token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    return env

@@ -48,6 +48,9 @@ TOPICS_DIR = MEMORY_DIR / "topics"
 
 SHARED_OWNER = "shared"
 
+# Longest acceptable status string ("in_progress", "live", "archived"...).
+MAX_STATUS_LEN = 40
+
 # Import atomic JSON writer. Prefer safe_json's save_json; fall back to an
 # inline atomic implementation if the module isn't importable (e.g. when
 # project_manager.py is invoked outside the bot's package layout).
@@ -280,6 +283,17 @@ def update_project(slug: str, user_id=None,
         sys.exit(2)
 
     if status:
+        # The status is a short state word, not a place for progress notes.
+        # A note written here reads as an unrecognised status downstream, which
+        # is how a live project once dropped out of the assistant's context.
+        if len(status) > MAX_STATUS_LEN or "\n" in status:
+            print(
+                f"Refused: status must be a short state word "
+                f"(max {MAX_STATUS_LEN} characters, single line). "
+                f"Use --next-step for progress notes.",
+                file=sys.stderr,
+            )
+            sys.exit(3)
         state["status"] = status
     if next_step:
         if next_step not in state.get("next_steps", []):
