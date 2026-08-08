@@ -54,6 +54,7 @@ from core.config import (  # noqa: E402
     get_primary_admin_id,
 )
 from core.users import resolve_user_dir  # noqa: E402
+from core.credentials import claude_cli_env  # noqa: E402
 from utils.safe_json import load_json, save_json  # noqa: E402
 
 logger = logging.getLogger("email_triage")
@@ -380,9 +381,16 @@ def _call_cli(prompt: str, model: str, timeout: int) -> str:
     proc = subprocess.run(
         [binary, "-p", prompt, "--model", model],
         capture_output=True, text=True, timeout=timeout,
+        # Scheduler-spawned, same tokenless environment that killed the nightly
+        # reflection and background compaction.
+        env=claude_cli_env(),
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:300]}")
+        # The CLI writes WHY it failed to stdout and leaves stderr empty, so
+        # reading stderr alone produced "claude exited 1: " with nothing after
+        # the colon -- the reason discarded on the one line that carried it.
+        detail = (proc.stderr or "").strip() or (proc.stdout or "").strip() or "no output"
+        raise RuntimeError(f"claude exited {proc.returncode}: {detail[:300]}")
     return proc.stdout.strip()
 
 

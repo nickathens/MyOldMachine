@@ -164,5 +164,122 @@ class CompactionCallSiteTests(unittest.TestCase):
                         f"cause missing from the warning: {logs.output}")
 
 
+class EmailTriageCallSiteTests(unittest.TestCase):
+    """utils.email_triage._call_cli -- the fourth local spawn, same failure.
+
+    Scheduler-spawned every 15 minutes, so it inherits the same tokenless
+    environment as the reflection and the compaction, and it carried BOTH
+    defects: no token, and the reason discarded. A stub `claude` on PATH,
+    mirroring the real one by writing "Not logged in" to stdout with an empty
+    stderr, produced exactly "claude exited 1: " -- nothing after the colon.
+    """
+
+    def test_cli_call_carries_the_token(self):
+        from utils import email_triage
+
+        done = subprocess.CompletedProcess(args=["claude"], returncode=0,
+                                           stdout="classified", stderr="")
+        with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True), \
+             patch.object(email_triage, "claude_cli_env",
+                          return_value={"PATH": "/usr/bin",
+                                        "CLAUDE_CODE_OAUTH_TOKEN": "oat-mail"}), \
+             patch.object(email_triage.subprocess, "run", return_value=done) as run:
+            out = email_triage._call_cli("prompt", "claude-opus-5", 30)
+
+        self.assertEqual(out, "classified")
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["CLAUDE_CODE_OAUTH_TOKEN"], "oat-mail")
+
+    def test_failure_on_stdout_is_reported_with_its_cause(self):
+        from utils import email_triage
+
+        failed = subprocess.CompletedProcess(
+            args=["claude"], returncode=1,
+            stdout="Not logged in - Please run /login", stderr="")
+        with patch.object(email_triage, "claude_cli_env", return_value={}), \
+             patch.object(email_triage.subprocess, "run", return_value=failed):
+            with self.assertRaises(RuntimeError) as caught:
+                email_triage._call_cli("prompt", "claude-opus-5", 30)
+
+        self.assertIn("Not logged in", str(caught.exception))
+
+    def test_stderr_still_wins_when_it_has_the_cause(self):
+        """Falling back to stdout must not shadow a real stderr diagnostic."""
+        from utils import email_triage
+
+        failed = subprocess.CompletedProcess(
+            args=["claude"], returncode=1,
+            stdout="partial answer", stderr="model overloaded")
+        with patch.object(email_triage, "claude_cli_env", return_value={}), \
+             patch.object(email_triage.subprocess, "run", return_value=failed):
+            with self.assertRaises(RuntimeError) as caught:
+                email_triage._call_cli("prompt", "claude-opus-5", 30)
+
+        self.assertIn("model overloaded", str(caught.exception))
+        self.assertNotIn("partial answer", str(caught.exception))
+
+
+class CallSiteInventoryTests(unittest.TestCase):
+    """No fifth call site, and no sixth arriving unnoticed.
+
+    Written after a first sweep read argv as source text and missed
+    email_triage entirely, because its binary is a variable rather than the
+    literal "claude". This walks the syntax tree instead and judges any
+    subprocess spawn carrying the CLI's own "-p" prompt flag.
+    """
+
+    # Spawns that take -p for their own reasons, not agent CLI calls.
+    NOT_AN_AGENT_CLI = {"mkdir", "ps"}
+
+    def _agent_spawns(self):
+        import ast
+
+        found = []
+        for path in sorted(REPO_ROOT.rglob("*.py")):
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            if rel.startswith(("tests/", "skills/", "install/", ".worktrees/")):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                fname = getattr(node.func, "attr", getattr(node.func, "id", ""))
+                if fname not in ("run", "Popen", "check_output", "call"):
+                    continue
+                argv = node.args[0]
+                if not isinstance(argv, (ast.List, ast.Tuple)) or not argv.elts:
+                    continue
+                flags = {e.value for e in argv.elts
+                         if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+                if "-p" not in flags or flags & self.NOT_AN_AGENT_CLI:
+                    continue
+                has_env = any(kw.arg == "env" for kw in node.keywords)
+                found.append((f"{rel}:{node.lineno}", has_env))
+        return found
+
+    def test_every_agent_cli_spawn_passes_an_env(self):
+        spawns = self._agent_spawns()
+
+        self.assertTrue(spawns, "the sweep found nothing: it has stopped working")
+        tokenless = [loc for loc, has_env in spawns if not has_env]
+        self.assertEqual(tokenless, [],
+                         f"claude spawned without env=claude_cli_env(): {tokenless}")
+
+    def test_the_sweep_can_see_a_tokenless_spawn(self):
+        """The sweep above passes trivially if it matches nothing. Prove it can fail."""
+        import ast
+
+        src = "subprocess.run([binary, '-p', prompt], capture_output=True)"
+        node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call))
+
+        self.assertEqual([kw.arg for kw in node.keywords], ["capture_output"])
+        flags = {e.value for e in node.args[0].elts if isinstance(e, ast.Constant)}
+        self.assertIn("-p", flags)
+        self.assertFalse(flags & self.NOT_AN_AGENT_CLI)
+
+
 if __name__ == "__main__":
     unittest.main()
