@@ -14,6 +14,8 @@ import ast
 import json
 import py_compile
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -244,6 +246,24 @@ class DctlContractTest(unittest.TestCase):
         sliders = {p[0] for p in ui_params(self.text) if p[2] == "DCTLUI_SLIDER_FLOAT"}
         self.assertEqual(packed - sliders, set(),
                          "dctlgen aims a slider the DCTL does not define")
+
+
+class LintTests(unittest.TestCase):
+    """CI's ruff scope is `bot.py core/ utils/ install/ miniapp/ tests/`.
+
+    `skills/` is not in it, so nothing in the pipeline can see a lint error in
+    this tree. Eight arrived here in one branch, invisible behind a green run.
+    Scoped to colorgrade rather than all of `skills/`, which already carries
+    eleven of its own elsewhere and wants its own clean-up.
+    """
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff not installed")
+    def test_the_skill_is_ruff_clean(self):
+        proc = subprocess.run([shutil.which("ruff"), "check", "--output-format=concise",
+                               str(SKILL)],
+                              capture_output=True, text=True, cwd=SKILL.parent.parent)
+
+        self.assertEqual(proc.returncode, 0, f"\n{proc.stdout}{proc.stderr}")
 
 
 if __name__ == "__main__":

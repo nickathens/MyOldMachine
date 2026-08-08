@@ -50,7 +50,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 
 import numpy as np
@@ -92,7 +91,6 @@ def landing(path, n=400_000, scale=480):
     """
     code, _ = sample_pixels(path, n=n, scale=scale)
     lin = C.code_to_lin(code)
-    lg = C.lin_to_log(lin)
     lab = C.lin_to_lab(lin)
     y = C.luma(lin)
     ylog = C.lin_to_log(y)
@@ -396,7 +394,7 @@ def _cli(argv=None):
         print(f"{args.video}")
         print(f"  the film's own mid      log {d['mid_log']:.3f}")
         print(f"  engine default pivot    log {d['engine_default']:.3f}")
-        print(f"  tonal peaks             " + ", ".join(f"{m:.3f}" for m in d["peaks"]))
+        print("  tonal peaks             " + ", ".join(f"{m:.3f}" for m in d["peaks"]))
         print(f"  pixels near the median  {d['share_at_median'] * 100:.1f}%")
         print()
         if d["bimodal"]:

@@ -414,9 +414,9 @@ def _cli(argv=None):
             print(f"      present over frames {f0}..{f1}"
                   f"  ({f0 / info['fps']:.2f}s to {f1 / info['fps']:.2f}s),"
                   f" held for {d['coverage'] * 100:.0f}% of them.")
-            print(f"      Those edges are where the EVIDENCE starts and stops, not"
-                  f" necessarily the cut. Check the head and tail against the cut"
-                  f" list: a split screen that dissolves in from a card reads late.")
+            print("      Those edges are where the EVIDENCE starts and stops, not"
+                  " necessarily the cut. Check the head and tail against the cut"
+                  " list: a split screen that dissolves in from a card reads late.")
             print(f"      gradient across the seam {d['gutter_gradient']:.2f} levels"
                   f"  ({'safe to switch on' if d['gutter_gradient'] < 1.2 else 'TOO STEEP to switch on'})")
             print(f"      left panel  = columns 0..{d['split_x'] - 1}")

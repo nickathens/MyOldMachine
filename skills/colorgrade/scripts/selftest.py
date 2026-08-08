@@ -118,6 +118,61 @@ def main():
     check("amount 1.0 reproduces the original curve exactly", e < 1e-6,
           f"max deviation {e:.2e}")
 
+    # ---- and `amount` must still mean what it says in between -------------
+    # The three checks above pin the two ENDS: bounded everywhere, and amount
+    # 1.0 identical to the old curve. Nothing pins the interior, and the
+    # interior is where the library lives -- 9 of the 10 looks ship a rolloff
+    # between 0.2 and 0.6. Reparameterising `a` survives all three: (1-a)**3,
+    # (1-a)**0.25 and (1-a*a) each pass with 0 failures, and (1-a)**3 makes
+    # `highlight_rolloff: 0.20` behave like 0.49 -- a slider that does not mean
+    # what its name says, which is the defect this whole section exists for.
+    # So assert the docstring's own promise: the knee sits `amount` of the way
+    # down from 1.0 to `knee`, and more amount always rolls off more signal.
+    bad = []
+    for a in (0.1, 0.2, 0.35, 0.5, 0.75, 1.0):
+        k = 0.80 + 0.20 * (1.0 - a)
+        below = np.array([k - 1e-3], dtype=np.float32)
+        above = np.array([min(k + 0.01, 0.999)], dtype=np.float32)
+        if float(C._soft_shoulder(below, a, knee=0.80)[0]) != float(below[0]):
+            bad.append(f"amount {a} rolls off below its stated knee {k:.3f}")
+        if float(C._soft_shoulder(above, a, knee=0.80)[0]) >= float(above[0]) - 1e-5:
+            bad.append(f"amount {a} does not roll off above its stated knee {k:.3f}")
+    check("the shoulder knee sits where `amount` says it does",
+          not bad, "; ".join(bad) or "amounts 0.10 to 1.00, knee 0.80")
+
+    bad = []
+    for a in (0.1, 0.2, 0.35, 0.5, 0.75, 1.0):
+        k = 0.25 * a
+        above = np.array([k + 1e-3], dtype=np.float32)
+        below = np.array([max(k - 0.01, -0.5)], dtype=np.float32)
+        if float(C._soft_toe(above, a, knee=0.25)[0]) != float(above[0]):
+            bad.append(f"amount {a} toes above its stated knee {k:.3f}")
+        if float(C._soft_toe(below, a, knee=0.25)[0]) <= float(below[0]) + 1e-5:
+            bad.append(f"amount {a} does not toe below its stated knee {k:.3f}")
+    check("the toe knee sits where `amount` says it does",
+          not bad, "; ".join(bad) or "amounts 0.10 to 1.00, knee 0.25")
+
+    ramp = np.linspace(0.0, 1.0, 20001, dtype=np.float32)
+    fracs = [float((np.abs(C._soft_shoulder(ramp, a, knee=0.80) - ramp) > 1e-5).mean())
+             for a in (0.1, 0.25, 0.5, 0.75, 1.0)]
+    check("more `amount` always rolls off more of the signal",
+          all(hi > lo for lo, hi in zip(fracs, fracs[1:])),
+          " < ".join(f"{f * 100:.1f}%" for f in fracs))
+
+    # The sweeps above stop at amount 1.0, so nothing sees a look file that
+    # asks for more. `min(amount, 1.0)` is load bearing: without it, amount 6
+    # puts the knee at -0.20 and the shoulder returns NEGATIVE values for a
+    # black input. Pin the clamp rather than the symptom.
+    worst = 0.0
+    for a in (1.5, 5.0, 50.0):
+        worst = max(worst,
+                    float(np.abs(C._soft_shoulder(over, a, knee=0.80)
+                                 - C._soft_shoulder(over, 1.0, knee=0.80)).max()),
+                    float(np.abs(C._soft_toe(under, a, knee=0.25)
+                                 - C._soft_toe(under, 1.0, knee=0.25)).max()))
+    check("an amount above 1.0 clamps to 1.0 rather than running past it",
+          worst == 0.0, f"worst difference {worst:.2e} across amounts 1.5, 5, 50")
+
     # and the rolloff must stop the display chain pinning at white
     dense = np.linspace(0, 1, 65, dtype=np.float32)
     cube = np.stack(np.meshgrid(dense, dense, dense, indexing="ij"), axis=-1).reshape(-1, 3)

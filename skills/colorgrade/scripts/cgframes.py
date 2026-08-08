@@ -502,7 +502,6 @@ def _repair(args, info, band, cuts):
 
     _rife()                                            # fail early with instructions
     bufs = read_yuv(args.video, 0, info["frames"] - 1, W, H)
-    fb = W * H * 3 // 2
     done = 0
     for d in plan:
         y, u, v = synth(bufs, d["p0"], d["p1"], d["t"], W, H, x0, x1)
