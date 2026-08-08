@@ -231,6 +231,15 @@ class CallSiteInventoryTests(unittest.TestCase):
     # Spawns that take -p for their own reasons, not agent CLI calls.
     NOT_AN_AGENT_CLI = {"mkdir", "ps"}
 
+    # Installed third-party code, not repo source. A dev machine keeps the bot's
+    # own .venv and the skill venvs under data/ inside the checkout, all
+    # gitignored and none of them ours to fix: mido's amidi backend and torch's
+    # distributed test helpers both spawn with a -p of their own, so the sweep
+    # read five foreign lines as tokenless call sites and failed on every real
+    # machine while passing on CI's bare checkout. A guard that only fires where
+    # nobody is looking gets deleted rather than heeded.
+    NOT_REPO_SOURCE = {".venv", "venv", "site-packages", "node_modules", "data"}
+
     def _agent_spawns(self):
         import ast
 
@@ -238,6 +247,8 @@ class CallSiteInventoryTests(unittest.TestCase):
         for path in sorted(REPO_ROOT.rglob("*.py")):
             rel = path.relative_to(REPO_ROOT).as_posix()
             if rel.startswith(("tests/", "skills/", "install/", ".worktrees/")):
+                continue
+            if self.NOT_REPO_SOURCE.intersection(rel.split("/")):
                 continue
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -259,6 +270,17 @@ class CallSiteInventoryTests(unittest.TestCase):
                 has_env = any(kw.arg == "env" for kw in node.keywords)
                 found.append((f"{rel}:{node.lineno}", has_env))
         return found
+
+    # The spawns this branch repaired, and the proof NOT_REPO_SOURCE prunes only
+    # foreign code. "The sweep found something" is too weak a check: pruning one
+    # directory too many would still leave it something to find.
+    KNOWN_CALL_SITES = {"core/session.py", "utils/email_triage.py", "utils/reflect.py"}
+
+    def test_the_sweep_still_reaches_repo_source(self):
+        seen = {loc.rsplit(":", 1)[0] for loc, _has_env in self._agent_spawns()}
+
+        self.assertTrue(self.KNOWN_CALL_SITES <= seen,
+                        f"pruned out of sight: {sorted(self.KNOWN_CALL_SITES - seen)}")
 
     def test_every_agent_cli_spawn_passes_an_env(self):
         spawns = self._agent_spawns()
