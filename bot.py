@@ -614,6 +614,12 @@ MAX_CONTEXT_MESSAGES = 40
 # ~20k tokens leaves room for the model's response and internal overhead.
 PROMPT_CHAR_BUDGET = 80000
 
+# Project statuses that mean the work is over. Anything else — "in_progress",
+# "live", a free-text progress note — counts as active and stays in context.
+FINISHED_PROJECT_STATUSES = {
+    "archived", "done", "complete", "completed", "cancelled", "canceled",
+}
+
 # Health check interval (seconds)
 _HEALTH_CHECK_INTERVAL = 4 * 3600  # 4 hours
 # Delay the very first health check well past the post-boot storm so the first
@@ -1285,7 +1291,11 @@ def build_system_prompt(user_id: int) -> str:
             try:
                 with open(state_file, encoding="utf-8") as f:
                     state = json.load(f)
-                if state.get("status") != "in_progress":
+                # Treat every project as active unless its status says it is
+                # finished. Matching "in_progress" exactly used to silently
+                # drop live projects whose status held any other wording.
+                status = str(state.get("status") or "").strip().lower()
+                if status in FINISHED_PROJECT_STATUSES:
                     continue
                 owner = state.get("owner") or "shared"
                 if owner != "shared" and str(owner) != str(user_id):

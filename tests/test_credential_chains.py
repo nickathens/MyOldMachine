@@ -504,7 +504,11 @@ class MachineLoginStateTests(unittest.TestCase):
     """The nightly check reports the WORSE chain, not the convenient one."""
 
     def _state(self, file_state, keychain_state):
-        with patch.object(lc, "read_login_state", return_value=file_state), \
+        # No stored subscription token: these tests are about the two OAuth
+        # chains, and a real token on the developer's Mac short-circuits past
+        # them (correctly -- see TokenSupersedesOAuthChainsTests below).
+        with patch.object(lc, "read_token_login_state", return_value=None), \
+             patch.object(lc, "read_login_state", return_value=file_state), \
              patch.object(lc, "read_keychain_login_state", return_value=keychain_state):
             return lc.read_machine_login_state()
 
@@ -556,6 +560,51 @@ class MachineLoginStateTests(unittest.TestCase):
         combined = self._state(healthy, healthy)
 
         self.assertEqual(set(combined["chains"]), {"file", "keychain"})
+
+
+class TokenSupersedesOAuthChainsTests(unittest.TestCase):
+    """A stored subscription token IS the login; the OAuth chains are debris.
+
+    Once `claude setup-token` is in use the CLI never consults the file or the
+    keychain item, and the deployment deletes both. Judging the machine by them
+    then inverts the check: it alerted "the machine is not logged in" on
+    2026-08-07 and 2026-08-08 about a machine holding a working token, while the
+    actual fault (two call sites spawning the CLI without that token) went
+    unnamed.
+    """
+
+    def _with_token(self, token_state, file_state):
+        with patch.object(lc, "read_token_login_state", return_value=token_state), \
+             patch.object(lc, "read_login_state", return_value=file_state), \
+             patch.object(lc, "read_keychain_login_state", return_value=None):
+            return lc.read_machine_login_state()
+
+    def test_missing_oauth_stores_are_not_an_outage_when_a_token_is_stored(self):
+        token = {"status": "ok", "days_left": None, "expires_at": None,
+                 "access_expires_at": None, "detail": "token in use"}
+        gone = {"status": "missing", "days_left": None, "expires_at": None,
+                "access_expires_at": None, "detail": "not logged in"}
+
+        combined = self._with_token(token, gone)
+
+        self.assertEqual(combined["status"], "ok")
+        self.assertIsNone(lc.warning_message(combined), "this was the false alarm")
+        self.assertEqual(set(combined["chains"]), {"token"})
+
+    def test_oauth_chains_still_judge_the_machine_with_no_token(self):
+        dead = {"status": "expired", "days_left": -1.0, "expires_at": None,
+                "access_expires_at": None, "detail": "file dead"}
+
+        combined = self._with_token(None, dead)
+
+        self.assertEqual(combined["status"], "expired")
+        self.assertIsNotNone(lc.warning_message(combined))
+
+    def test_token_state_is_read_from_the_keychain_helper(self):
+        with patch("core.credentials.read_claude_oauth_token", return_value="oat-x"):
+            self.assertEqual(lc.read_token_login_state()["status"], "ok")
+        with patch("core.credentials.read_claude_oauth_token", return_value=""):
+            self.assertIsNone(lc.read_token_login_state())
 
 
 class KeychainLoginStateTests(unittest.TestCase):

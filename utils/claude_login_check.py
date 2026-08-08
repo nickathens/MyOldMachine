@@ -39,6 +39,17 @@ killed every nightly job on the machine — which is the exact shape of the
 2026-07-20 incident. So the status reported here is the WORSE of the two, and
 the detail names the chain that is hurt.
 
+Both of those chains are now SUPERSEDED. A stored `claude setup-token` value
+outranks them in the CLI's documented auth precedence, and once it is in use the
+rotating stores are not merely healthy-or-not, they are DELETED — which is how
+this check spent 2026-08-07 and 2026-08-08 alerting "the machine is not logged
+in" about a machine whose only fault was elsewhere. So the token is checked
+first and, when present, is the answer. What it can report is presence, not
+expiry: the token is an opaque string with no readable clock, so the scheduled-
+chore trick above does not apply to it. Its ~yearly renewal is a calendar
+matter, and the liveness signal is a job failing with its cause, which is what
+the reflection log now carries.
+
 Usage:
     python claude_login_check.py            # human-readable status
     python claude_login_check.py --json     # machine-readable
@@ -69,6 +80,7 @@ RELOGIN_HINT = "Run `claude` in Terminal on the Mac mini to renew it (about 30 s
 # nightly job is down" is a different message from "nothing works".
 FILE_SOURCE = "The shared login file (used by the chats)"
 KEYCHAIN_SOURCE = "The keychain login (used by the nightly jobs)"
+TOKEN_SOURCE = "The stored subscription token (used by everything)"
 
 # Worst first. The machine-wide verdict is the worst status across the chains,
 # so this ordering decides whose problem gets reported. `expiring` outranks
@@ -209,16 +221,57 @@ def _severity(status: str) -> int:
     return _SEVERITY.index(status) if status in _SEVERITY else len(_SEVERITY)
 
 
+def read_token_login_state() -> dict | None:
+    """State of the long-lived `claude setup-token`, or None if none is stored.
+
+    Presence is the whole check. The token is opaque, so there is no expiry to
+    read and nothing to warn about in advance -- unlike the OAuth chains, whose
+    readable clock is the entire reason this module exists.
+    """
+    # Run as a script, `utils/` is sys.path[0] and the bot tree is not on the
+    # path at all, so the import below fails and the token goes unseen -- which
+    # is the false "not logged in" this function exists to stop.
+    if str(BOT_DIR) not in sys.path:
+        sys.path.insert(0, str(BOT_DIR))
+    try:
+        from core.credentials import read_claude_oauth_token
+    except ImportError:  # running outside the bot tree
+        return None
+    if not read_claude_oauth_token():
+        return None
+    return {
+        "status": "ok", "days_left": None, "expires_at": None,
+        "access_expires_at": None,
+        "detail": ("Logged in with the stored subscription token. It outranks "
+                   "the login file and keychain, so those can be absent without "
+                   "anything being wrong. Renew it about yearly with `claude "
+                   "setup-token`; nothing local can see its expiry."),
+    }
+
+
 def read_machine_login_state(*, warn_days: int = DEFAULT_WARN_DAYS,
                              now: datetime | None = None,
                              path: Path | None = None) -> dict:
-    """The machine-wide verdict: the WORSE of the two credential chains.
+    """The machine-wide verdict: the WORSE of the credential chains in use.
 
     Reporting the file alone was the blind spot that let the 2026-07-20
     outage look healthy from the outside. The returned dict is the losing
-    chain's state, plus a `chains` map so `--json` callers can see both.
+    chain's state, plus a `chains` map so `--json` callers can see each one.
+
+    A stored subscription token short-circuits all of that. It is what the CLI
+    authenticates with, so the OAuth chains are not a second opinion about the
+    same thing -- they are dead stores whose absence is the intended end state.
+    Averaging them in produced two nights of "the machine is not logged in"
+    alerts about a machine that was logged in.
     """
     now = now or datetime.now()
+
+    token = read_token_login_state()
+    if token is not None:
+        combined = dict(token)
+        combined["chains"] = {"token": {"status": "ok", "days_left": None,
+                                        "detail": token["detail"]}}
+        return combined
 
     chains = {"file": read_login_state(path=path, warn_days=warn_days, now=now,
                                        source=FILE_SOURCE)}

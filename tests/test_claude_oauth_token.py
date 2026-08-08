@@ -10,7 +10,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from core import llm
+from core import credentials, llm
 
 
 def _completed(returncode, stdout):
@@ -22,46 +22,46 @@ def _completed(returncode, stdout):
 class ReadClaudeOAuthTokenTests(unittest.TestCase):
     def setUp(self):
         # The helper caches a found token at module scope; isolate each test.
-        llm._oauth_token_cache = ""
+        credentials._oauth_token_cache = ""
 
     def tearDown(self):
-        llm._oauth_token_cache = ""
+        credentials._oauth_token_cache = ""
 
     def test_returns_empty_off_darwin(self):
-        with patch.object(llm.sys, "platform", "linux"), \
-             patch.object(llm.subprocess, "run") as run:
-            self.assertEqual(llm.read_claude_oauth_token(), "")
+        with patch.object(credentials.platform, "system", return_value="Linux"), \
+             patch.object(credentials.subprocess, "run") as run:
+            self.assertEqual(credentials.read_claude_oauth_token(), "")
             run.assert_not_called()  # never shell out on a machine with no keychain
 
     def test_reads_and_strips_token_from_keychain(self):
         fake = _completed(0, "sk-ant-oat01-XXXX\n")
-        with patch.object(llm.sys, "platform", "darwin"), \
-             patch.object(llm.subprocess, "run", return_value=fake) as run:
-            self.assertEqual(llm.read_claude_oauth_token(), "sk-ant-oat01-XXXX")
+        with patch.object(credentials.platform, "system", return_value="Darwin"), \
+             patch.object(credentials.subprocess, "run", return_value=fake) as run:
+            self.assertEqual(credentials.read_claude_oauth_token(), "sk-ant-oat01-XXXX")
             run.assert_called_once()
 
     def test_missing_item_returns_empty_and_is_not_cached(self):
         miss = _completed(44, "")  # `security` exit 44 == item not found
-        with patch.object(llm.sys, "platform", "darwin"), \
-             patch.object(llm.subprocess, "run", return_value=miss):
-            self.assertEqual(llm.read_claude_oauth_token(), "")
-        self.assertEqual(llm._oauth_token_cache, "")
+        with patch.object(credentials.platform, "system", return_value="Darwin"), \
+             patch.object(credentials.subprocess, "run", return_value=miss):
+            self.assertEqual(credentials.read_claude_oauth_token(), "")
+        self.assertEqual(credentials._oauth_token_cache, "")
 
     def test_transient_error_returns_empty_and_is_not_cached(self):
-        with patch.object(llm.sys, "platform", "darwin"), \
-             patch.object(llm.subprocess, "run", side_effect=OSError("boom")):
-            self.assertEqual(llm.read_claude_oauth_token(), "")
-        self.assertEqual(llm._oauth_token_cache, "")
+        with patch.object(credentials.platform, "system", return_value="Darwin"), \
+             patch.object(credentials.subprocess, "run", side_effect=OSError("boom")):
+            self.assertEqual(credentials.read_claude_oauth_token(), "")
+        self.assertEqual(credentials._oauth_token_cache, "")
 
     def test_found_token_is_cached_and_not_reread(self):
         fake = _completed(0, "tok-123\n")
-        with patch.object(llm.sys, "platform", "darwin"), \
-             patch.object(llm.subprocess, "run", return_value=fake):
-            self.assertEqual(llm.read_claude_oauth_token(), "tok-123")
+        with patch.object(credentials.platform, "system", return_value="Darwin"), \
+             patch.object(credentials.subprocess, "run", return_value=fake):
+            self.assertEqual(credentials.read_claude_oauth_token(), "tok-123")
         # A second call must not shell out again -- any run() call would raise.
-        with patch.object(llm.subprocess, "run",
+        with patch.object(credentials.subprocess, "run",
                           side_effect=AssertionError("re-read the keychain")):
-            self.assertEqual(llm.read_claude_oauth_token(), "tok-123")
+            self.assertEqual(credentials.read_claude_oauth_token(), "tok-123")
 
 
 class ClaudeCliEnvTokenTests(unittest.TestCase):
