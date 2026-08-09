@@ -267,7 +267,7 @@ class TestVideoCatalogAccuracy(unittest.TestCase):
             ("flux_3_video", 5, 20),
             ("grok_video_v15", 2, 15),
             ("happy_horse_video", 3, 15),
-            ("seedance_2_5", 5, 30),
+            ("seedance_2_5", 4, 30),  # re-probed 2026-08-09; the sweep recorded 5
         ):
             dur = generate.VIDEO_DURATIONS[job]
             self.assertEqual((dur["min"], dur["max"]), (lo, hi), msg=job)
