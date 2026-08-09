@@ -15,11 +15,13 @@ actually consistent, render. This is the common case and it is fully unattended.
 touching anything else that shares its colour. This ships as a DCTL, not a LUT,
 because a DCTL is handed the pixel coordinate and a LUT is not.
 
-**Track three, the picture itself.** Split screens, frames that repeat instead of
-advancing, and a colour step that lands inside a shot with no cut. These are not
-colour problems and no amount of grading fixes them. **Do this track before
-colour**, always: rebuilding frames afterwards means rebuilding them from source,
-which silently drops any colour repair that lands on them.
+**Track three, the picture itself.** Frames that do not advance, a shot that
+judders, one panel of a split screen running slower than the panel beside it,
+and a colour step that lands inside a shot with no cut. These are not colour
+problems and no amount of grading fixes them. Find them, rebuild them, prove the
+rebuild, splice it in. **Do this track before colour**, always: rebuilding
+frames afterwards means rebuilding them from source, which silently drops any
+colour repair that lands on them. It can share the grade's render pass.
 
 **Track four, matching a series.** Landing a new film where its already approved
 siblings landed, which is not the same thing as giving it their look values.
@@ -34,6 +36,7 @@ Needs its own Python environment, never the bot's:
 ```bash
 python3 -m venv ~/.venvs/colorgrade
 ~/.venvs/colorgrade/bin/pip install numpy pillow scipy scenedetect opencv-python-headless
+~/.venvs/colorgrade/bin/pip install torch torchvision      # track three only
 ```
 
 ffmpeg and ffprobe must be on PATH. Everything below assumes
@@ -42,14 +45,19 @@ ffmpeg and ffprobe must be on PATH. Everything below assumes
 Check the maths before trusting a result:
 
 ```bash
-$PY scripts/selftest.py          # colour maths, no video, must end "0 failures"
+$PY scripts/selftest.py          # colour maths, no video needed
 $PY scripts/selftest_tools.py    # picture tools, builds its own test clip
+$PY scripts/selftest_frames.py   # frame repair, builds its own clip
 ```
 
-The frame rebuild in track three additionally needs RIFE. Nothing else does:
+All three must end "0 failures".
+
+The frame rebuild in track three wants RIFE. Nothing else does, and it falls
+back to RAFT without it, but the fallback is materially worse and has failed the
+colour verdict on real footage where RIFE passed:
 
 ```bash
-bash scripts/setup_rife.sh       # torch plus ~80 MB of MIT licensed weights
+bash scripts/setup_rife.sh       # ~80 MB of MIT licensed weights
 ```
 
 ## Track one: grade a whole video
@@ -224,27 +232,116 @@ $PY scripts/cgpanel.py gutter IN.mp4 --range 361,411    # where to switch, per s
 ### Frames that do not advance
 
 ```bash
-$PY scripts/cgframes.py detect  IN.mp4 --band 1940,3840
-$PY scripts/cgframes.py holdout IN.mp4 --band 1940,3840 --range 361,412
-$PY scripts/cgframes.py repair  IN.mp4 --out FIXED.mp4 --band 1940,3840
+$PY scripts/cgframes.py repair IN.mp4 --work WORK --out OUT.mp4
 ```
 
-`detect` lists the stalled frames and says, per shot, whether the holes should be
-filled in place or the shot's timing rebuilt. Those are different faults wanting
-opposite repairs and the tool decides by measurement, not by eye: two frame gaps
-against one frame gaps, near 2 means frames were merely dropped and near 1 means
-a frame rate round trip.
+Six steps, and each is also a command of its own so a job can be inspected part
+way: `census`, `plan`, `build`, `gate`, `render`, `verify`. The working directory
+is reused across them and every step is resumable.
 
-A frame counts as stalled only when three things hold together: it moves far less
-than the frames **around it**, it is hold-like against the shot, and its run is
-no longer than about three frames. Drop the third condition and the rule wants a
-quarter of a film, including a settled close up where the actor is simply still.
-Cards and end boards hold on purpose; look at what was flagged before rebuilding.
+Grading and repair belong in the same render. Pass the LUT to the repair and
+there is one decode and one encode instead of two:
 
-`holdout` hides real frames, rebuilds them, and scores three numbers. Read all
-three. **Error alone prefers a blurry answer**, which is how a rebuild once
-shipped whose frames were 10 to 25 per cent softer than their neighbours and read
-to the viewer as the subject twitching sideways for one frame.
+```bash
+$PY scripts/cg.py grade IN.mp4 --look kodak2383 --no-render     # LUTs only
+$PY scripts/cgframes.py repair IN.mp4 --work WORK --out OUT.mp4 --lut shot_00.cube
+```
+
+### The one rule
+
+**A frame that goes back into a film never leaves the film's own colour space.**
+Motion is estimated in RGB and returns a vector field. The warp, the blend and
+the splice all happen on the native yuv420p planes. A yuv to RGB to yuv round
+trip shifts the picture by around 0.8 of a code level even with the right
+matrix, and with the wrong one by 2.79 levels mostly green. That is a constant,
+so it lands on every rebuilt frame and none of the others, and a shot carrying
+one rebuild every three frames then flashes eight times a second while every
+still looks perfect. This rejected a delivery. `reference/03_failures.md` entry 11.
+
+### Two faults, opposite repairs
+
+A list of frozen frames is the same list for both.
+
+**Holes**: the shot runs at the right rate with individual frames stuck. Fill
+each one from the two real frames either side and leave everything else where
+the editor put it.
+
+**Broken cadence**: the shot was retimed by repeating frames, so it advances at
+perhaps 18 unique pictures a second inside a 24 fps film. Filling its holes
+leaves a wobble at the same period, because the survivors are not evenly spaced
+either. The repair rewrites the whole shot and moves the survivors to their true
+positions, and it is kept or reverted as a whole shot.
+
+**A deliberate hold is neither**, and it is the dangerous one. Cards, end boards
+and settling titles freeze on purpose, and a solid run of frozen frames does not
+merely resemble a broken cadence, it SCORES BETTER on the cadence test than a
+real one: every gap inside a run is 1, so the beat is perfectly regular. A 20
+frame hold in real footage was read as density 0.26, gap spread 0.00, called a
+retimed shot, and planned to move 48 real frames. So `census` rejects runs
+longer than three frames before the cadence test sees them, and prints where
+they are. No rate conversion makes long runs: 24 from 18 repeats one frame at a
+time, 24 from 12 every other frame, 24 from 8 in pairs.
+
+`plan` decides per shot and prints the numbers behind each call. Read that table
+before building: calling a retime on a shot that only has holes throws away
+frames somebody chose. Override with `--cuts` on census if the shot list is
+wrong, which is the usual cause of a bad call.
+
+### The flags that matter
+
+`--panel x0,x1` repairs one side of a split screen and leaves the other byte
+identical. Every measurement is scoped to the panel too. A reading taken across
+the divider is two different pictures averaged together.
+
+`--cuts 120,340,512` supplies the shot boundaries. The census is scoped per shot,
+so a wrong shot list gives a wrong census.
+
+`--no-resharp` discards soft rebuilds instead of restoring their detail. The
+default restores, which roughly doubles how many repairs survive the gate.
+
+`--against BAD.mp4` on verify runs the colour instrument on a file known to
+carry the fault, usually the rejected version, and prints both columns. A test
+that reads clean on both proves nothing, and verify says so.
+
+`--approved lo,hi` on verify checks that a range the client already signed off
+comes out of this render as it came out of the one they signed off.
+
+### Before committing on unfamiliar footage
+
+```bash
+$PY scripts/cgframes.py holdout --work WORK
+```
+
+Hides a real frame, rebuilds it, and scores the rebuild against repeating the
+previous frame, which is what the stuttering file already does. If motion
+compensation does not win here it will not win in the film either, and the
+honest answer is to leave the stutter in rather than trade it for softness.
+
+**Read all three scores, not the error.** Error alone prefers a blurry answer,
+because a soft rebuild sits closer to the truth on average than a crisp one
+whose detail is a pixel out of place, so a holdout scored on error picks the
+softest method every time. That is how a rebuild once shipped 10 to 25 per cent
+softer than its neighbours, reading as the subject twitching sideways for one
+frame, which no measurement of motion can see. `detail` is gradient energy
+against the real frame, where 1.0 is right and above 1 is usually ghosting
+rather than sharpness, since a double edge carries more high frequency than a
+single one. `placed` is correlation of the gradient map, which is the only one
+that separates a crisp frame in the right place from a crisp frame in the wrong
+place.
+
+### Which engine builds the frame
+
+RIFE where `scripts/setup_rife.sh` has been run, RAFT optical flow otherwise,
+and the build step says which. They are not equivalent. RIFE returns a per pixel
+fusion mask, so where the two warps disagree it picks one; RAFT averages them,
+and averaging two warps that disagree by a pixel IS a two tap blur. On real
+footage RIFE kept 32 of 32 rebuilds at 1.01 times the real colour offset, while
+RAFT finished at 1.58 times and FAILED the colour verdict, or at 5.01 times with
+sharpening off. If the build says RAFT, expect rejections and read them as the
+fallback being honest. `CG_FRAME_ENGINE` forces one; forcing `rife` when it is
+absent is an error rather than a silent downgrade.
+
+`reference/07_frames.md` is the full method.
 
 ### A colour step inside a shot
 
@@ -321,13 +418,14 @@ Longer notes live in `reference/`. Read `01_method.md` first if you want to know
 why the order of operations is what it is, and `03_failures.md` if something
 came out wrong, since every entry there is a real failure that was measured on
 real footage and then fixed. `02_looks.md` is the per look rationale,
-`04_sources.md` the primary documents every claim traces to, and `00_library.md`
-the grading guides, kept outside the repo because of their size.
+`04_sources.md` the primary documents every claim traces to, `07_frames.md` the
+frame repair method in full, and `00_library.md` the grading guides, kept outside
+the repo because of their size.
 
-`05_picture.md` covers track three: split screens, stalled frames, the holdout
-scoring that selects for blur if you let it, and the localized colour repair.
-`06_series.md` covers track four, and both are worth reading before touching a
-film that has siblings.
+`05_picture.md` is the companion to `07_frames.md` and covers the rest of track
+three: split screens, the localized colour repair, and why two decode paths can
+never be compared. `06_series.md` covers track four, and both are worth reading
+before touching a film that has siblings.
 
 One rule spans everything and is enforced in code. **Two arrays that came out of
 different decode paths cannot be compared.** Splicing a numpy downscale into
@@ -336,3 +434,13 @@ at every repaired frame, and reported a repair as making shots 48 per cent
 rougher. `cgpanel.stream` returns the filter chain that produced every array and
 `require_same_path` refuses the comparison. Use it even when the paths obviously
 match.
+
+Two entries in the failure log are not about colour at all. Number 12 records
+that the fix for number 11 already existed, in the previous film's job folder,
+and was not carried anywhere the next job would look, so the next job repeated
+it and a delivery was rejected. Number 18 is the same shape from the other
+direction: a rule that had been written down was missing from the code that
+shipped, and only building the case on real footage showed it. A repair is not
+finished when the symptom is gone at the site it was found. It is finished when
+the same class of mistake is impossible at every site and something automated
+proves it.
