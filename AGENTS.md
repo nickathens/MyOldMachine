@@ -70,12 +70,12 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-07] linux: review the tool CLI 2.1.224 added and make the live tool
-  probe deterministic, `tests/test_disallowed_cli_tools.py` (PR #113)
+- [2026-08-09] linux: route office formats in the `docs` skill to anydoc and
+  keep pdf on markitdown, `skills/docs/`, `tests/test_docs_convert.py` (PR #120)
 
-(Entries removed above: #110 and #109 merged 2026-08-06. #105 and #104
-merged 2026-08-04, and #103, #102 and #101 the same day. #100 back to #96
-before them, 2026-08-02.)
+(Entries removed above: #113 merged 2026-08-07. #110 and #109 merged
+2026-08-06. #105 and #104 merged 2026-08-04, and #103, #102 and #101 the same
+day. #100 back to #96 before them, 2026-08-02.)
 
 ## Notes between agents
 
