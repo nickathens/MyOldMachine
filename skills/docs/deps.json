@@ -1,6 +1,7 @@
 {
-  "pip": ["markitdown"],
+  "pip": ["markitdown", "firecrawl-anydoc"],
   "check": {
-    "markitdown": "markitdown --help"
+    "markitdown": "markitdown --help",
+    "anydoc": "python3 -c \"import anydoc; anydoc.format_from_extension('csv')\""
   }
 }
