@@ -44,6 +44,42 @@ def ui_params(text):
     return out
 
 
+def _assignment(path, name):
+    """The module level assignment to `name`, read without importing.
+
+    These scripts import numpy at module level, so a bare runner cannot import
+    them to read a constant. Reading the source is the only way to pin one here.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else []
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == name:
+                return node.value
+    raise AssertionError(f"{path.name} has no module level {name}")
+
+
+def _module_constant(path, name):
+    value = _assignment(path, name)
+    if not isinstance(value, ast.Constant):
+        raise AssertionError(f"{path.name}: {name} is no longer a plain constant")
+    return value.value
+
+
+def _env_default(path, name, var):
+    """The fallback in `name = ...os.environ.get(var, DEFAULT)...`.
+
+    The default is what every run without the variable set actually uses, so
+    that literal is the thing worth pinning, not the assignment around it.
+    """
+    for node in ast.walk(_assignment(path, name)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get" and len(node.args) == 2
+                and isinstance(node.args[0], ast.Constant) and node.args[0].value == var):
+            return node.args[1].value
+    raise AssertionError(f"{path.name}: {name} no longer defaults an os.environ {var}")
+
+
 class SkillLayoutTest(unittest.TestCase):
     def test_expected_files_present(self):
         for rel in ("SKILL.md", "deps.json", "dctl/LensIsolate.dctl",
@@ -57,7 +93,10 @@ class SkillLayoutTest(unittest.TestCase):
                     "scripts/cgfix.py", "scripts/cgseries.py",
                     "scripts/cgrife.py", "scripts/setup_rife.sh",
                     "scripts/selftest_tools.py",
-                    "reference/05_picture.md", "reference/06_series.md"):
+                    "reference/05_picture.md", "reference/06_series.md",
+                    # track three's frame repair pipeline
+                    "scripts/cgyuv.py", "scripts/cgflow.py",
+                    "scripts/selftest_frames.py", "reference/07_frames.md"):
             self.assertTrue((SKILL / rel).is_file(), f"missing {rel}")
 
     def test_picture_tools_are_optional_about_torch(self):
@@ -82,6 +121,39 @@ class SkillLayoutTest(unittest.TestCase):
         """The weights live outside the repo, so the path must be settable."""
         text = (SCRIPTS / "cgrife.py").read_text(encoding="utf-8")
         self.assertIn("CG_RIFE_HOME", text)
+
+    def test_rife_runs_at_full_scale(self):
+        """The two faults this track was built to fix are numbers, so pin them.
+
+        `selftest_frames.py` proves the behaviour, but it needs numpy and torch
+        and so cannot run on a bare runner. That leaves the fault sites guarded
+        by nothing automatic, which is how the value got to 0.5 in the first
+        place: it is the usual recommendation for 4K, and correct for its own
+        purpose, which is interpolating across large motion. Frame repair works
+        between ADJACENT frames, where the coarse pyramid has nothing real to
+        lock onto. Fed two identical frames, where the only right answer is that
+        frame back, 0.5 invents 2.12 levels of movement in the middle of the
+        picture against 0.0001 at 1.0.
+        """
+        self.assertEqual(1.0, float(_env_default(SCRIPTS / "cgrife.py",
+                                                 "SCALE", "CG_RIFE_SCALE")),
+                         "RIFE scale default must stay 1.0, see reference/07_frames.md")
+
+    def test_a_long_freeze_is_treated_as_a_deliberate_hold(self):
+        """A hold must never be rebuilt, and the cap that spares it is a number.
+
+        No frame rate conversion produces long runs: 24 from 18 repeats one
+        frame at a time, 24 from 12 every other frame, 24 from 8 in pairs, so
+        three is the most a real retime can leave. What does produce a long run
+        is a title settling, an end board, or an actor being still. Raising this
+        cap hands those to the rebuilder, and a solid run scores BETTER on the
+        cadence test than genuine damage, because every gap inside a run is 1
+        and so the beat looks perfectly regular. Measured: a 20 frame hold
+        reached `plan` as density 0.26, gap spread 0.00, and planned to move 48
+        real frames to fix a fault that did not exist.
+        """
+        self.assertEqual(3, _module_constant(SCRIPTS / "cgframes.py", "MAX_STALL_RUN"),
+                         "MAX_STALL_RUN guards deliberate holds, see reference/07_frames.md")
 
     def test_every_script_compiles(self):
         for script in sorted(SCRIPTS.glob("*.py")):
