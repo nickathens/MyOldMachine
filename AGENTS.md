@@ -70,8 +70,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-09] linux: route office formats in the `docs` skill to anydoc and
-  keep pdf on markitdown, `skills/docs/`, `tests/test_docs_convert.py` (PR #120)
+- [2026-08-09] linux: carry the Seedance 2.0 craft into the 2.5 guide and correct
+  the 2.5 duration floor, `skills/image-gen/models/seedance*.md`,
+  `skills/image-gen/scripts/generate.py`, `tests/test_image_gen*.py` (PR #121)
 
 (Entries removed above: #113 merged 2026-08-07. #110 and #109 merged
 2026-08-06. #105 and #104 merged 2026-08-04, and #103, #102 and #101 the same
