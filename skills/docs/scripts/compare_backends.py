@@ -12,6 +12,16 @@ Usage:  python3 compare_backends.py FILE [FILE ...]
 A large "only markitdown" column that is all NaN and Unnamed is filler, not
 content. A non-empty "only markitdown" column of real words on a pdf is the
 ligature loss that keeps pdf on markitdown.
+
+Two shapes worth naming, because both are silent:
+
+  a large "only anydoc" column on a csv means markitdown misread the header
+  and collapsed the table to one column, which is data gone rather than
+  formatting;
+
+  a small "only markitdown" column on a docx, a word or two, is usually anydoc
+  breaking a word at a field boundary ("contact" arriving as "ntact"), which
+  is why docx is not routed to it.
 """
 
 import re

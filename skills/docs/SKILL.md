@@ -1,7 +1,8 @@
 # Document Conversion
 
-Convert documents to Markdown. Two backends, routed per format by
-`scripts/convert.py`, because measurement said neither wins everywhere.
+Convert documents to Markdown with markitdown, except for four formats where
+markitdown measurably loses data and `scripts/convert.py` routes to anydoc
+instead.
 
 ## Use this
 
@@ -16,33 +17,52 @@ announced on stderr. Exit code 1 with a reason on failure.
 
 ## Which backend, and why
 
-| formats | backend | why |
+| format | backend | what markitdown loses |
 |---|---|---|
-| .doc .docx .odt .rtf .epub .pptx .odp .xlsx .ods .csv | anydoc | faster, and no filler tokens |
-| .pdf | markitdown | anydoc mangles pdf text |
-| .html .htm images audio .zip | markitdown | anydoc does not read them |
+| .ods | anydoc | cannot open it at all |
+| .doc | anydoc | cannot open legacy binary Word at all |
+| .csv | anydoc | drops columns when it misreads the header |
+| .xlsx | anydoc | fills empty cells with NaN, columns with "Unnamed: N" |
+| everything else | markitdown | nothing |
 
-Measured over a real 195 document corpus on Linux: 107 pdf, 72 xlsx, 9 csv,
-6 docx, 1 legacy doc.
+Four formats, each with a measured reason. Measured over 195 real documents on
+Linux: 107 pdf, 72 xlsx, 9 csv, 6 docx, 1 legacy doc.
 
-* **Spreadsheets.** anydoc took 521 ms for all 72 workbooks, markitdown took
-  14656 ms. markitdown routes spreadsheets through pandas, so empty cells
-  become `NaN`, unlabelled columns become `Unnamed: 3`, and integers become
-  floats. That was 52334 filler tokens across the corpus, none of which anydoc
-  emits. Sheet headings are identical on multi sheet workbooks. anydoc omits
-  the heading on a single sheet workbook, which is the one thing it loses.
-* **Legacy .doc.** markitdown cannot read binary Word at all. anydoc can.
-* **Word documents.** anydoc 32 ms against 982 ms, and markitdown inlines
-  base64 image data into the text. anydoc split one word across a field
-  boundary in one of six files, so it is not free either.
-* **PDF.** anydoc failed to parse 15 of 107 files that markitdown read fine,
-  and drops the fi ligature on most of the rest, so "Please find below" comes
-  out "Please nd below". It also orphans currency symbols into a junk line at
-  the end. anydoc does reconstruct pdf tables better, so `--backend anydoc` is
-  worth trying by hand on a table heavy pdf, with the text checked afterwards.
+* **.ods.** `UnsupportedFormatException`, no converter even attempts it.
+  anydoc reads the same workbook in full.
+* **.doc.** markitdown cannot read binary Word at all.
+* **.csv.** markitdown reads csv through pandas, which infers a header row.
+  Given a real 11 column file whose first line is a comment, it inferred one
+  column and dropped **3298 of 3824 cells**. anydoc dropped none. On a clean
+  csv the two agree to within one character, so this is a tail risk rather
+  than a constant cost, and the tail is silent data loss.
+* **.xlsx.** Same pandas path, so empty cells become `NaN`, unlabelled columns
+  become `Unnamed: 3`, integers become floats. 183 to 756 filler tokens per
+  accounting workbook, none of which anydoc emits. No cell content is lost by
+  either side. anydoc omits the sheet heading on a single sheet workbook,
+  which is the one thing it loses.
 
-Do not trust that table on a different machine or a different document set.
-Re-measure:
+## What is deliberately NOT routed
+
+Three of these were routed in the first version of this skill and should not
+have been. Kept written down so the guess does not come back:
+
+* **.pdf.** anydoc failed to parse 15 of 107 files markitdown read fine, and
+  drops the fi ligature on most of the rest, so "Please find below" comes out
+  "Please nd below". It does reconstruct pdf tables better, so `--backend
+  anydoc` is worth trying by hand on a table heavy pdf, with the text checked
+  afterwards.
+* **.docx.** anydoc corrupts text at field boundaries: in a real invoice
+  template "contact" came out as "ntact". markitdown's only cost is a short
+  `![](data:image/png;base64...)` placeholder per image, truncated, not the
+  payload. Corruption beats cosmetics. anydoc is 30x faster on docx and that
+  is not worth a wrong word in an invoice.
+* **.odt .rtf .epub .pptx .odp.** Never measured. There was not one such file
+  in the corpus. They were routed because anydoc's own format table lists
+  them, which is exactly the habit that put pdf on the wrong backend.
+
+Do not trust the table above on a different machine or a different document
+set, and measure any format before adding it:
 
 ```bash
 python3 skills/docs/scripts/compare_backends.py YOUR_FILE ...
@@ -55,18 +75,20 @@ stderr. One workbook in that corpus is malformed enough that anydoc refuses it
 and markitdown reads it. A forced `--backend anydoc` does not fall back, so it
 stays a real measurement of anydoc.
 
-A pdf arriving under an office extension is detected by content and sent to
+A pdf arriving under a routed extension is detected by content and sent to
 markitdown anyway.
 
 An install where anydoc never landed degrades to markitdown for everything,
-which is what this skill did before, rather than raising.
+which is what this skill did before, rather than raising. So does an anydoc
+that is installed but does not load: it is a compiled Rust extension, so a
+broken shared object is the realistic failure, and the check performs the real
+import rather than asking whether the module is findable, because those are
+different questions.
 
 ## Python usage
 
 ```python
-from pathlib import Path
 import sys
-
 sys.path.insert(0, "skills/docs/scripts")
 from convert import convert
 
@@ -78,9 +100,7 @@ text, backend_used = convert(Path("ledger.xlsx"))
 * Scanned PDFs still need OCR first. Neither backend does OCR. Use the `ocr`
   skill or `ocrmypdf`, then convert.
 * anydoc is `firecrawl-anydoc` on PyPI, MIT, Rust with a Python binding and no
-  Python dependencies of its own. Published wheels cover linux and macOS on
-  both x86_64 and arm64, plus Windows x86_64, on Python 3.10 and up. There is
-  no anydoc command line tool, which is why this skill has a script rather
-  than a bare command.
-* markitdown stays installed. It is not a legacy path, it owns pdf, html,
-  images, audio and archives.
+  Python dependencies of its own. There is no anydoc command line tool, which
+  is why this skill has a script rather than a bare command.
+* markitdown owns everything else: pdf, docx, html, images, audio, archives.
+  It is the default, not the legacy path.
