@@ -2,12 +2,13 @@
   "check": {
     "ffmpeg": "ffmpeg -version",
     "ffprobe": "ffprobe -version",
-    "colorgrade-venv": "test -x $HOME/.venvs/colorgrade/bin/python && $HOME/.venvs/colorgrade/bin/python -c 'import numpy, scipy, scenedetect, PIL'"
+    "colorgrade-venv": "test -x $HOME/.venvs/colorgrade/bin/python && $HOME/.venvs/colorgrade/bin/python -c 'import numpy, scipy, scenedetect, PIL, cv2'",
+    "colorgrade-motion": "$HOME/.venvs/colorgrade/bin/python -c 'import torch, torchvision'"
   },
   "brew": ["ffmpeg"],
   "apt": ["ffmpeg"],
   "weight": "medium",
   "min_ram_gb": 4,
-  "min_disk_gb": 2,
-  "install_note": "Python packages go in their own environment at ~/.venvs/colorgrade, never in the bot's .venv: python3 -m venv ~/.venvs/colorgrade && ~/.venvs/colorgrade/bin/pip install numpy pillow scipy scenedetect opencv-python-headless (about 300 MB). Licences: numpy BSD-3, scipy BSD-3, pillow MIT-CMU, PySceneDetect BSD-3, OpenCV Apache-2.0. All clean for paid client work. The object isolation track additionally wants DaVinci Resolve installed to receive the DCTL, but the DCTL is written and proved with no Resolve involved. The frame REBUILD in track three is the only part that needs torch and RIFE 4.25 (Practical-RIFE, MIT, weights from gpanaretou/practical-rife-interpolation on HuggingFace, about 80 MB): run scripts/setup_rife.sh. Stall detection, the cadence test, judder, the split screen tools and every colour tool work without it."
+  "min_disk_gb": 6,
+  "install_note": "Python packages go in their own environment at ~/.venvs/colorgrade, never in the bot's .venv: python3 -m venv ~/.venvs/colorgrade && ~/.venvs/colorgrade/bin/pip install numpy pillow scipy scenedetect opencv-python-headless (about 300 MB). Licences: numpy BSD-3, scipy BSD-3, pillow MIT-CMU, PySceneDetect BSD-3, OpenCV Apache-2.0. All clean for paid client work. Frame repair (track three) is the only part that needs torch, about 2.5 GB, BSD-3. It builds frames with RIFE 4.25 where that is set up (Practical-RIFE, MIT, weights from gpanaretou/practical-rife-interpolation on HuggingFace, about 80 MB: run scripts/setup_rife.sh), and falls back to RAFT optical flow from torchvision (BSD-3, weights about 80 MB on first use) where it is not. RIFE is preferred because it was measured better on held out frames and about five times faster; see reference/07_frames.md. Either way it runs on the Apple GPU where one is present and falls back to CPU. Stall detection, the cadence test, judder, the split screen tools and every colour tool work with no motion backend at all. The object isolation track wants DaVinci Resolve installed to receive the DCTL, but the DCTL is written and proved with no Resolve involved."
 }

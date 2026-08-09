@@ -18,10 +18,26 @@ think; what comes back is a vector field and a fusion weight, and those are
 applied to the file's own y, u and v. In fastmode 4.25 has no refinement net, so
 warping the planes with its own flow reproduces exactly what it would have output.
 
-Two things about the model that cost time to find:
+Three things about the model that cost time to find:
   * `IFNet` returns `(flow_list, mask_list[4], merged)`, so the mask is a TENSOR
     and not a list, and it needs a sigmoid.
   * the useful flow is `flow_list[4]`, at full resolution.
+  * SCALE 0.5, WHICH IS THE USUAL RECOMMENDATION FOR 4K, IS WRONG FOR THIS JOB.
+    That advice is for interpolating across large motion, where a coarse
+    pyramid is needed to track a big displacement. Frame repair works between
+    ADJACENT frames, where the motion is small, and there the coarse pyramid
+    invents movement that is not there. The control is a pair of identical
+    frames: nothing moved, so the answer must be that frame. At 1080p, scale
+    0.5 came back off by 0.883 code levels on average, worst 177, with 3.85 per
+    cent of pixels off by more than two levels, AND THE ERROR WAS WORST IN THE
+    CENTRE OF THE FRAME, so it is invention and not an edge artifact. That is
+    the same order as the RGB round trip this whole module exists to avoid.
+    Scale 1.0 came back off by 0.015 levels, worst 7. At 4K: 0.794 against
+    0.0095. On held out frames with real rotation and zoom, scale 1.0 also won
+    outright on all three scores, error 1.141 against 1.257, detail 1.015
+    against 0.949, placement 0.7758 against 0.7133. It is also FASTER, because
+    the padding unit is 64/scale and a smaller unit pads less: 0.61s against
+    1.80s per 4K frame. There is no axis on which 0.5 is better here.
 
 Set up with `bash scripts/setup_rife.sh`, or point `CG_RIFE_HOME` at an existing
 Practical-RIFE checkout. Weights: gpanaretou/practical-rife-interpolation on
@@ -36,6 +52,9 @@ import sys
 import numpy as np
 
 HOME = os.environ.get("CG_RIFE_HOME", os.path.expanduser("~/.models/rife"))
+
+# Full resolution. See the note above: 0.5 invents motion between adjacent frames.
+SCALE = float(os.environ.get("CG_RIFE_SCALE", "1.0"))
 
 _net = None
 _torch = None
@@ -97,7 +116,7 @@ def _yuv_to_rgb_t(planes, x0, x1, H):
     return torch.from_numpy(rgb).permute(2, 0, 1)[None].to(device())
 
 
-def flow_mask(i0, i1, t, scale=0.5):
+def flow_mask(i0, i1, t, scale=SCALE):
     """RIFE's own flow and fusion mask, at full resolution."""
     import torch
     net = _load()
@@ -131,7 +150,7 @@ def _warp(plane, flow, full_w, H, sample="bicubic"):
                          padding_mode="border", align_corners=True)
 
 
-def warp_planes(pa, pb, t, x0, x1, H, scale=0.5, sample="bicubic"):
+def warp_planes(pa, pb, t, x0, x1, H, scale=SCALE, sample="bicubic"):
     """The rebuilt y, u and v for columns [x0, x1), as uint8 arrays."""
     import torch
     _load()
