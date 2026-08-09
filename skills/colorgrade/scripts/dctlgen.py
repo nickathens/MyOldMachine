@@ -128,7 +128,7 @@ def fill_inside_window(h, s, v, p, hue_tol=32.0):
 
     Measured, not guessed: a seeded region grow finds the bright rim of a glass
     object and leaves the pale interior behind, because the interior is too
-    washed out to match on colour. On the Delphi lens that left a hollow ring
+    washed out to match on colour. On a glass lens that left a hollow ring
     where the disc should be solid.
 
     Once the window is holding the area, the colour gate can be loosened a very
@@ -153,8 +153,8 @@ def fill_inside_window(h, s, v, p, hue_tol=32.0):
 
     # Loosen SATURATION, hold VALUE. The pale interior of a glassy object is
     # desaturated but still bright, so dropping the saturation floor claims it.
-    # Dropping the value floor as well is what let the dark denim behind the
-    # Delphi lens into the matte, because denim shares the blue band and only
+    # Dropping the value floor as well is what let the dark denim behind
+    # a glass lens into the matte, because denim shares the blue band and only
     # brightness told them apart. The value gate stays where the seed region
     # put it for exactly that reason.
     rel = rel_all[near]

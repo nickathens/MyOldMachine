@@ -5,7 +5,7 @@ comes out wrong, start here.
 
 ## 1. Grey world white balance destroys a brand
 
-**Symptom.** The Allwyn corporate film graded with the first version. Shots
+**Symptom.** A corporate brand film graded with the first version. Shots
 built on the brand yellow came back green. Shots on the brand pale blue came
 back warm and washed. Visible instantly on the contact sheet.
 
@@ -43,8 +43,8 @@ rendered. Fraction of pixels whose immediate neighbours match to within half a
 code level. Camera footage carries sensor noise everywhere so almost nothing is
 truly flat; rendered graphics are flat over most of the frame.
 
-**Calibrated, not picked.** Allwyn brand motion graphics read 0.26 to 0.72. The
-live action lottery shop inside the same film reads 0.09. AI generated footage
+**Calibrated, not picked.** The film's brand motion graphics read 0.26 to 0.72.
+The live action interior inside the same film reads 0.09. AI generated footage
 reads 0.10 to 0.17. Threshold set at 0.22.
 
 **The tolerance matters more than the threshold.** At 1.5 code levels instead of
@@ -100,7 +100,7 @@ cut, and supply `--cuts` if they look wrong.
 
 ## 6. A seeded colour grow finds the rim of a glassy object, not the object
 
-**Symptom.** The generated DCTL for the Delphi lens produced a hollow ring where
+**Symptom.** The generated DCTL for a glass lens produced a hollow ring where
 the disc should have been solid.
 
 **Cause.** The pale interior of a glass lens is too desaturated to match the
@@ -167,3 +167,71 @@ both constructs so they cannot come back unnoticed.
 If a generated DCTL is ever rejected again, load Blackmagic's own
 `GainDCTLPlugin.dctl` from that same folder as a control. If theirs also fails
 the problem is the install or the route, not the generated code.
+
+## 9. The highlight rolloff was not protection and every look clipped
+
+**Symptom.** Every attempt at a stronger grade blew about five per cent of a film
+to flat white, and it read as the footage having no headroom.
+
+**Cause.** `_soft_shoulder` lerped its compressed curve against the identity.
+The compressed curve is asymptotic to 1, but the identity is not, so any amount
+below 1.0 put an unbounded slope straight back into the output. Measured at knee
+0.80: amount 0.35 passed 1.0 for any input above 1.034 and reached 2.95 at input
+4.0. Only amount 1.0 was bounded at all, and **every look in the library shipped a
+value between 0.2 and 0.6.** `_soft_toe` had the identical defect downward, so a
+"soft" toe still crushed: at amount 0.15 the output went negative for any input
+under −0.016.
+
+The job it was found on worked around it by pushing `highlight_rolloff` to 0.91
+and then 1.00, which is the tell: a parameter that only works at its maximum is
+not doing what its name says.
+
+**Fix.** `amount` moves the knee instead of blending the result. Amount 0 leaves
+the signal alone, amount 1 rolls off from the knee, anything between rolls off
+from a knee that fraction of the way up. Output stays under 1 for every finite
+input at every amount, the slope at the knee is 1 so there is no kink, and amount
+1.0 reproduces the old curve exactly.
+
+**Measured across all ten library looks**, on two real frames and a dense
+lattice: mean difference 0.454 code levels of 255, worst look 1.310, and below
+output 0.90 the mean difference is 0.1 to 0.56, so the change is confined to the
+top end where the old curve was clipping. `neutral` is bit exact, which it has to
+be. Pixels pinned at pure white fell from 9.5 per cent to 2.0 on average, nothing
+clips more in any of thirty cases, and `clean_commercial`, `kodak2383`,
+`teal_orange`, `sunlit` and `warm_doc` went to exactly 0.000 per cent.
+
+**A second, unlooked for result.** Removing the clip crease improved LUT bake
+accuracy, because a 3D LUT cannot represent a crease. Worst dE2000 at 33 cubed:
+`noir` 2.39 to 0.76, `bleach_bypass` 1.61 to 0.68, `clean_commercial` 1.30 to
+0.82, `warm_doc` 1.05 to 0.89. Both `noir` and `bleach_bypass` now bake to a 33
+cube where they previously needed 65. `sunlit` got slightly worse, 0.80 to 0.97,
+still well inside budget.
+
+## 10. hue_shifts gated in one colour space and rotated in another
+
+**Symptom.** Four hue holds aimed at measured brand colours did nothing at all,
+and the graded film printed numbers identical to no holds. That very nearly read
+as "the holds do not help", for entirely the wrong reason.
+
+**Cause.** `apply_look` selected pixels with the HSV hue and rotated the Lab hue
+angle, in one call, with nothing naming either. The two are different numbers for
+the same colour and differ by a different amount for every colour: teal reads
+189.20 in HSV and −151.21 in Lab, skin 15.18 and 52.62, sky blue 227.08 and
+−76.28. Centres measured in Lab therefore selected colours that were not in the
+picture.
+
+**Fix.** Each `hue_shifts` entry takes `"space": "hsv"` or `"lab"`. Default is
+`hsv`, which is what the library looks were authored against and is bit exact for
+them. An unknown space raises rather than guessing. Both hue conventions are now
+reported side by side by `cgseries.py primaries` so the two can be seen not to
+match.
+
+## Where the rest of the failures live
+
+The picture faults found on a split screen series, and the frame repair work, are
+in `05_picture.md`: per panel measurement, the three condition stall rule, the
+gap ratio that separates dropped frames from a rate conversion, the holdout
+scoring that rewards blur if you let it, and the localized colour repair. The
+series matching failures are in `06_series.md`: matching the recipe instead of
+the result, pivot placement on a bimodal film, masks that select the wrong thing,
+and synthetic probes that fall outside the gamut.

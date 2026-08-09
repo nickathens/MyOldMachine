@@ -87,6 +87,144 @@ def main():
     check("compression never returns a negative", bool(np.all(gc >= -1e-6)),
           f"min {float(gc.min()):.4f}")
 
+    # ---- the shoulder and toe must actually bound the signal --------------
+    # They did not. The old form lerped the compressed curve against the
+    # identity, so at highlight_rolloff 0.35 the output passed 1.0 for any
+    # input above 1.034 and reached 2.95 at input 4.0, and every look in the
+    # library ships a value between 0.2 and 0.6. These two checks are the whole
+    # point of the parameter, so they are asserted rather than assumed.
+    over = np.linspace(0.0, 4.0, 4001, dtype=np.float32)
+    worst, worst_a = 0.0, None
+    for a in np.linspace(0.02, 1.0, 50):
+        m = float(C._soft_shoulder(over, float(a), knee=0.80).max())
+        if m > worst:
+            worst, worst_a = m, float(a)
+    check("the shoulder is bounded by 1 at every amount", worst <= 1.0 + 1e-6,
+          f"worst {worst:.6f} at amount {worst_a:.2f}, inputs to 4.0")
+
+    under = np.linspace(-2.0, 1.0, 3001, dtype=np.float32)
+    worst, worst_a = np.inf, 0.0
+    for a in np.linspace(0.02, 1.0, 50):
+        m = float(C._soft_toe(under, float(a), knee=0.25).min())
+        if m < worst:
+            worst, worst_a = m, float(a)
+    check("the toe is bounded by 0 at every amount", worst >= -1e-6,
+          f"worst {worst:.6f} at amount {worst_a:.2f}, inputs to -2.0")
+
+    # amount 1.0 must still be the curve the looks were authored against
+    ref = 0.80 + 0.20 * (1.0 - np.exp(-np.maximum(over - 0.80, 0.0) / 0.20))
+    ref = np.where(over > 0.80, ref, over)
+    e = float(np.abs(C._soft_shoulder(over, 1.0, knee=0.80) - ref).max())
+    check("amount 1.0 reproduces the original curve exactly", e < 1e-6,
+          f"max deviation {e:.2e}")
+
+    # ---- and `amount` must still mean what it says in between -------------
+    # The three checks above pin the two ENDS: bounded everywhere, and amount
+    # 1.0 identical to the old curve. Nothing pins the interior, and the
+    # interior is where the library lives -- 9 of the 10 looks ship a rolloff
+    # between 0.2 and 0.6. Reparameterising `a` survives all three: (1-a)**3,
+    # (1-a)**0.25 and (1-a*a) each pass with 0 failures, and (1-a)**3 makes
+    # `highlight_rolloff: 0.20` behave like 0.49 -- a slider that does not mean
+    # what its name says, which is the defect this whole section exists for.
+    # So assert the docstring's own promise: the knee sits `amount` of the way
+    # down from 1.0 to `knee`, and more amount always rolls off more signal.
+    bad = []
+    for a in (0.1, 0.2, 0.35, 0.5, 0.75, 1.0):
+        k = 0.80 + 0.20 * (1.0 - a)
+        below = np.array([k - 1e-3], dtype=np.float32)
+        above = np.array([min(k + 0.01, 0.999)], dtype=np.float32)
+        if float(C._soft_shoulder(below, a, knee=0.80)[0]) != float(below[0]):
+            bad.append(f"amount {a} rolls off below its stated knee {k:.3f}")
+        if float(C._soft_shoulder(above, a, knee=0.80)[0]) >= float(above[0]) - 1e-5:
+            bad.append(f"amount {a} does not roll off above its stated knee {k:.3f}")
+    check("the shoulder knee sits where `amount` says it does",
+          not bad, "; ".join(bad) or "amounts 0.10 to 1.00, knee 0.80")
+
+    bad = []
+    for a in (0.1, 0.2, 0.35, 0.5, 0.75, 1.0):
+        k = 0.25 * a
+        above = np.array([k + 1e-3], dtype=np.float32)
+        below = np.array([max(k - 0.01, -0.5)], dtype=np.float32)
+        if float(C._soft_toe(above, a, knee=0.25)[0]) != float(above[0]):
+            bad.append(f"amount {a} toes above its stated knee {k:.3f}")
+        if float(C._soft_toe(below, a, knee=0.25)[0]) <= float(below[0]) + 1e-5:
+            bad.append(f"amount {a} does not toe below its stated knee {k:.3f}")
+    check("the toe knee sits where `amount` says it does",
+          not bad, "; ".join(bad) or "amounts 0.10 to 1.00, knee 0.25")
+
+    ramp = np.linspace(0.0, 1.0, 20001, dtype=np.float32)
+    fracs = [float((np.abs(C._soft_shoulder(ramp, a, knee=0.80) - ramp) > 1e-5).mean())
+             for a in (0.1, 0.25, 0.5, 0.75, 1.0)]
+    check("more `amount` always rolls off more of the signal",
+          all(hi > lo for lo, hi in zip(fracs, fracs[1:])),
+          " < ".join(f"{f * 100:.1f}%" for f in fracs))
+
+    # The sweeps above stop at amount 1.0, so nothing sees a look file that
+    # asks for more. `min(amount, 1.0)` is load bearing: without it, amount 6
+    # puts the knee at -0.20 and the shoulder returns NEGATIVE values for a
+    # black input. Pin the clamp rather than the symptom.
+    worst = 0.0
+    for a in (1.5, 5.0, 50.0):
+        worst = max(worst,
+                    float(np.abs(C._soft_shoulder(over, a, knee=0.80)
+                                 - C._soft_shoulder(over, 1.0, knee=0.80)).max()),
+                    float(np.abs(C._soft_toe(under, a, knee=0.25)
+                                 - C._soft_toe(under, 1.0, knee=0.25)).max()))
+    check("an amount above 1.0 clamps to 1.0 rather than running past it",
+          worst == 0.0, f"worst difference {worst:.2e} across amounts 1.5, 5, 50")
+
+    # and the rolloff must stop the display chain pinning at white
+    dense = np.linspace(0, 1, 65, dtype=np.float32)
+    cube = np.stack(np.meshgrid(dense, dense, dense, indexing="ij"), axis=-1).reshape(-1, 3)
+    for name in sorted(os.path.basename(p)[:-5] for p in glob.glob(LOOKS + "/*.json")):
+        look = C.load_look(name, LOOKS)
+        if look.highlight_rolloff <= 0:
+            continue
+        code = C.lin_to_code(np.maximum(C.apply_look(C.code_to_lin(cube), look), 0.0))
+        if look.black_offset:
+            code = code * (1.0 - look.black_offset) + look.black_offset
+        rolled = C._soft_shoulder(code, look.highlight_rolloff, knee=0.80)
+        check(f"  {name} rolloff leaves headroom rather than clipping",
+              float(rolled.max()) <= 1.0 + 1e-6,
+              f"peak {float(rolled.max()):.6f} at rolloff {look.highlight_rolloff}")
+
+    # ---- hue_shifts gate and rotation must live in the same space ---------
+    # The gate was HSV and the rotation Lab, in one call, with nothing naming
+    # either. A centre measured in Lab then selected nothing and the shift was
+    # silently inert. On a real job four holds did nothing and printed numbers
+    # identical to no holds at all.
+    teal = C.code_to_lin(np.array([[[0.05, 0.42, 0.45]]], dtype=np.float32))
+    centre = float(C.lab_hue(teal)[0, 0])
+    start = float(C.lab_hue(teal)[0, 0])
+    ent = {"centre": centre, "width": 20.0, "shift": 25.0}
+    moved_hsv = float(C.lab_hue(C.apply_look(teal, C.Look(hue_shifts=[dict(ent)])))[0, 0]) - start
+    moved_lab = float(C.lab_hue(
+        C.apply_look(teal, C.Look(hue_shifts=[dict(ent, space="lab")])))[0, 0]) - start
+    check("a Lab centre gated in Lab rotates by what it asked for",
+          abs(moved_lab - 25.0) < 0.05, f"asked 25.0, got {moved_lab:+.3f} deg")
+    check("the same entry gated in HSV is inert, which is the trap",
+          abs(moved_hsv) < 0.5, f"{moved_hsv:+.3f} deg")
+
+    try:
+        C.apply_look(teal, C.Look(hue_shifts=[{"centre": 0.0, "space": "hcl"}]))
+        check("an unknown hue_shift space is refused", False, "it was accepted")
+    except ValueError:
+        check("an unknown hue_shift space is refused", True)
+
+    # looks in the library carry no space key and must keep their HSV gate
+    worst = 0.0
+    for name in sorted(os.path.basename(p)[:-5] for p in glob.glob(LOOKS + "/*.json")):
+        look = C.load_look(name, LOOKS)
+        if not look.hue_shifts:
+            continue
+        explicit = C.Look(**{**look.__dict__,
+                             "hue_shifts": [dict(x, space="hsv") for x in look.hue_shifts]})
+        a = C.apply_look(C.code_to_lin(pts), look)
+        b = C.apply_look(C.code_to_lin(pts), explicit)
+        worst = max(worst, float(np.abs(a - b).max()))
+    check("the library looks default to the HSV gate they were authored in",
+          worst == 0.0, f"worst difference {worst:.2e}")
+
     # ---- LUT bake ------------------------------------------------------
     # Error is in dE2000 because the raw code level error piles up in the
     # deepest shadows, where it is not visible. See lut_bake_error in cg.py.

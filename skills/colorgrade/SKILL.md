@@ -5,7 +5,7 @@ back a graded file, a before and after contact sheet, a consistency report, and
 one .cube LUT per shot that a colourist can drop straight onto the clip in
 Resolve.
 
-Two tracks, and they answer different questions.
+Four tracks, and they answer different questions.
 
 **Track one, the whole picture.** Cut the video into shots, measure every shot,
 balance the shots to each other, lay one look over the top, check the result is
@@ -14,6 +14,15 @@ actually consistent, render. This is the common case and it is fully unattended.
 **Track two, one object.** Change the colour of one thing in frame without
 touching anything else that shares its colour. This ships as a DCTL, not a LUT,
 because a DCTL is handed the pixel coordinate and a LUT is not.
+
+**Track three, the picture itself.** Split screens, frames that repeat instead of
+advancing, and a colour step that lands inside a shot with no cut. These are not
+colour problems and no amount of grading fixes them. **Do this track before
+colour**, always: rebuilding frames afterwards means rebuilding them from source,
+which silently drops any colour repair that lands on them.
+
+**Track four, matching a series.** Landing a new film where its already approved
+siblings landed, which is not the same thing as giving it their look values.
 
 Use the ffmpeg based `video-editing` skill for mechanical cuts, and the
 `davinci-resolve` skill when the result must live inside a Resolve project.
@@ -33,7 +42,14 @@ ffmpeg and ffprobe must be on PATH. Everything below assumes
 Check the maths before trusting a result:
 
 ```bash
-$PY scripts/selftest.py          # no video needed, must end "0 failures"
+$PY scripts/selftest.py          # colour maths, no video, must end "0 failures"
+$PY scripts/selftest_tools.py    # picture tools, builds its own test clip
+```
+
+The frame rebuild in track three additionally needs RIFE. Nothing else does:
+
+```bash
+bash scripts/setup_rife.sh       # torch plus ~80 MB of MIT licensed weights
 ```
 
 ## Track one: grade a whole video
@@ -185,6 +201,104 @@ plugin. `reference/03_failures.md` has the full account.
 if a file is rejected: it is theirs, so if it also fails, the problem is the
 install or the route and not the generated code.
 
+## Track three: the picture itself
+
+Run this before grading. Start by asking whether the frame is one picture:
+
+```bash
+$PY scripts/cgpanel.py panels IN.mp4
+```
+
+If it finds a divider, **every measurement and every repair from here is per
+panel**. On the film this was built for, whole frame cut detection found 17 cuts
+and per panel found 23; whole frame stall detection found 14 frozen frames and
+per panel found 54, and the real fault was one half of the screen running at 18
+pictures a second while the other half ran at 23.5. Averaged over the frame that
+is invisible.
+
+```bash
+$PY scripts/cgpanel.py cuts   IN.mp4 --band 0,1940      # cuts in one panel
+$PY scripts/cgpanel.py gutter IN.mp4 --range 361,411    # where to switch, per shot
+```
+
+### Frames that do not advance
+
+```bash
+$PY scripts/cgframes.py detect  IN.mp4 --band 1940,3840
+$PY scripts/cgframes.py holdout IN.mp4 --band 1940,3840 --range 361,412
+$PY scripts/cgframes.py repair  IN.mp4 --out FIXED.mp4 --band 1940,3840
+```
+
+`detect` lists the stalled frames and says, per shot, whether the holes should be
+filled in place or the shot's timing rebuilt. Those are different faults wanting
+opposite repairs and the tool decides by measurement, not by eye: two frame gaps
+against one frame gaps, near 2 means frames were merely dropped and near 1 means
+a frame rate round trip.
+
+A frame counts as stalled only when three things hold together: it moves far less
+than the frames **around it**, it is hold-like against the shot, and its run is
+no longer than about three frames. Drop the third condition and the rule wants a
+quarter of a film, including a settled close up where the actor is simply still.
+Cards and end boards hold on purpose; look at what was flagged before rebuilding.
+
+`holdout` hides real frames, rebuilds them, and scores three numbers. Read all
+three. **Error alone prefers a blurry answer**, which is how a rebuild once
+shipped whose frames were 10 to 25 per cent softer than their neighbours and read
+to the viewer as the subject twitching sideways for one frame.
+
+### A colour step inside a shot
+
+```bash
+$PY scripts/cgfix.py iscut  IN.mp4 --at 479 --band 0,1940
+$PY scripts/cgfix.py extent IN.mp4 --before 474,478 --after 479,483
+$PY scripts/cgfix.py model  IN.mp4 --before 474,478 --after 479,483 --band 0,1940
+$PY scripts/cgfix.py apply  IN.mp4 --out FIXED.mp4 --frames 479,510 \
+    --before 474,478 --after 479,483 --band 0,1940
+```
+
+`iscut` settles the only question that matters first: a real cut and a colour
+change look the same in a difference and want opposite treatment. Gradient map
+correlation across a real cut reads near zero; across a colour change it reads
+whatever its neighbours read, because the picture is continuous.
+
+`model` measures the size on cells that are static in both states, so a moving
+object cannot fake it, and tests what can express the change. It fits the delta
+rather than the map, and it prints the part of the change that is not a function
+of colour at all, which no correction can remove. Say that number out loud rather
+than implying the fix is total.
+
+## Track four: matching a series
+
+```bash
+$PY scripts/cgseries.py landing   NEW.mp4
+$PY scripts/cgseries.py compare   NEW.mp4 APPROVED.mp4
+$PY scripts/cgseries.py pivot     NEW.mp4
+$PY scripts/cgseries.py primaries NEW.mp4 --cards 0,60 1000,1120
+$PY scripts/cgseries.py mask      frame.png --hue 25 --out check.png
+```
+
+Match the **result**, not the recipe. Two films given identical look values
+landed in completely different places because their footage was different, and
+the second read flat. Carry the family's directions and re-derive every magnitude
+from the new film's own measurements.
+
+`pivot` is the mechanism under that. The engine pivots contrast at Cineon mid
+grey; a film whose own mid sits well below that gets several times less work out
+of an identical setting. It reports whether the film is bimodal and refuses to
+give one answer when it is, because a two world film has its own median sitting
+in the valley between the worlds where almost nothing lives.
+
+`primaries` reads brand colours off title cards at full resolution, because a
+card is flat known artwork and usually the only thing two films in a series
+genuinely share. It reports both the HSV hue and the Lab hue, which are different
+numbers for the same colour: `hue_shifts` gates in HSV by default and rotates in
+Lab, so pass `"space": "lab"` on an entry whose centre was measured in Lab.
+
+`mask` renders a mask in magenta so you can look at it. Do this before any claim
+that rests on a mask. It settled five separate disputes on one series, every time
+by showing that a mask everyone believed selected one thing selected something
+else.
+
 ## What this does not do
 
 It does not create nodes, draw windows, or build qualifiers inside Resolve.
@@ -209,3 +323,16 @@ came out wrong, since every entry there is a real failure that was measured on
 real footage and then fixed. `02_looks.md` is the per look rationale,
 `04_sources.md` the primary documents every claim traces to, and `00_library.md`
 the grading guides, kept outside the repo because of their size.
+
+`05_picture.md` covers track three: split screens, stalled frames, the holdout
+scoring that selects for blur if you let it, and the localized colour repair.
+`06_series.md` covers track four, and both are worth reading before touching a
+film that has siblings.
+
+One rule spans everything and is enforced in code. **Two arrays that came out of
+different decode paths cannot be compared.** Splicing a numpy downscale into
+ffmpeg's scaled output once put the two 11 code levels apart, invented a stutter
+at every repaired frame, and reported a repair as making shots 48 per cent
+rougher. `cgpanel.stream` returns the filter chain that produced every array and
+`require_same_path` refuses the comparison. Use it even when the paths obviously
+match.

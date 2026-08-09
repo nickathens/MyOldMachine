@@ -130,6 +130,18 @@ def hue_weight(h, centre, width):
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
+def lab_hue(lin):
+    """Lab hue angle in degrees, -180..180. The space `hue_shifts` rotates in.
+
+    This is NOT the HSV hue. The two disagree by tens of degrees and they
+    disagree by a different amount for every colour, so a centre measured in
+    one and gated in the other selects the wrong pixels. `hue_shifts` takes a
+    `space` key precisely so the two can never be mixed up silently again.
+    """
+    lab = lin_to_lab(lin)
+    return np.degrees(np.arctan2(lab[..., 2], lab[..., 1])).astype(np.float32)
+
+
 # Skin sits on the vectorscope I axis. Keith Jack, Video Demystified, gives
 # 116 to 126 degrees of phase for skin correction. In HSV hue terms that is
 # the orange band around 25 degrees, which is what we actually gate on here.
@@ -171,10 +183,17 @@ class Look:
     highlight_tint: list = field(default_factory=lambda: [0.0, 0.0, 0.0])
     tint_falloff: float = 2.0      # how fast the tints hand over
     crosstalk: float = 0.0         # film like channel bleed, 0..0.3
-    hue_shifts: list = field(default_factory=list)   # [{centre,width,shift,sat}]
-    protect_skin: float = 1.0      # 1 fully protects skin from hue_shifts
+    # [{centre, width, shift, sat, space}]. centre and width gate in `space`,
+    # "hsv" (default) or "lab". shift is ALWAYS a Lab hue rotation in degrees.
+    # Gate a measured centre in the space it was measured in, or it aims at a
+    # colour that is not there. See the note in apply_look.
+    hue_shifts: list = field(default_factory=list)
+    protect_skin: float = 1.0      # 1 fully protects skin from hue_shifts, HSV gated
     black_offset: float = 0.0      # code value lift at the very bottom
-    highlight_rolloff: float = 0.0  # soft clip near white, in code space
+    # Soft clip near white, in code space. Real protection: 1.0 rolls off from
+    # the knee, 0.4 rolls off from 40 per cent of the way up, nothing clips at
+    # any setting. Below 1.0 used to leak the overshoot through and hard clip.
+    highlight_rolloff: float = 0.0
     gamut_limit: float = 0.0       # 0 disables. 1.4 to 1.8 is the useful band
     gamut_threshold: float = 0.85  # below this distance nothing is touched
     gamut_power: float = 1.2       # 1 is gentle and wide, 4 is abrupt and local
@@ -197,22 +216,45 @@ class Grade:
 
 
 def _soft_shoulder(x, amount, knee=0.75):
-    """Compress everything above `knee` into the space up to 1, smoothly."""
+    """Compress everything above `knee` into the space up to 1, smoothly.
+
+    `amount` moves the knee. It does not blend the result against the input,
+    and that distinction is the whole point. The compressed curve is asymptotic
+    to 1, so lerping it against the identity puts the identity's unbounded slope
+    straight back into the output and the caller clips regardless. Measured on
+    the old form at knee 0.80: amount 0.35 passed 1.0 for any input above 1.034
+    and reached 2.95 at input 4.0. So `highlight_rolloff: 0.35` bought three per
+    cent of headroom and then hard clipped, and only amount 1.0 was bounded at
+    all. Every look in the library shipped a value between 0.2 and 0.6.
+
+    Now amount 0 leaves the signal alone, amount 1 rolls off from `knee`, and
+    anything between rolls off from a knee that fraction of the way up. Output
+    stays under 1 for every finite input at every amount, the slope at the knee
+    is 1 so there is no kink, and amount 1.0 reproduces the old curve exactly.
+    """
     if amount <= 0:
         return x
-    over = np.maximum(x - knee, 0.0)
-    head = max(1.0 - knee, EPS)
-    compressed = head * (1.0 - np.exp(-over / head))
-    return np.where(x > knee, knee + compressed * amount + over * (1.0 - amount), x)
+    a = min(float(amount), 1.0)
+    k = knee + (1.0 - knee) * (1.0 - a)
+    head = max(1.0 - k, EPS)
+    over = np.maximum(x - k, 0.0)
+    return np.where(x > k, k + head * (1.0 - np.exp(-over / head)), x).astype(np.float32)
 
 
 def _soft_toe(x, amount, knee=0.25):
+    """Mirror of `_soft_shoulder`, holding the bottom instead of the top.
+
+    Same defect, same fix: the old form let `amount` blend against the identity,
+    so at amount 0.15 the output went negative for any input under -0.016 and
+    reached -1.70 at input -2.0. A toe that crushes is not a toe.
+    """
     if amount <= 0:
         return x
-    under = np.maximum(knee - x, 0.0)
-    head = max(knee, EPS)
-    compressed = head * (1.0 - np.exp(-under / head))
-    return np.where(x < knee, knee - compressed * amount - under * (1.0 - amount), x)
+    a = min(float(amount), 1.0)
+    k = knee * a
+    head = max(k, EPS)
+    under = np.maximum(k - x, 0.0)
+    return np.where(x < k, k - head * (1.0 - np.exp(-under / head)), x).astype(np.float32)
 
 
 def apply_balance(lin, b: Balance):
@@ -279,19 +321,36 @@ def apply_look(lin, k: Look):
         lin = np.maximum(lin, 0.0)
 
     # ---- targeted hue work ----
+    #
+    # Two hue conventions meet here and they must not be confused. The gate
+    # ("which pixels") defaults to the HSV hue, because that is what the
+    # library looks were authored against. The rotation ("by how much") is
+    # always the Lab hue angle, because Lab is where a rotation is perceptually
+    # even. They are different numbers for the same colour: teal reads 192 in
+    # HSV and -151 in Lab, lime 104 and +106, skin 25 and +54.
+    #
+    # A centre measured in Lab and gated in HSV therefore selects a colour that
+    # is not in the picture, and the shift silently does nothing at all. That
+    # happened on a real job: four holds, all inert, and the graded film printed
+    # numbers identical to no holds. Set `"space": "lab"` on an entry to gate in
+    # the same space it rotates in, which is what a measured centre wants.
     if k.hue_shifts:
         h, s, v = rgb_to_hsv(lin)
-        skin_guard = 1.0
-        if k.protect_skin > 0:
-            skin_guard = 1.0 - k.protect_skin * hue_weight(h, SKIN_HUE, SKIN_WIDTH)
         lab = lin_to_lab(lin)
         a, bb = lab[..., 1], lab[..., 2]
         chroma = np.hypot(a, bb)
         angle = np.degrees(np.arctan2(bb, a))
+        skin_guard = 1.0
+        if k.protect_skin > 0:
+            skin_guard = 1.0 - k.protect_skin * hue_weight(h, SKIN_HUE, SKIN_WIDTH)
         total_rot = np.zeros_like(angle)
         total_sat = np.ones_like(angle)
         for hs in k.hue_shifts:
-            w = hue_weight(h, float(hs.get("centre", 0.0)), float(hs.get("width", 30.0)))
+            space = str(hs.get("space", "hsv")).lower()
+            if space not in ("hsv", "lab"):
+                raise ValueError(f"hue_shift space must be 'hsv' or 'lab', got {space!r}")
+            gate = angle if space == "lab" else h
+            w = hue_weight(gate, float(hs.get("centre", 0.0)), float(hs.get("width", 30.0)))
             w = w * skin_guard
             total_rot = total_rot + w * float(hs.get("shift", 0.0))
             total_sat = total_sat * (1.0 + w * (float(hs.get("sat", 1.0)) - 1.0))

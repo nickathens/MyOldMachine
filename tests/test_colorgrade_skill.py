@@ -14,6 +14,8 @@ import ast
 import json
 import py_compile
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,8 +51,37 @@ class SkillLayoutTest(unittest.TestCase):
                     "scripts/cganalyze.py", "scripts/cgvideo.py",
                     "scripts/dctlgen.py", "scripts/selftest.py",
                     "scripts/groundtruth.py", "reference/01_method.md",
-                    "reference/03_failures.md"):
+                    "reference/03_failures.md",
+                    # track three, the picture itself, and track four, series
+                    "scripts/cgpanel.py", "scripts/cgframes.py",
+                    "scripts/cgfix.py", "scripts/cgseries.py",
+                    "scripts/cgrife.py", "scripts/setup_rife.sh",
+                    "scripts/selftest_tools.py",
+                    "reference/05_picture.md", "reference/06_series.md"):
             self.assertTrue((SKILL / rel).is_file(), f"missing {rel}")
+
+    def test_picture_tools_are_optional_about_torch(self):
+        """Only the frame REBUILD may need torch, and it must say so, not crash.
+
+        Stall detection, the cadence test and every colour tool have to work on
+        a machine with no torch. If cgframes or cgpanel ever import it at module
+        level, the whole picture track becomes unusable behind a 2 GB install.
+        """
+        for name in ("cgpanel.py", "cgframes.py", "cgfix.py", "cgseries.py"):
+            tree = ast.parse((SCRIPTS / name).read_text(encoding="utf-8"))
+            for node in tree.body:                      # module level only
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                self.assertNotIn("torch", [n.split(".")[0] for n in names],
+                                 f"{name} imports torch at module level")
+
+    def test_rife_model_path_is_overridable(self):
+        """The weights live outside the repo, so the path must be settable."""
+        text = (SCRIPTS / "cgrife.py").read_text(encoding="utf-8")
+        self.assertIn("CG_RIFE_HOME", text)
 
     def test_every_script_compiles(self):
         for script in sorted(SCRIPTS.glob("*.py")):
@@ -215,6 +246,24 @@ class DctlContractTest(unittest.TestCase):
         sliders = {p[0] for p in ui_params(self.text) if p[2] == "DCTLUI_SLIDER_FLOAT"}
         self.assertEqual(packed - sliders, set(),
                          "dctlgen aims a slider the DCTL does not define")
+
+
+class LintTests(unittest.TestCase):
+    """CI's ruff scope is `bot.py core/ utils/ install/ miniapp/ tests/`.
+
+    `skills/` is not in it, so nothing in the pipeline can see a lint error in
+    this tree. Eight arrived here in one branch, invisible behind a green run.
+    Scoped to colorgrade rather than all of `skills/`, which already carries
+    eleven of its own elsewhere and wants its own clean-up.
+    """
+
+    @unittest.skipUnless(shutil.which("ruff"), "ruff not installed")
+    def test_the_skill_is_ruff_clean(self):
+        proc = subprocess.run([shutil.which("ruff"), "check", "--output-format=concise",
+                               str(SKILL)],
+                              capture_output=True, text=True, cwd=SKILL.parent.parent)
+
+        self.assertEqual(proc.returncode, 0, f"\n{proc.stdout}{proc.stderr}")
 
 
 if __name__ == "__main__":
