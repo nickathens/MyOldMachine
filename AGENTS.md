@@ -70,6 +70,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+- [2026-08-09] linux: carry the Seedance 2.0 craft into the 2.5 guide and correct
+  the 2.5 duration floor, `skills/image-gen/models/seedance*.md`,
+  `skills/image-gen/scripts/generate.py`, `tests/test_image_gen*.py` (PR #121)
 - [2026-08-10] linux: stage tarball archives under `.part` so an interrupted
   run cannot spend a retention slot, and cover install/wizard.py's retention
   default behaviourally, `utils/backup.py`, `tests/test_backup_retention.py`

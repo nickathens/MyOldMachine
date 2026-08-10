@@ -5,6 +5,12 @@ Covers: `seedance` (Seedance 2.0), `seedance1.5` (Seedance 1.5 Pro), `seedance-m
 **Seedance 2.5 is a different model with a different prompt grammar** and has its own guide,
 `seedance-2-5.md`. The long multi-beat timeline blocks below are right for 2.0 and wrong for 2.5.
 
+Most of the craft below does transfer. `seedance-2-5.md` carries a row by row table of what applies,
+what needs reshaping, and the eight things that conflict outright. Two of the conflicts are silent
+traps if you read only this file: **the ban on music in the prompt is reversed on 2.5**, which routes
+it through a `( )` channel, and **`mode` means a speed tier here and a capability there**, so
+`mode: fast` is a rejected call on 2.5 rather than a cheaper one.
+
 ---
 
 ## Hard specs **[live 2026-08-07]**
@@ -15,7 +21,7 @@ Covers: `seedance` (Seedance 2.0), `seedance1.5` (Seedance 1.5 Pro), `seedance-m
 | Resolution | 480p, 720p, **1080p, 4k** | 480p, 720p, 1080p | 480p, 720p |
 | Mode | `std` (default), `fast` | none | none |
 | Genre | auto, action, horror, comedy, noir, drama, epic | none | same as 2.0 |
-| Start / end image | yes, `end_image` needs `start_image` | yes, same rule | yes |
+| Start / end image | yes, `end_image` alone is fine | yes, `end_image` **needs** `start_image` | yes, `end_image` alone is fine |
 | References | image, video, audio | none | image, video, audio |
 | Audio | `generate_audio`, default on | default on | default on |
 | Cost at 720p | **4.5 credits/s** | **1.2 credits/s** | **2.5 credits/s** |
@@ -27,6 +33,13 @@ in `fast` mode. `seedance1.5` is 0.6 credits/s at 480p and 3.0 at 1080p. `seedan
 **Corrected 2026-08-07:** the wrapper previously advertised 5 to 30 s for `seedance` and
 `seedance-mini`. The validator's real range for both is **4 to 15 s**. Anything from 16 s up was
 being offered and would have failed at generation time.
+
+**Corrected 2026-08-09:** this file said `end_image` requires `start_image` on all three models. The
+validator disagrees on two of them. An end frame with no start frame quotes fine on `seedance`
+(22.5 credits) and `seedance-mini` (12.5), and only `seedance1.5` refuses it with "end_image requires
+start_image to be set". A last frame lock without a first frame is a real option on 2.0. Measured
+through the raw CLI: the wrapper's `--cost` path never forwards the keyframe flags at all, so it
+cannot answer this question either way.
 
 `seedance1.5` at 1.2 credits a second is the second cheapest video model on the whole route, behind
 only `veo3-lite`. It is the correct place to find a Seedance shot before paying for 2.0.
@@ -212,6 +225,29 @@ The single most common "it looks like a moving photo" failure. Seedance front-lo
 
 - **seedance**: Seedance 2.0. Best quality, strongest motion coherence, supports auto-duration 2-12s, multimodal references.
 - **seedance1.5**: Seedance 1.5. Faster, lower cost, has audio synthesis. Good for iteration.
+
+## Speed and Bitrate (Seedance 2.0 only) **[live 2026-08-09]**
+
+Seedance 2.0 exposes two controls worth knowing. Both travel through `--extra`, and neither exists
+on 2.5, where `mode` means something else entirely and `bitrate_mode` is rejected as an unknown
+param.
+
+- **`mode`: `fast` or `std`.** Fast is the tier Higgsfield markets as unlimited on the Ultra plan,
+  and it quotes cheaper: **17.5 credits for a 5 s clip against 22.5 for `std`**, so 3.5 credits a
+  second rather than 4.5. It trades a little motion coherence for speed and cost. The wrapper
+  default is `std`, so drafting cheap is something you have to ask for; reserve `std` for the select.
+- **`bitrate_mode`: `high` or `standard`.** High raises the encode bitrate, so cleaner gradients and
+  less compression mush in motion and grain, **for zero extra credits**: both quote 17.5 on the same
+  5 s `fast` clip. The wrapper default is `standard`, so this one is free quality left on the table
+  unless you ask for it. The only reason to stay on standard is a smaller file.
+
+```bash
+python skills/image-gen/scripts/generate.py "..." --video -m seedance --duration 5 \
+  --extra '{"mode":"fast","bitrate_mode":"high"}' --cost
+```
+
+The credit quote is the same whether a generation draws on the unlimited tier or the credit pool, so
+read the balance either side of the call if you need to know which one paid.
 
 ## Render Cheap, Upscale After
 

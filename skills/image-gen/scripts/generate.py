@@ -185,7 +185,11 @@ VIDEO_DURATIONS = {
     "flux_3_video": {"type": "slider", "default": 5, "min": 5, "max": 20},
     "grok_video_v15": {"type": "slider", "default": 5, "min": 2, "max": 15},
     "happy_horse_video": {"type": "slider", "default": 5, "min": 3, "max": 15},
-    "seedance_2_5": {"type": "slider", "default": 5, "min": 5, "max": 30},
+    # The 2026-08-07 sweep recorded a 5s floor; re-probed 2026-08-09 and the real
+    # floor is 4 ("--duration 3" gives "Input should be greater than or equal to 4",
+    # "--duration 4" quotes 26 credits at 720p). The cheapest 720p roll read as
+    # unavailable until this was corrected.
+    "seedance_2_5": {"type": "slider", "default": 5, "min": 4, "max": 30},
 }
 
 MODEL_PARAMS = {
