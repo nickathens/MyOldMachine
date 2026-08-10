@@ -67,6 +67,36 @@ class LogIsolationTests(unittest.TestCase):
             ("import utils.reflect", "from utils.reflect import", "from utils import reflect"))
         self.assertEqual(offenders, [], f"unguarded reflect imports: {offenders}")
 
+    def test_every_backup_importing_test_sets_mom_test_first(self):
+        """Same rule for utils.backup, which writes its own backup.log.
+
+        Measured on this file's own suite before the guard existed:
+        test_secret_hygiene drives a real _create_tarball_backup, and wrote
+        four "Backup complete" lines into the production log, which is the file
+        an operator reads to find out whether last night's backup ran.
+
+        `from utils import backup_borg` matches this prefix too. That is
+        wanted: the borg path logs through the same utils.backup._open_log.
+        """
+        offenders = self._unguarded(
+            ("import utils.backup", "from utils.backup import", "from utils import backup"))
+        self.assertEqual(offenders, [], f"unguarded backup imports: {offenders}")
+
+    def test_backup_log_does_not_touch_the_real_file_under_mom_test(self):
+        """Proves the guard in backup._open_log() is live, by writing through it."""
+        from utils import backup
+
+        self.assertTrue(os.environ.get("MOM_TEST"), "this module must set MOM_TEST")
+        log_file = backup.LOG_DIR / "backup.log"
+        before = log_file.stat().st_size if log_file.exists() else None
+        backup._open_log("/tmp")("synthetic line from test_log_isolation")
+        after = log_file.stat().st_size if log_file.exists() else None
+        self.assertEqual(
+            after, before,
+            f"backup logging wrote into {log_file} during a test run: the "
+            f"MOM_TEST guard in backup._open_log() is missing or was bypassed",
+        )
+
     def test_reflect_log_does_not_touch_the_real_file_under_mom_test(self):
         """Proves the guard in reflect.log() is live, by writing through it."""
         from utils import reflect

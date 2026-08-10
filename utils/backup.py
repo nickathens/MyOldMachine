@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -31,8 +32,34 @@ LOG_DIR = DATA_DIR / "logs"
 
 logger = logging.getLogger(__name__)
 
-# Default retention for tarball mode (count-based).
-DEFAULT_RETENTION = 7
+# Default retention for tarball mode (count-based). Canonical value: every
+# other module reads this rather than repeating a literal, so the default
+# cannot drift between the writer, the installer, and the status readout.
+#
+# Kept deliberately low. A tarball is a full copy, not a delta, so each night
+# costs the whole archive again, and when the target sits on a volume Time
+# Machine also covers, compression hides the overlap and every archive lands
+# there as brand-new data. Two survives a corrupt latest archive; more than
+# that just multiplies the same bytes on the same disk.
+DEFAULT_RETENTION = 2
+
+# Suffix an archive carries while it is still being written. The prune and the
+# listing both glob for "myoldmachine_*.tar.gz", and neither opens a candidate,
+# so a half-written archive left at the final name would count as a backup and
+# evict a good one. Writing under this suffix and renaming on success means an
+# interrupted run leaves nothing either of them can see. The rename is atomic
+# within a directory, so no archive is ever visible in a partial state.
+PARTIAL_SUFFIX = ".part"
+
+# How long a partial must have gone untouched before a later run treats it as
+# abandoned and deletes it. Nothing in-process can clean up after SIGKILL, so
+# the sweep is the only thing that stops a dead 20GB partial sitting there
+# forever. tarfile writes continuously, so a run that is genuinely still going
+# has a current mtime whatever its total duration; only a dead one goes quiet.
+# This matters because the backup has no lock: the nightly job and
+# `/maintenance run backup` can overlap, and the sweep must not touch a live
+# partial belonging to the other one.
+STALE_PARTIAL_AGE_SEC = 3600
 
 # Default retention for borg mode (calendar-based).
 DEFAULT_KEEP_DAILY = 7
@@ -136,7 +163,17 @@ def _should_exclude(path: str) -> bool:
 
 
 def _open_log(target_dir: str) -> "callable":
-    """Build a (log, notify) closure pair for backup runs."""
+    """Build a (log, notify) closure pair for backup runs.
+
+    Under MOM_TEST the file write is skipped, the same gate bot.py and
+    utils/reflect.py use for their logs. Tests drive real backup runs over
+    temp trees, and their synthetic "Backup complete" lines are
+    indistinguishable from the real thing once they are in the file an
+    operator reads to find out whether last night's backup ran.
+    """
+    if os.environ.get("MOM_TEST"):
+        return lambda msg: logger.info(msg)
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOG_DIR / "backup.log"
 
@@ -203,6 +240,11 @@ def _create_tarball_backup(target_dir: str, notify_fn=None) -> str:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     archive_name = f"myoldmachine_{timestamp}.tar.gz"
     archive_path = target / archive_name
+    partial_path = target / (archive_name + PARTIAL_SUFFIX)
+
+    swept = _sweep_stale_partials(target)
+    if swept:
+        log(f"Discarded {swept} abandoned partial archive(s) from an interrupted run")
 
     file_count = 0
     try:
@@ -211,9 +253,10 @@ def _create_tarball_backup(target_dir: str, notify_fn=None) -> str:
         # default umask would otherwise leave it world-readable (0644) on a
         # shared or removable backup target for the whole write. os.chmod covers
         # the rare case of reusing a stale archive name from the same minute.
-        os.close(os.open(str(archive_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
-        os.chmod(str(archive_path), 0o600)
-        with tarfile.open(str(archive_path), "w:gz", compresslevel=6, dereference=True) as tar:
+        # The mode travels with the rename, so the published archive is 0600 too.
+        os.close(os.open(str(partial_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+        os.chmod(str(partial_path), 0o600)
+        with tarfile.open(str(partial_path), "w:gz", compresslevel=6, dereference=True) as tar:
             for source in BACKUP_SOURCES:
                 full_path = BOT_DIR / source
                 if not full_path.exists():
@@ -237,12 +280,16 @@ def _create_tarball_backup(target_dir: str, notify_fn=None) -> str:
                                     file_count += 1
                                 except (PermissionError, OSError) as e:
                                     log(f"  Skipped {rel_path}: {e}")
+        # The archive is closed and complete only here. Publishing it under the
+        # name the prune and the listing look for is the last thing that
+        # happens, so an interrupted run can never leave one behind.
+        os.replace(str(partial_path), str(archive_path))
     except Exception as e:
         msg = f"Backup failed: {e}"
         log(msg)
         notify(msg)
         try:
-            archive_path.unlink(missing_ok=True)
+            partial_path.unlink(missing_ok=True)
         except OSError:
             pass
         return msg
@@ -274,8 +321,33 @@ def _create_tarball_backup(target_dir: str, notify_fn=None) -> str:
     return summary
 
 
+def _sweep_stale_partials(target: Path, now: float | None = None) -> int:
+    """Delete partials left behind by a run that died without cleaning up.
+
+    Only ones that have gone untouched for STALE_PARTIAL_AGE_SEC: a partial
+    still being written by a concurrent run has a current mtime, and deleting
+    that would break a backup that is working.
+    """
+    now = time.time() if now is None else now
+    removed = 0
+    for partial in target.glob(f"myoldmachine_*.tar.gz{PARTIAL_SUFFIX}"):
+        try:
+            if not partial.is_file() or now - partial.stat().st_mtime < STALE_PARTIAL_AGE_SEC:
+                continue
+            partial.unlink()
+            removed += 1
+        except OSError as e:
+            logger.warning(f"Failed to remove abandoned partial {partial.name}: {e}")
+    return removed
+
+
 def _prune_old_tarballs(target: Path, keep: int) -> int:
-    """Remove old tarballs, keeping the most recent `keep` archives."""
+    """Remove old tarballs, keeping the most recent `keep` archives.
+
+    Partials are invisible here by construction: they carry PARTIAL_SUFFIX
+    until the archive is complete, so this glob cannot match one and a killed
+    run cannot spend a retention slot.
+    """
     backups = sorted(
         [f for f in target.glob("myoldmachine_*.tar.gz") if f.is_file()],
         key=lambda f: f.stat().st_mtime,

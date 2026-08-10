@@ -17,6 +17,7 @@ steps later in main() pick up the change.
 from __future__ import annotations
 
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -26,6 +27,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep test backup runs out of the production backup.log
 
 from install import wizard  # noqa: E402
 
@@ -431,7 +434,7 @@ class BackupRegistryEntryTests(unittest.TestCase):
                 captured.update(kwargs)
                 return kwargs
 
-            # Non-numeric retention should fall back to 7
+            # Non-numeric retention should fall back to the canonical default
             answers = iter([tmpdir, "garbage"])
 
             def fake_ask(prompt, default=None, **_):
@@ -446,7 +449,8 @@ class BackupRegistryEntryTests(unittest.TestCase):
                 config = {}
                 feat["configure"](config)
 
-            self.assertEqual(captured["backup_retention"], 7)
+            from utils.backup import DEFAULT_RETENTION
+            self.assertEqual(captured["backup_retention"], DEFAULT_RETENTION)
 
     def test_backup_configure_borg_branch_initializes_repo(self):
         """When the user picks borg, the wizard should install borg, generate
