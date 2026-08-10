@@ -469,8 +469,8 @@ class TestTheSelectionSurfacesCarryBothTiers(unittest.TestCase):
         m = re.search(r"and from 3 to \*\*(\d+(?:\.\d+)?) credits/s at 480p\*\*", self.guide)
         self.assertIsNotNone(m, "could not read the 480p video reference rate out of the guide")
         at_720, at_480 = self.documented_video_reference_rate(), float(m.group(1))
-        note = re.search(r"`seedance2\.5` is the only model here with two tiers.*?`seedance-2-5\.md`",
-                         self.skill, re.S)
+        note = re.search(r"Two models re-price when a `video_references` file is attached"
+                         r".*?`seedance-2-5\.md` first\.", self.skill, re.S)
         self.assertIsNotNone(note, "SKILL.md has no two-tier note under the table")
         self.assertIn(f"**{at_720:.1f}/s at 720p and {at_480:.1f} at 480p**", note.group(0),
                       msg="the two-tier note does not state the guide's measured rates")
@@ -491,6 +491,105 @@ class TestTheSelectionSurfacesCarryBothTiers(unittest.TestCase):
         self.assertIn("| `seedance2.5` | 6.5 | | **`h3`** | **4.0** |", self.h3)
         self.assertIn("exactly level with H3", self.h3)
         self.assertIn("only for a plain\n`t2v` roll", self.h3)
+
+
+class TestFluxVideoCarriesTheOppositeTier(unittest.TestCase):
+    """`flux-video` re-prices on the same trigger, upward **[live 2026-08-10]**.
+
+    Measured against the account the same day as the `seedance2.5` tier: a
+    `video_references` file takes Flux 3 from 5.5 to 13 credits/s at 720p and
+    from 9 to 17 at 1080p, exactly linear at both, while an `image_references`
+    file and `generate_audio` move nothing. It is the only other model on the
+    route that re-prices on an attached file, so the selection table's note may
+    not describe the trigger as belonging to one model. This one hurts in the
+    dangerous direction: the table rate understates a continuation, and the
+    model has no `mode` param to make the switch visible.
+    """
+
+    RATES = {"720p": (5.5, 13.0), "1080p": (9.0, 17.0)}
+    DURATIONS = (5, 10, 15, 20)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.skill = SKILL_MD.read_text(encoding="utf-8")
+        cls.flux = (MODELS_DIR / "flux-3-video.md").read_text(encoding="utf-8")
+
+    def test_the_selection_table_qualifies_the_plain_rate(self):
+        """5.5/s is only true with no clip attached, so the row has to say so."""
+        row = re.search(r"^\| 5\.5 \| (.*) \|$", self.skill, re.M)
+        self.assertIsNotNone(row, "the 5.5/s row is gone from SKILL.md")
+        self.assertIn("`flux-video`", row.group(1))
+        self.assertIn("no video reference", row.group(1),
+                      msg=f"the 5.5/s row still reads as the only price: {row.group(1)!r}")
+
+    def test_the_note_names_both_models_and_neither_as_the_only_one(self):
+        self.assertNotIn("is the only model here with two tiers", self.skill,
+                         msg="SKILL.md still claims a single model re-prices; flux-video does too")
+        note = re.search(r"Two models re-price when a `video_references` file is attached"
+                         r".*?only a video does\.", self.skill, re.S)
+        self.assertIsNotNone(note, "SKILL.md has no two-model tier note")
+        for model in ("`seedance2.5`", "`flux-video`"):
+            self.assertIn(model, note.group(0), msg=f"the tier note does not name {model}")
+
+    def test_the_note_states_the_measured_upward_rates(self):
+        note = re.search(r"`flux-video` climbs to \*\*(\d+(?:\.\d+)?)/s at 720p "
+                         r"and (\d+(?:\.\d+)?) at 1080p\*\*, from (\d+(?:\.\d+)?) and (\d+(?:\.\d+)?)",
+                         self.skill)
+        self.assertIsNotNone(note, "SKILL.md does not state flux-video's video reference rates")
+        at_720, at_1080, plain_720, plain_1080 = (float(g) for g in note.groups())
+        self.assertEqual((plain_720, at_720), self.RATES["720p"])
+        self.assertEqual((plain_1080, at_1080), self.RATES["1080p"])
+
+    def test_the_multiplier_in_the_note_is_the_arithmetic_one(self):
+        plain, loaded = self.RATES["720p"]
+        self.assertIn(f"costs {loaded / plain:.1f}x what this table quotes", self.skill)
+
+    def test_the_worked_example_is_the_rate_times_the_maximum(self):
+        """Both figures derived from the rates, so a typo cannot survive."""
+        longest = max(self.DURATIONS)
+        self.assertEqual(longest, generate.VIDEO_DURATIONS["flux_3_video"]["max"])
+        plain, loaded = self.RATES["720p"]
+        self.assertIn(f"continuation at {plain * longest:g} and the bill is {loaded * longest:g}",
+                      self.skill)
+        self.assertIn(f"understate a {longest} s piece by {(loaded - plain) * longest:g} credits",
+                      self.flux)
+
+    def test_the_guide_price_table_is_linear_at_both_tiers(self):
+        """Every cell recomputed from the rates rather than read as prose."""
+        rows = re.findall(r"^\| (\d+) s \| ([\d.]+) \| \*\*([\d.]+)\*\* \| ([\d.]+) \| \*\*([\d.]+)\*\* \|$",
+                          self.flux, re.M)
+        self.assertEqual(len(rows), len(self.DURATIONS), msg=f"expected one row per duration: {rows}")
+        for row, dur in zip(rows, self.DURATIONS):
+            self.assertEqual(int(row[0]), dur)
+            expected = (self.RATES["720p"][0] * dur, self.RATES["720p"][1] * dur,
+                        self.RATES["1080p"][0] * dur, self.RATES["1080p"][1] * dur)
+            self.assertEqual(tuple(float(c) for c in row[1:]), expected,
+                             msg=f"the {dur} s row is not rate times duration")
+
+    def test_the_guide_headline_row_points_at_the_second_tier(self):
+        """The spec table is the first thing read; 5.5/9 alone is a trap there."""
+        cost_row = re.search(r"^\| Cost \| n/a \| (.*) \|$", self.flux, re.M)
+        self.assertIsNotNone(cost_row, "the flux guide has no Cost spec row")
+        self.assertIn("video reference tier", cost_row.group(1),
+                      msg=f"the Cost row does not point at the second tier: {cost_row.group(1)!r}")
+
+    def test_the_guide_rules_out_the_alternative_explanations(self):
+        """The controls that prove the video file is what moves the price."""
+        for control in ("no `mode` param", "`image_references` file leaves the quote untouched",
+                        "`generate_audio` makes no difference"):
+            self.assertIn(control, self.flux, msg=f"the guide does not record the control: {control}")
+
+    def test_the_two_guides_cross_reference_the_inverted_ranking(self):
+        """At 13 against 4, the t2v ranking of these two reverses outright."""
+        self.assertIn("13/s against Seedance 2.5's\n4", self.flux)
+        self.assertIn("seedance-2-5.md", self.flux)
+        seedance_loaded = float(re.search(r"drops from 6\.5 to \*\*(\d+(?:\.\d+)?)\s+credits/s",
+                                          (MODELS_DIR / "seedance-2-5.md").read_text(encoding="utf-8")
+                                          ).group(1))
+        self.assertGreater(self.RATES["720p"][1], seedance_loaded,
+                           msg="flux is no longer the dearer of the two on a continuation")
+        self.assertLess(self.RATES["720p"][0], 6.5,
+                        msg="flux is no longer the cheaper of the two on a plain roll")
 
 
 if __name__ == "__main__":

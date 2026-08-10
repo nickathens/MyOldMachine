@@ -71,9 +71,11 @@ provider.
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
 - [2026-08-10] linux: carry #125's video-reference price tier into the surfaces a
-  model is actually picked from, `skills/image-gen/SKILL.md`,
+  model is actually picked from, plus the second model that re-prices on the same
+  trigger (`flux-video`, upward), `skills/image-gen/SKILL.md`,
   `skills/image-gen/models/minimax-h3.md`,
-  `tests/test_image_gen_seedance_guides.py`
+  `skills/image-gen/models/flux-3-video.md`,
+  `tests/test_image_gen_seedance_guides.py` (PR #126)
 
 (Entries removed above: #113 merged 2026-08-07. #110 and #109 merged
 2026-08-06. #105 and #104 merged 2026-08-04, and #103, #102 and #101 the same
