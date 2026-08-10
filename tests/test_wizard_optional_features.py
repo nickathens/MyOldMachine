@@ -17,6 +17,7 @@ steps later in main() pick up the change.
 from __future__ import annotations
 
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -26,6 +27,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep test backup runs out of the production backup.log
 
 from install import wizard  # noqa: E402
 

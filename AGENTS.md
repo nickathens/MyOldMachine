@@ -70,8 +70,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-09] linux: route office formats in the `docs` skill to anydoc and
-  keep pdf on markitdown, `skills/docs/`, `tests/test_docs_convert.py` (PR #120)
+- [2026-08-10] linux: stage tarball archives under `.part` so an interrupted
+  run cannot spend a retention slot, and cover install/wizard.py's retention
+  default behaviourally, `utils/backup.py`, `tests/test_backup_retention.py`
+  (follow-up to #123)
 
 (Entries removed above: #113 merged 2026-08-07. #110 and #109 merged
 2026-08-06. #105 and #104 merged 2026-08-04, and #103, #102 and #101 the same
