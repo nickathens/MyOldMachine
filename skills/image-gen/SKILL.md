@@ -356,14 +356,30 @@ rather than paying flagship rates to find a shot. Always confirm with `--cost` b
 | 2.6 | `wan2.6` |
 | 2.75 | `veo3.1` |
 | 3.0 | `gemini` |
-| 4.0 | `h3` |
+| 4.0 | `h3`, and `seedance2.5` carrying a video reference |
 | 4.5 | `seedance`, `grok-video1.5` |
 | 5.0 | `cinematic3`, `cinematic3.5`, `marketing` |
-| 5.5 | `flux-video` |
-| 6.5 | `seedance2.5` |
+| 5.5 | `flux-video`, no video reference |
+| 6.5 | `seedance2.5`, plain `t2v` only |
 
 `veo3` is priced per clip, not per second: 22 flat on `veo-3-fast`, 58 on `veo-3-preview`.
 Quality steps cost extra on top: `kling` 4k is 6.0/s, `seedance` 4k is 22/s, `cinematic3` 4k is 24/s.
+
+**Two models re-price when a `video_references` file is attached [live 2026-08-10], and they move in
+opposite directions.** The attached file is what moves the price, not the name of the mode, so both
+traps spring on a quote that names no mode at all:
+
+- `seedance2.5` drops to **4.0/s at 720p and 2.0 at 480p**, from 6.5 and 3.0 (`video_edit`,
+  `video_extension`, or `omni_reference` with a clip attached). That takes it off the top of this
+  table and level with `h3`. Budget an edit at the headline rate and you
+  overstate a 30 s job by 75 credits: read `seedance-2-5.md` first.
+- `flux-video` climbs to **13.0/s at 720p and 17.0 at 1080p**, from 5.5 and 9.0, which is the row
+  above turned inside out: a video continuation costs 2.4x what this table quotes. Budget a 20 s
+  continuation at 110 and the bill is 260: read `flux-3-video.md` first.
+
+Every other model that accepts a `video_references` file quotes the same with and without one
+(`h3`, `wan2.6`, `wan3`, `gemini`, `seedance`), so these two are the whole list, measured not
+assumed. An image reference moves neither price; only a video does.
 
 **3D and audio models** (`tripo`, `text-to-3d`, `image-to-3d`, `music`, `speech`) have no prompt-refinement guide yet. Use the model's own `--cost` output and parameter list until one is written.
 

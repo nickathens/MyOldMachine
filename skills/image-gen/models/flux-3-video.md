@@ -19,10 +19,32 @@ image models with their own guide (`flux.md`). Do not reuse still FLUX prompt ha
 | Video continuation | up to 4 s of source video and audio | `video_references` |
 | Image references | yes | `image_references`, **10 max** across all image slots |
 | Draft mode | fast cheap preview, then enhance | **not exposed** |
-| Cost | n/a | **5.5 credits/s at 720p, 9 credits/s at 1080p** |
+| Cost | n/a | **5.5 credits/s at 720p, 9 credits/s at 1080p** — but see the video reference tier |
 
 **Cost, measured not estimated [live]:** 720p is 27.5 credits for 5 s, 55 for 10 s, 82.5 for 15 s,
 110 for the 20 s maximum. 1080p is 45 for 5 s. Linear, no length discount.
+
+**A video reference more than doubles the rate [live 2026-08-10].** Those are the prices for a roll
+with no `video_references` file. Attach one — which is the only way to use the video continuation
+this route advertises — and the rate goes to **13 credits/s at 720p and 17 at 1080p**, also exactly
+linear:
+
+| Duration | 720p plain | 720p continuation | 1080p plain | 1080p continuation |
+|---|---|---|---|---|
+| 5 s | 27.5 | **65** | 45 | **85** |
+| 10 s | 55 | **130** | 90 | **170** |
+| 15 s | 82.5 | **195** | 135 | **255** |
+| 20 s | 110 | **260** | 180 | **340** |
+
+The file is what moves the price, not any mode setting: this model has no `mode` param, and an
+`image_references` file leaves the quote untouched at 27.5. `generate_audio` makes no difference
+either way. Quote a continuation at the headline rate and you
+understate a 20 s piece by 150 credits, so always `--cost` with the reference actually attached.
+
+This is the mirror image of `seedance_2_5`, which *drops* from 6.5 to 4 credits/s on the same
+trigger. On a 720p continuation the ranking inverts outright: Flux 3 is 13/s against Seedance 2.5's
+4, so the model that is dearer for `t2v` is the cheaper of the two the moment there is a clip to
+work from. See `seedance-2-5.md`.
 
 **The draft mode is the thing we are missing.** BFL's own workflow is: render a cheap low resolution
 draft, iterate on it, then send the cached draft back for a full quality enhance. Our route has no
@@ -155,6 +177,10 @@ one distant roll of thunder. No music.
 
 5.5 credits a second at 720p makes a 20 s piece 110 credits, and 1080p nearly doubles it. Because
 there is no draft mode, iterate at 720p and short durations, then commit once at length.
+
+Those figures are for a roll from scratch. A **video continuation is 13/s at 720p**, so the same
+20 s piece is 260, and iterating on one is dear enough that the cheap pass belongs on
+`seedance_2_5` at 4/s instead.
 
 ```bash
 python skills/image-gen/scripts/generate.py "..." --video -m flux-video --duration 10 --cost

@@ -70,6 +70,10 @@ model's own default quality, H3 is eighth:
 | `cinematic3`, `cinematic3.5`, `marketing` | 5.0 | | `veo3.1` | 2.75 |
 | `seedance`, `grok-video1.5` | 4.5 | | `happy-horse`, `seedance-mini` | 2.5 |
 
+One qualifier on the top row **[live 2026-08-10]**: `seedance2.5` charges 6.5/s only for a plain
+`t2v` roll. Any job it runs from a video reference, meaning an edit or an extension, is 4.0/s,
+exactly level with H3. The gap this table shows closes the moment there is a clip to work from.
+
 What is still true, and is the real constraint: **there is no 768p draft tier on this route, so
 every roll is a full-price 2K roll.** Models below it in that table mostly have a cheap resolution
 step; H3 does not. Block the idea out on `kling-turbo` (7.5 for 5 s) or `seedance-mini` (12.5) and

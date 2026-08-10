@@ -70,13 +70,12 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-09] linux: carry the Seedance 2.0 craft into the 2.5 guide and correct
-  the 2.5 duration floor, `skills/image-gen/models/seedance*.md`,
-  `skills/image-gen/scripts/generate.py`, `tests/test_image_gen*.py` (PR #121)
-- [2026-08-10] linux: stage tarball archives under `.part` so an interrupted
-  run cannot spend a retention slot, and cover install/wizard.py's retention
-  default behaviourally, `utils/backup.py`, `tests/test_backup_retention.py`
-  (follow-up to #123)
+- [2026-08-10] linux: carry #125's video-reference price tier into the surfaces a
+  model is actually picked from, plus the second model that re-prices on the same
+  trigger (`flux-video`, upward), `skills/image-gen/SKILL.md`,
+  `skills/image-gen/models/minimax-h3.md`,
+  `skills/image-gen/models/flux-3-video.md`,
+  `tests/test_image_gen_seedance_guides.py` (PR #126)
 
 (Entries removed above: #113 merged 2026-08-07. #110 and #109 merged
 2026-08-06. #105 and #104 merged 2026-08-04, and #103, #102 and #101 the same
