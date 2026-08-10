@@ -13,6 +13,7 @@ import logging
 import platform
 from pathlib import Path
 
+from utils.backup import DEFAULT_RETENTION
 from utils.safe_json import save_json
 
 BOT_DIR = Path(__file__).parent.parent
@@ -29,7 +30,7 @@ DEFAULT_CONFIG = {
     # Tool: "tarball" (default for back-compat) or "borg".
     "backup_tool": "tarball",
     # Tarball mode: keep this many archives.
-    "backup_retention": 7,
+    "backup_retention": DEFAULT_RETENTION,
     # Borg mode: calendar-based retention.
     "backup_keep_daily": 7,
     "backup_keep_weekly": 4,
@@ -176,7 +177,7 @@ def get_status_report() -> str:
             if extras:
                 lines.append(f"  Extra paths: {len(extras)}")
         else:
-            retention = config.get("backup_retention", 7)
+            retention = config.get("backup_retention", DEFAULT_RETENTION)
             lines.append(f"  Retention: {retention} backups")
     else:
         lines.append("Backup: OFF")

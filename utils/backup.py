@@ -31,8 +31,16 @@ LOG_DIR = DATA_DIR / "logs"
 
 logger = logging.getLogger(__name__)
 
-# Default retention for tarball mode (count-based).
-DEFAULT_RETENTION = 7
+# Default retention for tarball mode (count-based). Canonical value: every
+# other module reads this rather than repeating a literal, so the default
+# cannot drift between the writer, the installer, and the status readout.
+#
+# Kept deliberately low. A tarball is a full copy, not a delta, so each night
+# costs the whole archive again, and when the target sits on a volume Time
+# Machine also covers, compression hides the overlap and every archive lands
+# there as brand-new data. Two survives a corrupt latest archive; more than
+# that just multiplies the same bytes on the same disk.
+DEFAULT_RETENTION = 2
 
 # Default retention for borg mode (calendar-based).
 DEFAULT_KEEP_DAILY = 7

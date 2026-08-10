@@ -1050,11 +1050,13 @@ def _run_backup_setup_step(config: dict):
             tool = "tarball"
 
     if tool == "tarball":
-        retention_str = ask("How many backups to keep?", default="7")
+        from utils.backup import DEFAULT_RETENTION
+        retention_str = ask("How many backups to keep?",
+                            default=str(DEFAULT_RETENTION))
         try:
             retention = max(1, int(retention_str))
         except ValueError:
-            retention = 7
+            retention = DEFAULT_RETENTION
         try:
             from utils.maintenance import update_config
             update_config(
