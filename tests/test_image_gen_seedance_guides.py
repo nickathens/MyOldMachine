@@ -28,6 +28,8 @@ import generate  # noqa: E402
 MODELS_DIR = ROOT / "skills" / "image-gen" / "models"
 GUIDE_25 = MODELS_DIR / "seedance-2-5.md"
 GUIDE_20 = MODELS_DIR / "seedance.md"
+GUIDE_H3 = MODELS_DIR / "minimax-h3.md"
+SKILL_MD = ROOT / "skills" / "image-gen" / "SKILL.md"
 
 
 class TestSeedance25GuideMatchesTheWrapper(unittest.TestCase):
@@ -399,6 +401,96 @@ class TestImplicitModeTrap(unittest.TestCase):
         self.assertIn('resolution=args.resolution if kind == "image" else None', src,
                       msg="main() now forwards resolution for video; drop the guide's warning")
         self.assertIn("drops\n`--resolution` for video kinds", self.text)
+
+
+class TestTheSelectionSurfacesCarryBothTiers(unittest.TestCase):
+    """`SKILL.md`'s credits/s table is where a model is picked, before any guide is opened.
+
+    The video reference tier is the one fact that changes that pick: at 4.0/s
+    `seedance2.5` stops being the dearest model on the route and ties `h3`. A
+    correction that lands only in `seedance-2-5.md` leaves the decision it was
+    meant to change still reading the superseded ranking, so the selection table
+    and the head to head in `minimax-h3.md` are pinned here against the rate the
+    model guide itself states.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.skill = SKILL_MD.read_text(encoding="utf-8")
+        cls.h3 = GUIDE_H3.read_text(encoding="utf-8")
+        cls.guide = GUIDE_25.read_text(encoding="utf-8")
+
+    def rate_rows(self):
+        """`{rate: models cell}` for every row of the credits/s table."""
+        table = re.search(r"^\| Credits/s \| Models \|\n\|[-| ]+\|\n((?:\|.*\|\n)+)",
+                          self.skill, re.M)
+        self.assertIsNotNone(table, "could not find the credits/s table in SKILL.md")
+        rows = {}
+        for line in table.group(1).strip().splitlines():
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            self.assertEqual(len(cells), 2, msg=f"malformed rate row: {line!r}")
+            rows[float(cells[0])] = cells[1]
+        return rows
+
+    def documented_video_reference_rate(self):
+        """The 720p video reference rate, read out of the model guide."""
+        m = re.search(r"drops from 6\.5 to \*\*(\d+(?:\.\d+)?)\s+credits/s at 720p\*\*", self.guide)
+        self.assertIsNotNone(m, "could not read the video reference rate out of seedance-2-5.md")
+        return float(m.group(1))
+
+    def test_the_selection_table_files_seedance_under_the_cheaper_rate(self):
+        rate, rows = self.documented_video_reference_rate(), self.rate_rows()
+        self.assertIn(rate, rows,
+                      msg=f"SKILL.md has no {rate}/s row to file the cheaper tier under")
+        self.assertIn("seedance2.5", rows[rate],
+                      msg=f"the {rate}/s row does not name seedance2.5: {rows[rate]!r}")
+
+    def test_the_headline_row_no_longer_reads_as_the_only_price(self):
+        rows = self.rate_rows()
+        self.assertIn(6.5, rows, msg="the 6.5/s row is gone from SKILL.md")
+        self.assertIn("seedance2.5", rows[6.5])
+        self.assertIn("t2v", rows[6.5],
+                      msg=f"the 6.5/s row still reads as the model's only price: {rows[6.5]!r}")
+
+    def test_level_with_h3_and_below_flux_are_arithmetic_not_assertion(self):
+        """The guide's ranking claim is only true while this table backs it."""
+        rate, rows = self.documented_video_reference_rate(), self.rate_rows()
+        for claim in ("level with `h3`", "below `flux-video`"):
+            self.assertIn(claim, self.guide.replace("\n", " "),
+                          msg=f"seedance-2-5.md no longer claims it lands {claim}")
+        h3_rate = next((r for r, cell in rows.items() if "`h3`" in cell), None)
+        flux_rate = next((r for r, cell in rows.items() if "`flux-video`" in cell), None)
+        self.assertEqual(h3_rate, rate, msg=f"h3 is {h3_rate}/s, so 'level with h3' is wrong")
+        self.assertGreater(flux_rate, rate,
+                           msg=f"flux-video is {flux_rate}/s, so 'below flux-video' is wrong")
+
+    def test_the_two_tier_note_states_both_resolutions(self):
+        """Both discounted rates, and both are read out of the model guide."""
+        m = re.search(r"and from 3 to \*\*(\d+(?:\.\d+)?) credits/s at 480p\*\*", self.guide)
+        self.assertIsNotNone(m, "could not read the 480p video reference rate out of the guide")
+        at_720, at_480 = self.documented_video_reference_rate(), float(m.group(1))
+        note = re.search(r"`seedance2\.5` is the only model here with two tiers.*?`seedance-2-5\.md`",
+                         self.skill, re.S)
+        self.assertIsNotNone(note, "SKILL.md has no two-tier note under the table")
+        self.assertIn(f"**{at_720:.1f}/s at 720p and {at_480:.1f} at 480p**", note.group(0),
+                      msg="the two-tier note does not state the guide's measured rates")
+
+    def test_the_overstatement_figure_is_the_arithmetic_difference(self):
+        """Same sum in both files, derived here so neither can drift alone."""
+        dur = generate.VIDEO_DURATIONS["seedance_2_5"]["max"]
+        gap = (6.5 - self.documented_video_reference_rate()) * dur
+        self.assertIn(f"overstate a {dur} s job by {gap:g} credits", self.skill)
+        self.assertIn(f"overstates a {dur} s job by {gap:g} credits", self.guide)
+
+    def test_the_head_to_head_table_carries_the_qualifier(self):
+        """`minimax-h3.md` prints the two rates directly against each other.
+
+        Without the qualifier that table says h3 is 38 percent cheaper than
+        seedance2.5 even for an edit, where the two are identical.
+        """
+        self.assertIn("| `seedance2.5` | 6.5 | | **`h3`** | **4.0** |", self.h3)
+        self.assertIn("exactly level with H3", self.h3)
+        self.assertIn("only for a plain\n`t2v` roll", self.h3)
 
 
 if __name__ == "__main__":

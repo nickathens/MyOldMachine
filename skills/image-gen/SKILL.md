@@ -356,14 +356,21 @@ rather than paying flagship rates to find a shot. Always confirm with `--cost` b
 | 2.6 | `wan2.6` |
 | 2.75 | `veo3.1` |
 | 3.0 | `gemini` |
-| 4.0 | `h3` |
+| 4.0 | `h3`, and `seedance2.5` carrying a video reference |
 | 4.5 | `seedance`, `grok-video1.5` |
 | 5.0 | `cinematic3`, `cinematic3.5`, `marketing` |
 | 5.5 | `flux-video` |
-| 6.5 | `seedance2.5` |
+| 6.5 | `seedance2.5`, plain `t2v` only |
 
 `veo3` is priced per clip, not per second: 22 flat on `veo-3-fast`, 58 on `veo-3-preview`.
 Quality steps cost extra on top: `kling` 4k is 6.0/s, `seedance` 4k is 22/s, `cinematic3` 4k is 24/s.
+
+`seedance2.5` is the only model here with two tiers **[live 2026-08-10]**. Any job carrying a
+`video_references` file (`video_edit`, `video_extension`, or `omni_reference` with a clip attached)
+runs at **4.0/s at 720p and 2.0 at 480p** instead of 6.5 and 3.0, which moves it from the top of
+this table to level with `h3`. The file is what moves the price, not the name of the mode. Budget an
+edit or an extension at the headline rate and you overstate a 30 s job by 75 credits: read
+`seedance-2-5.md` first.
 
 **3D and audio models** (`tripo`, `text-to-3d`, `image-to-3d`, `music`, `speech`) have no prompt-refinement guide yet. Use the model's own `--cost` output and parameter list until one is written.
 
