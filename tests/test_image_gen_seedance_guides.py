@@ -212,5 +212,194 @@ class TestKeyframeCaveat(unittest.TestCase):
                       GUIDE_20.read_text(encoding="utf-8"))
 
 
+class TestPromptCeiling(unittest.TestCase):
+    """The 4000-character ceiling, and the unit it is counted in.
+
+    The ceiling itself is cheap to state and cheap to get wrong in the one way
+    that costs you work: counting bytes. The API counts Unicode characters, so a
+    byte count over-reports every non-ASCII prompt -- measured live, a 4000
+    character Greek prompt is 7525 bytes, which `wc -c` calls 88 percent over a
+    limit the API accepts without complaint. A guide that says `wc -c` makes
+    people cut good prompts in half, so the wrong tool is asserted absent, not
+    merely the right one present.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = GUIDE_25.read_text(encoding="utf-8")
+
+    def test_the_ceiling_is_stated_in_the_specs_table(self):
+        row = re.search(r"^\| Prompt length \|.*\|\s*\*\*4000 characters, hard\*\*", self.text, re.M)
+        self.assertIsNotNone(row, "could not find the Prompt length row in the hard specs table")
+
+    def test_the_boundary_is_walked_on_both_sides(self):
+        # 4000 alone would not distinguish "at most 4000" from "under 4000".
+        self.assertIn("4000\ncharacters is accepted, 4001 is rejected", self.text)
+
+    def test_the_rejection_wording_is_quoted_verbatim(self):
+        self.assertIn("`prompt: String should have at most 4000 characters`", self.text)
+
+    def test_it_prescribes_character_counting_not_byte_counting(self):
+        self.assertIn("wc -m", self.text)
+        self.assertIn("**Use `wc -m`, never `wc -c`.**", self.text)
+
+    def test_no_byte_counting_command_sits_in_a_copyable_block(self):
+        """`wc -c` may be named in prose as the wrong tool, never offered as a command.
+
+        Prose can hedge; a fenced block is what gets copied and run. The earlier
+        version of this guide shipped `tr '\\n' ' ' < prompt.txt | wc -c` as the
+        prescribed count -- and the `tr` was a no-op besides, since swapping a
+        newline for a space leaves the byte count untouched.
+        """
+        in_fence, fenced = False, []
+        for line in self.text.splitlines():
+            if line.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                fenced.append(line)
+        offenders = [ln for ln in fenced if "wc -c" in ln]
+        self.assertEqual(offenders, [], msg=f"byte counting offered as a command: {offenders}")
+        # And the counting block that does exist must be the character one.
+        self.assertTrue(any("wc -m" in ln for ln in fenced),
+                        msg="no `wc -m` command block found in the guide")
+
+    def test_the_measured_byte_inflation_is_self_consistent(self):
+        m = re.search(r"a (\d+)[- ]character Greek\s*\n?prompt is (\d+) bytes", self.text)
+        self.assertIsNotNone(m, "could not find the measured Greek byte count")
+        chars, byts = int(m.group(1)), int(m.group(2))
+        self.assertEqual(chars, 4000)
+        pct = round((byts - chars) / chars * 100)
+        self.assertIn(f"{pct} percent\nover the limit", self.text,
+                      msg=f"{byts} bytes for {chars} chars is {pct}% over, not what the guide says")
+
+    def test_it_warns_that_the_estimator_does_not_enforce_it(self):
+        # The trap is a clean quote read as a green light. `generate cost` takes
+        # any length, so only `generate create` can refuse an over-long prompt.
+        self.assertIn("**`generate cost` does not enforce it**", self.text)
+
+
+class TestVideoReferencePricingTier(unittest.TestCase):
+    """Two price tiers, selected by the presence of a video reference.
+
+    Measured live on 2026-08-10: 6.5 credits/s at 720p and 3 at 480p with no
+    video reference, 4 and 2 with one, in every mode that accepts one. The tier
+    follows the file, not the mode name -- `omni_reference` carrying a video
+    reference is charged the lower rate, which is why the table below is keyed on
+    the reference rather than on the mode.
+    """
+
+    T2V_720, T2V_480 = 6.5, 3.0
+    VREF_720, VREF_480 = 4.0, 2.0
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = GUIDE_25.read_text(encoding="utf-8")
+
+    def test_the_stated_rates_are_the_measured_ones(self):
+        self.assertIn("**4\ncredits/s at 720p**", self.text)
+        self.assertIn("**2 credits/s at 480p**", self.text)
+
+    def test_the_discount_percentages_match_the_rates(self):
+        at_720 = round((self.T2V_720 - self.VREF_720) / self.T2V_720 * 100)
+        at_480 = round((self.T2V_480 - self.VREF_480) / self.T2V_480 * 100)
+        self.assertIn(f"{at_720} percent off at 720p, {at_480} at 480p", self.text,
+                      msg=f"rates give {at_720}% / {at_480}% off")
+
+    def test_every_row_of_the_price_table_is_rate_times_five_seconds(self):
+        """The table is hand-typed, and it is what a job gets budgeted against."""
+        table = re.search(r"^\| 5 s job \| 720p \| 480p \|\n(?:\|[-| ]+\|\n)((?:\|.*\|\n)+)",
+                          self.text, re.M)
+        self.assertIsNotNone(table, "could not find the 5 s price table")
+        rows = [r for r in table.group(1).strip().splitlines() if r.strip()]
+        self.assertEqual(len(rows), 5, msg=f"expected 5 priced rows, got {rows}")
+
+        seen_vref = seen_plain = 0
+        for row in rows:
+            cells = [c.strip().replace("*", "") for c in row.strip().strip("|").split("|")]
+            self.assertEqual(len(cells), 3, msg=f"malformed row: {row!r}")
+            label, at720, at480 = cells[0], float(cells[1]), float(cells[2])
+            carries_video = ("video reference" in label
+                            or "video_edit" in label or "video_extension" in label)
+            rate720 = self.VREF_720 if carries_video else self.T2V_720
+            rate480 = self.VREF_480 if carries_video else self.T2V_480
+            self.assertAlmostEqual(at720, rate720 * 5, places=6,
+                                   msg=f"{label}: {at720} at 720p is not {rate720}/s x 5 s")
+            self.assertAlmostEqual(at480, rate480 * 5, places=6,
+                                   msg=f"{label}: {at480} at 480p is not {rate480}/s x 5 s")
+            seen_vref += carries_video
+            seen_plain += not carries_video
+        # Both tiers must be represented, or the table proves nothing.
+        self.assertEqual((seen_vref, seen_plain), (3, 2),
+                         msg=f"expected 3 video-reference rows and 2 without, got {seen_vref}/{seen_plain}")
+
+    def test_the_table_covers_every_mode_the_wrapper_offers(self):
+        table = re.search(r"^\| 5 s job \| 720p \| 480p \|.*?\n\n", self.text, re.M | re.S)
+        self.assertIsNotNone(table)
+        for mode in generate.MODEL_PARAMS["seedance_2_5"]["mode"]["options"]:
+            self.assertIn(mode, table.group(0), msg=f"price table omits mode {mode}")
+
+    def test_the_lower_tier_is_linear(self):
+        para = re.search(r"Linear at the lower rate as well:(.*?)extension\.", self.text, re.S)
+        self.assertIsNotNone(para, "could not find the lower-tier linearity sentence")
+        pairs = [(float(c), int(s)) for c, s in
+                 re.findall(r"(\d+(?:\.\d+)?) for (?:the )?(\d+) s", para.group(1))]
+        self.assertGreaterEqual(len(pairs), 4, f"only parsed {pairs}")
+        for credits, seconds in pairs:
+            self.assertAlmostEqual(credits, self.VREF_720 * seconds, places=6,
+                                   msg=f"{credits} for {seconds}s is not {self.VREF_720}/s")
+
+    def test_the_thirty_second_comparison_uses_both_rates(self):
+        dur = generate.VIDEO_DURATIONS["seedance_2_5"]["max"]
+        self.assertIn(f"costs {self.T2V_720 * dur:g} as `t2v` costs **{self.VREF_720 * dur:g}**",
+                      self.text)
+
+    def test_the_overstatement_warning_is_the_arithmetic_difference(self):
+        dur = generate.VIDEO_DURATIONS["seedance_2_5"]["max"]
+        gap = (self.T2V_720 - self.VREF_720) * dur
+        self.assertIn(f"overstates a 30 s job by {gap:g} credits", self.text)
+
+    def test_audio_is_documented_as_free(self):
+        # Measured on/off in both resolutions and all four modes: identical quote.
+        self.assertIn("**`generate_audio` changes nothing.**", self.text)
+
+
+class TestImplicitModeTrap(unittest.TestCase):
+    """`t2v` rejects references only when `--mode` is passed explicitly.
+
+    The rule is written against the `mode` parameter and the CLI omits the
+    parameter when the flag is absent, so the default path never evaluates it:
+    a video reference is accepted and billed at the lower rate. This is the
+    dangerous shape -- it succeeds rather than failing -- so the guide has to
+    say it in both the mode section and the don't-list.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = GUIDE_25.read_text(encoding="utf-8")
+
+    def test_the_t2v_section_qualifies_the_rejection(self):
+        self.assertIn("**But only when you say `t2v` out loud", self.text)
+
+    def test_the_dont_list_carries_it(self):
+        self.assertIn("**Do not omit `--mode` when you attach a reference.**", self.text)
+
+    def test_the_rule_ordering_is_recorded(self):
+        # Mode rules run before field rules, so a doubly-invalid request reports
+        # only the mode error. That is why the default path looks silent.
+        self.assertIn("run *before* the field rules", self.text)
+
+    def test_the_wrapper_still_cannot_quote_a_video_reference(self):
+        """The guide tells you to skip `generate.py --cost`; that must stay true."""
+        self.assertNotIn("video_references", inspect.signature(generate.estimate_cost).parameters)
+        self.assertIn("never forwards media references", self.text)
+
+    def test_resolution_is_still_dropped_for_video_quotes(self):
+        src = inspect.getsource(generate.main)
+        self.assertIn('resolution=args.resolution if kind == "image" else None', src,
+                      msg="main() now forwards resolution for video; drop the guide's warning")
+        self.assertIn("drops\n`--resolution` for video kinds", self.text)
+
+
 if __name__ == "__main__":
     unittest.main()
