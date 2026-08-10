@@ -39,6 +39,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+os.environ["MOM_TEST"] = "1"  # keep test backup runs out of the production backup.log
+
 from core import tools  # noqa: E402
 from utils import backup  # noqa: E402
 from utils.env_io import atomic_env_write  # noqa: E402

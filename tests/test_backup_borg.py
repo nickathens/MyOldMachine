@@ -17,6 +17,7 @@ All borg subprocess calls are mocked. No real borg invocations.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -25,6 +26,8 @@ from unittest import mock
 
 REPO_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_DIR))
+
+os.environ["MOM_TEST"] = "1"  # keep test backup runs out of the production backup.log
 
 from utils import backup_borg  # noqa: E402
 
