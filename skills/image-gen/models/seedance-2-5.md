@@ -19,16 +19,73 @@ we can reach. Read this before touching it.
 | Audio | native, generated in the same pass | `generate_audio`, default on |
 | References | 50 files (30 image, 10 video, 10 audio) | `image_references`, `video_references`, `audio_references`, **50 total** |
 | Modes | t2v, omni reference, video edit, video extension | all four reachable |
-| Cost | n/a | **6.5 credits/s at 720p, 3 credits/s at 480p** |
+| Prompt length | not published | **4000 characters, hard** (characters, not bytes) |
+| Cost | n/a | **6.5 credits/s at 720p, 3 at 480p** — but **4 and 2** with a video reference |
+
+**The 4000-character prompt ceiling is real, undocumented by the vendor, and counted in
+CHARACTERS not bytes, tokens or words [live 2026-08-10].** Boundary walked on both sides: 4000
+characters is accepted, 4001 is rejected with `prompt: String should have at most 4000 characters`.
+The rejection is free and nothing is charged, but **`generate cost` does not enforce it** — the
+estimator quotes a 4339-character prompt without a murmur, so the quote is not a pre-flight check.
+Count locally before you submit:
+
+```bash
+wc -m < prompt.txt          # characters
+```
+
+**Use `wc -m`, never `wc -c`.** `wc -c` counts bytes, and the ceiling is Unicode characters, so
+bytes overcount every non ASCII prompt — which means Greek, curly quotes and em dashes all inflate
+the number. Measured: a 4000-character Greek prompt is 7525 bytes. `wc -c` calls that 88 percent
+over the limit; the API accepts it. Trust `wc -m` and you keep the prompt you wrote.
+
+For scale: a disciplined structured `video_edit` prompt of ~670 words came to 3778 characters, so
+the ceiling bites at roughly **700 words** of English. Budget in characters, not words — an English
+word plus its space averages about 5.6 characters here, and long prompts are exactly where you stop
+noticing.
 
 **Cost, measured not estimated [live 2026-08-09]:** 720p is 26 credits for the 4 s minimum, 32.5 for
 5 s, 65 for 10 s, 97.5 for 15 s, 195 for the 30 s maximum. 480p is 12 for 4 s, 15 for 5 s, 30 for
 10 s. Exactly linear, no discount for length.
 
+**Those are `t2v` prices, and the discount that undercuts them is not a mode — it is the video
+reference [live 2026-08-10].** Any job carrying a `video_references` file drops from 6.5 to **4
+credits/s at 720p**, and from 3 to **2 credits/s at 480p** — 38 percent off at 720p, 33 at 480p.
+The file is what moves the price, not the name of the mode:
+
+| 5 s job | 720p | 480p |
+|---|---|---|
+| `t2v` | 32.5 | 15 |
+| `omni_reference`, image references only | 32.5 | 15 |
+| `omni_reference` **carrying a video reference** | **20** | **10** |
+| `video_edit` (requires exactly one) | **20** | **10** |
+| `video_extension` (requires at least one) | **20** | **10** |
+
+Linear at the lower rate as well: `video_edit` at 720p is 16 for 4 s, 40 for 10 s, 60 for 15 s and
+120 for the 30 s maximum. The 30 s take that costs 195 as `t2v` costs **120** as an edit or an
+extension. Reach for a video reference and the model stops being the dearest on the route.
+
+**`generate_audio` changes nothing.** On or off, the quote is identical in every mode and at both
+resolutions. Mute it because you do not want a soundtrack, never to save credits.
+
+Quote the mode you will actually run, and quote it through the CLI rather than the wrapper.
+`generate.py --cost` never forwards media references, so `--extra '{"mode":"video_edit"}'` dies on
+the model's own rule (`mode 'video_edit' requires exactly one video reference`); and it drops
+`--resolution` for video kinds, so every wrapper quote silently comes back at the 720p default
+unless you push resolution through `--extra` too:
+
+```bash
+higgsfield generate cost seedance_2_5 --prompt "..." --duration 5 --resolution 480p \
+  --mode video_edit --video-references "<upload-id>" --json
+```
+
 At 6.5 credits a second this is **the most expensive video model in the catalog**, ahead of
 `flux-video` (5.5), `cinematic3` and `cinematic3.5` (5.0), `seedance` (4.5) and `h3` (4.0).
-A single 30 s take is 195 credits. **480p is less than half price and is a real draft tier here**,
-unlike H3 which has none. Block the shot out at 480p, then commit once at 720p.
+A single 30 s take is 195 credits. That ranking is a `t2v` ranking: at the 4 credits/s video
+reference rate the same model lands below `flux-video` and level with `h3`, so an edit or an
+extension is not the luxury the headline rate makes it look.
+
+**480p is less than half price and is a real draft tier here**, unlike H3 which has none. Block the
+shot out at 480p, then commit once at 720p.
 
 Verified rejections **[live 2026-08-09]**: `--duration 3` gives "Input should be greater than or
 equal to 4", `--duration 31` gives "less than or equal to 30".
@@ -156,6 +213,14 @@ all verified live.
 
 Pure text to video. **Rejects all reference media** ("mode 't2v' does not accept reference media").
 If you attach anything, you must change mode.
+
+**But only when you say `t2v` out loud [live 2026-08-10].** The rule is written against the `mode`
+parameter, and the CLI omits the parameter entirely when you do not pass `--mode`. Omit it and the
+rule never evaluates: `--video-references <id>` with no `--mode` is accepted at quote and clears
+validation at submit, and it is quoted at the 4 credits/s video reference rate rather than 6.5. The
+mode rules also run *before* the field rules, so a request that is wrong in both ways reports only
+the mode error — which is why the default path shows nothing at all. Pass `--mode` explicitly on
+every call and the trap cannot fire.
 
 ### `omni_reference`
 
@@ -373,7 +438,15 @@ channel, both references routed and de authorized. Nothing from Mode B.
 - **Do not fill all six slots.** Dense style plus dense camera instructions degrade the result. This
   is the model's own documented failure mode.
 - **Do not draft at 720p.** 480p is half price and exists precisely for this.
-- **Do not attach references in `t2v`.** Hard rejection, not a silent ignore.
+- **Do not submit over 4000 characters.** Hard rejection at submit. Free, but the cost estimator
+  does not enforce it, so a clean quote is no evidence the prompt will be accepted.
+- **Do not count the prompt with `wc -c`.** That is bytes. Use `wc -m`. Greek, curly quotes and em
+  dashes all read as over-long in bytes and get cut for nothing.
+- **Do not omit `--mode` when you attach a reference.** With `--mode t2v` spelled out, a reference
+  is a hard rejection. Leave `--mode` off and the rule never fires: the default silently takes the
+  reference, and bills it at the cheaper video reference rate. Always pass the mode you mean.
+- **Do not budget an edit or an extension at the `t2v` rate.** Anything carrying a video reference
+  runs at 4 credits/s at 720p, not 6.5. Quoting the wrong mode overstates a 30 s job by 75 credits.
 - **Do not omit the "do not use" clause** on a reference. You will inherit its background.
 - **Do not omit the preserve list** in `video_edit`.
 - **Do not expect 1080p or 4K.** ByteDance ships them; this route does not expose them.
