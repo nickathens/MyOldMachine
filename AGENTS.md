@@ -72,6 +72,10 @@ provider.
 
 - [2026-08-09] linux: route office formats in the `docs` skill to anydoc and
   keep pdf on markitdown, `skills/docs/`, `tests/test_docs_convert.py` (PR #120)
+- [2026-08-10] mac: cut default tarball retention 7 -> 2 and make
+  `DEFAULT_RETENTION` the only source of it, `utils/backup.py`,
+  `utils/maintenance.py`, `bot.py`, `install/wizard.py`,
+  `tests/test_backup_retention.py` (PR #122)
 
 (Entries removed above: #113 merged 2026-08-07. #110 and #109 merged
 2026-08-06. #105 and #104 merged 2026-08-04, and #103, #102 and #101 the same
