@@ -4468,7 +4468,8 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             km = cur_cfg.get("backup_keep_monthly", 6)
             retention_line = f"Retention: {kd} daily / {kw} weekly / {km} monthly"
         else:
-            kn = cur_cfg.get("backup_retention", 7)
+            from utils.backup import DEFAULT_RETENTION
+            kn = cur_cfg.get("backup_retention", DEFAULT_RETENTION)
             retention_line = f"Retention: {kn} backups"
 
         # Save config
