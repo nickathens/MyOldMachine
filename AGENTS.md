@@ -75,7 +75,7 @@ provider.
   (`utils/email_triage.py`), setup-token age warning via the keychain's own
   clock (`core/credentials.py`, `utils/claude_login_check.py`), nightly-report
   sent-record (`utils/nightly_report.py`), ruff widened to the full
-  correctness set (`ruff.toml`) (PR pending)
+  correctness set (`ruff.toml`) (PR #127)
 
 (Entries removed above: #126 merged 2026-08-10 — striking it here rather than
 in a dedicated docs PR because this entry edits the same lines anyway.
