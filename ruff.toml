@@ -2,5 +2,11 @@ target-version = "py310"
 line-length = 120
 
 [lint]
-select = ["F", "E741"]
+# Full correctness set (mirrors the production bot's 2026-08-11 widening):
+# F catches dead imports/variables, E4 import placement, E7 comparison and
+# statement pitfalls (E741 ambiguous names lives here), E9 syntax/io errors,
+# W6 deprecated constructs. Style-only rules stay out on purpose.
+select = ["F", "E4", "E7", "E9", "W6"]
+# Repo convention: utils/ scripts insert the bot root on sys.path before
+# importing core modules, so imports legitimately follow code.
 ignore = ["E402"]

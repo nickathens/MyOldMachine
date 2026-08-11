@@ -85,6 +85,8 @@ MAX_LLM_BATCH = 10              # emails per classification call
 MAX_FETCH_PER_PASS = 25         # detail-fetch cap; the rest stay unseen for next pass
 MAX_DRAFTS_PER_PASS = 3         # cost guard
 MAX_PINGS_PER_PASS = 5          # storm guard
+CLASSIFY_FAIL_PING_AFTER = 3    # consecutive failed classify passes before
+                                # the dead-classifier ping
 BODY_EXCERPT_CLASSIFY = 1500
 BODY_EXCERPT_DRAFT = 4000
 PING_DRAFT_PREVIEW_CHARS = 1500
@@ -803,12 +805,14 @@ def run_triage(user_id: int, seed: bool = False, dry_run: bool = False,
             if e["category"] is None:
                 to_classify.append(e)
 
+        classify_error = ""
         for i in range(0, len(to_classify), MAX_LLM_BATCH):
             chunk = to_classify[i:i + MAX_LLM_BATCH]
             try:
                 results = classify_batch(chunk)
             except Exception as ex:
                 logger.error("classification failed: %s", ex)
+                classify_error = str(ex) or ex.__class__.__name__
                 results = [{"category": "unclassified", "summary": ""} for _ in chunk]
             for e, r in zip(chunk, results):
                 e["category"] = r["category"]
@@ -819,6 +823,9 @@ def run_triage(user_id: int, seed: bool = False, dry_run: bool = False,
             for e in emails:
                 out.append(f"  [{e['category']}] {e['from']} :: {e['subject']} :: {e['summary']}")
             return "\n".join(out)
+
+        update_classify_fail_streak(user_id, state, state_file,
+                                    bool(to_classify), classify_error)
 
         # Act: pings and drafts
         drafting_enabled = can_draft(get_llm_provider(), get_llm_model())
@@ -892,6 +899,56 @@ def _maybe_error_ping(user_id: int, state: dict, state_file: Path, error: str):
         pass
     send_ping(user_id, f"Email triage cannot read Gmail: {error[:200]}")
     state["error_pinged_at"] = datetime.now().isoformat()
+    save_json(state_file, state)
+
+
+def update_classify_fail_streak(user_id: int, state: dict, state_file: Path,
+                                attempted: bool, error: str) -> None:
+    """Track consecutive classify-pass failures; alert when the alarm is off.
+
+    A dead classifier (capped account, dead token, broken CLI) does not crash
+    the pass: every chunk degrades to "unclassified", which is a FILED
+    category, so urgent mail gets silently filed and the alarm is off with no
+    symptom — live for hours on the production bot during its 2026-08-11 cap
+    lockout. Any pass that classified cleanly resets the streak; passes with
+    nothing to classify leave it untouched (no evidence either way); a streak
+    of CLASSIFY_FAIL_PING_AFTER pings the owner once per 24h. Never called on
+    dry runs, which return before state changes.
+    """
+    if not attempted:
+        return
+    if error:
+        try:
+            streak = int(state.get("classify_fail_streak") or 0) + 1
+        except (TypeError, ValueError):
+            streak = 1
+        state["classify_fail_streak"] = streak
+        if streak >= CLASSIFY_FAIL_PING_AFTER:
+            _maybe_classify_error_ping(user_id, state, state_file, streak, error)
+    else:
+        state["classify_fail_streak"] = 0
+
+
+def _maybe_classify_error_ping(user_id: int, state: dict, state_file: Path,
+                               streak: int, error: str):
+    """Tell the owner once per 24h when the classifier keeps dying.
+
+    Separate cooldown key from the Gmail-read ping so one failure class
+    cannot eat the other's alert. State is saved here as well as at the end
+    of the pass, so a crash between the two cannot repeat the ping.
+    """
+    last = state.get("classify_error_pinged_at", "")
+    try:
+        if last and (datetime.now() - datetime.fromisoformat(last)).total_seconds() < 86400:
+            return
+    except ValueError:
+        pass
+    send_ping(user_id, (
+        f"Email triage: the mail classifier has failed {streak} passes in a "
+        f"row, so new mail is being filed as 'unclassified' without urgency "
+        f"checks. Urgent mail will NOT ping until this recovers. "
+        f"Last error: {error[:200]}"))
+    state["classify_error_pinged_at"] = datetime.now().isoformat()
     save_json(state_file, state)
 
 

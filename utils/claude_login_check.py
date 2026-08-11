@@ -44,11 +44,14 @@ outranks them in the CLI's documented auth precedence, and once it is in use the
 rotating stores are not merely healthy-or-not, they are DELETED — which is how
 this check spent 2026-08-07 and 2026-08-08 alerting "the machine is not logged
 in" about a machine whose only fault was elsewhere. So the token is checked
-first and, when present, is the answer. What it can report is presence, not
-expiry: the token is an opaque string with no readable clock, so the scheduled-
-chore trick above does not apply to it. Its ~yearly renewal is a calendar
-matter, and the liveness signal is a job failing with its cause, which is what
-the reflection log now carries.
+first and, when present, is the answer. The token itself is an opaque string
+with no readable expiry, but the keychain item that stores it has a clock of
+its own — the modification date, refreshed on every re-mint — so its AGE is
+watched: past TOKEN_WARN_AFTER_DAYS (default 335) the status turns "expiring"
+with a re-mint instruction, closing the ~1-year silent death that cost the
+production bot 18 unnoticed days on a rotted credential. Where that clock is
+unreadable, renewal stays a calendar matter and the liveness signal is a job
+failing with its cause, which is what the reflection log carries.
 
 Usage:
     python claude_login_check.py            # human-readable status
@@ -62,7 +65,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 BOT_DIR = Path(__file__).resolve().parent.parent
@@ -70,6 +73,12 @@ BOT_DIR = Path(__file__).resolve().parent.parent
 # Days of notice before the refresh token lapses. Three nightly warnings is
 # enough to catch Nick without nagging, and the chore itself takes seconds.
 DEFAULT_WARN_DAYS = int(os.environ.get("CLAUDE_LOGIN_WARN_DAYS", "3"))
+
+# Days after minting before the stored setup-token reads as "expiring". The
+# token dies around one year after mint with nothing else on the machine
+# watching, so 335 buys about a month of nightly warnings to re-mint it on
+# purpose instead of discovering the death from a failing job.
+TOKEN_WARN_AFTER_DAYS = int(os.environ.get("CLAUDE_TOKEN_WARN_DAYS", "335"))
 
 SHARED_CREDENTIALS = Path.home() / ".claude" / ".credentials.json"
 
@@ -221,12 +230,16 @@ def _severity(status: str) -> int:
     return _SEVERITY.index(status) if status in _SEVERITY else len(_SEVERITY)
 
 
-def read_token_login_state() -> dict | None:
+def read_token_login_state(*, now: datetime | None = None) -> dict | None:
     """State of the long-lived `claude setup-token`, or None if none is stored.
 
-    Presence is the whole check. The token is opaque, so there is no expiry to
-    read and nothing to warn about in advance -- unlike the OAuth chains, whose
-    readable clock is the entire reason this module exists.
+    Presence makes this chain the machine's answer. The token is opaque -- no
+    expiry to read -- but the keychain item holding it has a clock (its
+    modification date, refreshed on every re-mint), so age is watched too:
+    past TOKEN_WARN_AFTER_DAYS the status turns "expiring" with a re-mint
+    instruction. An unreadable clock degrades to the plain presence answer,
+    never to an alert: a working token must not page anyone because a
+    timestamp failed to parse.
     """
     # Run as a script, `utils/` is sys.path[0] and the bot tree is not on the
     # path at all, so the import below fails and the token goes unseen -- which
@@ -234,18 +247,42 @@ def read_token_login_state() -> dict | None:
     if str(BOT_DIR) not in sys.path:
         sys.path.insert(0, str(BOT_DIR))
     try:
-        from core.credentials import read_claude_oauth_token
+        from core.credentials import claude_oauth_token_mdate, read_claude_oauth_token
     except ImportError:  # running outside the bot tree
         return None
     if not read_claude_oauth_token():
         return None
+    minted = claude_oauth_token_mdate()
+    if minted is not None:
+        now_utc = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
+        age_days = (now_utc - minted).days
+        days_left = float(max(365 - age_days, 0))
+        if age_days >= TOKEN_WARN_AFTER_DAYS:
+            return {
+                "status": "expiring", "days_left": days_left,
+                "expires_at": None, "access_expires_at": None,
+                "detail": (f"The stored subscription token was minted about "
+                           f"{age_days} days ago, and these tokens die around "
+                           f"one year with no local warning. Re-mint it with "
+                           f"`claude setup-token` before it lapses."),
+            }
+        return {
+            "status": "ok", "days_left": days_left,
+            "expires_at": None, "access_expires_at": None,
+            "detail": (f"Logged in with the stored subscription token (minted "
+                       f"about {age_days} days ago). It outranks the login file "
+                       f"and keychain, so those can be absent without anything "
+                       f"being wrong. Renew it about yearly with `claude "
+                       f"setup-token`."),
+        }
     return {
         "status": "ok", "days_left": None, "expires_at": None,
         "access_expires_at": None,
         "detail": ("Logged in with the stored subscription token. It outranks "
                    "the login file and keychain, so those can be absent without "
                    "anything being wrong. Renew it about yearly with `claude "
-                   "setup-token`; nothing local can see its expiry."),
+                   "setup-token`; its keychain item carries no readable clock "
+                   "here, so renewal stays a calendar matter."),
     }
 
 
@@ -266,10 +303,13 @@ def read_machine_login_state(*, warn_days: int = DEFAULT_WARN_DAYS,
     """
     now = now or datetime.now()
 
-    token = read_token_login_state()
+    token = read_token_login_state(now=now)
     if token is not None:
+        # Carry the token chain's REAL state: hardcoding "ok" here would
+        # swallow the age warning read_token_login_state now produces.
         combined = dict(token)
-        combined["chains"] = {"token": {"status": "ok", "days_left": None,
+        combined["chains"] = {"token": {"status": token["status"],
+                                        "days_left": token.get("days_left"),
                                         "detail": token["detail"]}}
         return combined
 

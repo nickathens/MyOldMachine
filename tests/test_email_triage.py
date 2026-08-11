@@ -6,11 +6,13 @@ threading, seen-id pruning, summary rendering, the draft capability
 gate, the per-user token privacy gate, and the scheduler's cron repeat.
 """
 
+import json
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -28,6 +30,7 @@ from utils.email_triage import (
     should_run,
     strip_dashes,
     token_mode,
+    update_classify_fail_streak,
 )
 
 
@@ -261,6 +264,86 @@ class TestCronRepeatTrigger(unittest.TestCase):
     def test_existing_repeats_unaffected(self):
         trigger = Scheduler._build_trigger(None, datetime.now(), "daily")
         self.assertIsInstance(trigger, CronTrigger)
+
+
+class TestClassifyFailStreak(unittest.TestCase):
+    """The dead-classifier alarm (ported from the production bot, 2026-08-11).
+
+    classify_batch failures degrade every chunk to "unclassified", a FILED
+    category, so a dead classifier silently switches the urgent-mail alarm
+    off. The streak counts consecutive failed passes and pings the owner.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state_file = Path(self.tmp.name) / "state.json"
+        self.pings = []
+        patcher = patch("utils.email_triage.send_ping",
+                        side_effect=lambda uid, text: self.pings.append(text) or True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_failure_increments_streak_without_early_ping(self):
+        state = {}
+        update_classify_fail_streak(1, state, self.state_file, True, "boom")
+        self.assertEqual(state["classify_fail_streak"], 1)
+        self.assertEqual(self.pings, [])
+
+    def test_clean_pass_resets_streak(self):
+        state = {"classify_fail_streak": 2}
+        update_classify_fail_streak(1, state, self.state_file, True, "")
+        self.assertEqual(state["classify_fail_streak"], 0)
+
+    def test_nothing_to_classify_leaves_streak_untouched(self):
+        state = {"classify_fail_streak": 2}
+        update_classify_fail_streak(1, state, self.state_file, False, "")
+        self.assertEqual(state["classify_fail_streak"], 2)
+
+    def test_third_failure_pings_and_persists_state(self):
+        state = {}
+        for _ in range(3):
+            update_classify_fail_streak(1, state, self.state_file, True, "dead CLI")
+        self.assertEqual(len(self.pings), 1)
+        self.assertIn("will NOT ping", self.pings[0])
+        self.assertIn("dead CLI", self.pings[0])
+        # The ping helper saves state itself, so a crash later in the pass
+        # cannot repeat the ping on the next one.
+        on_disk = json.loads(self.state_file.read_text())
+        self.assertEqual(on_disk["classify_fail_streak"], 3)
+        self.assertTrue(on_disk["classify_error_pinged_at"])
+
+    def test_cooldown_suppresses_repeat_within_24h(self):
+        state = {"classify_fail_streak": 2,
+                 "classify_error_pinged_at": datetime.now().isoformat()}
+        update_classify_fail_streak(1, state, self.state_file, True, "still dead")
+        self.assertEqual(state["classify_fail_streak"], 3)
+        self.assertEqual(self.pings, [])
+
+    def test_cooldown_expiry_pings_again(self):
+        stale = (datetime.now() - timedelta(hours=25)).isoformat()
+        state = {"classify_fail_streak": 5, "classify_error_pinged_at": stale}
+        update_classify_fail_streak(1, state, self.state_file, True, "still dead")
+        self.assertEqual(len(self.pings), 1)
+
+    def test_corrupt_streak_value_recovers(self):
+        state = {"classify_fail_streak": "garbage"}
+        update_classify_fail_streak(1, state, self.state_file, True, "boom")
+        self.assertEqual(state["classify_fail_streak"], 1)
+
+    def test_gmail_read_ping_cooldown_is_a_separate_key(self):
+        # A fresh Gmail-unreachable ping must not eat the classifier alert.
+        state = {"classify_fail_streak": 2,
+                 "error_pinged_at": datetime.now().isoformat()}
+        update_classify_fail_streak(1, state, self.state_file, True, "boom")
+        self.assertEqual(len(self.pings), 1)
+
+    def test_run_triage_is_wired_to_the_streak(self):
+        # run_triage needs a live Gmail service, so the streak seam is tested
+        # directly above and this deliberate source-text guard pins the
+        # wiring: silently dropping the call site must break a test.
+        source = (Path(__file__).parent.parent / "utils" / "email_triage.py").read_text()
+        self.assertIn("update_classify_fail_streak(user_id, state, state_file,", source)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ DATA_DIR = BOT_DIR / "data"
 HISTORY_DB = DATA_DIR / "scheduler" / "history.db"
 CAPS_FILE = DATA_DIR / "system_caps.json"
 UPDATE_LOG = DATA_DIR / "logs" / "system_update.log"
+REPORT_LOG = DATA_DIR / "logs" / "nightly_report.jsonl"
 MAINTENANCE_CONFIG = DATA_DIR / "maintenance.json"
 TM_PLIST = Path("/Library/Preferences/com.apple.TimeMachine.plist")
 SEND_SCRIPT = BOT_DIR / "utils" / "send_to_telegram.py"
@@ -292,6 +293,27 @@ def build_report() -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
+def _record(text: str, delivered: bool) -> None:
+    """Append what was sent, with a delivered flag (ported from the
+    production bot's 2026-08-11 audit, finding B4).
+
+    Without this, "what did last night's report say" has no answer on disk,
+    and a delivery failure is indistinguishable from a quiet night. Never
+    raises: keeping the record must not be able to break the send path.
+    """
+    try:
+        REPORT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(REPORT_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "delivered": delivered,
+                "chars": len(text),
+                "text": text,
+            }, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"nightly_report: could not record the report: {e}", file=sys.stderr)
+
+
 def send(text: str) -> int:
     """Send the report via the bot's Telegram helper. Returns its exit code."""
     admin_id = get_primary_admin_id()
@@ -309,6 +331,7 @@ def send(text: str) -> int:
     if proc.returncode != 0:
         print(f"send_to_telegram failed: rc={proc.returncode}", file=sys.stderr)
         print(proc.stderr, file=sys.stderr)
+    _record(text, proc.returncode == 0)
     return proc.returncode
 
 
