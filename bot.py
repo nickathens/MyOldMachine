@@ -5115,6 +5115,25 @@ def _configure_claude_hooks():
         logger.warning(f"Failed to configure Claude Code hooks (non-fatal): {e}")
 
 
+async def on_ptb_error(update: object, context: "ContextTypes.DEFAULT_TYPE"):
+    """Global PTB error handler.
+
+    Without one, python-telegram-bot logs "No error handlers are registered,
+    logging exception" at ERROR for every polling hiccup — network blips, the
+    opt-in nightly reboot, a restarting Telegram API — which inflates error
+    counts with expected transport noise. Transport drops log as WARNING;
+    anything else is a real handler failure and stays ERROR with the full
+    traceback.
+    """
+    err = context.error
+    # BadRequest SUBCLASSES NetworkError in PTB, but it is an API-usage bug
+    # (bad markup, oversized message), not transport noise — keep it ERROR.
+    if isinstance(err, NetworkError) and not isinstance(err, BadRequest):
+        logger.warning(f"Telegram transport error (expected during network blips): {err!r}")
+        return
+    logger.error("Unhandled error in Telegram handler", exc_info=err)
+
+
 # --- Main ---
 
 def main():
@@ -5304,6 +5323,8 @@ def main():
         & filters.UpdateType.MESSAGE,
         handle_message,
     ))
+
+    app.add_error_handler(on_ptb_error)
 
     # Startup: initialize scheduler, recover pending messages, health monitor, send first boot
     async def post_init(application):
