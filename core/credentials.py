@@ -22,6 +22,7 @@ import platform
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 SERVICE_PREFIX = "mom-"
 
@@ -299,3 +300,56 @@ def claude_cli_env(base: dict | None = None) -> dict:
         if token:
             env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return env
+
+
+# Keychain timestamp attribute line, e.g.:
+#     "mdat"<timedate>=0x32303236...5A00  "20260724084512Z\000"
+# The quote before the digits keeps the match out of the hex blob (whose
+# ASCII-encoded digits would otherwise satisfy a bare \d{14}).
+_KEYCHAIN_MDATE_RE = re.compile(r'"mdat"[^\n]*"(\d{14})Z')
+
+
+def _parse_keychain_mdate(text: str) -> "datetime | None":
+    """The modification timestamp out of `security find-generic-password`
+    attribute output, as an aware UTC datetime, or None if absent/garbled."""
+    m = _KEYCHAIN_MDATE_RE.search(text or "")
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d%H%M%S").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def claude_oauth_token_mdate() -> "datetime | None":
+    """When the stored ``claude setup-token`` was last written, or None.
+
+    The token itself is an opaque string with no readable expiry, but the
+    keychain item holding it has a clock: `security`'s mdat attribute, which
+    refreshes whenever the token is re-minted and stored again. That makes
+    item age a faithful proxy for token age, which is what lets
+    utils/claude_login_check.py warn BEFORE the ~1-year silent death instead
+    of after (the failure class that cost the production bot 18 unnoticed
+    days on a rotted credential).
+
+    Reads attributes only (no ``-w``), so the secret itself is never fetched.
+    Attribute output lands on stdout on current macOS, but both streams are
+    parsed because older `security` builds wrote attributes to stderr — the
+    regex only matches the mdat line either way. None off macOS, when no item
+    exists, or when the output cannot be parsed; callers treat None as "no
+    clock", never as an error.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        proc = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", _OAUTH_TOKEN_KEYCHAIN_SERVICE],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _parse_keychain_mdate((proc.stdout or "") + (proc.stderr or ""))

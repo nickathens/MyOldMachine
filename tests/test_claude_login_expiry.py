@@ -21,7 +21,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -31,8 +31,14 @@ sys.path.insert(0, str(REPO_ROOT))
 
 os.environ["MOM_TEST"] = "1"  # keep synthetic output out of the real reflection.log
 
+from core.credentials import _parse_keychain_mdate
 from utils import reflect
-from utils.claude_login_check import read_login_state, warning_message
+from utils.claude_login_check import (
+    read_login_state,
+    read_machine_login_state,
+    read_token_login_state,
+    warning_message,
+)
 
 
 def _cred_file(oauth: dict) -> Path:
@@ -408,6 +414,107 @@ class RunReflectionReasonTests(unittest.TestCase):
         self.assertEqual(result["status"], "no_llm")
         self.assertIn("login expired", result["reason"].lower())
         self.assertIn("OAuth session expired", result["reason"])
+
+
+# A real-shaped `security find-generic-password` attribute dump. The hex blob
+# is the same timestamp ASCII-encoded, which is exactly why the parser must
+# anchor on the QUOTED form: the blob's own digit run would satisfy a bare
+# \d{14}. cdat deliberately differs from mdat so a test can prove which
+# attribute the parser reads.
+_SECURITY_DUMP = """keychain: "/Users/x/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="mom-claude-oauth"
+    "acct"<blob>="default"
+    "cdat"<timedate>=0x32303235303130313030303030305A00  "20250101000000Z\\000"
+    "mdat"<timedate>=0x32303236303732343038343531325A00  "20260724084512Z\\000"
+    "svce"<blob>="mom-claude-oauth"
+"""
+
+
+class KeychainMdateParserTests(unittest.TestCase):
+    """The pure parser behind claude_oauth_token_mdate."""
+
+    def test_reads_the_quoted_mdat_timestamp_as_utc(self):
+        parsed = _parse_keychain_mdate(_SECURITY_DUMP)
+        self.assertEqual(parsed,
+                         datetime(2026, 7, 24, 8, 45, 12, tzinfo=timezone.utc))
+
+    def test_mdat_wins_over_cdat(self):
+        # cdat stays at first creation; mdat refreshes on re-mint. Reading
+        # cdat would false-alarm forever after the first anniversary even
+        # with a fresh token stored.
+        parsed = _parse_keychain_mdate(_SECURITY_DUMP)
+        self.assertEqual(parsed.year, 2026)
+
+    def test_missing_mdat_returns_none(self):
+        self.assertIsNone(_parse_keychain_mdate('    "cdat"<timedate>=0x32  "20250101000000Z\\000"'))
+        self.assertIsNone(_parse_keychain_mdate(""))
+        self.assertIsNone(_parse_keychain_mdate(None))
+
+    def test_hex_blob_alone_cannot_satisfy_the_match(self):
+        truncated = '    "mdat"<timedate>=0x32303236303732343038343531325A00'
+        self.assertIsNone(_parse_keychain_mdate(truncated))
+
+    def test_garbage_timestamp_returns_none(self):
+        self.assertIsNone(_parse_keychain_mdate('"mdat"<timedate>=0x00  "99999999999999Z\\000"'))
+
+
+class TokenAgeTests(unittest.TestCase):
+    """The stored setup-token's age turns into a warning before it dies.
+
+    Ported from the production bot's 2026-08-11 audit (finding B2): both
+    ~1-year tokens there rotted silently; here the keychain item's mdate is
+    the clock.
+    """
+
+    def _token_state(self, age_days):
+        mdate = (None if age_days is None
+                 else datetime.now(timezone.utc) - timedelta(days=age_days))
+        with patch("core.credentials.read_claude_oauth_token", return_value="oat-x"), \
+             patch("core.credentials.claude_oauth_token_mdate", return_value=mdate):
+            return read_token_login_state()
+
+    def test_fresh_token_is_ok_and_names_its_age(self):
+        state = self._token_state(18)
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["days_left"], 347.0)
+        self.assertIn("18 days ago", state["detail"])
+        self.assertIsNone(warning_message(state))
+
+    def test_old_token_reads_expiring_with_remint_instruction(self):
+        state = self._token_state(340)
+        self.assertEqual(state["status"], "expiring")
+        self.assertEqual(state["days_left"], 25.0)
+        self.assertIn("claude setup-token", state["detail"])
+        self.assertIsNotNone(warning_message(state))
+
+    def test_threshold_day_already_warns(self):
+        self.assertEqual(self._token_state(335)["status"], "expiring")
+
+    def test_past_a_year_floors_days_left_at_zero(self):
+        state = self._token_state(400)
+        self.assertEqual(state["status"], "expiring")
+        self.assertEqual(state["days_left"], 0.0)
+
+    def test_unreadable_clock_degrades_to_presence_not_alert(self):
+        state = self._token_state(None)
+        self.assertEqual(state["status"], "ok")
+        self.assertIsNone(state["days_left"])
+        self.assertIn("calendar matter", state["detail"])
+        self.assertIsNone(warning_message(state))
+
+    def test_machine_verdict_carries_the_age_warning_through(self):
+        # The chains map used to hardcode the token entry as "ok", which
+        # would have swallowed exactly this warning.
+        with patch("core.credentials.read_claude_oauth_token", return_value="oat-x"), \
+             patch("core.credentials.claude_oauth_token_mdate",
+                   return_value=datetime.now(timezone.utc) - timedelta(days=340)):
+            combined = read_machine_login_state()
+        self.assertEqual(combined["status"], "expiring")
+        self.assertEqual(combined["chains"]["token"]["status"], "expiring")
+        self.assertEqual(combined["chains"]["token"]["days_left"], 25.0)
 
 
 if __name__ == "__main__":
