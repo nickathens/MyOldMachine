@@ -70,14 +70,16 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-10] linux: carry #125's video-reference price tier into the surfaces a
-  model is actually picked from, plus the second model that re-prices on the same
-  trigger (`flux-video`, upward), `skills/image-gen/SKILL.md`,
-  `skills/image-gen/models/minimax-h3.md`,
-  `skills/image-gen/models/flux-3-video.md`,
-  `tests/test_image_gen_seedance_guides.py` (PR #126)
+- [2026-08-11] linux: port the production bot's 2026-08-11 audit fixes —
+  global PTB error handler (`bot.py`), email-triage dead-classifier alarm
+  (`utils/email_triage.py`), setup-token age warning via the keychain's own
+  clock (`core/credentials.py`, `utils/claude_login_check.py`), nightly-report
+  sent-record (`utils/nightly_report.py`), ruff widened to the full
+  correctness set (`ruff.toml`) (PR pending)
 
-(Entries removed above: #113 merged 2026-08-07. #110 and #109 merged
+(Entries removed above: #126 merged 2026-08-10 — striking it here rather than
+in a dedicated docs PR because this entry edits the same lines anyway.
+#113 merged 2026-08-07. #110 and #109 merged
 2026-08-06. #105 and #104 merged 2026-08-04, and #103, #102 and #101 the same
 day. #100 back to #96 before them, 2026-08-02.)
 
