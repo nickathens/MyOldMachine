@@ -803,21 +803,26 @@ def write_user_profile(repo_dir: Path, config: dict, machine_specs: dict):
     profiles_file = data_dir / "users.json"
     profiles_file.write_text(json.dumps(profiles, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    memories = [
-        {
-            "content": f"User's name is {config['user_name']}",
-            "timestamp": datetime.now().isoformat(),
-        },
-        {
-            "content": f"Machine: {machine_specs.get('hostname', 'unknown')} / "
-                       f"{machine_specs.get('cpu', 'unknown')} / "
-                       f"{machine_specs.get('ram_gb', '?')}GB RAM / "
-                       f"{machine_specs.get('disk_gb', '?')}GB disk",
-            "timestamp": datetime.now().isoformat(),
-        },
-    ]
-    memories_file = users_dir / "memories.json"
-    memories_file.write_text(json.dumps(memories, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    # Seed the user's name straight into the observation pipeline (the
+    # memories.json pile is retired; the person model is the one home for
+    # facts about a person). Machine specs are deliberately NOT seeded: the
+    # bot injects a live caps summary from the system probe on every turn,
+    # and a spec copy written once at install time only rots.
+    from core.memory import MemoryManager
+
+    try:
+        mm = MemoryManager(data_dir)
+        mm.add_observation(
+            int(config["telegram_user_id"]), "factual",
+            f"User's name is {config['user_name']}",
+            importance=8, use_semantic=False,
+        )
+    except PermissionError:
+        # Same resilience contract as the memory-subdir loop below: a
+        # permission-broken data/memory from a previous install must not
+        # crash a re-run. The name also lives in users.json, and the intro
+        # flow learns it at runtime.
+        pass
 
     # Memory directory structure. mkdir is best-effort; the bot creates
     # dirs on demand at runtime if a PermissionError ever surfaces here.

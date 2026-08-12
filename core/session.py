@@ -167,16 +167,10 @@ class SessionManager:
             "updated": datetime.now().isoformat(),
         })
 
-    def load_memories(self) -> list:
-        return load_json(self.user_dir / "memories.json", [])
-
-    def save_memories(self, memories: list):
-        save_json(self.user_dir / "memories.json", memories)
-
-    def add_memory(self, content: str):
-        memories = self.load_memories()
-        memories.append({"content": content, "timestamp": datetime.now().isoformat()})
-        self.save_memories(memories)
+    # NOTE: the memories.json pile (load_memories/save_memories/add_memory)
+    # was retired 2026-08-12 — /remember routes through core.memory's
+    # observation pipeline now, and legacy piles are migrated at startup by
+    # bot.migrate_memories_piles().
 
     def should_daily_reset(self) -> bool:
         """Check if daily reset should occur."""

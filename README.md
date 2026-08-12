@@ -155,13 +155,13 @@ Some things are clumsy in a chat box. MyOldMachine ships a Telegram Mini App, a 
 |---------|-------------|
 | `/start` | Connect and show system info |
 | `/help` | List all commands |
-| `/status` | Messages, memories, skills, uptime |
+| `/status` | Messages, long-term memory, skills, uptime |
 | `/health` | Disk, RAM, CPU, and network report |
 | `/system` | Version, OS, and provider info |
 | `/clear` | Reset the conversation |
-| `/remember <fact>` | Save something the bot should always know |
-| `/memories` | Show saved memories |
-| `/forget <n>` | Delete a memory by number |
+| `/remember <fact>` | Save something the bot should always know (routed into long-term memory) |
+| `/memories` | Show recent long-term memory |
+| `/forget` | How to remove or correct a memory |
 | `/remind <time> <msg>` | Set a reminder ("tomorrow 9am", "in 30 minutes") |
 | `/reminders` | Show active reminders |
 | `/cancel <id>` | Cancel a reminder |
@@ -493,7 +493,7 @@ The Claude CLI provider extends this scoping to the model's own workspace. Each 
 | `factual` | "User's timezone is Europe/Athens" |
 | `relationship` | "User expressed frustration with verbose responses" |
 
-The bot saves observations automatically during conversations. Users can also use `/remember` for explicit facts.
+The bot saves observations automatically during conversations. `/remember` routes explicit facts through the same pipeline (as high-importance `factual` observations), so everything the bot knows about a person has one home: the person model, rebuilt by nightly reflection. Every Monday a short change report shows each user what that week's reflections changed in their model.
 
 ## Architecture
 

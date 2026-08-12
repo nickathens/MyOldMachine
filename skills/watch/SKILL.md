@@ -91,6 +91,7 @@ If you already watched a video this session and the user asks a follow-up, **do 
 - **No transcript available** → captions missing AND (no Whisper backend OR all backends failed). Proceed frames-only and tell the user
 - **Long video warning printed** → acknowledge it; offer to re-run focused on a specific section via `--start`/`--end`
 - **Download fails** → yt-dlp's error goes to stderr. If it's login-required or region-locked, tell the user plainly; do not retry
+- **YouTube quality degrades** (missing formats, "formats may be missing" warnings, low-res only) → a stale yt-dlp is the first suspect; YouTube breaks old extractors within months. Update yt-dlp before debugging anything else. Current yt-dlp also needs a JavaScript runtime (node or deno) plus the `yt-dlp-ejs` package for full YouTube extraction — without them it silently falls back to degraded formats
 - **Whisper request fails** → invalid key, rate limit, or 25 MB upload limit. Try `--whisper openai` if Groq failed, or `--whisper local`
 - **Local whisper hangs/OOMs** → the CPU run is memory-capped in a systemd scope (default 6G via `WHISPER_MEM_MAX`), so a heavy model dies alone instead of taking down the bot. If a model gets killed at the cap, drop to a smaller one: `WATCH_LOCAL_WHISPER_MODEL=tiny python …/watch.py …`. Where `systemd-run` is unavailable (macOS, non-systemd Linux), models heavier than `medium` are refused on CPU, so use a smaller model or set an API key.
 
