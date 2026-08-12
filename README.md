@@ -155,13 +155,13 @@ Some things are clumsy in a chat box. MyOldMachine ships a Telegram Mini App, a 
 |---------|-------------|
 | `/start` | Connect and show system info |
 | `/help` | List all commands |
-| `/status` | Messages, memories, skills, uptime |
+| `/status` | Messages, long-term memory, skills, uptime |
 | `/health` | Disk, RAM, CPU, and network report |
 | `/system` | Version, OS, and provider info |
 | `/clear` | Reset the conversation |
-| `/remember <fact>` | Save something the bot should always know |
-| `/memories` | Show saved memories |
-| `/forget <n>` | Delete a memory by number |
+| `/remember <fact>` | Pin something the bot should always know (stays in context for good) |
+| `/memories` | Show pinned facts, numbered, plus recent long-term memory |
+| `/forget <number>` | Remove a pinned fact by its `/memories` number |
 | `/remind <time> <msg>` | Set a reminder ("tomorrow 9am", "in 30 minutes") |
 | `/reminders` | Show active reminders |
 | `/cancel <id>` | Cancel a reminder |
@@ -493,7 +493,11 @@ The Claude CLI provider extends this scoping to the model's own workspace. Each 
 | `factual` | "User's timezone is Europe/Athens" |
 | `relationship` | "User expressed frustration with verbose responses" |
 
-The bot saves observations automatically during conversations. Users can also use `/remember` for explicit facts.
+The bot saves observations automatically during conversations, and the nightly reflection folds them into the person model. Observations are a moving window: the ones not yet reflected are shown ten at a time, and after reflection they live on only through the model, which is itself capped in the prompt.
+
+`/remember` is deliberately not that path. An explicitly remembered fact becomes an **anchor**: ground truth, rendered at the top of the memory context in every mode, exempt from truncation, and never rewritten by reflection. That is the guarantee the command implies, so a busy day of observations can never push a fact the user asked for out of context. `/memories` lists anchors by number and `/forget <number>` removes one; the observation log itself stays append-only and is corrected by recording a correction, not by deletion.
+
+Every Monday a short change report shows each user what that week's reflections changed in their model.
 
 ## Architecture
 

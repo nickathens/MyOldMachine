@@ -38,7 +38,11 @@ from core.config import (
     LOG_DIR,
 )
 from core.llm import create_provider, Message, LLMResponse, ClaudeCLIProvider, CodexCLIProvider
-from core.conversation_format import strip_hallucinated_turns, TURN_OVERHEAD_CHARS
+from core.conversation_format import (
+    strip_hallucinated_turns,
+    strip_methodology_reports,
+    TURN_OVERHEAD_CHARS,
+)
 from core.prompt_security import UNTRUSTED_CONTEXT_POLICY
 
 # Both subprocess CLI providers share progress callbacks, /stop semantics, and
@@ -1384,13 +1388,11 @@ def build_system_prompt(user_id: int) -> str:
         parts.append("Recent messages are preserved verbatim below.")
         parts.append("")
 
-    # Persistent memories
-    memories = session.load_memories()
-    if memories:
-        parts.append("### Persistent Memories:")
-        for mem in memories:
-            parts.append(f"- {mem['content']}")
-        parts.append("")
+    # NOTE: the old "### Persistent Memories" block (memories.json pile) was
+    # removed 2026-08-12: /remember now routes through the observation
+    # pipeline, and the person model plus the "Recent Observations (not yet
+    # reflected)" section below are the one home for facts about a person.
+    # Existing piles are migrated at startup (see migrate_memories_piles).
 
     # Deep memory system — person models and observations
     if _memory_manager:
@@ -1567,10 +1569,22 @@ def build_messages(user_id: int, new_message: str) -> list[Message]:
     if len(history) > MAX_CONTEXT_MESSAGES:
         history = history[-MAX_CONTEXT_MESSAGES:]
 
+    # Methodology-report ritual is collapsed to one line on all but the newest
+    # assistant turn: the stored history keeps full text, only the message
+    # list handed to the provider sheds it (and the prompt-size budget then
+    # measures the smaller, post-strip content).
+    last_assistant_idx = None
+    for i in range(len(history) - 1, -1, -1):
+        if history[i].get("role") == "assistant":
+            last_assistant_idx = i
+            break
+
     messages = []
-    for msg in history:
+    for i, msg in enumerate(history):
         role = msg.get("role")
         content = msg.get("content")
+        if role == "assistant" and i != last_assistant_idx:
+            content = strip_methodology_reports(content)
         if role and content is not None:
             messages.append(Message(role=role, content=content))
     messages.append(Message(role="user", content=new_message))
@@ -2368,17 +2382,19 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
     history = session.load_conversation()
-    memories = session.load_memories()
     summary = session.load_summary()
     current_topic = session.get_current_topic()
     topics = session.list_topics()
     skills_count = len(_skill_manager.get_enabled_skills()) if _skill_manager else 0
     meta = session.load_session_meta()
+    obs_count = 0
+    if _memory_manager:
+        obs_count = len(_memory_manager.get_all_observations(user_id, limit=None))
     await update.message.reply_text(
         f"Status: Online\n"
         f"Provider: {get_llm_provider()} / {get_llm_model()}\n"
         f"Messages in context: {len(history)}\n"
-        f"Persistent memories: {len(memories)}\n"
+        f"Observations (long-term memory): {obs_count}\n"
         f"Has summary: {'Yes' if summary else 'No'}\n"
         f"Current session: {current_topic or 'main'}\n"
         f"Topic sessions: {len(topics)}\n"
@@ -2389,46 +2405,159 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @requires_auth
 async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pin a fact to long-term memory as a ground-truth anchor.
+
+    The old per-user memories.json pile is retired (memory unification,
+    2026-08-12), but /remember keeps that pile's one real virtue: what the
+    user explicitly asks to be remembered stays in the prompt, verbatim,
+    forever. Anchors are the memory system's own mechanism for that — they
+    render at the top of the memory context in both full and lite mode and
+    are exempt from every truncation. A plain observation is not equivalent:
+    the unreflected window is the last 10 lines, so ten later observations
+    evict the fact the same day (this install records a median of 7 a day
+    and has seen 39), and after reflection it survives only if the LLM chose
+    to write it into a person model that is itself truncated to 2800 chars.
+    An anchor has no such gate.
+    """
     user_id = update.effective_user.id
-    text = command_body(update.message.text)
+    # Collapse internal newlines/whitespace: anchors are stored one per line
+    # and the parse regex depends on it (add_anchor collapses too; doing it
+    # here keeps the empty check and the echoed preview honest).
+    text = " ".join(command_body(update.message.text).split())
     if not text:
-        await update.message.reply_text("Usage: /remember <fact to remember>")
+        await update.message.reply_text(
+            "Usage: /remember <fact to remember>\n"
+            "Facts saved this way are pinned for good — I see them every turn."
+        )
         return
-    session = get_session(user_id)
-    session.add_memory(text)
-    await update.message.reply_text(f"Saved: {text}")
+    if not _memory_manager:
+        await update.message.reply_text(
+            "Long-term memory is not initialized yet — try again in a moment."
+        )
+        return
+    try:
+        # add_anchor is idempotent by id, but only when the caller supplies
+        # one: left to generate, it suffixes a colliding slug (-2, -3), so
+        # remembering the same fact twice would pin it twice and inject it
+        # into the prompt twice. Match on the text instead. Passing a
+        # text-derived id would be worse — the slug truncates at 40 chars,
+        # so two different long facts sharing a prefix would overwrite each
+        # other.
+        existing = await asyncio.to_thread(_memory_manager.load_anchors, user_id)
+        if any(a["text"].casefold() == text.casefold() for a in existing):
+            await update.message.reply_text(
+                "Already pinned — I have that one. See /memories."
+            )
+            return
+        result = await asyncio.to_thread(
+            _memory_manager.add_anchor, user_id, text,
+        )
+    except Exception:
+        logger.exception(f"/remember failed for user {user_id}")
+        await update.message.reply_text(
+            "Could not save that to long-term memory — the fact was NOT "
+            "stored. Try again, or just tell me in chat and I will record it."
+        )
+        return
+    status = result.get("status") if isinstance(result, dict) else ""
+    # Echo a capped preview: the stored fact is always full-length, but a
+    # near-4096-char /remember plus this prefix would exceed Telegram's
+    # message limit and make the confirmation itself fail to send.
+    preview = text if len(text) <= 1000 else text[:1000] + "…"
+    if status in ("added", "updated"):
+        await update.message.reply_text(
+            f"Saved to long-term memory: {preview}\n"
+            "Pinned for good — see /memories, remove with /forget."
+        )
+    else:
+        logger.error(f"/remember unexpected outcome {result!r} for user {user_id}")
+        await update.message.reply_text(
+            "Could not save that to long-term memory — the fact was NOT stored."
+        )
 
 
 @requires_auth
 async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show pinned facts (numbered, for /forget) and the recent observation log.
+
+    Two sections because they are two different things: anchors are what the
+    user pinned and can remove, observations are what I noticed and cannot
+    be deleted individually (append-only log).
+    """
     user_id = update.effective_user.id
-    memories = get_session(user_id).load_memories()
-    if not memories:
-        await update.message.reply_text("No memories saved. Use /remember to add some.")
+    anchors = _memory_manager.load_anchors(user_id) if _memory_manager else []
+    obs_lines = (_memory_manager.get_all_observations(user_id, limit=20)
+                 if _memory_manager else [])
+    if not anchors and not obs_lines:
+        await update.message.reply_text(
+            "Nothing saved yet. Use /remember <fact>, or just talk — I "
+            "record what matters as we go."
+        )
         return
-    text = "Memories:\n\n"
-    for i, mem in enumerate(memories, 1):
-        text += f"{i}. {mem['content']}\n"
+    text = ""
+    if anchors:
+        text += "Pinned facts (always in front of me; /forget <number> removes one):\n\n"
+        # Numbering is positional and matches load_anchors' file order, which
+        # is what forget_command re-reads — the same contract the old numbered
+        # memories.json listing had.
+        for i, a in enumerate(anchors, 1):
+            text += f"{i}. {a['text']}\n"
+        text += "\n"
+    if obs_lines:
+        text += ("What I have noticed lately (woven into your model nightly, "
+                 "not individually removable):\n\n")
+        text += "\n".join(obs_lines)
     for chunk in split_message(text):
         await update.message.reply_text(chunk)
 
 
 @requires_auth
 async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove a pinned fact by its /memories number."""
     user_id = update.effective_user.id
-    text = command_body(update.message.text)
-    if not text.isdigit():
-        await update.message.reply_text("Usage: /forget <number>")
+    body = command_body(update.message.text).strip()
+    anchors = _memory_manager.load_anchors(user_id) if _memory_manager else []
+    if not body.isdigit():
+        if not anchors:
+            await update.message.reply_text(
+                "Nothing pinned to forget. What I have noticed on my own is "
+                "an append-only log — to correct something there, tell me in "
+                "chat what is wrong and I will record the correction."
+            )
+            return
+        await update.message.reply_text(
+            f"Usage: /forget <number>\nYou have {len(anchors)} pinned "
+            "fact(s) — /memories lists them with their numbers."
+        )
         return
-    idx = int(text) - 1
-    session = get_session(user_id)
-    memories = session.load_memories()
-    if 0 <= idx < len(memories):
-        removed = memories.pop(idx)
-        session.save_memories(memories)
-        await update.message.reply_text(f"Forgot: {removed['content']}")
+    idx = int(body) - 1
+    if not 0 <= idx < len(anchors):
+        await update.message.reply_text(
+            f"There is no pinned fact number {body}. /memories lists what "
+            "you have."
+        )
+        return
+    target = anchors[idx]
+    try:
+        result = await asyncio.to_thread(
+            _memory_manager.remove_anchor, user_id, target["id"],
+        )
+    except Exception:
+        logger.exception(f"/forget failed for user {user_id}")
+        await update.message.reply_text(
+            "Could not remove that — it is still saved. Try again."
+        )
+        return
+    if isinstance(result, dict) and result.get("status") == "removed":
+        preview = target["text"]
+        if len(preview) > 1000:
+            preview = preview[:1000] + "…"
+        await update.message.reply_text(f"Forgot: {preview}")
     else:
-        await update.message.reply_text("Invalid memory number.")
+        logger.error(f"/forget unexpected outcome {result!r} for user {user_id}")
+        await update.message.reply_text(
+            "Could not remove that — it is still saved."
+        )
 
 
 @requires_auth
@@ -3408,8 +3537,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /clear — Start a fresh conversation\n"
         "  /status — See how things are running\n\n"
         "Memory & reminders:\n"
-        "  /remember — Save something I should always know\n"
+        "  /remember — Pin something I should always know\n"
         "  /memories — See what I remember about you\n"
+        "  /forget — Remove a pinned fact by its number\n"
         "  /remind — Set a reminder (e.g. /remind tomorrow 9am Call the dentist)\n"
         "  /reminders — See your upcoming reminders\n"
         "  /cancel — Cancel a reminder\n"
@@ -4078,6 +4208,71 @@ async def _health_monitor_loop(scheduler):
         await asyncio.sleep(300)  # Check eligibility every 5 minutes
 
 
+def migrate_memories_piles():
+    """One-time startup migration: fold each user's legacy memories.json pile
+    into the observation pipeline, then retire the file.
+
+    The pile was a second home for facts about a person (the old
+    "### Persistent Memories" prompt section); the person model is the one
+    home now. Each entry becomes a high-importance factual observation
+    (lexical dedup only: deterministic, no optional-venv dependency), and the
+    file is renamed to memories.json.migrated so it can never feed the prompt
+    again while nothing is destroyed. Idempotent: the rename makes the next
+    startup a no-op, and if every entry failed to convert the pile is left in
+    place to retry next startup (re-runs are safe because dedup suppresses
+    already-converted lines).
+    """
+    from utils.safe_json import load_json as _load_json
+
+    if not _memory_manager or not USERS_DIR.exists():
+        return
+    migrated_users = 0
+    for user_dir in sorted(USERS_DIR.iterdir()):
+        pile = user_dir / "memories.json"
+        if not user_dir.is_dir() or not pile.exists():
+            continue
+        try:
+            uid = int(user_dir.name)
+        except ValueError:
+            continue
+        entries = _load_json(pile, [])
+        if not isinstance(entries, list):
+            entries = []
+        moved = 0
+        for mem in entries:
+            content = mem.get("content") if isinstance(mem, dict) else str(mem)
+            if not content or not str(content).strip():
+                continue
+            stamp = ""
+            if isinstance(mem, dict) and mem.get("timestamp"):
+                stamp = f" (saved {str(mem['timestamp'])[:10]})"
+            try:
+                _memory_manager.add_observation(
+                    uid, "factual", f"{content}{stamp}",
+                    importance=8, use_semantic=False,
+                )
+                moved += 1
+            except Exception:
+                logger.exception(
+                    f"memories.json migration: entry failed for user {uid}")
+        if entries and moved == 0:
+            logger.error(
+                f"memories.json migration: all {len(entries)} entries failed "
+                f"for user {uid}; pile left in place for retry next startup")
+            continue
+        try:
+            pile.rename(pile.parent / "memories.json.migrated")
+        except OSError:
+            logger.exception(f"memories.json migration: could not retire {pile}")
+            continue
+        migrated_users += 1
+        logger.info(
+            f"Migrated {moved}/{len(entries)} memories.json entries to "
+            f"observations for user {uid}")
+    if migrated_users:
+        logger.info(f"memories.json migration complete for {migrated_users} user(s)")
+
+
 def _setup_reflection_job(scheduler):
     """Set up the nightly reflection scheduler job if not already present."""
     from core.scheduler import _get_all_meta
@@ -4131,6 +4326,48 @@ def _setup_reflection_job(scheduler):
         command=f"{shlex.quote(venv_python)} {shlex.quote(reflect_script)}",
     )
     logger.info("Scheduled nightly reflection job at 3:00 AM")
+
+
+def _setup_weekly_model_report_job(scheduler):
+    """Set up the weekly person-model change report if not already present.
+
+    Nightly reflection edits person models but nobody grades the edits; the
+    report diffs each user's model against last week's snapshot and sends a
+    short change note (utils/weekly_model_report.py). Registered
+    unconditionally because the script self-gates: users without a model, or
+    whose model has never been rewritten by reflection, are skipped, and a
+    week with no changes is recorded but not sent. Mondays 08:05, when the
+    weekend's reflection runs have settled.
+    """
+    from core.scheduler import _get_all_meta
+
+    existing = _get_all_meta()
+    for meta in existing:
+        if meta.get("name") == "weekly-model-report":
+            logger.info("Weekly model report job already scheduled")
+            return
+
+    venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
+    report_script = str(BOT_DIR / "utils" / "weekly_model_report.py")
+    admin_id = get_primary_admin_id() or 0
+
+    # Next Monday 08:05 (today if that is still in the future).
+    run_at = datetime.now().replace(hour=8, minute=5, second=0, microsecond=0)
+    run_at += timedelta(days=(0 - run_at.weekday()) % 7)
+    if run_at <= datetime.now():
+        run_at += timedelta(days=7)
+
+    scheduler.add_job(
+        user_id=admin_id,
+        message="Weekly person-model change report",
+        run_at=run_at,
+        repeat="weekly",
+        job_type="command",
+        name="weekly-model-report",
+        notify=False,
+        command=f"{shlex.quote(venv_python)} {shlex.quote(report_script)}",
+    )
+    logger.info("Scheduled weekly model report job (Mondays 08:05)")
 
 
 def _setup_maintenance_jobs(scheduler):
@@ -5232,6 +5469,13 @@ def main():
     _memory_manager = MemoryManager(DATA_DIR)
     logger.info("Memory system initialized")
 
+    # Retire any legacy memories.json piles into the observation pipeline.
+    # Guarded: a migration surprise must never stop the bot from starting.
+    try:
+        migrate_memories_piles()
+    except Exception:
+        logger.exception("memories.json migration failed (non-fatal)")
+
     # Build Telegram app
     api_base = get_telegram_api_base()
     builder = Application.builder().token(token)
@@ -5367,6 +5611,9 @@ def main():
 
         # Schedule nightly reflection job if not already present
         _setup_reflection_job(scheduler)
+
+        # Schedule the weekly person-model change report if not already present
+        _setup_weekly_model_report_job(scheduler)
 
         # Schedule maintenance jobs (system update, cleanup, backup) if not already present
         _setup_maintenance_jobs(scheduler)

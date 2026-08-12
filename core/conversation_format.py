@@ -91,3 +91,69 @@ def strip_hallucinated_turns(text: str) -> str:
     text = _STRAY_MARK_RE.sub("", text)
     text = _TRAILING_PARTIAL_RE.sub("", text)
     return text
+
+
+# ── Methodology-report trimming ──────────────────────────────────────────────
+# Every non-trivial delivery ends with a "## Methodology Report" block (the
+# coding skill mandates it). Useful once, then pure bulk: the production bot
+# measured ~37K chars of a ~170K-char prompt spent re-reading old reports on
+# every turn (2026-08-11). Older turns keep the verdict and shed the ritual;
+# storage (conversation.json, the message log) is never touched — only what
+# build_messages hands the provider. This is history *hygiene* rather than
+# turn serialization, but it lives here so both stay in one module with one
+# test surface.
+
+METHODOLOGY_TRIM_NOTE = (
+    "[Methodology Report: verified before delivery — detail trimmed from "
+    "context, full text kept in stored history]"
+)
+
+# The heading line the coding skill's report template uses. Tolerant of
+# heading level and case; anchored to a whole line so prose that merely
+# mentions the phrase is never treated as a block start.
+_METHODOLOGY_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s+Methodology Report\s*$", re.IGNORECASE
+)
+
+# A line belonging to the report body: one of its bullets, or the indented
+# continuation of a wrapped bullet. The first line that is neither ends the
+# block, so prose after a report ("Send /restart and it goes live.") survives.
+_REPORT_BODY_RE = re.compile(r"^\s*[-*+]\s|^\s{2,}\S")
+
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def strip_methodology_reports(text: str) -> str:
+    """Collapse each Methodology Report block to a one-line note.
+
+    Applied when history is built into the provider message list, to every
+    assistant turn except the newest (the freshest report is often still under
+    discussion). Fenced code blocks are left alone, so a turn *quoting* the
+    report template is never mangled. Non-string content passes through
+    untouched.
+    """
+    if not isinstance(text, str) or "methodology report" not in text.lower():
+        return text
+    lines = text.split("\n")
+    out = []
+    in_fence = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+        if not in_fence and _METHODOLOGY_HEADING_RE.match(line):
+            out.append(METHODOLOGY_TRIM_NOTE)
+            i += 1
+            # Consume the bullet block that follows the heading. Blank lines
+            # between heading and first bullet belong to the block; a blank
+            # line after the bullets ends it (report bullets are contiguous),
+            # so an unrelated list further down is never swallowed.
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            while i < len(lines) and _REPORT_BODY_RE.match(lines[i]):
+                i += 1
+        else:
+            out.append(line)
+            i += 1
+    return "\n".join(out)

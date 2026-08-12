@@ -587,6 +587,7 @@ class MemoryManager:
         """Get recent observations as a list of strings.
 
         Args:
+            limit: Newest N lines; None returns every line in the live log.
             skip_reflected: If True, exclude observations marked [reflected].
         """
         obs_file = self._observations_file(user_id)
@@ -597,7 +598,7 @@ class MemoryManager:
         lines = [line for line in content.split("\n") if line.startswith("[")]
         if skip_reflected:
             lines = [line for line in lines if "[reflected]" not in line]
-        return lines[-limit:]
+        return lines if limit is None else lines[-limit:]
 
     def archive_old_observations(self, user_id: int, keep_days: int = 14):
         """Move observations older than keep_days to an archive file."""

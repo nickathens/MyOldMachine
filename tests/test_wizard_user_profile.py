@@ -57,10 +57,16 @@ class WriteUserProfileResilienceTests(unittest.TestCase):
         users_json = self.tmpdir / "data" / "users.json"
         self.assertTrue(users_json.exists())
 
-    def test_memories_json_written(self):
+    def test_name_seeded_as_observation_not_pile(self):
+        """The name lands in the observation pipeline; no memories.json pile
+        is created (retired 2026-08-12, one home per fact)."""
         wizard.write_user_profile(self.tmpdir, self._config(), self._machine_specs())
-        memories = self.tmpdir / "data" / "users" / "1234" / "memories.json"
-        self.assertTrue(memories.exists())
+        obs = (self.tmpdir / "data" / "memory" / "people" / "1234"
+               / "observations.md")
+        self.assertTrue(obs.exists())
+        self.assertIn("User's name is TestUser", obs.read_text(encoding="utf-8"))
+        pile = self.tmpdir / "data" / "users" / "1234" / "memories.json"
+        self.assertFalse(pile.exists())
 
     def test_skips_memory_subdir_on_permission_error(self):
         """If data/memory/ is owned by another user and mode 0700, mkdir
@@ -89,10 +95,13 @@ class WriteUserProfileResilienceTests(unittest.TestCase):
                 self.tmpdir, self._config(), self._machine_specs()
             )
 
-        # Other writes still succeeded.
+        # Other writes still succeeded; the observation seed was skipped
+        # (MemoryManager could not create data/memory/people) without
+        # crashing the install.
         self.assertTrue((self.tmpdir / "data" / "users.json").exists())
-        self.assertTrue(
-            (self.tmpdir / "data" / "users" / "1234" / "memories.json").exists()
+        self.assertFalse(
+            (self.tmpdir / "data" / "memory" / "people" / "1234"
+             / "observations.md").exists()
         )
 
     def test_partial_memory_subdir_failure_does_not_block_remaining(self):
