@@ -1,17 +1,25 @@
-"""/remember routes through the observation pipeline; the memories.json pile
-is retired (memory unification, ported from the production bot 2026-08-12).
+"""/remember pins a ground-truth anchor; the memories.json pile is retired
+(memory unification, ported from the production bot 2026-08-12).
 
 What must hold:
-- /remember stores a high-importance factual observation via the real
-  MemoryManager (in-process, never argv), and the reply is honest about
-  saved vs corroborated vs NOT stored.
-- /memories reads the observation log; /forget explains the append-only
-  correction path instead of deleting by number.
+- /remember pins the fact as an anchor via the real MemoryManager
+  (in-process, never argv), and the reply is honest about saved vs NOT
+  stored.
+- /memories lists pinned facts by number plus the observation log; /forget
+  <number> removes a pinned fact and nothing else.
 - The "### Persistent Memories" prompt section can never resurrect, even
   when a legacy memories.json is planted on disk.
+- A remembered fact stays in the prompt *permanently* — the property the
+  retired pile actually provided. Routing /remember to a plain observation
+  instead looks equivalent on the next turn and is not: the unreflected
+  window is the last 10 lines, reflection then hides the line, and the
+  person model that is supposed to carry it forward is truncated to 2800
+  chars. The DurabilityTests below pin all three.
 - migrate_memories_piles folds legacy piles into observations exactly once,
   preserves the original file under a .migrated name, and leaves the pile in
-  place for retry when every entry fails to convert.
+  place for retry when every entry fails to convert. (Migrated entries stay
+  observations on purpose: they are install-time leftovers of unknown age,
+  e.g. a machine-spec line that only rots, so they decay rather than pin.)
 
 Every path is a tmp tree. Both user-dir roots (bot.USERS_DIR and
 core.users.USERS_DATA_DIR) are patched to the same tmp dir, per the
@@ -88,6 +96,9 @@ class TmpMemoryFixture(unittest.TestCase):
         return [ln for ln in self.obs_text(uid).split("\n")
                 if ln.startswith("[")]
 
+    def anchor_texts(self, uid=None) -> list[str]:
+        return [a["text"] for a in self.mm.load_anchors(uid or self.uid)]
+
 
 class RememberHandlerTests(TmpMemoryFixture):
     def _remember(self, text: str):
@@ -95,44 +106,51 @@ class RememberHandlerTests(TmpMemoryFixture):
         asyncio.run(botmod.remember_command(update, None))
         return replies
 
-    def test_remember_saves_factual_high_importance_observation(self):
+    def test_remember_pins_the_fact_as_an_anchor(self):
         replies = self._remember("/remember The studio monitor is a Neumann KH 120")
-        lines = self.obs_lines()
-        self.assertEqual(len(lines), 1)
-        self.assertIn("The studio monitor is a Neumann KH 120", lines[0])
-        self.assertIn("(factual)", lines[0])
-        self.assertIn("importance:8", lines[0])
+        self.assertEqual(self.anchor_texts(),
+                         ["The studio monitor is a Neumann KH 120"])
         self.assertEqual(len(replies), 1)
         self.assertIn("Saved to long-term memory", replies[0])
+        # An anchor is the point; it must not also be logged as an
+        # observation, which would inject the same fact into the prompt twice.
+        self.assertEqual(self.obs_lines(), [])
 
-    def test_remember_same_fact_corroborates_instead_of_duplicating(self):
+    def test_remember_same_fact_twice_does_not_duplicate(self):
+        # add_anchor suffixes a colliding generated slug rather than
+        # replacing, so without a text-level check this pins the fact twice.
         self._remember("/remember The studio monitor is a Neumann KH 120")
-        replies = self._remember("/remember The studio monitor is a Neumann KH 120")
-        self.assertEqual(len(self.obs_lines()), 1)
-        self.assertIn("Already known", replies[0])
+        replies = self._remember("/remember the STUDIO monitor is a Neumann KH 120")
+        self.assertEqual(len(self.anchor_texts()), 1)
+        self.assertIn("Already pinned", replies[0])
 
-    def test_remember_collapses_newlines_to_one_log_line(self):
-        # The observation log is line-oriented; a raw newline would split the
-        # fact into continuation lines that every parser silently drops.
+    def test_two_long_facts_sharing_a_prefix_both_survive(self):
+        # The anchor slug truncates at 40 chars: keying dedup on a
+        # text-derived id would silently overwrite the first fact here.
+        shared = "The mastering chain for the Allwyn films "
+        self._remember(f"/remember {shared}starts with a Neumann console")
+        self._remember(f"/remember {shared}ends with a Weiss limiter")
+        self.assertEqual(len(self.anchor_texts()), 2)
+
+    def test_remember_collapses_newlines_to_one_line(self):
+        # Anchors are stored one per line and the parse regex depends on it;
+        # a raw newline would split the fact into unparseable fragments.
         self._remember("/remember line one\nline two\n\nline three")
-        lines = self.obs_lines()
-        self.assertEqual(len(lines), 1)
-        self.assertIn("line one line two line three", lines[0])
+        self.assertEqual(self.anchor_texts(), ["line one line two line three"])
 
     def test_remember_flag_shaped_content_is_stored_verbatim(self):
         # In-process API, never argv: content that looks like CLI flags or
         # shell must land as inert text.
         hostile = "--type behavioral --importance 1 ; rm -rf / #"
         self._remember(f"/remember {hostile}")
-        self.assertIn(hostile, self.obs_text())
-        self.assertIn("importance:8", self.obs_lines()[0])
+        self.assertEqual(self.anchor_texts(), [hostile])
 
     def test_remember_failure_reply_is_honest(self):
-        with patch.object(self.mm, "add_observation",
+        with patch.object(self.mm, "add_anchor",
                           side_effect=OSError("disk full")):
             replies = self._remember("/remember something important")
         self.assertIn("NOT stored", replies[0])
-        self.assertEqual(self.obs_lines(), [])
+        self.assertEqual(self.anchor_texts(), [])
 
     def test_remember_without_manager_says_not_initialized(self):
         with patch.object(botmod, "_memory_manager", None):
@@ -146,25 +164,71 @@ class RememberHandlerTests(TmpMemoryFixture):
 
 
 class MemoriesAndForgetTests(TmpMemoryFixture):
-    def test_memories_shows_recent_observations(self):
+    def _memories(self):
+        update, replies = make_update(self.uid, "/memories")
+        asyncio.run(botmod.memories_command(update, None))
+        return replies
+
+    def _forget(self, text: str):
+        update, replies = make_update(self.uid, text)
+        asyncio.run(botmod.forget_command(update, None))
+        return replies
+
+    def test_memories_shows_pinned_facts_and_observations(self):
+        self.mm.add_anchor(self.uid, "Mixes on Neumann KH 120")
         self.mm.add_observation(self.uid, "factual", "Prefers dark UI themes",
                                 importance=8, use_semantic=False)
-        update, replies = make_update(self.uid, "/memories")
-        asyncio.run(botmod.memories_command(update, None))
-        self.assertTrue(any("Prefers dark UI themes" in r for r in replies))
+        joined = "\n".join(self._memories())
+        self.assertIn("1. Mixes on Neumann KH 120", joined)
+        self.assertIn("Prefers dark UI themes", joined)
 
     def test_memories_empty_points_at_remember(self):
-        update, replies = make_update(self.uid, "/memories")
-        asyncio.run(botmod.memories_command(update, None))
-        self.assertIn("/remember", replies[0])
+        self.assertIn("/remember", self._memories()[0])
 
-    def test_forget_explains_append_only_and_deletes_nothing(self):
-        self.mm.add_observation(self.uid, "factual", "A fact to keep",
-                                importance=8, use_semantic=False)
-        update, replies = make_update(self.uid, "/forget 1")
-        asyncio.run(botmod.forget_command(update, None))
+    def test_forget_by_number_removes_that_pinned_fact(self):
+        self.mm.add_anchor(self.uid, "First pinned fact")
+        self.mm.add_anchor(self.uid, "Second pinned fact")
+        replies = self._forget("/forget 1")
+        self.assertIn("Forgot: First pinned fact", replies[0])
+        self.assertEqual(self.anchor_texts(), ["Second pinned fact"])
+
+    def test_forget_numbering_matches_the_memories_listing(self):
+        # The number the user types comes off the /memories listing; both
+        # sides must read load_anchors in the same order or /forget deletes
+        # the wrong fact.
+        for t in ("alpha fact", "beta fact", "gamma fact"):
+            self.mm.add_anchor(self.uid, t)
+        listing = "\n".join(self._memories())
+        self.assertIn("2. beta fact", listing)
+        self._forget("/forget 2")
+        self.assertEqual(self.anchor_texts(), ["alpha fact", "gamma fact"])
+
+    def test_forget_out_of_range_removes_nothing(self):
+        self.mm.add_anchor(self.uid, "Only fact")
+        replies = self._forget("/forget 7")
+        self.assertIn("no pinned fact number 7", replies[0])
+        self.assertEqual(self.anchor_texts(), ["Only fact"])
+
+    def test_forget_without_number_shows_usage_and_deletes_nothing(self):
+        self.mm.add_anchor(self.uid, "Only fact")
+        replies = self._forget("/forget")
+        self.assertIn("Usage", replies[0])
+        self.assertEqual(self.anchor_texts(), ["Only fact"])
+
+    def test_forget_with_nothing_pinned_explains_the_observation_log(self):
+        self.mm.add_observation(self.uid, "factual", "A noticed thing",
+                                importance=5, use_semantic=False)
+        replies = self._forget("/forget")
         self.assertIn("append-only", replies[0])
-        self.assertIn("A fact to keep", self.obs_text())
+        self.assertIn("A noticed thing", self.obs_text())
+
+    def test_forget_never_touches_the_observation_log(self):
+        self.mm.add_anchor(self.uid, "Pinned fact")
+        self.mm.add_observation(self.uid, "factual", "A noticed thing",
+                                importance=5, use_semantic=False)
+        self._forget("/forget 1")
+        self.assertEqual(self.anchor_texts(), [])
+        self.assertIn("A noticed thing", self.obs_text())
 
 
 class GetAllObservationsLimitTests(TmpMemoryFixture):
@@ -200,14 +264,92 @@ class PromptPileNeverResurrects(TmpMemoryFixture):
         self.assertNotIn(sentinel, prompt)
         self.assertNotIn("Persistent Memories", prompt)
 
-    def test_remembered_fact_reaches_the_prompt_as_observation(self):
-        # The replacement path: a saved fact is visible on the very next turn
-        # through the unreflected-observations section.
-        self.mm.add_observation(self.uid, "factual",
-                                "Ships every release on a Thursday",
-                                importance=8, use_semantic=False)
+    def test_remembered_fact_reaches_the_prompt(self):
+        update, _ = make_update(self.uid, "/remember Ships every release on a Thursday")
+        asyncio.run(botmod.remember_command(update, None))
         prompt = botmod.build_system_prompt(self.uid)
         self.assertIn("Ships every release on a Thursday", prompt)
+
+
+class DurabilityTests(TmpMemoryFixture):
+    """A remembered fact must stay in the prompt permanently.
+
+    That is the one property the retired memories.json pile really had, and
+    the three gates below are why a plain observation does not replace it.
+    Each test carries a control that proves the gate was actually reached —
+    without it, a test can pass because the flood never happened.
+    """
+
+    #: Disjoint alphabetic vocabulary per line: the dedup keyword extractor
+    #: only sees [a-zA-Z]{3,} runs, and any shared word makes the lexical
+    #: pass (correctly) fold lines into one, so a naive flood of similar
+    #: sentences appends almost nothing and the flood silently never occurs.
+    @staticmethod
+    def _distinct(n: int) -> list[str]:
+        import itertools
+        words = ["".join(t) for t in itertools.product("abcdefghijklmnop",
+                                                       repeat=3)]
+        return [" ".join(words[i * 5:(i + 1) * 5]) for i in range(n)]
+
+    def _remember(self, text: str):
+        update, _ = make_update(self.uid, f"/remember {text}")
+        asyncio.run(botmod.remember_command(update, None))
+
+    def test_survives_a_flood_of_later_observations(self):
+        pinned = "My accountant is Maria Papadopoulou"
+        control = "CONTROL-OBSERVATION-4f21"
+        self._remember(pinned)
+        self.mm.add_observation(self.uid, "factual", control,
+                                importance=8, use_semantic=False)
+
+        for line in self._distinct(40):
+            self.mm.add_observation(self.uid, "behavioral", line,
+                                    importance=5, use_semantic=False)
+        # Prove the flood actually landed; dedup could otherwise swallow it
+        # and make the assertions below meaningless.
+        self.assertGreater(len(self.obs_lines()), 30)
+
+        ctx = self.mm.build_memory_context(self.uid, full_mode=False)
+        self.assertNotIn(control, ctx)  # the gate was reached
+        self.assertIn(pinned, ctx)      # the anchor is not subject to it
+
+    def test_survives_reflection_marking_observations_reflected(self):
+        # Once reflection marks a line [reflected] it drops out of the
+        # unreflected section, and whether it reaches the prompt at all then
+        # depends on the LLM having copied it into the person model.
+        pinned = "My accountant is Maria Papadopoulou"
+        control = "CONTROL-OBSERVATION-9c07"
+        self._remember(pinned)
+        self.mm.add_observation(self.uid, "factual", control,
+                                importance=8, use_semantic=False)
+        people = self.data / "memory" / "people" / str(self.uid)
+        (people / "model.md").write_text("# T\n\nA person model.\n",
+                                         encoding="utf-8")
+        obs_file = people / "observations.md"
+        obs_file.write_text(
+            obs_file.read_text(encoding="utf-8").replace(
+                control, f"{control} [reflected]"),
+            encoding="utf-8")
+
+        ctx = self.mm.build_memory_context(self.uid, full_mode=True)
+        self.assertNotIn(control, ctx)  # the gate was reached
+        self.assertIn(pinned, ctx)
+
+    def test_survives_person_model_truncation(self):
+        # The person model is capped at 2800 chars in the prompt. A fact that
+        # reflection wrote into the tail of a long model never arrives; this
+        # install's model.md is already an order of magnitude over the cap.
+        pinned = "My accountant is Maria Papadopoulou"
+        control = "CONTROL-MODEL-TAIL-1a55"
+        self._remember(pinned)
+        people = self.data / "memory" / "people" / str(self.uid)
+        (people / "model.md").write_text(
+            "# T\n\n" + ("filler line of the person model.\n" * 400)
+            + f"\n{control}\n", encoding="utf-8")
+
+        ctx = self.mm.build_memory_context(self.uid, full_mode=True)
+        self.assertNotIn(control, ctx)  # the gate was reached
+        self.assertIn(pinned, ctx)
 
 
 class MigrationTests(TmpMemoryFixture):

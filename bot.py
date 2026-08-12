@@ -2405,22 +2405,29 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @requires_auth
 async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Save a fact to long-term memory via the observation pipeline.
+    """Pin a fact to long-term memory as a ground-truth anchor.
 
     The old per-user memories.json pile is retired (memory unification,
-    ported from the production bot 2026-08-12): the fact becomes a
-    high-importance observation and the nightly reflection integrates it
-    into the person model, its one home.
+    2026-08-12), but /remember keeps that pile's one real virtue: what the
+    user explicitly asks to be remembered stays in the prompt, verbatim,
+    forever. Anchors are the memory system's own mechanism for that — they
+    render at the top of the memory context in both full and lite mode and
+    are exempt from every truncation. A plain observation is not equivalent:
+    the unreflected window is the last 10 lines, so ten later observations
+    evict the fact the same day (this install records a median of 7 a day
+    and has seen 39), and after reflection it survives only if the LLM chose
+    to write it into a person model that is itself truncated to 2800 chars.
+    An anchor has no such gate.
     """
     user_id = update.effective_user.id
-    # Collapse internal newlines/whitespace: the observation log is
-    # line-oriented ("[ts] (type) … content"), so a raw newline would split
-    # the fact into continuation lines that every parser silently drops.
+    # Collapse internal newlines/whitespace: anchors are stored one per line
+    # and the parse regex depends on it (add_anchor collapses too; doing it
+    # here keeps the empty check and the echoed preview honest).
     text = " ".join(command_body(update.message.text).split())
     if not text:
         await update.message.reply_text(
             "Usage: /remember <fact to remember>\n"
-            "Saved facts are woven into your long-term model overnight."
+            "Facts saved this way are pinned for good — I see them every turn."
         )
         return
     if not _memory_manager:
@@ -2429,9 +2436,21 @@ async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     try:
+        # add_anchor is idempotent by id, but only when the caller supplies
+        # one: left to generate, it suffixes a colliding slug (-2, -3), so
+        # remembering the same fact twice would pin it twice and inject it
+        # into the prompt twice. Match on the text instead. Passing a
+        # text-derived id would be worse — the slug truncates at 40 chars,
+        # so two different long facts sharing a prefix would overwrite each
+        # other.
+        existing = await asyncio.to_thread(_memory_manager.load_anchors, user_id)
+        if any(a["text"].casefold() == text.casefold() for a in existing):
+            await update.message.reply_text(
+                "Already pinned — I have that one. See /memories."
+            )
+            return
         result = await asyncio.to_thread(
-            _memory_manager.add_observation, user_id, "factual", text,
-            importance=8,
+            _memory_manager.add_anchor, user_id, text,
         )
     except Exception:
         logger.exception(f"/remember failed for user {user_id}")
@@ -2441,19 +2460,14 @@ async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     status = result.get("status") if isinstance(result, dict) else ""
-    if status.startswith("corroborated"):
-        await update.message.reply_text(
-            "Already known — strengthened the existing memory instead of "
-            "duplicating it."
-        )
-    elif status == "saved":
-        # Echo a capped preview: the stored fact is always full-length, but a
-        # near-4096-char /remember plus this prefix would exceed Telegram's
-        # message limit and make the confirmation itself fail to send.
-        preview = text if len(text) <= 1000 else text[:1000] + "…"
+    # Echo a capped preview: the stored fact is always full-length, but a
+    # near-4096-char /remember plus this prefix would exceed Telegram's
+    # message limit and make the confirmation itself fail to send.
+    preview = text if len(text) <= 1000 else text[:1000] + "…"
+    if status in ("added", "updated"):
         await update.message.reply_text(
             f"Saved to long-term memory: {preview}\n"
-            "Visible in /memories now; woven into your model tonight."
+            "Pinned for good — see /memories, remove with /forget."
         )
     else:
         logger.error(f"/remember unexpected outcome {result!r} for user {user_id}")
@@ -2464,31 +2478,86 @@ async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @requires_auth
 async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent long-term memory (observation log) for this user."""
+    """Show pinned facts (numbered, for /forget) and the recent observation log.
+
+    Two sections because they are two different things: anchors are what the
+    user pinned and can remove, observations are what I noticed and cannot
+    be deleted individually (append-only log).
+    """
     user_id = update.effective_user.id
+    anchors = _memory_manager.load_anchors(user_id) if _memory_manager else []
     obs_lines = (_memory_manager.get_all_observations(user_id, limit=20)
                  if _memory_manager else [])
-    if not obs_lines:
+    if not anchors and not obs_lines:
         await update.message.reply_text(
-            "No observations recorded yet. Use /remember <fact>, or just "
-            "talk — I record what matters as we go."
+            "Nothing saved yet. Use /remember <fact>, or just talk — I "
+            "record what matters as we go."
         )
         return
-    text = "Recent long-term memory (newest last; integrated into your model nightly):\n\n"
-    text += "\n".join(obs_lines)
+    text = ""
+    if anchors:
+        text += "Pinned facts (always in front of me; /forget <number> removes one):\n\n"
+        # Numbering is positional and matches load_anchors' file order, which
+        # is what forget_command re-reads — the same contract the old numbered
+        # memories.json listing had.
+        for i, a in enumerate(anchors, 1):
+            text += f"{i}. {a['text']}\n"
+        text += "\n"
+    if obs_lines:
+        text += ("What I have noticed lately (woven into your model nightly, "
+                 "not individually removable):\n\n")
+        text += "\n".join(obs_lines)
     for chunk in split_message(text):
         await update.message.reply_text(chunk)
 
 
 @requires_auth
 async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Explain removal now that memory is an append-only observation log."""
-    await update.message.reply_text(
-        "Long-term memory is an append-only observation log now, so there "
-        "are no numbered entries to delete. To remove or correct something, "
-        "tell me in chat what is wrong and I will fix the record; the "
-        "nightly reflection folds corrections into your model."
-    )
+    """Remove a pinned fact by its /memories number."""
+    user_id = update.effective_user.id
+    body = command_body(update.message.text).strip()
+    anchors = _memory_manager.load_anchors(user_id) if _memory_manager else []
+    if not body.isdigit():
+        if not anchors:
+            await update.message.reply_text(
+                "Nothing pinned to forget. What I have noticed on my own is "
+                "an append-only log — to correct something there, tell me in "
+                "chat what is wrong and I will record the correction."
+            )
+            return
+        await update.message.reply_text(
+            f"Usage: /forget <number>\nYou have {len(anchors)} pinned "
+            "fact(s) — /memories lists them with their numbers."
+        )
+        return
+    idx = int(body) - 1
+    if not 0 <= idx < len(anchors):
+        await update.message.reply_text(
+            f"There is no pinned fact number {body}. /memories lists what "
+            "you have."
+        )
+        return
+    target = anchors[idx]
+    try:
+        result = await asyncio.to_thread(
+            _memory_manager.remove_anchor, user_id, target["id"],
+        )
+    except Exception:
+        logger.exception(f"/forget failed for user {user_id}")
+        await update.message.reply_text(
+            "Could not remove that — it is still saved. Try again."
+        )
+        return
+    if isinstance(result, dict) and result.get("status") == "removed":
+        preview = target["text"]
+        if len(preview) > 1000:
+            preview = preview[:1000] + "…"
+        await update.message.reply_text(f"Forgot: {preview}")
+    else:
+        logger.error(f"/forget unexpected outcome {result!r} for user {user_id}")
+        await update.message.reply_text(
+            "Could not remove that — it is still saved."
+        )
 
 
 @requires_auth
@@ -3468,8 +3537,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /clear — Start a fresh conversation\n"
         "  /status — See how things are running\n\n"
         "Memory & reminders:\n"
-        "  /remember — Save something I should always know\n"
+        "  /remember — Pin something I should always know\n"
         "  /memories — See what I remember about you\n"
+        "  /forget — Remove a pinned fact by its number\n"
         "  /remind — Set a reminder (e.g. /remind tomorrow 9am Call the dentist)\n"
         "  /reminders — See your upcoming reminders\n"
         "  /cancel — Cancel a reminder\n"

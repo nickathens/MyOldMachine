@@ -71,7 +71,7 @@ provider.
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
 - [2026-08-12] linux: port the production bot's memory-unification and
-  context work — /remember routes through the observation pipeline and the
+  context work — /remember pins a ground-truth anchor and the
   memories.json pile retires with a startup migration (`bot.py`,
   `core/session.py`, `install/wizard.py`), methodology-report ritual shed
   from all but the newest assistant turn (`core/conversation_format.py`,
