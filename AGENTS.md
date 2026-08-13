@@ -70,16 +70,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-12] linux: port the production bot's memory-unification and
-  context work — /remember pins a ground-truth anchor and the
-  memories.json pile retires with a startup migration (`bot.py`,
-  `core/session.py`, `install/wizard.py`), methodology-report ritual shed
-  from all but the newest assistant turn (`core/conversation_format.py`,
-  `bot.py`), weekly person-model change report
-  (`utils/weekly_model_report.py`, `bot.py`)
+(Nothing open right now.)
 
-(Entries removed above: #127 merged 2026-08-11 — striking it here rather than
-in a dedicated docs PR because this entry edits the same lines anyway.
+(Entries removed above: #128 merged 2026-08-12. #127 merged 2026-08-11,
+struck inside #128's own work-log edit since the two entries shared lines.
 #126 merged 2026-08-10.
 #113 merged 2026-08-07. #110 and #109 merged
 2026-08-06. #105 and #104 merged 2026-08-04, and #103, #102 and #101 the same
