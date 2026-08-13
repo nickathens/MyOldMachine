@@ -242,9 +242,9 @@ def cmd_census(args):
 
     ruler = Y.Ruler(spec, args.view_width)
     print("measuring every frame at viewing scale")
-    lap, diff, span = ruler.scan(args.input)
+    lap, diff, span, area = ruler.scan(args.input)
     n = min(len(lap), media.nb_frames)
-    np.savez(p["scan"], lap=lap[:n], diff=diff[:n], span=span[:n])
+    np.savez(p["scan"], lap=lap[:n], diff=diff[:n], span=span[:n], area=area[:n])
 
     st = {
         "input": os.path.abspath(args.input),
@@ -257,14 +257,29 @@ def cmd_census(args):
     }
     json.dump(st, open(p["state"], "w"), indent=1)
 
-    census = census_frozen(st, diff[:n])
+    census = census_frozen(st, diff[:n], area[:n])
     json.dump(census, open(p["census"], "w"), indent=1)
     report_census(st, census)
     return census
 
 
-def census_frozen(st, diff):
-    """Frozen frames per shot, judged against that shot's own typical motion."""
+def census_frozen(st, diff, area=None):
+    """Frozen frames per shot, judged against that shot's own typical motion.
+
+    Two readings, and a frame is frozen if EITHER calls it frozen.
+
+    `diff` is the mean step. It is the right test for a photographed shot and
+    it is blind to a frozen plate under a moving graphic, because a small
+    bright overlay lifts the mean without moving the picture underneath.
+
+    `area` is the share of the frame that moved at all. It sees exactly that
+    case, and it is the weaker test on flat motion graphics, where large parts
+    of the frame are static by design and long runs of "frozen" frames are the
+    normal state. Those are rejected by `_drop_holds` on run length, which is
+    the same cap that already protects the mean test. See MAX_STALL_RUN.
+
+    Reported per frame so the plan can say which reading found what.
+    """
     b = shot_bounds(st)
     out = {}
     for i in range(len(b) - 1):
@@ -275,12 +290,51 @@ def census_frozen(st, diff):
         med = float(np.median(seg))
         if med < 1e-5:                       # a shot that never moves has no stutter
             continue
-        reps = [a + 1 + j for j, v in enumerate(seg) if v < FROZEN_RATIO * med]
-        reps, held = _drop_holds(reps)
+        by_mean = {a + 1 + j for j, v in enumerate(seg) if v < FROZEN_RATIO * med}
+        by_area = set()
+        amed = 0.0
+        if area is not None:
+            aseg = area[a + 1:e]
+            amed = float(np.median(aseg))
+            if amed > 1e-6:
+                by_area = {a + 1 + j for j, hit in enumerate(_local_frozen(aseg)) if hit}
+        reps, held = _drop_holds(sorted(by_mean | by_area))
         if reps or held:
             out[str(i)] = {"span": [a, e - 1], "repeats": reps, "median_motion": med,
-                           "held": held}
+                           "held": held,
+                           "median_area": amed,
+                           "area_only": sorted((set(reps) & by_area) - by_mean)}
     return out
+
+
+def _local_frozen(seg, rel=0.35, hold=0.30, k=5):
+    """The three condition stall rule, applied to one shot's series.
+
+    This is the rule `stalls()` already uses and documents, reused here rather
+    than reinvented. A frame must fall below both
+
+      rel   this share of its own NEIGHBOURHOOD's typical step, which is what
+            lets a shot that slows down keep its frames: a shot wide threshold
+            marks a settled close up as stalled
+      hold  this share of the SHOT's typical step, the absolute condition
+
+    The shot wide ratio on its own is what `census_frozen` applies to the mean
+    series, and on the film this was built for it found 20 of 36 repeated frames
+    because it needs a frame to fall to a TENTH. The repeats sat at 0.07 to 0.19
+    of the shot median while every real frame sat at 0.71 or above, so the
+    separation was enormous and the threshold simply sat on the wrong side of
+    it. Under detection is not a safe failure here: 20 of 36 read as density
+    0.14 with a gap spread of 0.54, which the cadence test calls holes, and
+    filling holes in a retimed shot leaves the wobble it was meant to remove.
+    """
+    seg = np.asarray(seg, float)
+    base = float(np.median(seg))
+    if base <= 0:
+        return np.zeros(len(seg), bool)
+    pad = np.pad(seg, k, mode="edge")
+    local = np.array([np.median(np.delete(pad[i:i + 2 * k + 1], k))
+                      for i in range(len(seg))])
+    return (seg < rel * np.maximum(local, 1e-12)) & (seg < hold * base)
 
 
 def _drop_holds(reps):
@@ -340,6 +394,9 @@ def cmd_plan(args):
     p = work_paths(args.work)
     st = load_state(args.work)
     census = json.load(open(p["census"]))
+    if isinstance(getattr(args, "force_mode", None), str):
+        args.force_mode = {int(k): v for k, v in
+                           (s.split(":") for s in args.force_mode.split(",") if s.strip())}
     jobs, modes = plan_jobs(st, census, args)
     json.dump(jobs, open(p["jobs"], "w"), indent=0)
     st["shot_modes"] = {str(k): v for k, v in modes.items()}
@@ -666,7 +723,7 @@ def cmd_gate(args):
             shot_soft[s] = film_soft
             borrowed.append(s)
 
-    still = {f: bool(span[f] < MOVE_FLOOR) for f in jobs}
+    still = _still_by_anchors(jobs, span, lap, ruler, p, spec)
     sharp = _resharp(st, spec, ruler, jobs, lap, still, p, args)
 
     rows, keep, unmeasured = [], [], 0
@@ -716,6 +773,40 @@ def cmd_gate(args):
     json.dump(sorted(keep), open(p["keep"], "w"))
     _report_gate(rows, keep, jobs, ratio_cut, borrowed, sidx)
     return keep
+
+
+def _still_by_anchors(jobs, span, lap, ruler, p, spec):
+    """Is the subject really still where this frame is being rebuilt?
+
+    `span[f]` is |next minus previous| in the ORIGINAL, and inside a hole the
+    frames either side ARE the frozen copies the repair exists to replace. So
+    for any stall two frames long or more, the interior frame reads as a shot
+    that is not moving and is reverted, every time, by construction. Measured
+    on two 11 second generated clips: every 2 frame stall lost its first frame
+    that way (34, 58, 82, 106, 130), the second was kept, and the hitch
+    survived at the same rhythm one frame shorter.
+
+    Judge a hole across the two REAL frames it was built from instead, which is
+    what the softness test already does a few lines below and for the same
+    reason. Normalise to the 2 frame distance `span` and MOVE_FLOOR are stated
+    in, so the floor keeps its meaning. If the anchors themselves barely
+    differ, the subject genuinely is still and reverting is right.
+    """
+    out = {}
+    for f, j in jobs.items():
+        a, b = int(j[1]), int(j[2])
+        if j[4] != "fill" or b <= a:
+            out[f] = bool(span[f] < MOVE_FLOOR)      # retime: judged shot wide
+            continue
+        try:
+            ga = ruler.small(Y.read_yuv(f"{p['src_yuv']}/{a:06d}.yuv", spec))
+            gb = ruler.small(Y.read_yuv(f"{p['src_yuv']}/{b:06d}.yuv", spec))
+        except OSError:
+            out[f] = bool(span[f] < MOVE_FLOOR)      # unreadable: old reading
+            continue
+        travel = float(np.abs(gb.astype(np.float32) - ga.astype(np.float32)).mean())
+        out[f] = bool(travel * 2.0 / (b - a) < MOVE_FLOOR)
+    return out
 
 
 def _shot_verdicts(st, rows, keep, plan, sidx, shot_soft, ratio_cut, span, fail_share=0.25):
@@ -936,8 +1027,16 @@ def cmd_render(args):
     have_sharp = os.path.isdir(p["sharp"])
 
     vf = []
-    if args.lut:
-        vf.append(f"lut3d='{args.lut}'")
+    if args.vf:
+        # An explicit chain, for a film where the colour repair is not one LUT
+        # over the whole running time. cgvideo builds exactly this shape for the
+        # grader: one lut3d per range, each switched on over its own frames
+        # through the filter's own timeline `enable`. It is here so that a film
+        # with several corrected ranges still gets ONE decode and ONE encode,
+        # which is the rule the whole track is built on.
+        vf.append(args.vf)
+    elif args.lut:
+        vf.append(f"lut3d=file={args.lut}:interp=tetrahedral")
     enc = [FFMPEG, "-y", "-v", "error", "-stats",
            "-f", "rawvideo", "-pix_fmt", "yuv420p",
            "-s", f"{spec.width}x{spec.height}", "-r", f"{st['fps']}",
@@ -1035,10 +1134,14 @@ def cmd_verify(args):
 
     print("\n2  is the stutter actually gone")
     ruler = Y.Ruler(spec, st["view_width"])
-    _, diff_out, _ = ruler.scan(args.delivered, verbose=False)
+    _, diff_out, _, area_out = ruler.scan(args.delivered, verbose=False)
     st_out = dict(st)
     st_out["nb_frames"] = min(len(diff_out), st["nb_frames"])
-    frozen_out = sum(len(c["repeats"]) for c in census_frozen(st_out, diff_out).values())
+    # the delivered file is judged by BOTH readings, exactly as the source was.
+    # Judging the source on two and the delivery on one would let a repair that
+    # only the area reading can see come back clean whatever it did.
+    frozen_out = sum(len(c["repeats"])
+                     for c in census_frozen(st_out, diff_out, area_out).values())
     frozen_src = sum(len(c["repeats"]) for c in
                      json.load(open(p["census"])).values()) if os.path.exists(p["census"]) else -1
     print(f"   frozen frames: source {frozen_src}, delivered {frozen_out}")
@@ -1285,7 +1388,9 @@ def main():
     c.set_defaults(func=cmd_census)
 
     q = common(sub.add_parser("plan", help="decide, per shot, holes or cadence"), False)
-    q.set_defaults(func=cmd_plan, force_mode=None)
+    q.add_argument("--force-mode", default=None,
+                   help="override the decision per shot, e.g. 0:rebuild,2:fill")
+    q.set_defaults(func=cmd_plan)
 
     q = common(sub.add_parser("build", help="synthesise the frames, never leaving yuv"), False)
     q.set_defaults(func=cmd_build)
@@ -1298,6 +1403,9 @@ def main():
     q = common(sub.add_parser("render", help="splice the kept rebuilds and encode"), False)
     q.add_argument("--out", required=True)
     q.add_argument("--lut", help="a .cube applied in the same pass, so there is one encode")
+    q.add_argument("--vf", help="an explicit filter chain instead of --lut, for a film "
+                                "whose colour repair is several LUTs over different "
+                                "frame ranges. Still one decode and one encode.")
     q.add_argument("--crf", type=int, default=16)
     q.add_argument("--preset", default="medium")
     q.add_argument("--codec", default="libx264")
@@ -1321,6 +1429,7 @@ def main():
     r.add_argument("--color-range", choices=["tv", "pc"])
     r.add_argument("--view-width", type=int, default=1920)
     r.add_argument("--lut")
+    r.add_argument("--vf")
     r.add_argument("--crf", type=int, default=16)
     r.add_argument("--preset", default="medium")
     r.add_argument("--codec", default="libx264")

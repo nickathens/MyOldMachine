@@ -35,6 +35,7 @@ class Media:
     pix_fmt: str
     color_space: str
     color_transfer: str
+    color_primaries: str
     codec: str
     has_audio: bool
 
@@ -62,6 +63,7 @@ def probe(path) -> Media:
         pix_fmt=v.get("pix_fmt", ""),
         color_space=v.get("color_space", ""),
         color_transfer=v.get("color_transfer", ""),
+        color_primaries=v.get("color_primaries", ""),
         codec=v.get("codec_name", ""),
         has_audio=has_audio,
     )

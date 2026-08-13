@@ -247,6 +247,25 @@ $PY scripts/cg.py grade IN.mp4 --look kodak2383 --no-render     # LUTs only
 $PY scripts/cgframes.py repair IN.mp4 --work WORK --out OUT.mp4 --lut shot_00.cube
 ```
 
+When the colour repair is several LUTs over different frame ranges, which is
+what a film with a few replaced shots needs, pass the chain instead. Still one
+decode and one encode:
+
+```bash
+$PY scripts/cgframes.py render --work WORK --out OUT.mp4 \
+  --vf "lut3d=file=a.cube:enable='between(n,700,1018)',lut3d=file=b.cube:enable='between(n,2046,2243)'"
+```
+
+### The census reads two things, and either can call a frame frozen
+
+The mean step, and how much of the frame moved. The second exists because the
+first cannot see a frozen plate under a moving graphic: live action conformed
+from 18 fps with an animated overlay running over it at 24 keeps the mean at
+0.26 of the shot's typical step, and a whole shot of repeats was reported as
+none. Under detection is not a safe failure here. Finding 20 of 36 repeats made
+`plan` call a retimed shot a set of holes, and filling holes in a retimed shot
+leaves the wobble the repair exists to remove. `03_failures.md` entry 20.
+
 ### The one rule
 
 **A frame that goes back into a film never leaves the film's own colour space.**
@@ -287,6 +306,30 @@ before building: calling a retime on a shot that only has holes throws away
 frames somebody chose. Override with `--cuts` on census if the shot list is
 wrong, which is the usual cause of a bad call.
 
+### Generated video: the jump no census can see
+
+Generated clips carry a third fault: every so often the picture genuinely
+advances 3 to 4 normal frames of ground in one slot. Nothing repeats, so the
+census is structurally blind to it, and the cadence retime can only space
+survivors 1 or 2 slots apart, so it cannot repair it either. Measure travel
+first, then plan by distance:
+
+```bash
+$PY scripts/cgtrack.py IN.mp4 W H            # tracked travel per gap -> IN.mp4.track.npz
+$PY scripts/cgmotion.py WORK 73 --report     # sweep the window, keep the shot's arc
+$PY scripts/cgmotion.py WORK 73              # then build/gate/render as usual
+$PY scripts/cglocal.py IN.mp4 WORK LO HI     # one bad gap: retime a window, in 10 bit
+$PY scripts/cgfidget.py OUT.mp4 GUIDE.mp4    # pace vs a real camera, jerk + cross track
+$PY scripts/cgverify10.py IN.mp4 OUT.mp4 W H # 10 bit proven off pictures, not the tag
+```
+
+`cgmotion.py` rebuilds nearly every frame and does not yet correct the engine's
+placement error, so measure its output with `cgfidget.py` against a real camera
+clip and state the number; `cglocal.py` closes that loop and reached the camera
+floor. The full method, the numbers behind it and the placement story are in
+`reference/07_frames.md`; the faults it grew from are `03_failures.md` entries
+22 to 24.
+
 ### The flags that matter
 
 `--panel x0,x1` repairs one side of a split screen and leaves the other byte
@@ -295,6 +338,12 @@ the divider is two different pictures averaged together.
 
 `--cuts 120,340,512` supplies the shot boundaries. The census is scoped per shot,
 so a wrong shot list gives a wrong census.
+
+`--force-mode 0:rebuild` on plan overrides the hole or cadence call per shot,
+for the case the printed numbers show is wrong: stalls arriving in pairs score
+density 0.117 against the 0.15 the test wants, and their gap series alternates
+1 and 23, which reads as irregular. State the override instead of loosening a
+threshold. `03_failures.md` entry 22.
 
 `--no-resharp` discards soft rebuilds instead of restoring their detail. The
 default restores, which roughly doubles how many repairs survive the gate.

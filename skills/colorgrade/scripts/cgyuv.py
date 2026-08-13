@@ -34,6 +34,13 @@ import numpy as np
 
 FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
 
+# A pixel counts as having moved once it shifts more than this many code levels
+# between neighbouring frames. Well above h264 ringing and grain on a delivery
+# encode, well below any real movement: on the film this was calibrated against,
+# a genuinely repeated plate moved 0.66 per cent of the frame past it and the
+# frames either side moved 5.8 to 8.5 per cent.
+MOVED_LEVELS = 8.0
+
 
 # ---------------------------------------------------------------- raw planes
 
@@ -45,6 +52,8 @@ class Spec:
     height: int
     color_range: str = "tv"
     colorspace: str = "bt709"
+    transfer: str = "bt709"
+    primaries: str = "bt709"
 
     def __post_init__(self):
         if self.width % 2 or self.height % 2:
@@ -64,7 +73,17 @@ class Spec:
 
     @property
     def tags(self):
-        return ["-color_range", self.color_range, "-colorspace", self.colorspace]
+        """The full tag set, all four, for BOTH sides of a raw video pipe.
+
+        All four, not two. ffmpeg drops an output -color_trc and
+        -color_primaries when the raw input carries no transfer and no
+        primaries of its own, silently: the delivery came out tagged
+        `bt709 / unknown / unknown` where the source was `bt709 / bt709 /
+        bt709`, and an untagged transfer is a gamma the player has to guess.
+        Nothing in the render failed and nothing warned.
+        """
+        return ["-color_range", self.color_range, "-colorspace", self.colorspace,
+                "-color_trc", self.transfer, "-color_primaries", self.primaries]
 
 
 def spec_from_media(media, color_range=None) -> Spec:
@@ -74,10 +93,12 @@ def spec_from_media(media, color_range=None) -> Spec:
     for delivery footage and is what ffmpeg itself assumes, so a missing tag is
     read as limited rather than guessed at.
     """
-    cs = getattr(media, "color_space", "") or "bt709"
-    if cs in ("unknown", "reserved"):
-        cs = "bt709"
-    return Spec(media.width, media.height, color_range or "tv", cs)
+    def tag(name, default="bt709"):
+        v = getattr(media, name, "") or default
+        return default if v in ("unknown", "reserved") else v
+
+    return Spec(media.width, media.height, color_range or "tv",
+                tag("color_space"), tag("color_transfer"), tag("color_primaries"))
 
 
 def planes(buf, spec: Spec):
@@ -316,10 +337,21 @@ class Ruler:
         lap   variance of the Laplacian          how sharp the frame is
         diff  mean |frame minus the one before|  how far it moved
         span  mean |next minus previous|         how far the pair around it moved
+        area  share of pixels that moved at all  how MUCH of it moved
 
         span is measured for every frame, not only the repaired ones. Without it
         there is no floor from the film's own frames to judge a rebuild against,
         and the cut would have to be picked by taste.
+
+        `area` exists because `diff` cannot see a frozen plate under a moving
+        graphic. A corporate film whose live action was generated at 18 fps and
+        conformed to 24 by repeating one frame in four carried a bright animated
+        overlay running on top of it. On a repeated frame the plate is identical
+        and only the overlay moves, so the MEAN still reads 0.26 of the shot's
+        typical step, nowhere near the tenth the census needs, and 36 repeated
+        frames were reported as none. The area over MOVED_LEVELS reads 0.089 on
+        the same frames, because a small bright overlay lifts the mean and
+        barely touches the area. Same decode, same scale, no extra pass.
         """
         import cv2
         p = subprocess.Popen(
@@ -328,7 +360,7 @@ class Ruler:
              "-pix_fmt", "gray", "-f", "rawvideo", "-"],
             stdout=subprocess.PIPE, bufsize=10 ** 7)
         n = self.view_w * self.view_h
-        lap, diff, span, win = [], [], [], []
+        lap, diff, span, area, win = [], [], [], [], []
         try:
             while True:
                 b = p.stdout.read(n)
@@ -337,7 +369,13 @@ class Ruler:
                 g = np.frombuffer(b, np.uint8).reshape(self.view_h, self.view_w)
                 lap.append(float(cv2.Laplacian(g, cv2.CV_32F).var()))
                 win.append(g.astype(np.float32))
-                diff.append(0.0 if len(win) < 2 else float(np.abs(win[-1] - win[-2]).mean()))
+                if len(win) < 2:
+                    diff.append(0.0)
+                    area.append(0.0)
+                else:
+                    d = np.abs(win[-1] - win[-2])
+                    diff.append(float(d.mean()))
+                    area.append(float((d > MOVED_LEVELS).mean()))
                 span.append(0.0)
                 if len(win) >= 3:
                     span[-2] = float(np.abs(win[-1] - win[-3]).mean())
@@ -348,7 +386,7 @@ class Ruler:
             p.stdout.close()
             p.terminate()
             p.wait()
-        return np.array(lap), np.array(diff), np.array(span)
+        return np.array(lap), np.array(diff), np.array(span), np.array(area)
 
     def small(self, buf, y_override=None):
         """One raw frame at viewing scale, as gray, down the tagged path."""

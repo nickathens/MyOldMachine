@@ -58,6 +58,49 @@ def synthetic_clip(path, w=320, h=180, n=24):
     return path
 
 
+def conform_18_to_24(path, w=320, h=180, n=72, plate_amp=60, plate_shift=3,
+                     ov=26, ov_step=14, blur=6):
+    """Live action at 18 fps repeated up to 24, with a 24 fps graphic over it.
+
+    Three unique plates per four slots, which is what 24 from 18 produces, and a
+    small bright block that keeps moving every single frame the way an animated
+    overlay does.
+
+    The proportions are not free. They are set so the clip lands in the same
+    regime as the film this was found on, where the mean step on a repeated
+    frame reads 0.26 of the shot's typical value and the area reads 0.089. Here
+    they read about 0.20 and 0.03: the mean stays clear of the 0.10 the census
+    needs, so the mean is genuinely blind, and the area is clear the other side,
+    so it genuinely catches it. A first attempt used sharp noise for the plate
+    and a tiny overlay, which put the mean ratio near zero, and the mean caught
+    every repeat: the clip has to model the FAULT, not merely contain repeats.
+    """
+    rng = np.random.default_rng(4)
+    base = rng.normal(0, 1, (h, w))
+    k = np.ones(blur) / blur
+    for ax in (0, 1):
+        base = np.apply_along_axis(lambda m: np.convolve(m, k, "same"), ax, base)
+    base = (base - base.min()) / (base.max() - base.min())
+    plate = (60 + plate_amp * base).astype(np.float32)
+    frames = []
+    for i in range(n):
+        uniq = (i // 4) * 3 + max(0, i % 4 - 1)      # slots 0 and 1 share a plate
+        f = np.roll(plate, uniq * plate_shift, axis=1).copy()
+        x = 8 + (i * ov_step) % (w - ov - 16)        # the overlay moves every frame
+        f[30:48, x:x + ov] = 248
+        frames.append(np.clip(f, 0, 255).astype(np.uint8))
+    raw = b"".join(f.tobytes() + bytes([128] * (w * h // 2)) for f in frames)
+    assert len(raw) == n * w * h * 3 // 2
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p",
+         "-s", f"{w}x{h}", "-r", "24", "-i", "-",
+         "-vf", "setparams=colorspace=bt709:color_primaries=bt709:"
+                "color_trc=bt709:range=tv",
+         "-c:v", "libx264", "-crf", "8", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+         path], input=raw, check=True)
+    return path
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="cgframes_selftest_")
     clip = synthetic_clip(f"{tmp}/clip.mp4")
@@ -220,6 +263,33 @@ def main():
           0 not in [j[0] for j in jobs if j[4] == "rebuild"]
           and 23 not in [j[0] for j in jobs if j[4] == "rebuild"],
           "so no cut point can soften")
+
+    # ---- a frozen plate under a moving graphic --------------------------
+    # Live action generated at 18 fps and conformed to 24 by repeating one
+    # frame in four, with a bright overlay running over the top at the full
+    # rate. This is the shape the mean step cannot see, so build it and require
+    # BOTH answers: the mean must miss it, and the area must catch it. Only the
+    # pair proves anything. If the mean ever starts catching it, this clip has
+    # stopped modelling the fault and the check has to be rebuilt, not relaxed.
+    overlaid = os.path.join(tmp, "overlaid.mp4")
+    conform_18_to_24(overlaid, n=72)
+    ruler = Y.Ruler(Y.Spec(320, 180, "tv", "bt709"), view_w=320)
+    _, d18, _, a18 = ruler.scan(overlaid, verbose=False)
+    st18 = {"width": 320, "height": 180, "nb_frames": len(d18), "shots": [[0, len(d18)]]}
+    dup = [f for f in range(1, len(d18)) if f % 4 == 1]      # where the plate repeats
+    by_mean = cgframes.census_frozen(st18, d18)
+    both = cgframes.census_frozen(st18, d18, a18)
+    found_mean = set(sum((c["repeats"] for c in by_mean.values()), []))
+    found_both = set(sum((c["repeats"] for c in both.values()), []))
+    check("the mean step is blind to a frozen plate under a moving graphic",
+          len(found_mean & set(dup)) <= len(dup) // 4,
+          f"mean found {len(found_mean & set(dup))} of {len(dup)} repeated frames")
+    check("the area that moved finds them",
+          len(found_both & set(dup)) >= 3 * len(dup) // 4,
+          f"area found {len(found_both & set(dup))} of {len(dup)}")
+    check("and it invents nothing that was not repeated",
+          not (found_both - set(dup)),
+          f"{len(found_both - set(dup))} frames flagged that do move")
 
     print()
     if _skip:

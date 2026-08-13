@@ -459,6 +459,171 @@ gives it back.
 
 ---
 
+## 20. A frozen plate under a moving graphic is invisible to the mean step
+
+**Symptom.** A corporate film arrived with one sequence visibly juddering, and
+`census` reported ZERO frozen frames in that shot. Every other shot in the film
+was measured correctly by the same pass. The shot was live action generated at
+18 fps and conformed to 24 by repeating one frame in four, textbook 24 from 18.
+
+**Cause.** The census asks whether a frame's whole frame MEAN step falls under a
+tenth of its shot's typical step. This shot carried a bright animated overlay,
+an arc of lottery tickets, running over the live action at the full 24. On a
+repeated frame the picture underneath is identical and only the overlay moves,
+so the mean still read **0.26** of the shot's typical value. Nowhere near the
+0.10 needed, and the shot's "typical" value was itself inflated by the same
+overlay. Measured on a repeat pair: the counter and the window moved 0.9 levels
+against 2.8 on a normal pair, while the arc moved 1.7 against 10.3.
+
+**Fix.** Measure how much of the frame moved, not how far the average pixel
+moved. A small bright overlay lifts the mean and barely touches the area. The
+same frames read **0.089** by area, which the existing threshold catches with no
+loosening at all. `cgyuv.Ruler.scan` returns an `area` series from the same
+decode and `census_frozen` flags a frame that EITHER reading calls frozen.
+
+**A second fault inside the first, and it was the dangerous one.** With the
+area series added but judged by the same shot wide ratio, detection found **20
+of 36** repeats. That is not a safe failure. Twenty of thirty six reached `plan`
+as density 0.14 with a gap spread of 0.54, which the cadence test calls holes,
+and **filling holes in a retimed shot leaves exactly the wobble the repair
+exists to remove** (entry 13). The repeats sat at 0.07 to 0.19 of the shot
+median while every real frame sat at 0.71 or above, so the separation was
+enormous and the threshold simply sat on the wrong side of it. The rule that
+fixed it was already in this file, in `stalls()`: local neighbourhood AND shot
+wide, both required. Applied to the area series it finds 35 of 36, density 0.24,
+**gap spread 0.00**, verdict REBUILD. Same file, same footage, opposite repair.
+
+**Measured after.** 36 repeated frames at 18.04 unique fps became 1 at 23.83,
+and the frame to frame motion went from a coefficient of variation of 0.447 to
+0.228. Holdout on that footage: motion compensation 32.99 dB against 27.13 for
+the repeat the file already carried, winning on 22 of 24 held out frames.
+
+**The general lesson.** Two rules for the same question lived in one file and
+the weaker one shipped. That is entry 18 again from a different direction. When
+a detector under reports, do not reach for its threshold: ask whether the file
+already contains a better rule.
+
+---
+
+## 21. The delivery lost its transfer and primaries tags, silently
+
+**Symptom.** None visible, which is the point. The regraded film came out tagged
+`bt709 / unknown / unknown` where the source was `bt709 / bt709 / bt709`.
+Nothing failed, nothing warned, and every measurement of the picture passed.
+
+**Cause.** `cgframes render` pipes raw yuv into ffmpeg and names all four tags
+on the OUTPUT. `Spec.tags`, which tags the raw INPUT, named only the range and
+the matrix. ffmpeg drops an output `-color_trc` and `-color_primaries` when the
+raw input it is fed carries neither. Reproduced in isolation: identical command,
+input tagged with two fields, output loses two.
+
+**Why it matters.** An untagged transfer is a gamma the player has to guess.
+A file that reads correctly in one viewer and shifts in another is the hardest
+kind of delivery note to answer, because both parties are looking at the same
+file and seeing different pictures.
+
+**Fix.** `Spec` carries all four, `Spec.tags` emits all four, and
+`cgvideo.probe` reads `color_primaries` off the source alongside the other two
+so the delivery inherits the film's own tags rather than a default.
+
+**Detail that mattered.** The first guard for this passed on mutated code. It
+matched the source text of `Spec.tags`, and the docstring of that property names
+all four flags, so deleting them from the code left the test green. Two of three
+mutations walked through it. The guard now reads the returned list through the
+AST and the `Media(...)` call's keywords. A test written by string matching over
+source that also contains prose about the thing being matched is not a test.
+
+---
+
+## 22. Two frame stalls: reverted by construction, and scored as irregular
+
+**Symptom.** On two 11 second generated clips whose stalls come in pairs, every
+repair lost the FIRST frame of every pair: the gate built it, judged it, and
+reverted it, on every clip, at frames 34, 58, 82, 106, 130. Separately, `plan`
+refused to call the beat a cadence at all, though the stalls arrived like
+clockwork.
+
+**Cause, first fault.** The gate's still test read `span[f] < MOVE_FLOOR`, and
+`span` is |next minus previous| in the ORIGINAL. Inside a stall two frames long
+the frames either side of the interior frame ARE the frozen copies the repair
+exists to replace, so the shot reads as not moving there, and the rebuild is
+reverted every time, by construction. No threshold fixes a test that measures
+the fault itself.
+
+**Cause, second fault.** The cadence test wants density 0.15 and regularity
+0.35. Pairs at this rhythm land density 0.117, just short, and their gap series
+alternates 1 (inside a pair) and 23 (between pairs), which puts the coefficient
+of variation at 1.09: a perfectly regular beat scored as the most irregular
+thing the test had ever seen, because regularity was measured on the raw gaps
+rather than on the beat.
+
+**Fix.** The still test now judges a fill across the two REAL anchors it was
+built from, normalised to the 2 frame distance the floor is stated in
+(`_still_by_anchors`). The thresholds kept their values, because loosening a
+threshold to catch a case is how entry 20's second fault was born; instead
+`plan --force-mode 0:rebuild` states the override explicitly, next to the
+printed numbers that justify it.
+
+**The general lesson.** Before tuning a detector, ask what its input MEANS at
+the fault. Both of these read exactly the value they were designed to read; the
+value stopped meaning what the test thought at precisely the frames that
+mattered.
+
+---
+
+## 23. The jump that no census can see, because nothing repeats
+
+**Symptom.** Generated clips, delivered smooth by every duplicate count, where
+the subject visibly lurches ahead roughly once a second. Census: zero frozen
+frames. Cadence: nothing to do.
+
+**Cause.** The material teleports: every ~20 frames the picture genuinely
+advances 3 to 4.7 normal frames of ground in one slot. No frame repeats, so
+frozen frame logic is structurally blind. And the cadence retime cannot repair
+it even when told, because `survivor_positions` states survivor spacing as 1.0
+or 2.0 slots only; a pair that needs four slots gets two, and about a third of
+every jump survives.
+
+**Fix.** Measure travel per gap in frames of ground BEFORE choosing a repair
+(`cgtrack.py`; Farneback under reads single events, phase correlation invents
+them). Where the material teleports, plan by measured distance instead of by
+counting slots: `cgmotion.py`, the motion proportional retime. Where the clip
+is clean apart from one event, retime only a window: `cglocal.py`. Numbers and
+the placement caveat live in `07_frames.md`.
+
+---
+
+## 24. Every instrument read clean, and the viewer was still right
+
+**Symptom.** A repaired clip with zero stuck frames, zero jumps, timing exact
+on the integer clock, every rebuild passing the picture gate, and the client
+saying it is a bit fidgety. He was.
+
+**Cause.** The frame engine does not land a requested fraction t exactly t of
+the way across: 0.43 px rms here, worst 0.90, on a 12.5 px step. Invisible as a
+still, which is why every gate passed it. Audible as pace, because the step a
+viewer sees between two rebuilt frames is the DIFFERENCE of two uncorrelated
+placement errors: 3 percent of placement became 6 percent of wobble. The
+rebuilt window measured 12.8 percent jerk per step against 2.4 in the untouched
+frames either side and a real camera's 2.8.
+
+**Fix.** A new instrument and a closed loop. `cgfidget.py` reports jerk and
+cross track change as a share of the median step, always beside a real camera
+clip, because the honest question is "is it more than a camera", never "is it
+zero". `cglocal.py` builds the window, tracks where each frame actually landed,
+pushes t by the shortfall and builds again: two rounds, 0.427 px rms to 0.180,
+window jerk 12.8 to 2.8 percent, the camera's own figure. The loop is not yet
+in `cgmotion.py`, which rebuilds nearly every frame and measured 4 to 5 times
+the camera floor on full clip repairs; until that lands, `cgfidget.py` runs on
+every motion retime delivery and the number is said out loud.
+
+**The general lesson.** Instruments only answer what they ask. Every ruler here
+asked how far the picture travelled; none asked whether the travel sat on the
+shot's own acceleration. When a viewer contradicts a clean dashboard, build the
+instrument for what the viewer felt before arguing with the viewer.
+
+---
+
 ## Where the rest of the failures live
 
 The picture faults found on a split screen series are in `05_picture.md`: per

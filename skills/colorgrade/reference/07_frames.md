@@ -95,13 +95,93 @@ A retime is kept or reverted as a **whole shot**. Keeping the frames that passed
 and dropping the ones that failed would leave gaps in a timeline that has already
 been rewritten, which is a worse stutter than the one being repaired.
 
+## The third fault: the teleport, which duplicate counting can never find
+
+Generated video carries a fault photographed video does not: every so often the
+picture genuinely advances three or four normal frames of ground in a single
+slot. No frame is repeated, so the census sees nothing, and the cadence retime
+cannot fix it either, because `survivor_positions` can only ever state that two
+survivors sit 1.0 or 2.0 slots apart. A pair that needs four slots is given two,
+and about a third of every jump survives the repair.
+
+What finds it is measuring optical flow travel per gap, expressed in frames of
+ground, before choosing a repair mode. What fixes it is placing output frames by
+measured DISTANCE travelled rather than by counting slots: `cgmotion.py` runs
+after `census`, writes the same jobs.json the stock `build`, `gate` and `render`
+consume, and replaces only the planner. Its smoothing window must be wider than
+both artefact periods; sweep with `--report` and keep the shot's own
+acceleration arc alive. Measured on two 11 second generated clips that carried
+both faults at once: stuck frames 23 and 20 to 0, jump events 12 and 16 to 0,
+worst local step 3.4x to 1.42x against a real camera guide's 1.24x.
+
+When the clip is clean apart from ONE event, that trade inverts: rebuilding
+every frame to fix one gap replaces the generator's fine detail everywhere for
+nothing. `cglocal.py` is the surgical version. It pins the window's two end
+frames, folds the spike back into its neighbours, reslots only the interior by
+distance, rebuilds in 10 bit, and passes every frame outside the window through
+bit exact. On the clip it was built for: 14 frames rebuilt, 107 delivered byte
+for byte identical to the source.
+
+Both planners consume a travel measurement, and the measurement has three rules
+learned at full price. Measure with tracked features (`cgtrack.py`), because
+Farneback under reads single events and phase correlation invents them. Build
+the plan from a track OF THE SOURCE, never of an earlier repair, which is why
+`cgtrack.py` names its output after the file it measured. And confirm any
+single gap event with the mean pixel difference at that gap before reporting
+it, because a median of corners can flip cluster and report a freeze where
+nothing froze.
+
+## Placement: a built frame must land where it was asked
+
+Asking the engine for the picture at fraction t of the way across a gap does
+not put it t of the way across. Measured: 0.43 px rms, worst 0.90, on a 12.5 px
+step. As a still that is invisible, which is why it survives every picture
+gate. As motion it is not, because the step a viewer sees between two rebuilt
+frames is the DIFFERENCE of two placement errors and they are uncorrelated: a 3
+percent placement error becomes a 6 percent wobble in pace, and the shot stops
+sitting on its own acceleration. A viewer called the result fidgety and was
+right; every distance instrument had read clean.
+
+The instrument for it is `cgfidget.py`: split each gap's displacement into the
+component along the shot's dominant direction and the component across it,
+report cross track change and jerk (the second difference of along track speed)
+as a share of the median step, and always beside a REAL CAMERA clip measured
+the same way. The honest question is never "is it zero", it is "is it more than
+a camera". The floor measured on a real camera guide: jerk 2.8 percent of a
+step, cross track 1.2.
+
+The fix is closed loop, in `cglocal.py`: build the window, track where each
+built frame actually landed, push t by the shortfall, build again. Two rounds
+took 0.427 px rms to 0.180, and the rebuilt window's jerk from 12.8 percent of
+a step, five times its own shot's untouched 2.4, to the guide's own 2.8. The
+loop is not yet inside `cgmotion.py`, which needs it more because it rebuilds
+nearly every frame: full clip repairs measured 4 to 5 times the camera floor.
+Until that port lands, measure any `cgmotion.py` result with `cgfidget.py` and
+state the number in the delivery.
+
 ## The order of operations
 
-1. **census.** One decode. Sharpness, frame to frame motion and span for every
-   frame, at viewing scale. Then, per shot, the frames carrying less than a
-   tenth of that shot's own typical motion. Scoped to the shot, so a genuinely
-   still shot is not accused of stuttering.
+1. **census.** One decode. Sharpness, frame to frame motion, span and moved
+   area for every frame, at viewing scale. Then, per shot, the frames carrying
+   less than a tenth of that shot's own typical motion. Scoped to the shot, so a
+   genuinely still shot is not accused of stuttering.
+
+   **Two readings, and either one is enough to call a frame frozen.** The mean
+   step is the right test for a photographed shot and it is blind to a frozen
+   plate under a moving graphic: a bright animated overlay running at the full
+   rate over live action that repeats one frame in four keeps the mean at 0.26
+   of the shot's typical value, and 36 repeated frames were reported as none.
+   The share of the frame that moved reads 0.089 on the same frames, because a
+   small bright overlay lifts the mean and barely touches the area. The area
+   series is judged by the LOCAL rule, neighbourhood and shot wide together,
+   not by the shot wide ratio alone: on that film the ratio alone found 20 of
+   36, and 20 of 36 is worse than nothing, because it reaches `plan` looking
+   like holes and holes are the opposite repair. `03_failures.md` entry 20.
 2. **plan.** Holes or cadence, per shot, with the reasoning printed.
+   `--force-mode 0:rebuild` overrides a call the printed numbers show is wrong
+   (`03_failures.md` entry 22 has the case that needed it). Where travel
+   measurement says the material teleports, `cgmotion.py` replaces this step
+   with the motion proportional retime and writes the same jobs.json.
 3. **build.** Synthesise, in the film's own colour space, on the GPU.
 4. **gate.** Judge every synthesised frame against the film's own frames, put
    back the detail a rebuild costs, then decide what goes in.
@@ -211,6 +291,29 @@ signed off. This is the check a rebuild is most likely to break by accident,
 because a section that was previously reused gets re encoded now. On that job
 the two approved sections matched to four decimal places on 14 of 15 sampled
 frames, worst difference 0.42 of a level.
+
+**And four more on the file itself, before the word "done".** Timing on the
+integer clock: same fps, same frame count, same duration, and every gap between
+frames the same tick count of the stream's own time base. Never test printed
+seconds for equality: 1/24 prints as an alternating 0.041666 / 0.041667 and a
+naive equality test calls a perfectly constant file broken; the untouched
+source failing the same test is the tell. Bit depth off the pictures, not the
+tag: `cgverify10.py` counts which frames are bit exact against the source and
+reads the bottom two bits of the rebuilt ones, because an 8 bit rebuild written
+into a 10 bit container still reports `yuv420p10le` and the low bit spread
+cannot lie. Colour declaration equal to the source's: ffprobe range, matrix,
+transfer and primaries on the deliverable must equal the source
+(`03_failures.md` entry 21); if a finished master shipped without them the fix
+needs no re-encode, rewrite the bitstream headers with `-c copy -bsf:v
+h264_metadata` naming the four fields (`hevc_metadata` for HEVC), remux once
+more so the container colr box is rewritten, then prove the pictures untouched
+by per frame sha256. And native size at native depth, always: a deliverable is
+never downscaled and never requantised, a lighter copy for viewing keeps the
+full frame and the full bit depth and is only ever labelled a viewing copy, and
+the small copy is never the file a verdict is asked on. Lossless x264 at
+`-qp 0` is both exact and smaller than ProRes on this class of material; a
+`hevc_videotoolbox -profile:v main10` encode of the same full frame plays
+anywhere a review happens.
 
 ## Before committing on unfamiliar footage
 
