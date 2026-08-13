@@ -132,6 +132,27 @@ class RRDBNet(nn.Module):
         return out
 
 
+def pick_device():
+    """The best device that actually runs, proven by one real op.
+
+    `torch.cuda.is_available()` answers whether a GPU is visible, not whether
+    these wheels carry kernels for it. On a card older than sm_70 (a GTX 970,
+    exactly the hardware an old machine has) every CUDA op dies with "no
+    kernel image is available", so trusting the flag turns a working CPU
+    fallback into a crash. Run one op on the candidate and believe the op.
+    """
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        try:
+            (torch.zeros(1, device="cuda") + 1).item()
+            return torch.device("cuda")
+        except Exception:
+            print("CUDA device visible but unusable on this GPU, using CPU",
+                  flush=True)
+    return torch.device("cpu")
+
+
 def load_model(scale, device):
     name, url = WEIGHTS[scale]
     path = os.path.expanduser(f"~/.cache/realesrgan/{name}")
@@ -148,6 +169,13 @@ def load_model(scale, device):
 
 def esrgan_tiled(model, img, device, scale, tile=512, tile_pad=16):
     """img: HxWx3 float32 0..1 -> (H*scale)x(W*scale)x3 float32."""
+    oh, ow = img.shape[:2]
+    # the x2 head opens with pixel_unshuffle(2), which needs even sides, and
+    # screenshots arrive odd all the time. Reflect pad the whole image by one
+    # row or column and crop the result back: with even image sides and even
+    # tile and pad sizes, every patch the loop cuts is even too.
+    if oh % 2 or ow % 2:
+        img = np.pad(img, ((0, oh % 2), (0, ow % 2), (0, 0)), mode="reflect")
     h, w = img.shape[:2]
     out = np.zeros((h * scale, w * scale, 3), dtype=np.float32)
     for ty in range(math.ceil(h / tile)):
@@ -163,7 +191,7 @@ def esrgan_tiled(model, img, device, scale, tile=512, tile_pad=16):
             ox0, oy0 = (x0 - px0) * scale, (y0 - py0) * scale
             out[y0 * scale:y1 * scale, x0 * scale:x1 * scale] = \
                 r[oy0:oy0 + (y1 - y0) * scale, ox0:ox0 + (x1 - x0) * scale]
-    return out
+    return out[:oh * scale, :ow * scale]
 
 
 def gauss(img, sigma):
@@ -243,8 +271,7 @@ def main():
     if a.mode == "lanczos":
         out, lan, mask = lanczos(src_u8, size), None, None
     else:
-        device = torch.device("mps" if torch.backends.mps.is_available()
-                              else "cuda" if torch.cuda.is_available() else "cpu")
+        device = pick_device()
         model = load_model(a.scale, device)
         esr = esrgan_tiled(model, src_u8.astype(np.float32) / 255.0,
                            device, a.scale, tile=a.tile)
