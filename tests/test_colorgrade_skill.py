@@ -155,6 +155,165 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertEqual(3, _module_constant(SCRIPTS / "cgframes.py", "MAX_STALL_RUN"),
                          "MAX_STALL_RUN guards deliberate holds, see reference/07_frames.md")
 
+    def test_the_census_reads_both_motion_and_area(self):
+        """A frozen plate under a moving graphic is invisible to the mean step.
+
+        A corporate film generated its live action at 18 fps and conformed it to
+        24 by repeating one frame in four, then laid a bright animated overlay
+        over the top at the full rate. On a repeated frame the picture
+        underneath is identical and only the overlay moves, so the MEAN step
+        still reads 0.26 of the shot's typical value, nowhere near the 0.10 the
+        census needs, and 36 repeated frames in one shot were reported as zero.
+        The share of the frame that moved reads 0.089 on the same frames.
+
+        So `census_frozen` has to take an area series and flag a frame that
+        either reading calls frozen. Losing the second argument, or dropping the
+        OR, restores a blindness that a whole delivery walked through.
+        """
+        src = (SCRIPTS / "cgframes.py").read_text()
+        tree = ast.parse(src)
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "census_frozen"), None)
+        self.assertIsNotNone(fn, "census_frozen must exist")
+        args = [a.arg for a in fn.args.args]
+        self.assertIn("area", args,
+                      "census_frozen must take the area series, see reference/07_frames.md")
+        body = ast.get_source_segment(src, fn) or ""
+        self.assertIn("by_mean | by_area", body,
+                      "a frame frozen by EITHER reading is frozen; the OR is the fix")
+        # every caller has to pass it, or the argument is decoration
+        for call in [n for n in ast.walk(tree)
+                     if isinstance(n, ast.Call)
+                     and getattr(n.func, "id", None) == "census_frozen"]:
+            self.assertGreaterEqual(
+                len(call.args), 3,
+                f"census_frozen called with {len(call.args)} arguments at line "
+                f"{call.lineno}; the area series must be passed at every call site")
+
+    def test_the_scan_returns_the_area_series(self):
+        """cgyuv.Ruler.scan feeds the census, so the series has to come from it.
+
+        Pinned here because the unpacking is positional at every call site: a
+        scan that quietly goes back to three return values fails loudly, but a
+        census that quietly stops being given the fourth does not.
+        """
+        src = (SCRIPTS / "cgyuv.py").read_text()
+        fn = next((n for n in ast.walk(ast.parse(src))
+                   if isinstance(n, ast.FunctionDef) and n.name == "scan"), None)
+        self.assertIsNotNone(fn, "cgyuv.Ruler.scan must exist")
+        ret = [n for n in ast.walk(fn) if isinstance(n, ast.Return)][-1]
+        self.assertIsInstance(ret.value, ast.Tuple)
+        self.assertEqual(4, len(ret.value.elts),
+                         "scan must return lap, diff, span, area")
+        self.assertEqual(
+            4, len(ast.parse((SCRIPTS / "cgframes.py").read_text()).body and
+                   [t for t in ast.walk(ast.parse((SCRIPTS / "cgframes.py").read_text()))
+                    if isinstance(t, ast.Assign) and isinstance(t.value, ast.Call)
+                    and getattr(t.value.func, "attr", None) == "scan"
+                    and isinstance(t.targets[0], ast.Tuple)][0].targets[0].elts),
+            "every ruler.scan() call must unpack four values")
+        self.assertGreater(_module_constant(SCRIPTS / "cgyuv.py", "MOVED_LEVELS"), 2.0,
+                           "MOVED_LEVELS below h264 ringing would count noise as motion")
+
+    def test_the_render_tags_all_four_colour_fields(self):
+        """A delivery that loses its transfer tag is a gamma the player guesses.
+
+        ffmpeg drops an output -color_trc and -color_primaries when the raw
+        video being piped in carries no transfer and no primaries of its own.
+        `Spec.tags` sits on both sides of that pipe, so when it named only the
+        range and the matrix, a render of a file tagged bt709/bt709/bt709 came
+        out tagged bt709/unknown/unknown. Nothing failed and nothing warned.
+        """
+        src = (SCRIPTS / "cgyuv.py").read_text()
+        spec = next((n for n in ast.walk(ast.parse(src))
+                     if isinstance(n, ast.ClassDef) and n.name == "Spec"), None)
+        self.assertIsNotNone(spec, "cgyuv.Spec must exist")
+        fields = [n.target.id for n in spec.body if isinstance(n, ast.AnnAssign)]
+        for f in ("color_range", "colorspace", "transfer", "primaries"):
+            self.assertIn(f, fields, f"Spec must carry {f}")
+        # Read the RETURNED LIST, not the source text. A first version of this
+        # matched the function's source segment, which includes the docstring,
+        # and the docstring names all four flags: deleting them from the code
+        # left the test passing. Two of three mutations walked through it.
+        tags = next((n for n in spec.body
+                     if isinstance(n, ast.FunctionDef) and n.name == "tags"), None)
+        self.assertIsNotNone(tags, "Spec.tags must exist")
+        ret = [n for n in ast.walk(tags) if isinstance(n, ast.Return)][-1]
+        self.assertIsInstance(ret.value, ast.List, "Spec.tags must return a list")
+        emitted = {e.value for e in ret.value.elts
+                   if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+        for flag in ("-color_range", "-colorspace", "-color_trc", "-color_primaries"):
+            self.assertIn(flag, emitted, f"Spec.tags must emit {flag}")
+
+        # and the probe has to SUPPLY them, checked on the Media(...) call
+        # rather than on the file text, for the same reason.
+        vsrc = (SCRIPTS / "cgvideo.py").read_text()
+        made = [n for n in ast.walk(ast.parse(vsrc))
+                if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "Media"]
+        self.assertTrue(made, "cgvideo.probe must build a Media")
+        passed = {k.arg for k in made[0].keywords}
+        for f in ("color_space", "color_transfer", "color_primaries"):
+            self.assertIn(f, passed, f"cgvideo.probe must read {f} off the source")
+
+    def test_the_gate_judges_stillness_across_the_anchors(self):
+        """Inside a 2 frame stall, span measures the fault, not the shot.
+
+        `span[f]` is |next minus previous| in the ORIGINAL, and inside a stall
+        two frames long the frames either side of the interior frame ARE the
+        frozen copies the repair exists to replace. Judged on span alone, that
+        frame reads as a shot that is not moving and its rebuild is reverted
+        every time, by construction: five rebuilds thrown away per clip on the
+        material this was found on. The gate must judge a fill across the two
+        REAL anchors it was built from. See reference/03_failures.md entry 22.
+        """
+        src = (SCRIPTS / "cgframes.py").read_text()
+        tree = ast.parse(src)
+        names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+        self.assertIn("_still_by_anchors", names,
+                      "the anchor based still test must exist")
+        gate = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "cmd_gate")
+        called = {getattr(c.func, "id", None) for c in ast.walk(gate)
+                  if isinstance(c, ast.Call)}
+        self.assertIn("_still_by_anchors", called,
+                      "cmd_gate must judge stillness across the anchors, "
+                      "not on span at the rebuilt frame")
+
+    def test_plan_takes_an_explicit_mode_override(self):
+        """Stalls in pairs score density 0.117 and regularity 1.09: both
+        thresholds sit on the wrong side of a perfectly regular beat. The fix
+        is an explicit per shot override, not a loosened threshold, so the
+        flag has to exist and cmd_plan has to parse it into a per shot map.
+        """
+        src = (SCRIPTS / "cgframes.py").read_text()
+        self.assertIn("--force-mode", src,
+                      "plan must expose --force-mode, see 03_failures.md entry 22")
+        tree = ast.parse(src)
+        plan = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "plan_jobs")
+        body = ast.get_source_segment(src, plan) or ""
+        self.assertIn("force_mode", body,
+                      "plan_jobs must consult the override")
+
+    def test_the_track_names_its_output_after_its_input(self):
+        """A plan must be built from a track OF THE SOURCE. An earlier tracker
+        hardcoded its output path, so tracking a repaired clip silently
+        overwrote the source's track and the replan was built from the
+        repair's own output. The default output name must be derived from the
+        measured file, never a fixed path.
+        """
+        src = (SCRIPTS / "cgtrack.py").read_text()
+        tree = ast.parse(src)
+        savez = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and getattr(n.func, "attr", None) == "savez"]
+        self.assertTrue(savez, "cgtrack must save the track")
+        self.assertNotIsInstance(
+            savez[0].args[0], ast.Constant,
+            "the track's output path must come from the input or an argument, "
+            "not a hardcoded literal")
+        self.assertIn(".track.npz", src,
+                      "the default track name must say which file it came from")
+
     def test_every_script_compiles(self):
         for script in sorted(SCRIPTS.glob("*.py")):
             with self.subTest(script=script.name):
