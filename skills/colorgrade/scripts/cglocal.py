@@ -216,7 +216,7 @@ def measure_final(out, jobs):
                 src[k] = small(read(fh, k)[0])
     fh.close()
     err = []
-    print(f"\n  slot   from   asked   landed     error px")
+    print("\n  slot   from   asked   landed     error px")
     for s, i, t in jobs:
         f = shift(src[i], src[i + 1])
         n = max(np.linalg.norm(f), 1e-9)
@@ -234,7 +234,9 @@ def write(out, path):
         for f in range(N):
             if f in out:
                 y, u, v = out[f]
-                o.write(y.tobytes()); o.write(u.tobytes()); o.write(v.tobytes())
+                o.write(y.tobytes())
+                o.write(u.tobytes())
+                o.write(v.tobytes())
             else:
                 fh.seek(f * FRAME_BYTES)
                 o.write(fh.read(FRAME_BYTES))

@@ -43,7 +43,6 @@ CUDA or CPU, in that order of preference; the 2x on a 1.5 MP image is about
 import argparse
 import math
 import os
-import sys
 import time
 import urllib.request
 
@@ -221,7 +220,7 @@ def metrics(src_u8, out, lan, mask, scale):
         print(f"  fine band std in flat areas: {255 * fine[flat].std():.2f} "
               f"against Lanczos truth {255 * flan[flat].std():.2f} "
               f"(just under truth is right; far below is airbrush, above is invention)")
-    print(f"  colour drift vs Lanczos truth: "
+    print("  colour drift vs Lanczos truth: "
           + "  ".join(f"{255 * (out[..., c].mean() - lan[..., c].mean()):+.2f}"
                       for c in range(3)) + "  levels per channel")
 

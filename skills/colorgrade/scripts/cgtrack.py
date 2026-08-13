@@ -51,14 +51,20 @@ for i in range(1, n):
     p0 = cv2.goodFeaturesToTrack(a, maxCorners=1200, qualityLevel=0.01,
                                  minDistance=8, blockSize=7)
     if p0 is None or len(p0) < 12:
-        dx.append(np.nan); dy.append(np.nan); cnt.append(0); continue
+        dx.append(np.nan)
+        dy.append(np.nan)
+        cnt.append(0)
+        continue
     p1, st, _ = cv2.calcOpticalFlowPyrLK(a, b, p0, None, **lk)
     p0b, st2, _ = cv2.calcOpticalFlowPyrLK(b, a, p1, None, **lk)
     good = (st.ravel() == 1) & (st2.ravel() == 1)
     fb = np.linalg.norm((p0 - p0b).reshape(-1, 2), axis=1)
     good &= fb < 1.0
     if good.sum() < 12:
-        dx.append(np.nan); dy.append(np.nan); cnt.append(int(good.sum())); continue
+        dx.append(np.nan)
+        dy.append(np.nan)
+        cnt.append(int(good.sum()))
+        continue
     d = (p1 - p0).reshape(-1, 2)[good]
     dx.append(float(np.median(d[:, 0])) * SC)
     dy.append(float(np.median(d[:, 1])) * SC)

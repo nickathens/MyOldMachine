@@ -43,7 +43,7 @@ def dims(path):
     p = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
                         "-show_entries", "stream=width,height", "-of", "csv=p=0",
                         path], capture_output=True, text=True).stdout
-    line = [l for l in p.splitlines() if l.strip()][0]
+    line = [ln for ln in p.splitlines() if ln.strip()][0]
     return [int(x) for x in line.split(",")[:2]]
 
 
@@ -89,12 +89,12 @@ def report(path, dx, dy):
     print(f"\n{path.split('/')[-1]}    {n} gaps, native pixels")
     print(f"  dominant direction  ({u[0]:+.2f},{u[1]:+.2f})     "
           f"speed along it: median {np.median(speed):.2f}  max {speed.max():.2f}")
-    print(f"  CROSS TRACK, frame to frame change")
+    print("  CROSS TRACK, frame to frame change")
     print(f"    rms {cross_d.std():.3f} px   p95 {np.percentile(np.abs(cross_d),95):.3f} px"
           f"   worst {np.abs(cross_d).max():.3f} px")
     print(f"    as a share of the median step: {100*cross_d.std()/max(np.median(speed),1e-6):.1f} percent")
     print(f"    direction flips {flips}/{max(len(s)-1,0)} = {100*flip_rate:.0f} percent of moves")
-    print(f"  JERK along the move (second difference of speed)")
+    print("  JERK along the move (second difference of speed)")
     print(f"    rms {jerk.std():.3f} px   p95 {np.percentile(np.abs(jerk),95):.3f}"
           f"   worst {np.abs(jerk).max():.3f} at gap {int(np.abs(jerk).argmax())+1}")
     print(f"    as a share of the median step: {100*jerk.std()/max(np.median(speed),1e-6):.1f} percent")

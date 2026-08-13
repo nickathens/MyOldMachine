@@ -133,7 +133,7 @@ def plan(work, window=73, report_only=False):
           f"{n_out - len(jobs)} untouched")
     if spans:
         u, c = np.unique(spans, return_counts=True)
-        print(f"  how far apart the two real frames are: " +
+        print("  how far apart the two real frames are: " +
               "  ".join(f"{int(a)} apart x{int(b)}" for a, b in zip(u, c)))
     if not report_only:
         json.dump(jobs, open(f"{work}/jobs.json", "w"))
