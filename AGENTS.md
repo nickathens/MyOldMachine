@@ -70,9 +70,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-13] mac: colorgrade frame placement toolkit + upscale hybrid route (PR #133)
+(Nothing open right now.)
 
-(Entries removed above: #128 merged 2026-08-12. #127 merged 2026-08-11,
+(Entries removed above: #133 merged 2026-08-13. #128 merged 2026-08-12. #127 merged 2026-08-11,
 struck inside #128's own work-log edit since the two entries shared lines.
 #126 merged 2026-08-10.
 #113 merged 2026-08-07. #110 and #109 merged
