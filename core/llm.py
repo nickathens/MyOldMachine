@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -167,6 +168,63 @@ def _error_excerpt(text: Optional[str], limit: int = 600) -> str:
     if len(text) <= limit:
         return text
     return "..." + text[-limit:]
+
+
+# Why a subprocess turn that produced no final result ended. A signal reaches us
+# in two spellings depending on who reaped the child: asyncio reports it as a
+# NEGATIVE returncode, a wrapper script reports it as 128+N. Both mean one thing.
+_INTERRUPT_REASONS = {
+    int(signal.SIGTERM): "the bot was stopped or restarted underneath it",
+    int(signal.SIGKILL): "the process was killed outright",
+    int(signal.SIGINT): "the process was interrupted",
+    int(signal.SIGHUP): "the process lost the session it was running in",
+}
+
+
+def _interrupted_notice(returncode) -> str:
+    """Trailer marking salvaged text as working notes rather than an answer.
+
+    When a CLI turn dies before its final result, all that survives is the
+    narration written along the way ("Reading the file...", "Tests green.
+    Committing:"). The /stop, time-limit and OOM salvage paths already say why
+    they stopped; the rest returned that narration bare, so it arrived looking
+    exactly like a deliberate reply. On the Linux production bot this shipped
+    twice in twenty minutes on 2026-08-15, when the service was restarted under
+    a live turn and the child died with exit 143 (128+SIGTERM). The user's
+    report was "your reply is strange. why?", which is the whole problem: a
+    crash that does not announce itself gets read as the assistant misbehaving.
+    """
+    sig = None
+    if isinstance(returncode, int):
+        if returncode < 0:
+            sig = -returncode
+        elif returncode > 128:
+            sig = returncode - 128
+    reason = _INTERRUPT_REASONS.get(sig)
+    if reason is None:
+        reason = (
+            "the process ended before finishing"
+            if not returncode
+            else f"the process failed (exit {returncode})"
+        )
+    return (
+        "\n\n[Unfinished: the text above is my working notes, not an answer - "
+        f"{reason}. Anything already written to disk is still there. "
+        "Send the message again to pick it up.]"
+    )
+
+
+def _is_oom_exit(returncode, stderr_text: Optional[str]) -> bool:
+    """True if the child was SIGKILLed, which on a memory-capped service means
+    the limit was hit. Same two spellings as any signal: -9 when asyncio reaps
+    the child, 137 when a wrapper reports 128+9.
+    """
+    lowered = (stderr_text or "").lower()
+    return (
+        returncode in (-int(signal.SIGKILL), 128 + int(signal.SIGKILL))
+        or "out of memory" in lowered
+        or "killed" in lowered
+    )
 
 
 class LLMProvider(ABC):
@@ -1224,7 +1282,8 @@ class ClaudeCLIProvider(LLMProvider):
                 last_turn = "\n".join(last_turn_text_blocks).strip()
                 salvage = last_turn or partial_text.strip()
                 return LLMResponse(
-                    text=salvage or f"That turn failed before it finished: {detail}",
+                    text=(salvage + _interrupted_notice(process.returncode)) if salvage
+                    else f"That turn failed before it finished: {detail}",
                     model=self.model, provider=self.provider_name,
                     error=detail, tool_use=bool(salvage),
                 )
@@ -1233,18 +1292,15 @@ class ClaudeCLIProvider(LLMProvider):
                 logger.error(f"Claude error for user {user_id} (exit {process.returncode}): {stderr_text}")
                 # Detect OOM kill: kernel sends SIGKILL (-9) when memory limit
                 # is hit, or stderr may mention it explicitly
-                is_oom = (
-                    process.returncode == -9
-                    or "out of memory" in stderr_text.lower()
-                    or "killed" in stderr_text.lower()
-                )
+                is_oom = _is_oom_exit(process.returncode, stderr_text)
                 last_turn = "\n".join(last_turn_text_blocks).strip()
                 fallback_text = last_turn or partial_text.strip()
                 if fallback_text:
                     logger.info(f"Returning fallback text despite error for user {user_id} ({len(fallback_text)} chars, from_last_turn={bool(last_turn)})")
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
-                    suffix = ""
+                    # Never ship salvaged narration bare: it reads as a real reply.
+                    suffix = _interrupted_notice(process.returncode)
                     if is_oom:
                         elapsed = int(asyncio.get_running_loop().time() - start_time)
                         suffix = (
@@ -1304,14 +1360,14 @@ class ClaudeCLIProvider(LLMProvider):
             if last_turn:
                 logger.warning(f"No final result for user {user_id}, returning last turn ({len(last_turn)} chars)")
                 return LLMResponse(
-                    text=last_turn, model=self.model,
+                    text=last_turn + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
                 )
             if partial_text.strip():
                 fallback_text = partial_text.strip()
                 logger.warning(f"No final result for user {user_id}, returning full partial_text ({len(fallback_text)} chars)")
                 return LLMResponse(
-                    text=fallback_text, model=self.model,
+                    text=fallback_text + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
                 )
 
@@ -1827,16 +1883,13 @@ class CodexCLIProvider(LLMProvider):
 
             if process.returncode != 0 and not agent_message_blocks:
                 logger.error(f"Codex error for user {user_id} (exit {process.returncode}): {stderr_text}")
-                is_oom = (
-                    process.returncode == -9
-                    or "out of memory" in stderr_text.lower()
-                    or "killed" in stderr_text.lower()
-                )
+                is_oom = _is_oom_exit(process.returncode, stderr_text)
                 fallback_text = partial_text.strip()
                 if fallback_text:
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
-                    suffix = ""
+                    # Never ship salvaged narration bare: it reads as a real reply.
+                    suffix = _interrupted_notice(process.returncode)
                     if is_oom:
                         elapsed = int(asyncio.get_running_loop().time() - start_time)
                         suffix = (
@@ -1894,7 +1947,7 @@ class CodexCLIProvider(LLMProvider):
                 fallback_text = partial_text.strip()
                 logger.warning(f"No agent_message for Codex user {user_id}, returning full partial_text ({len(fallback_text)} chars)")
                 return LLMResponse(
-                    text=fallback_text, model=self.model,
+                    text=fallback_text + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
                     input_tokens=total_input, output_tokens=total_output,
                 )
