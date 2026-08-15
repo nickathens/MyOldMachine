@@ -1,6 +1,6 @@
 {
   "weight": "heavy",
   "min_ram_gb": 4,
-  "min_disk_gb": 2,
-  "install_note": "Installs ChromaDB + embedding model in isolated venv (~500 MB). Run setup script to install."
+  "min_disk_gb": 3,
+  "install_note": "Clones the upstream mempalace repo (~100 MB) and installs it editable into an isolated venv with ChromaDB + embedding model (~690 MB). Run setup script to install."
 }
