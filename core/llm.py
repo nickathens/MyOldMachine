@@ -697,7 +697,7 @@ class ClaudeCLIProvider(LLMProvider):
     """
 
     IDLE_TIMEOUT = 1800  # 30 min of no output = stuck
-    ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling per request, even with continuous activity
+    ABSOLUTE_TIMEOUT = 86400  # 24 hour hard ceiling per request, even with continuous activity
     # Progress cadence. Between updates the user sees only a "typing" indicator.
     # A flat 10-minute gap is intentional: the user finds early/frequent heartbeats
     # more annoying than silence, so there is no front-loaded burst. PROGRESS_SCHEDULE
@@ -1478,7 +1478,7 @@ class CodexCLIProvider(LLMProvider):
     """
 
     IDLE_TIMEOUT = 1800
-    ABSOLUTE_TIMEOUT = 7200  # 2 hour hard ceiling per request, even with continuous activity
+    ABSOLUTE_TIMEOUT = 86400  # 24 hour hard ceiling per request, even with continuous activity
     # Flat 10-minute progress cadence, no front-loaded burst. See ClaudeCLIProvider
     # for the rationale; the two providers run parallel loops and must stay in sync.
     PROGRESS_SCHEDULE = ()
