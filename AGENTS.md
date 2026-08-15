@@ -70,11 +70,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-08-15] linux: port production triage change (urgent nags gated on unread, needs_reply drafts only, digest lists unread only) (PR #135)
-- [2026-08-15] mac: mempalace runs from a pinned upstream checkout, extras
-  partitioned, venv no longer built on a versioned Homebrew python (PR #136)
+(Nothing open right now.)
 
-(Entries removed above: #133 merged 2026-08-13. #128 merged 2026-08-12.
+(Entries removed above: #136 and #135 merged 2026-08-15.
+#133 merged 2026-08-13. #128 merged 2026-08-12.
 #127 merged 2026-08-11,
 struck inside #128's own work-log edit since the two entries shared lines.
 #126 merged 2026-08-10.
