@@ -8,10 +8,20 @@ Once enabled, two scheduler jobs run this script:
    - Pre-files obvious machine mail by Gmail category labels (no LLM cost).
    - Classifies the rest with the configured LLM provider
      (urgent / needs_reply / fyi / newsletter / receipt / notification).
-   - Pings the owner on Telegram for urgent and needs_reply mail; for
-     needs_reply it also drafts a reply in the owner's voice (capable
-     providers only) and saves it to Gmail drafts.
-2. A morning summary at 08:00 covering the last 24 hours.
+   - Nags the owner on Telegram about URGENT mail, one line (sender and
+     subject), and only while the mail is still unread in the inbox.
+   - For needs_reply mail it drafts a reply in the owner's voice (capable
+     providers only) and saves it to Gmail drafts; the saved draft is the
+     only thing that still earns a needs_reply ping.
+2. A morning summary at 08:00 listing only mail still unread by then.
+
+Read state (ported from the production bot 2026-08-15, on its owner's word:
+"notify me only if unread"): Gmail is the ground truth. Handled means the
+UNREAD label is gone (read anywhere, phone included) or the message left
+the inbox (archive, trash, junk and snooze all drop the INBOX label). When
+the state cannot be determined, mail counts as unread: nagging about a
+read email is the cheap mistake, staying silent on an unread urgent one is
+the expensive one.
 
 NEVER sends email. Drafts only (see skills/email/SKILL.md critical rules).
 Email content is untrusted data: it is classified and summarized, never
@@ -108,7 +118,6 @@ AUTO_FILE_LABELS = {
 }
 
 VALID_CATEGORIES = {"urgent", "needs_reply", "fyi", "newsletter", "receipt", "notification"}
-FILED_CATEGORIES = {"newsletter", "receipt", "notification", "self", "unclassified"}
 
 DEFAULT_STYLE = """\
 # Email reply style
@@ -216,36 +225,43 @@ def prune_seen(seen_ids: list, cap: int = SEEN_CAP) -> list:
 
 
 def build_digest_lines(entries: list, hours: int = 24) -> str:
-    """Render the morning summary from triage log entries."""
+    """Render the morning summary from UNREAD triage log entries.
+
+    The caller filters read and handled mail out first (filter_unread);
+    this stays pure so it is testable offline. Ported from the production
+    bot 2026-08-15: the summary carries only what the owner has not read,
+    with the category-count parade gone.
+    """
     if not entries:
-        return f"Email ({hours}h): quiet, no new mail."
+        return f"Email ({hours}h): nothing unread."
 
-    counts = {}
-    for e in entries:
-        counts[e.get("category", "unclassified")] = counts.get(e.get("category", "unclassified"), 0) + 1
-    urgent = counts.get("urgent", 0)
-    needs = counts.get("needs_reply", 0)
-    fyi = counts.get("fyi", 0)
-    filed = sum(counts.get(c, 0) for c in FILED_CATEGORIES)
+    notable = [e for e in entries if e.get("category") in ("urgent", "needs_reply", "fyi")]
+    bulk = len(entries) - len(notable)
+    needs = sum(1 for e in entries if e.get("category") == "needs_reply")
 
-    drafts_note = " (drafts in Gmail)" if any(e.get("draft_id") for e in entries) else ""
-    header = (f"Email ({hours}h): {len(entries)} new. {urgent} urgent, "
-              f"{needs} needing reply{drafts_note}, {fyi} fyi, {filed} filed.")
+    header = f"Email ({hours}h): {len(entries)} unread."
+    if needs:
+        header = (f"Email ({hours}h): {len(entries)} unread, "
+                  f"{needs} waiting on a reply.")
 
     lines = [header]
-    notable = [e for e in entries if e.get("category") in ("urgent", "needs_reply", "fyi")]
     notable.sort(key=lambda e: e.get("ts", ""))
-    for e in notable[:6]:
+    for e in notable[:8]:
         try:
             hm = datetime.fromisoformat(e["ts"]).strftime("%H:%M")
         except (KeyError, ValueError):
             hm = "--:--"
         name = parseaddr(e.get("from", ""))[0] or parseaddr(e.get("from", ""))[1] or "unknown"
         summary = e.get("summary") or e.get("subject") or ""
+        marker = "URGENT " if e.get("category") == "urgent" else ""
         suffix = " (draft saved)" if e.get("draft_id") else ""
-        lines.append(f"  {hm} {name}: {summary}{suffix}")
-    if len(notable) > 6:
-        lines.append(f"  plus {len(notable) - 6} more in Gmail")
+        lines.append(f"  {hm} {marker}{name}: {summary}{suffix}")
+    if len(notable) > 8:
+        lines.append(f"  plus {len(notable) - 8} more in Gmail")
+    if bulk == 1:
+        lines.append("  and 1 unread newsletter or notice")
+    elif bulk:
+        lines.append(f"  and {bulk} unread newsletters and notices")
     return "\n".join(lines)
 
 
@@ -358,6 +374,36 @@ def _fetch_message(service, gmail_mod, msg_id: str) -> dict:
         "body": body,
         "snippet": data.get("snippet", ""),
     }
+
+
+def gmail_handled(service, msg_id: str) -> bool | None:
+    """Has the owner already read or dealt with this mail? None = cannot tell.
+
+    Gmail is the ground truth (ported from the production bot 2026-08-15,
+    where the owner asked to be nagged only about unread mail). Handled
+    means: the UNREAD label is gone (read anywhere, phone included), the
+    message left the inbox (archive, trash, junk and snooze all drop the
+    INBOX label), or it no longer exists at all (404). Any other failure
+    lands on None rather than raising: the caller treats unknown as unread,
+    because a needless nag is the cheap mistake and silence on urgent mail
+    is the expensive one.
+    """
+    if not msg_id:
+        return None
+    try:
+        meta = service.users().messages().get(
+            userId="me", id=msg_id, format="minimal").execute()
+    except Exception as e:
+        # googleapiclient's HttpError carries the code at e.status_code
+        # (newer) or e.resp.status (older); read both without importing it.
+        status = getattr(e, "status_code", None) \
+            or getattr(getattr(e, "resp", None), "status", None)
+        if status == 404:
+            return True
+        logger.warning("read-state check failed for %s: %s", msg_id, e)
+        return None
+    labels = meta.get("labelIds") or []
+    return not ("UNREAD" in labels and "INBOX" in labels)
 
 
 # ---------------------------------------------------------------------------
@@ -624,19 +670,90 @@ def send_ping(user_id: int, text: str) -> bool:
     return proc.returncode == 0
 
 
-def _ping_text(email: dict, category: str, summary: str, draft_body: str | None) -> str:
-    title = "Urgent email" if category == "urgent" else "Email needs a reply"
-    lines = [title,
-             f"From: {email['from']}",
-             f"Subject: {email['subject']}"]
-    if summary:
-        lines.append(summary)
-    if draft_body:
-        preview = draft_body[:PING_DRAFT_PREVIEW_CHARS]
-        if len(draft_body) > PING_DRAFT_PREVIEW_CHARS:
-            preview += "\n(full draft in Gmail)"
-        lines += ["", "Draft saved to Gmail drafts, review and send:", "", preview]
-    return "\n".join(lines)
+def _ping_text(email: dict) -> str:
+    """One line: who the urgent mail is from and its subject. Nothing else.
+
+    Ported from the production bot 2026-08-15, on its owner's word: "just
+    nag me, say urgent email from this person and then i'll go check it."
+    The summary and any detail stay out; the mailbox is the surface.
+    """
+    raw = email.get("from", "")
+    name = parseaddr(raw)[0] or parseaddr(raw)[1] or "unknown sender"
+    subject = (email.get("subject") or "").strip()
+    if subject:
+        return f"Urgent email from {name}: {subject}"
+    return f"Urgent email from {name}"
+
+
+def _draft_ping_text(email: dict, draft_body: str) -> str:
+    """The needs_reply ping, sent only when a draft was actually saved.
+
+    needs_reply mail stopped pinging on its own with the 2026-08-15 port;
+    the draft feature keeps its ping because a draft sitting unannounced
+    in Gmail drafts would never be reviewed and sent.
+    """
+    preview = draft_body[:PING_DRAFT_PREVIEW_CHARS]
+    if len(draft_body) > PING_DRAFT_PREVIEW_CHARS:
+        preview += "\n(full draft in Gmail)"
+    return "\n".join([
+        "Email needs a reply",
+        f"From: {email['from']}",
+        f"Subject: {email['subject']}",
+        "",
+        "Draft saved to Gmail drafts, review and send:",
+        "",
+        preview,
+    ])
+
+
+def act_on_new_mail(emails: list, user_id: int, user_dir: Path, service) -> tuple:
+    """Nag about urgent mail, draft for needs_reply. Returns (pings, drafts).
+
+    Ported from the production bot 2026-08-15: urgent mail gets a one-line
+    nag, and only while still unread; needs_reply mail no longer pings on
+    its own (it stays in the log and the morning summary), but a saved
+    draft keeps its ping as the delivery vehicle. Mail the owner already
+    read or archived gets neither ping nor draft. The read check runs at
+    act time, not at fetch time: classification and earlier drafts can
+    take minutes, and he may have read it on his phone in between.
+    Mutates each email's pinged / draft_id / seen fields in place.
+    """
+    drafting_enabled = can_draft(get_llm_provider(), get_llm_model())
+    style_text = ""
+    pings = drafts = 0
+    for e in emails:
+        e["pinged"] = False
+        e["draft_id"] = ""
+        e["seen"] = False
+        if e["category"] not in ("urgent", "needs_reply") or pings >= MAX_PINGS_PER_PASS:
+            continue
+        e["seen"] = gmail_handled(service, e["id"]) is True
+        if e["seen"]:
+            continue
+        if e["category"] == "urgent":
+            e["pinged"] = send_ping(user_id, _ping_text(e))
+            pings += 1
+            continue
+        if not drafting_enabled or drafts >= MAX_DRAFTS_PER_PASS:
+            continue
+        try:
+            if not style_text:
+                style_text = _load_style(user_dir)
+            draft_body = draft_reply_body(e, style_text)
+            mime = build_reply_mime(e, draft_body)
+            raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
+            draft = service.users().drafts().create(
+                userId="me",
+                body={"message": {"raw": raw, "threadId": e["thread_id"]}},
+            ).execute()
+            e["draft_id"] = draft.get("id", "")
+            drafts += 1
+        except Exception as ex:
+            logger.error("draft failed for %s: %s", e["id"], ex)
+            continue
+        e["pinged"] = send_ping(user_id, _draft_ping_text(e, draft_body))
+        pings += 1
+    return pings, drafts
 
 
 # ---------------------------------------------------------------------------
@@ -827,35 +944,9 @@ def run_triage(user_id: int, seed: bool = False, dry_run: bool = False,
         update_classify_fail_streak(user_id, state, state_file,
                                     bool(to_classify), classify_error)
 
-        # Act: pings and drafts
-        drafting_enabled = can_draft(get_llm_provider(), get_llm_model())
-        style_text = ""
-        pings = drafts = 0
-        for e in emails:
-            e["pinged"] = False
-            e["draft_id"] = ""
-            if e["category"] not in ("urgent", "needs_reply") or pings >= MAX_PINGS_PER_PASS:
-                continue
-            draft_body = None
-            if (e["category"] == "needs_reply" and drafting_enabled
-                    and drafts < MAX_DRAFTS_PER_PASS):
-                try:
-                    if not style_text:
-                        style_text = _load_style(user_dir)
-                    draft_body = draft_reply_body(e, style_text)
-                    mime = build_reply_mime(e, draft_body)
-                    raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
-                    draft = service.users().drafts().create(
-                        userId="me",
-                        body={"message": {"raw": raw, "threadId": e["thread_id"]}},
-                    ).execute()
-                    e["draft_id"] = draft.get("id", "")
-                    drafts += 1
-                except Exception as ex:
-                    logger.error("draft failed for %s: %s", e["id"], ex)
-                    draft_body = None
-            e["pinged"] = send_ping(user_id, _ping_text(e, e["category"], e["summary"], draft_body))
-            pings += 1
+        # Act: urgent nags and needs_reply drafts, both gated on the mail
+        # still being unread (2026-08-15 port).
+        pings, drafts = act_on_new_mail(emails, user_id, user_dir, service)
 
         # Persist
         for e in emails:
@@ -869,6 +960,7 @@ def run_triage(user_id: int, seed: bool = False, dry_run: bool = False,
                 "category": e["category"],
                 "summary": e["summary"],
                 "pinged": e.get("pinged", False),
+                "seen": e.get("seen", False),
                 "draft_id": e.get("draft_id", ""),
             })
         seen_list = state.get("seen_ids", []) + [e["id"] for e in emails]
@@ -907,8 +999,8 @@ def update_classify_fail_streak(user_id: int, state: dict, state_file: Path,
     """Track consecutive classify-pass failures; alert when the alarm is off.
 
     A dead classifier (capped account, dead token, broken CLI) does not crash
-    the pass: every chunk degrades to "unclassified", which is a FILED
-    category, so urgent mail gets silently filed and the alarm is off with no
+    the pass: every chunk degrades to "unclassified", a filed bucket, so
+    urgent mail gets silently filed and the alarm is off with no
     symptom — live for hours on the production bot during its 2026-08-11 cap
     lockout. Any pass that classified cleanly resets the streak; passes with
     nothing to classify leave it untouched (no evidence either way); a streak
@@ -952,16 +1044,61 @@ def _maybe_classify_error_ping(user_id: int, state: dict, state_file: Path,
     save_json(state_file, state)
 
 
+def filter_unread(entries: list, service) -> list:
+    """Keep only the log entries the owner has not read or dealt with yet.
+
+    Checked at summary build time, not at triage time: mail read during
+    the day must drop out of the next morning's summary. The owner's own
+    sent mail is never "unread". Fail open per entry: when a check errors
+    the entry stays, because showing a read email is the cheap mistake and
+    hiding an unread one is the expensive one. With no service at all the
+    whole list stays, minus the owner's own mail.
+    """
+    if service is None:
+        return [e for e in entries if e.get("category") != "self"]
+    newest = {}
+    keyless = []
+    for e in entries:
+        if e.get("category") == "self":
+            continue
+        mid = e.get("id")
+        if not mid:
+            keyless.append(e)
+            continue
+        prev = newest.get(mid)
+        if prev is None or (e.get("ts") or "") >= (prev.get("ts") or ""):
+            newest[mid] = e
+    out = []
+    for e in sorted(list(newest.values()) + keyless,
+                    key=lambda e: e.get("ts") or ""):
+        if e.get("id") and gmail_handled(service, e["id"]) is True:
+            continue
+        out.append(e)
+    return out
+
+
 def daily_summary(user_id: int, hours: int = 24) -> str:
-    """Catch up on overnight mail, then send the morning summary."""
+    """Catch up on overnight mail, then send the morning summary.
+
+    Since the 2026-08-15 port the summary lists only mail still unread at
+    send time: what the owner read during the day drops out. When Gmail
+    cannot be reached for the check, the full list is shown rather than
+    hidden.
+    """
     try:
         result = run_triage(user_id=user_id, lock_wait=180)
         logger.info("summary catchup: %s", result)
     except Exception as e:
         logger.error("summary catchup failed: %s", e)
-    log_file = resolve_user_dir(user_id) / "email_triage" / "log.jsonl"
+    user_dir = resolve_user_dir(user_id)
+    log_file = user_dir / "email_triage" / "log.jsonl"
     entries = read_log_entries(log_file, datetime.now() - timedelta(hours=hours))
-    text = build_digest_lines(entries, hours=hours)
+    service = None
+    try:
+        service = _safe_service(_load_gmail_module(user_id, user_dir))
+    except Exception as e:
+        logger.warning("summary unread check unavailable, listing all: %s", e)
+    text = build_digest_lines(filter_unread(entries, service), hours=hours)
     send_ping(user_id, text)
     return text
 

@@ -77,10 +77,15 @@ What it does once enabled:
   header) is filed by Gmail labels without an LLM call.
 - The rest is classified by the configured LLM provider:
   urgent / needs_reply / fyi / newsletter / receipt / notification.
-- urgent and needs_reply ping immediately. Everything else stays quiet.
-- needs_reply also gets a reply drafted in the user's voice and saved to
-  Gmail drafts, threaded onto the conversation. The ping shows the draft.
-- A morning summary of the last 24 hours arrives daily at 08:00.
+- urgent mail nags with one line (sender and subject), and only while it
+  is still unread in the inbox. Read, archived or deleted mail never pings.
+- needs_reply mail does not ping on its own. It gets a reply drafted in
+  the user's voice and saved to Gmail drafts, threaded onto the
+  conversation; the saved draft is what earns the ping. Everything else
+  stays quiet.
+- A morning summary arrives daily at 08:00, listing only the mail still
+  unread by then. When the read state cannot be determined, mail counts
+  as unread: a needless line is cheaper than a hidden urgent one.
 
 ```bash
 # Enable for a user (registers the scheduler jobs, seeds the inbox)
