@@ -1,5 +1,20 @@
 # Motion Design
 
+## Should It Animate At All?
+
+The first decision is not which animation, but whether. Gate by how often a user meets the moment:
+
+| Frequency | Decision |
+|-----------|----------|
+| **100+ times/day** (keyboard shortcuts, command palette, core navigation) | No animation. Ever. |
+| **Tens of times/day** (hover states, list navigation, frequent toggles) | Near-imperceptible only: fast and subtle, or nothing |
+| **Occasional** (modals, drawers, toasts, settings) | Standard animation |
+| **Rare / first-time** (onboarding, empty states, success, celebration) | The delight budget lives here |
+
+**Keyboard-initiated actions are a disqualifier, not a judgment call.** They repeat hundreds of times a day; animation makes them feel slow and disconnected. Raycast has no open/close animation, and that is correct for something opened hundreds of times daily.
+
+Every animation must also name its purpose in one of these words: **feedback** (the interface heard you), **spatial consistency** (where something came from or went), **state indication** (a change made legible), **preventing a jarring change** (bridging content that would otherwise teleport), **explanation** (marketing and onboarding only), or **delight** (allowed only at the rare/first-time tier). "It looks cool" on a frequently seen element is a reason to stop. Data the user is reading or acting on should not move for style: a decorative effect belongs on a marketing page, not on a chart in a dashboard.
+
 ## Duration: The 100/300/500 Rule
 
 Timing matters more than easing. These durations feel right for most UI:
@@ -37,6 +52,31 @@ Timing matters more than easing. These durations feel right for most UI:
 ```
 
 **Avoid bounce and elastic curves.** They were trendy in 2015 but now feel tacky and amateurish. Real objects don't bounce when they stop—they decelerate smoothly. Overshoot effects draw attention to the animation itself rather than the content.
+
+## Origin: Where Motion Starts From
+
+**Never `scale(0)`.** Nothing in the real world appears from nothing. Enter from `scale(0.9)` to `scale(0.97)` plus `opacity: 0`.
+
+**Popovers, dropdowns, menus, and tooltips scale from their trigger, not from their own center.** Set `transform-origin` to the trigger side (Base UI exposes `var(--transform-origin)` for exactly this). **Modals are exempt**: they are not anchored to a trigger, so they keep `transform-origin: center`.
+
+**Exit the way it entered.** A toast that slides in from the bottom leaves through the bottom. Symmetric paths keep the user's spatial map of the interface intact, and they are what make swipe-to-dismiss feel obvious.
+
+## Interruptibility
+
+Anything a user can trigger twice in a second (toasts stacking, toggles, rapid open/close) must retarget smoothly from its current state instead of restarting.
+
+- **CSS transitions retarget; `@keyframes` restart from zero.** Use transitions for rapidly triggered UI; reserve keyframes for predetermined motion that runs once (entrances, reveals).
+- **`@starting-style` gives an entry animation without JS** while staying a transition, so it remains interruptible:
+
+```css
+.toast {
+  opacity: 1; transform: translateY(0);
+  transition: opacity 400ms ease, transform 400ms ease;
+  @starting-style { opacity: 0; transform: translateY(100%); }
+}
+```
+
+- **Springs carry velocity through an interruption**, which fixed-duration curves cannot: a flicked element keeps its speed when redirected instead of stopping and restarting. Use them for gesture-driven motion the user may reverse mid-flight (drag-to-dismiss, sheets). Keep any bounce subtle and out of everyday UI; the no-bounce rule above still holds for non-gesture motion.
 
 ## The Only Two Properties You Should Animate
 
@@ -96,4 +136,8 @@ Don't use `will-change` preemptively—only when animation is imminent (`:hover`
 
 ---
 
-**Avoid**: Animating everything (animation fatigue is real). Using >500ms for UI feedback. Ignoring `prefers-reduced-motion`. Using animation to hide slow loading.
+**Avoid**: Animating everything (animation fatigue is real). Animating keyboard-initiated actions or anything used 100+ times a day. Entrances from `scale(0)`. Keyframes on rapidly triggered elements. Using >500ms for UI feedback. Ignoring `prefers-reduced-motion`. Using animation to hide slow loading.
+
+---
+
+The frequency gate, purpose vocabulary, origin rules, and interruptibility rules are adapted from [emilkowalski/skills](https://github.com/emilkowalski/skills) (MIT, commit `78761e1`). Licence text and fold notes: `animation-vocabulary.md`, Source and Licence section. For the exact name of a motion effect, see `animation-vocabulary.md`.
