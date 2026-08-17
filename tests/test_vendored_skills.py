@@ -419,6 +419,66 @@ class ImpeccableAccessibilityFoldTests(unittest.TestCase):
                     )
         self.assertGreater(checked, 20, "the reference cross-links look truncated")
 
+    def test_animation_fold_notice_names_the_licence(self):
+        """The emilkowalski/skills fold keeps its notice inside the vendored
+        file itself (there is no subfolder to hold a NOTICE.md)."""
+        vocab = IMPECCABLE / "reference" / "animation-vocabulary.md"
+        self.assertTrue(vocab.is_file(), "reference/animation-vocabulary.md is missing")
+        text = vocab.read_text(errors="replace")
+        for token in ("emilkowalski", "MIT", "78761e1", "Emil Kowalski"):
+            self.assertIn(token, text, f"animation-vocabulary.md lost {token!r}")
+        # MIT is only satisfied if the permission notice itself travels.
+        self.assertIn("Permission is hereby granted", text)
+        self.assertIn("WITHOUT WARRANTY OF ANY KIND", text)
+
+    def test_animation_fold_skill_md_keeps_attribution_and_reachability(self):
+        """Same failure mode as the accessibility fold: this skill ships no
+        scripts, so a reference doc SKILL.md never names is never read."""
+        text = (IMPECCABLE / "SKILL.md").read_text(errors="replace")
+        self.assertIn("emilkowalski/skills", text, "SKILL.md lost the attribution link")
+        self.assertIn(
+            "reference/animation-vocabulary.md",
+            text,
+            "SKILL.md no longer points at the animation vocabulary",
+        )
+
+    def test_animation_vocabulary_glossary_is_whole(self):
+        """91 terms in 12 categories at fold time. A truncated re-pull or an
+        overeager tidy would shrink these counts silently; the glossary's value
+        is coverage, so shrinkage is breakage."""
+        text = (IMPECCABLE / "reference" / "animation-vocabulary.md").read_text(
+            errors="replace"
+        )
+        self.assertTrue(
+            text.lstrip().startswith("# "),
+            "animation-vocabulary.md must open with a markdown title",
+        )
+        glossary = text.split("## Glossary", 1)[1].split("## Source and Licence", 1)[0]
+        terms = re.findall(r"^- \*\*(.+?)\*\*: ", glossary, re.M)
+        categories = re.findall(r"^### ", glossary, re.M)
+        self.assertEqual(len(terms), 91, "glossary terms went missing or gained")
+        self.assertEqual(len(categories), 12, "glossary categories changed")
+        for ch in ("—", "–"):
+            self.assertNotIn(
+                ch, text,
+                "a dash survived in animation-vocabulary.md; the fold's documented "
+                "punctuation rule (no em or en dashes) has been undone",
+            )
+
+    def test_motion_design_carries_the_folded_sections(self):
+        """The other half of the fold: three sections adapted into
+        motion-design.md. Losing one silently narrows the skill's judgment."""
+        text = (IMPECCABLE / "reference" / "motion-design.md").read_text(
+            errors="replace"
+        )
+        for heading in (
+            "## Should It Animate At All?",
+            "## Origin: Where Motion Starts From",
+            "## Interruptibility",
+        ):
+            self.assertIn(heading, text, f"motion-design.md lost {heading!r}")
+        self.assertIn("emilkowalski/skills", text, "motion-design.md lost its source note")
+
     def test_the_reconciliation_section_still_stands(self):
         """interaction-design.md predates this material and is looser in three
         places (focus rings, validation timing, hit-area thresholds). The

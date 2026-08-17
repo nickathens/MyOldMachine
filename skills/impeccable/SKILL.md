@@ -6,6 +6,8 @@ Based on [Impeccable](https://github.com/pbakaus/impeccable) (Apache 2.0, built 
 
 The accessibility material is folded in from [better-accessibility](https://github.com/jakubkrehel/skills) (MIT, commit `a673333`). Attribution and licence text: `reference/accessibility/NOTICE.md`.
 
+The animation vocabulary and the frequency-gating, origin, and interruptibility material in motion-design.md are folded in from [emilkowalski/skills](https://github.com/emilkowalski/skills) (MIT, commit `78761e1`). Attribution and licence text: `reference/animation-vocabulary.md`, Source and Licence section.
+
 **When to use:** Any time you're building or modifying HTML/CSS/JS -- websites, landing pages, web apps, email templates, UI components.
 
 **Before using:** Read the relevant reference docs in `skills/impeccable/reference/` for the specific design domain you're working on.
@@ -22,7 +24,8 @@ Read these for deep guidance on specific design domains:
 | `reference/typography.md` | Font selection, pairing, scales, fluid type, web font loading |
 | `reference/color-and-contrast.md` | OKLCH, palettes, dark mode, tinted neutrals, WCAG contrast |
 | `reference/spatial-design.md` | Spacing systems, grids, visual hierarchy, container queries |
-| `reference/motion-design.md` | Timing, easing curves, staggering, reduced motion, perceived performance |
+| `reference/motion-design.md` | Whether to animate at all (frequency gate), timing, easing curves, origin, interruptibility, staggering, reduced motion, perceived performance |
+| `reference/animation-vocabulary.md` | Reverse lookup from a described motion effect to its exact term, for briefing or prompting animation work |
 | `reference/interaction-design.md` | States, focus rings, forms, loading, keyboard navigation |
 | `reference/responsive-design.md` | Mobile-first, breakpoints, input detection, safe areas, images |
 | `reference/ux-writing.md` | Button labels, error messages, empty states, voice/tone, translation |
@@ -75,11 +78,14 @@ Choose a clear conceptual direction and execute with precision. Bold maximalism 
 - **DON'T**: Modals unless there's truly no better alternative.
 
 ### Motion
+- Gate by frequency first: anything a user triggers 100+ times a day (keyboard shortcuts, command palettes) gets no animation at all.
 - Focus on high-impact moments: one well-orchestrated page load with staggered reveals > scattered micro-interactions.
 - Use exponential easing (ease-out-quart/quint/expo) for natural deceleration.
 - For height animations, use grid-template-rows transitions.
+- Popovers and menus scale from their trigger (`transform-origin`), never from `scale(0)`; modals stay centered.
 - **DON'T**: Animate layout properties (width, height, padding, margin) -- use transform and opacity only.
 - **DON'T**: Bounce or elastic easing -- dated and tacky.
+- **DON'T**: Keyframes on rapidly triggered elements (toasts, toggles); transitions retarget, keyframes restart.
 
 ### Interaction
 - Use progressive disclosure -- start simple, reveal sophistication through interaction.
