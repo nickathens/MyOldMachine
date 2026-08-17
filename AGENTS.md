@@ -56,6 +56,38 @@ isolation is **app-level only**:
 
 If you add a new helper script that takes `--user`, wire `session_guard` in.
 
+### Never reap by name across the machine
+
+One OS account means every user's work shows up in one process table, one
+`ps` output, one `/tmp`. Anything that finds work by matching a name and then
+acts on it will hit other people's jobs, and the Stop event fires at the end
+of **every turn for every user**, so the damage lands constantly.
+
+This is not hypothetical. `skills/watch/hooks.json` once declared
+`"kill_processes": ["whisper", "yt-dlp", "ffmpeg"]`; the literal behaviour was
+that anybody finishing a reply killed every `ffmpeg` on the machine. It took
+down a client's 4K master render five times over four hours before anyone
+looked at the config, because a userland SIGKILL leaves no trace and every
+other signal (free memory, thermals, jetsam, the logs) said the machine was
+fine. See PR #139.
+
+Rules:
+
+- A session may only kill what it can prove it started. `skill_hooks
+  .get_owned_pids()` returns that subtree, or `None` when it cannot be proved,
+  and `None` means kill nothing. Leaking a stray process is a cost; killing
+  another user's render is not.
+- Process group and PPID are **not** ownership here. The bot is a launchd job,
+  so every session shares its process group, and every detached job is
+  reparented to PID 1. Ancestry up to the session's own agent process is the
+  signal that works.
+- A `kill_processes` pattern must name something only that skill's own
+  processes carry (a `mkdtemp` prefix, a full script path), never a shared
+  binary. `tests/test_skill_hooks_ownership.py` fails the build on the worst
+  of those.
+- The same reasoning covers files. `clean_patterns` deletes by glob and age,
+  which cannot tell stale scratch from a long job's live working directory.
+
 ### Known limitation
 
 The per-user env vars (`JARVIS_USER_ID`, `JARVIS_USER_DIR`) are injected by
