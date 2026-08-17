@@ -4,7 +4,7 @@
     "min_disk_mb": 1024
   },
   "stop": {
-    "kill_processes": ["whisper", "yt-dlp", "ffmpeg"],
+    "kill_processes": ["/watch-"],
     "clean_patterns": ["/tmp/watch-*"]
   }
 }

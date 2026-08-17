@@ -23,6 +23,13 @@ hooks.json schema:
     "clean_patterns": ["/tmp/separated/"]   # Glob patterns for temp cleanup
   }
 }
+
+kill_processes matches are CONTAINED to the stopping session's own process
+subtree (see get_owned_pids). A pattern can never reach a process this session
+did not start, no matter how broad the pattern is. This machine hosts several
+Telegram users behind one OS account, so an unscoped reaper walking the whole
+process table by name kills other people's work: a bare "ffmpeg" here once
+killed a 4K render at the end of every unrelated assistant turn, for hours.
 """
 
 import glob
@@ -35,6 +42,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -266,44 +274,119 @@ def get_daemon_pid() -> int | None:
         return None
 
 
-def get_all_pids() -> list[tuple[int, str]]:
-    """Get all running PIDs and their command lines. Cross-platform."""
-    pids = []
-    exclude = {os.getpid(), os.getppid()}
+def get_process_table() -> list[tuple[int, int, str]]:
+    """
+    Every running process as (pid, ppid, command). Cross-platform.
+
+    Unlike get_all_pids() this keeps the parent link, which is what makes
+    ownership containment possible. Nothing is filtered out here: the table is
+    also used to walk our own ancestry, so our own pids have to be in it.
+    """
+    procs: list[tuple[int, int, str]] = []
     try:
-        # macOS: ps -ax -o pid,args (no --no-headers)
-        # Linux: ps -eo pid,args --no-headers
+        # macOS: ps -ax -o pid,ppid,args (no --no-headers)
+        # Linux: ps -eo pid,ppid,args --no-headers
         if IS_MACOS:
-            cmd = ["ps", "-ax", "-o", "pid,args"]
+            cmd = ["ps", "-ax", "-o", "pid,ppid,args"]
         else:
-            cmd = ["ps", "-eo", "pid,args", "--no-headers"]
+            cmd = ["ps", "-eo", "pid,ppid,args", "--no-headers"]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         lines = result.stdout.strip().split("\n")
 
-        # Skip header on macOS (first line is "PID ARGS" or similar)
+        # Skip header on macOS (first line is "PID PPID ARGS" or similar)
         start = 1 if IS_MACOS and lines else 0
 
         for line in lines[start:]:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(None, 1)
-            if len(parts) < 2:
+            parts = line.strip().split(None, 2)
+            if len(parts) < 3:
                 continue
             try:
                 pid = int(parts[0])
+                ppid = int(parts[1])
             except ValueError:
                 continue
-            if pid in exclude:
-                continue
-            cmd_str = parts[1]
-            if "skill_hooks.py" in cmd_str:
-                continue
-            pids.append((pid, cmd_str))
+            procs.append((pid, ppid, parts[2]))
     except (subprocess.TimeoutExpired, OSError):
         pass
-    return pids
+    return procs
+
+
+def get_all_pids(table: list[tuple[int, int, str]] | None = None) -> list[tuple[int, str]]:
+    """Killable PIDs and their command lines: the table minus our own hook process."""
+    exclude = {os.getpid(), os.getppid()}
+    return [
+        (pid, cmd)
+        for pid, _ppid, cmd in (table if table is not None else get_process_table())
+        if pid not in exclude and "skill_hooks.py" not in cmd
+    ]
+
+
+def _is_agent_process(cmd: str) -> bool:
+    """True if this command line looks like a Claude Code CLI session process."""
+    tokens = cmd.split()
+    if not tokens:
+        return False
+    if os.path.basename(tokens[0]) == "claude":
+        return True
+    # node/bun wrapper installs: `node /path/to/claude` or `.../claude/cli.js`
+    if os.path.basename(tokens[0]) in ("node", "bun", "deno"):
+        for tok in tokens[1:]:
+            base = os.path.basename(tok)
+            if base == "claude" or (base == "cli.js" and "claude" in tok):
+                return True
+    return False
+
+
+def get_session_root(table: list[tuple[int, int, str]],
+                     start_pid: int | None = None) -> int | None:
+    """
+    The PID of the agent session this hook is running inside, or None.
+
+    Found by walking our own ancestry up to the NEAREST Claude Code CLI process.
+    Stopping at the agent (rather than at PID 1, the process group, or the bot)
+    is what keeps the answer correct on this machine: the bot is itself a
+    launchd job, so every session shares the bot's process group and every
+    detached job is reparented to PID 1. Those two signals cannot tell one
+    user's session from another's; ancestry can.
+    """
+    parent_of = {pid: ppid for pid, ppid, _cmd in table}
+    cmd_of = {pid: cmd for pid, _ppid, cmd in table}
+    pid = start_pid if start_pid is not None else os.getpid()
+    seen: set[int] = set()
+    while pid and pid > 1 and pid not in seen:
+        seen.add(pid)
+        if _is_agent_process(cmd_of.get(pid, "")):
+            return pid
+        pid = parent_of.get(pid, 0)
+    return None
+
+
+def get_owned_pids(table: list[tuple[int, int, str]],
+                   start_pid: int | None = None) -> set[int] | None:
+    """
+    Every PID in this session's own subtree, or None if that cannot be proved.
+
+    None means "ownership unknown" and callers MUST treat it as "kill nothing".
+    Leaking a stray process is a cost; killing another user's render is not.
+    """
+    root = get_session_root(table, start_pid)
+    if root is None:
+        return None
+
+    children: dict[int, list[int]] = {}
+    for pid, ppid, _cmd in table:
+        children.setdefault(ppid, []).append(pid)
+
+    owned: set[int] = set()
+    stack = [root]
+    while stack:
+        pid = stack.pop()
+        for child in children.get(pid, ()):
+            if child not in owned:
+                owned.add(child)
+                stack.append(child)
+    return owned
 
 
 def find_orphaned_browser_pids(all_pids: list[tuple[int, str]],
@@ -320,8 +403,15 @@ def find_orphaned_browser_pids(all_pids: list[tuple[int, str]],
 
 def find_processes_by_patterns(all_pids: list[tuple[int, str]],
                                 patterns: list[str],
-                                exclude_pids: set[int] | None = None) -> list[int]:
-    """Find PIDs matching any of the given command-line substring patterns."""
+                                exclude_pids: set[int] | None = None,
+                                owned_pids: set[int] | None = None) -> list[int]:
+    """
+    Find PIDs matching any of the given command-line substring patterns.
+
+    owned_pids is the containment set: a process outside it is never returned,
+    however well it matches. Pass None only from callers that have already
+    proved they may reap machine-wide; the Stop handler never does.
+    """
     matched = []
     exclude = exclude_pids or set()
     str_patterns = [p for p in patterns if isinstance(p, str)]
@@ -329,6 +419,8 @@ def find_processes_by_patterns(all_pids: list[tuple[int, str]],
         return matched
     for pid, cmd in all_pids:
         if pid in exclude:
+            continue
+        if owned_pids is not None and pid not in owned_pids:
             continue
         if any(pat in cmd for pat in str_patterns):
             matched.append(pid)
@@ -376,22 +468,50 @@ def clean_stale_state_files():
             pass
 
 
-def clean_old_temp_files(patterns: list[str] | None = None) -> int:
-    """Remove temp files older than TEMP_MAX_AGE matching the given patterns."""
+def _expand_tmp_pattern(pattern: str) -> list[str]:
+    """
+    A "/tmp/..." pattern also matched against the real temp dir.
+
+    On macOS tempfile.mkdtemp() honours TMPDIR, so scratch lands under
+    /var/folders/.../T/ and a literal /tmp/ glob never matches anything. Every
+    clean_patterns entry written as /tmp/foo-* was silently a no-op here.
+    """
+    if not pattern.startswith("/tmp/"):
+        return [pattern]
+    real_tmp = os.path.realpath(tempfile.gettempdir())
+    if real_tmp in ("/tmp", os.path.realpath("/tmp")):
+        return [pattern]
+    return [pattern, os.path.join(real_tmp, pattern[len("/tmp/"):])]
+
+
+def clean_old_temp_files(patterns: list[str] | None = None,
+                         all_pids: list[tuple[int, str]] | None = None) -> int:
+    """
+    Remove temp files older than TEMP_MAX_AGE matching the given patterns.
+
+    Paths named on a live process's command line are left alone even when they
+    are old: a long job's scratch directory is in use, not stale.
+    """
     cutoff = time.time() - TEMP_MAX_AGE
     cleaned = 0
     target_patterns = patterns or TEMP_CLEANUP_PATTERNS
+    live_cmds = [cmd for _pid, cmd in (all_pids or [])]
     for pattern in target_patterns:
-        for path in glob.glob(pattern):
-            try:
-                if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
-                    os.unlink(path)
-                    cleaned += 1
-                elif os.path.isdir(path) and os.path.getmtime(path) < cutoff:
-                    shutil.rmtree(path, ignore_errors=True)
-                    cleaned += 1
-            except OSError:
-                pass
+        for expanded in _expand_tmp_pattern(pattern):
+            for path in glob.glob(expanded):
+                if any(path in cmd for cmd in live_cmds):
+                    continue
+                try:
+                    if os.path.getmtime(path) >= cutoff:
+                        continue
+                    if os.path.isfile(path):
+                        os.unlink(path)
+                        cleaned += 1
+                    elif os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=True)
+                        cleaned += 1
+                except OSError:
+                    pass
     return cleaned
 
 
@@ -753,7 +873,9 @@ def handle_stop(data: dict) -> dict | None:
     and orphaned docker containers.
     """
     actions = []
-    all_pids = get_all_pids()
+    table = get_process_table()
+    all_pids = get_all_pids(table)
+    owned_pids = get_owned_pids(table)
     killed_pids: set[int] = set()
 
     # 1. Browser-specific cleanup
@@ -785,8 +907,19 @@ def handle_stop(data: dict) -> dict | None:
 
     # Re-scan after daemon kill to catch orphaned children
     if kill_daemon:
-        all_pids = get_all_pids()
+        table = get_process_table()
+        all_pids = get_all_pids(table)
+        owned_pids = get_owned_pids(table)
+
+    # A browser outside our subtree may only be swept under the SHARED idle
+    # policy (nobody has used the skill for DAEMON_IDLE_TIMEOUT), never just
+    # because this session happened to stop. Another user's live scrape is not
+    # an orphan.
+    browser_idle = get_last_used_age("browser")
+    sweep_unowned_browsers = kill_daemon or browser_idle is None or browser_idle > DAEMON_IDLE_TIMEOUT
     orphans = find_orphaned_browser_pids(all_pids, exclude_pid=daemon_pid if not kill_daemon else None)
+    if not sweep_unowned_browsers and owned_pids is not None:
+        orphans = [pid for pid in orphans if pid in owned_pids]
     if orphans:
         kill_pids_batch(orphans)
         killed_pids.update(orphans)
@@ -802,11 +935,13 @@ def handle_stop(data: dict) -> dict | None:
             continue
 
         kill_patterns = stop_config.get("kill_processes", [])
-        if kill_patterns and isinstance(kill_patterns, list):
+        # owned_pids is None => ownership could not be proved => reap nothing.
+        if kill_patterns and isinstance(kill_patterns, list) and owned_pids is not None:
             str_patterns = [p for p in kill_patterns if isinstance(p, str)]
             if str_patterns:
                 matched = find_processes_by_patterns(
-                    all_pids, str_patterns, exclude_pids=killed_pids
+                    all_pids, str_patterns, exclude_pids=killed_pids,
+                    owned_pids=owned_pids,
                 )
                 for pid in matched:
                     if pid not in all_skill_kill_pids_set:
@@ -815,7 +950,7 @@ def handle_stop(data: dict) -> dict | None:
 
         skill_patterns = stop_config.get("clean_patterns", [])
         if skill_patterns and isinstance(skill_patterns, list):
-            cleaned = clean_old_temp_files(skill_patterns)
+            cleaned = clean_old_temp_files(skill_patterns, all_pids)
             if cleaned:
                 actions.append(f"cleaned {cleaned} {skill_name} temp files")
 
@@ -835,8 +970,11 @@ def handle_stop(data: dict) -> dict | None:
         for skill_name, count in skill_counts.items():
             actions.append(f"killed {count} {skill_name} processes")
 
+    if owned_pids is None:
+        actions.append("skipped kill_processes (session subtree not identified)")
+
     # 3. Global temp file cleanup
-    cleaned = clean_old_temp_files()
+    cleaned = clean_old_temp_files(None, all_pids)
     if cleaned:
         actions.append(f"cleaned {cleaned} global temp files")
 
