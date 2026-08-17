@@ -102,9 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-08-16] linux: fold emilkowalski motion material into impeccable (PR #138)
+(Nothing open right now.)
 
-(Entries removed above: #137, #136 and #135 merged 2026-08-15.
+(Entries removed above: #139 and #138 merged 2026-08-18.
+#137, #136 and #135 merged 2026-08-15.
 #133 merged 2026-08-13. #128 merged 2026-08-12.
 #127 merged 2026-08-11,
 struck inside #128's own work-log edit since the two entries shared lines.
