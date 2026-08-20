@@ -36,12 +36,23 @@ logger = logging.getLogger(__name__)
 # other module reads this rather than repeating a literal, so the default
 # cannot drift between the writer, the installer, and the status readout.
 #
-# Kept deliberately low. A tarball is a full copy, not a delta, so each night
-# costs the whole archive again, and when the target sits on a volume Time
-# Machine also covers, compression hides the overlap and every archive lands
-# there as brand-new data. Two survives a corrupt latest archive; more than
-# that just multiplies the same bytes on the same disk.
-DEFAULT_RETENTION = 2
+# Kept at one. A tarball is a full copy, not a delta, so each night costs the
+# whole archive again, and the target is normally a directory on the same disk
+# as the originals it protects. The prune runs after the new archive is renamed
+# into place, so a retention of N needs room for N + 1 archives at the peak of
+# the run, and a growing project tree moves that peak every night: on this Mac
+# mini the nightly archive went 22 GB to 66 GB in six days, two copies reached
+# 116 GB (a quarter of the volume), and the run on 2026-08-20 drove the disk to
+# zero and died mid-write with ENOSPC.
+#
+# What the second copy bought was a survivor if the newest archive is corrupt
+# or truncated. That is better bought from the snapshot layer already covering
+# the volume (Time Machine on macOS), which keeps history without paying for a
+# whole extra copy nightly on the disk being protected, and which is also where
+# a user who wants real depth should be pointed. Raising this to 2 or more is a
+# supported choice per install via `backup_retention`; it just should not be
+# what every machine pays by default.
+DEFAULT_RETENTION = 1
 
 # Suffix an archive carries while it is still being written. The prune and the
 # listing both glob for "myoldmachine_*.tar.gz", and neither opens a candidate,
