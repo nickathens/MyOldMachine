@@ -21,7 +21,6 @@ real call_llm, so they cover the mechanism rather than a replica of it.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import types
@@ -202,7 +201,9 @@ class BlockerListTests(_RestartStateMixin, unittest.TestCase):
         # still yield an empty string; the id must survive that.
         botmod.get_user_profile = lambda uid: {}
         botmod._running_turns = {5}
-        self.assertIn("5", botmod._restart_blockers()[0])
+        line = botmod._restart_blockers()[0]
+        self.assertIn("5", line)
+        self.assertNotIn("None", line, "a missing name must not print as None")
 
     def test_scheduled_compaction_blocks(self):
         session_mod._compaction_scheduled.add("/tmp/u/conversation_summary.json")
