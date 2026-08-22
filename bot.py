@@ -3122,12 +3122,69 @@ async def cleanup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(report)
 
 
+def _restart_blockers() -> list[str]:
+    """One line per unit of work a /restart would destroy right now.
+
+    An empty list means restarting costs nothing. Deliberately NOT built on
+    _semaphore_holder: that name is only recorded while _semaphore_active,
+    which main() turns on for low-RAM machines only, so on a capable machine
+    it is always None and a guard reading it would be dead code exactly where
+    the bot runs best.
+
+    _running_turns is the provider-agnostic signal instead. _TurnGate fills it
+    the instant a turn passes its last cancellation check — before any
+    subprocess exists — and empties it on the way out, so it is true for all
+    twelve providers rather than only the two that spawn a CLI.
+    """
+    lines: list[str] = []
+    for uid in sorted(_running_turns):
+        profile = get_user_profile(uid)
+        name = profile.get("display_name") or profile.get("name") or str(uid)
+        lines.append(f"  - {name} ({uid}): request in progress")
+
+    from core.session import _compaction_scheduled
+    pending = len(_compaction_scheduled)
+    if pending:
+        word = "compaction" if pending == 1 else "compactions"
+        lines.append(f"  - {pending} background {word} in flight")
+
+    # A live CLI subprocess with no turn behind it: one that outlived its turn,
+    # or work started outside the gate. Reported only when nothing else is, so
+    # an ordinary request is never counted twice.
+    if not lines and getattr(_llm_provider, "has_active_processes", False):
+        lines.append("  - a provider subprocess is still running")
+
+    return lines
+
+
 @requires_auth
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restart the bot service. Admin only.
+
+    Refuses while a request is in flight, because the restart kills it: the
+    user loses the turn, and on a CLI provider whatever partial answer had
+    been written dies with the process. `/restart force` overrides, because
+    /stop only ever cancels the caller's own work — without an override an
+    admin could not clear someone else's stuck turn to get a restart through.
+    """
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("Admin only.")
         return
+
+    forced = command_body(update.message.text).strip().lower() == "force"
+    blockers = [] if forced else _restart_blockers()
+    if blockers:
+        logger.info(f"/restart refused for admin {user_id}: {len(blockers)} blocker(s)")
+        await update.message.reply_text(
+            "Cannot restart, the bot is busy:\n"
+            + "\n".join(blockers)
+            + "\n\nWait for it to finish, or /stop your own request first, then "
+            "retry /restart. To restart anyway and lose that work, send "
+            "/restart force."
+        )
+        return
+
     from core.updater import restart_service
     await update.message.reply_text("Shutting down gracefully, then restarting...")
     # Graceful shutdown: stop scheduler and kill background processes before restart
