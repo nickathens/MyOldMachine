@@ -68,6 +68,12 @@ in the journal, during exactly the incident you want a clean signal from.
 launchd has no equivalent of `Requisite=` at all, so a gate in the unit file
 could never have covered both platforms. A skip that exits 0 is silent on both.
 
+If you run the bot by hand rather than as a service, leave `--require-service`
+off the schedule. On Linux an unknown unit name is told apart from a stopped
+one and reads as unknown, so the gate degrades safely; launchd reports both the
+same way, so on macOS a bot that was never registered as a LaunchAgent would
+read as permanently down.
+
 When the service manager cannot answer at all (no systemd, no launchd, an
 unreadable launchctl), the script pings anyway and says so on stderr. That
 degrades to machine-and-network monitoring, which is what an ungated schedule

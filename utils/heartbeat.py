@@ -63,6 +63,13 @@ from core.config import get_heartbeat_url  # noqa: E402
 # A skip that exits 0 is silent on both platforms.
 
 
+# `systemctl is-active` exit code for "no such unit", as distinct from 3,
+# which is a unit that exists and is stopped. Measured against systemd 255:
+# an installed-but-stopped unit gives 3, a name systemd has never heard of
+# gives 4. The difference is load-bearing, see below.
+_SYSTEMCTL_NO_SUCH_UNIT = 4
+
+
 def _systemd_unit_active(unit: str) -> Optional[bool]:
     """True when systemd reports `unit` active, False when not, None if unknown."""
     try:
@@ -73,8 +80,14 @@ def _systemd_unit_active(unit: str) -> Optional[bool]:
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
         # No systemd on this host (or it did not answer): cannot tell.
         return None
-    # `is-active --quiet` exits 0 for active and non-zero for every other
-    # state (inactive, failed, activating, unknown unit).
+    if result.returncode == _SYSTEMCTL_NO_SUCH_UNIT:
+        # The unit does not exist, which says nothing about the bot: it is
+        # probably running by hand or under a different unit name. Reporting
+        # that as "down" would stop the pings forever and page the operator
+        # forever, so it is unknown and the caller fails open.
+        return None
+    # 0 is active; everything else left (3, and the transitional states) is a
+    # unit that exists and is not up.
     return result.returncode == 0
 
 
@@ -85,6 +98,12 @@ def _launchd_job_running(label: str) -> Optional[bool]:
     and on success prints a plist-ish dict that carries a `"PID" = <n>;` line
     only while the job actually has a process. A loaded job with no PID is a
     crashed or throttled job, which is "not running" for our purposes.
+
+    Asymmetry worth knowing: on Linux "no such unit" is a distinct exit code
+    from "stopped", so a bot that is not systemd-managed reads as unknown.
+    launchctl gives one failure for both, so a bot that was never registered
+    as a LaunchAgent reads as down. Run the bot by hand rather than as a
+    service and you want the schedule without --require-service.
     """
     try:
         result = subprocess.run(

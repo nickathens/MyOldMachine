@@ -27,6 +27,16 @@ REPO_DIR = Path(__file__).parent.parent
 BOT_SYSTEMD_SERVICE = "myoldmachine"
 BOT_LAUNCHD_LABEL = "com.myoldmachine.bot"
 
+
+def bot_service_name() -> str:
+    """The systemd unit the bot actually runs under.
+
+    Custom installs rename it and point SERVICE_NAME at the new name; that is
+    already how core.updater.restart_service finds it. Gating on the wrong
+    name would make the ping skip forever on such a host.
+    """
+    return (os.environ.get("SERVICE_NAME") or "").strip() or BOT_SYSTEMD_SERVICE
+
 # Our own identities.
 SYSTEMD_UNIT_NAME = "myoldmachine-heartbeat"
 SYSTEMD_UNIT_PATH = f"/etc/systemd/system/{SYSTEMD_UNIT_NAME}.service"
@@ -120,7 +130,7 @@ def render_systemd_units(service_text: str, timer_text: str, repo_dir: Path,
     venv_python = repo_dir / ".venv" / "bin" / "python"
     service = service.replace("{{USER}}", username)
     service = service.replace("{{PYTHON}}", str(venv_python))
-    service = service.replace("{{BOT_SERVICE}}", BOT_SYSTEMD_SERVICE)
+    service = service.replace("{{BOT_SERVICE}}", bot_service_name())
     # WORKING_DIR last: it appears inside the ExecStart path too.
     service = service.replace("{{WORKING_DIR}}", str(repo_dir))
 

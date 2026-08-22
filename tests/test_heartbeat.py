@@ -108,12 +108,24 @@ class ServiceProbeTests(unittest.TestCase):
                          ["systemctl", "is-active", "--quiet", "mom.service"])
 
     def test_systemd_inactive_is_false(self):
-        # `is-active --quiet` exits 3 for inactive, 4 for an unknown unit.
-        for rc in (1, 3, 4):
+        # Measured against systemd 255: a unit that exists and is stopped
+        # exits 3. 1 and the transitional states are also "exists, not up".
+        for rc in (1, 3):
             with self.subTest(returncode=rc):
                 with patch("utils.heartbeat.subprocess.run",
                            return_value=self._completed(rc)):
                     self.assertIs(heartbeat._systemd_unit_active("mom.service"), False)
+
+    def test_systemd_unknown_unit_is_unknown_not_down(self):
+        """Exit 4 is "no such unit", which says nothing about the bot.
+
+        Reporting it as down would stop the pings forever on any host running
+        the bot by hand or under a different unit name, and the monitor would
+        page forever. Measured on real systemd: stopped is 3, unknown is 4.
+        """
+        with patch("utils.heartbeat.subprocess.run",
+                   return_value=self._completed(4)):
+            self.assertIsNone(heartbeat._systemd_unit_active("mom.service"))
 
     def test_systemd_missing_is_unknown(self):
         # No systemd on this host: unknown, which is not the same as down.

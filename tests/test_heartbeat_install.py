@@ -11,6 +11,7 @@ touches the network or the real service managers.
 """
 from __future__ import annotations
 
+import os
 import plistlib
 import sys
 import unittest
@@ -72,6 +73,33 @@ class IntervalValidationTests(unittest.TestCase):
                     heartbeat_setup.normalize_interval(bad),
                     heartbeat_setup.DEFAULT_INTERVAL_MIN,
                 )
+
+
+class BotServiceNameTests(unittest.TestCase):
+    """A custom install renames the bot unit and points SERVICE_NAME at it,
+    the same override core.updater.restart_service honours. Gating on the
+    stock name there would skip the ping forever."""
+
+    def test_defaults_to_the_stock_unit(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(heartbeat_setup.bot_service_name(), "myoldmachine")
+
+    def test_service_name_env_wins(self):
+        with patch.dict(os.environ, {"SERVICE_NAME": "mombot"}, clear=True):
+            self.assertEqual(heartbeat_setup.bot_service_name(), "mombot")
+
+    def test_blank_service_name_falls_back(self):
+        with patch.dict(os.environ, {"SERVICE_NAME": "   "}, clear=True):
+            self.assertEqual(heartbeat_setup.bot_service_name(), "myoldmachine")
+
+    def test_rendered_unit_gates_on_the_override(self):
+        with patch.dict(os.environ, {"SERVICE_NAME": "mombot"}, clear=True):
+            service, _ = heartbeat_setup.render_systemd_units(
+                (TEMPLATES / "myoldmachine-heartbeat.service").read_text(encoding="utf-8"),
+                (TEMPLATES / "myoldmachine-heartbeat.timer").read_text(encoding="utf-8"),
+                Path("/opt/mom"), 2, "tester",
+            )
+        self.assertIn("--require-service mombot.service", service)
 
 
 class SystemdRenderTests(unittest.TestCase):
