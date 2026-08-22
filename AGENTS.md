@@ -102,11 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-08-20] mac: tarball backup default retention 2 -> 1 (PR #140)
-[2026-08-21] linux: /restart refuses while a request is in flight (PR #141)
-[2026-08-22] linux: installer wires the down-alert heartbeat, gated schedule (PR #142)
+(Nothing open right now.)
 
-(Entries removed above: #139 and #138 merged 2026-08-18.
+(Entries removed above: #143, #142, #141 and #140 merged 2026-08-22.
+#139 and #138 merged 2026-08-18.
 #137, #136 and #135 merged 2026-08-15.
 #133 merged 2026-08-13. #128 merged 2026-08-12.
 #127 merged 2026-08-11,
