@@ -58,6 +58,13 @@ The setup wizard walks you through these steps:
 
 When the wizard finishes, it runs `claude auth login` (or `codex login`) for you in a browser if you picked a CLI provider, then registers the system service. The bot messages you on Telegram. Close the laptop lid if you like, it stays running. If the machine reboots, the bot comes back on its own.
 
+Optional extras are offered when you run the installer again rather than on the
+first pass, so the first install stays short. One of them is worth knowing about
+up front: a **down alert** that tells you within minutes when the bot dies, the
+machine freezes, or the network drops, instead of you noticing hours later. It
+pings an uptime monitor you create on a timer while the bot is running, and the
+pings stop when the bot does. See [docs/heartbeat.md](docs/heartbeat.md).
+
 ### Resuming a failed install
 
 If the install is interrupted (power loss, SSH disconnect, anything), run the command again. It has a checkpoint system and resumes from where it stopped.

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the MyOldMachine heartbeat every {{INTERVAL_MIN}} minutes
+
+[Timer]
+OnBootSec={{INTERVAL_MIN}}min
+OnUnitActiveSec={{INTERVAL_MIN}}min
+AccuracySec=15
+
+[Install]
+WantedBy=timers.target
