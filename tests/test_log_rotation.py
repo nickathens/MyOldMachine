@@ -51,8 +51,12 @@ class ServiceTemplateLogRoutingTests(unittest.TestCase):
         for name in (
             "com.myoldmachine.bot.plist",
             "com.myoldmachine.miniapp.plist",
+            "com.myoldmachine.heartbeat.plist",
             "myoldmachine.service",
             "myoldmachine-miniapp.service",
+            # myoldmachine-heartbeat.service is absent on purpose: the oneshot
+            # sets no StandardOutput, so its single line per run goes to the
+            # journal, which systemd bounds itself. There is no file to rotate.
         ):
             targets = self._log_targets(name)
             self.assertTrue(targets, f"{name}: no log target found")
@@ -69,6 +73,7 @@ class ServiceTemplateLogRoutingTests(unittest.TestCase):
         for name in (
             "com.myoldmachine.bot.plist",
             "com.myoldmachine.miniapp.plist",
+            "com.myoldmachine.heartbeat.plist",
             "myoldmachine.service",
             "myoldmachine-miniapp.service",
         ):
