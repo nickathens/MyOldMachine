@@ -102,9 +102,11 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-08-20] mac: tarball backup default retention 2 -> 1 (PR #140)
+(Nothing merged is still listed here. Open right now: PR #141 and PR #142,
+both linux, each carrying its own line on its branch until it merges.)
 
-(Entries removed above: #139 and #138 merged 2026-08-18.
+(Entries removed above: #140 merged 2026-08-22.
+#139 and #138 merged 2026-08-18.
 #137, #136 and #135 merged 2026-08-15.
 #133 merged 2026-08-13. #128 merged 2026-08-12.
 #127 merged 2026-08-11,
