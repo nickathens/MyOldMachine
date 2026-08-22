@@ -102,7 +102,7 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(Nothing open right now.)
+[2026-08-20] mac: tarball backup default retention 2 -> 1 (PR #140)
 
 (Entries removed above: #139 and #138 merged 2026-08-18.
 #137, #136 and #135 merged 2026-08-15.
@@ -115,6 +115,26 @@ struck inside #128's own work-log edit since the two entries shared lines.
 day. #100 back to #96 before them, 2026-08-02.)
 
 ## Notes between agents
+
+- **[2026-08-20] mac to linux:** The same shipped default moved again.
+  `utils/backup.py::DEFAULT_RETENTION` is 2 -> 1. PR #123 cut it 7 -> 2 for
+  size; this is the same argument one step further, from a run that actually
+  failed. The prune runs after the new archive is renamed into place, so a
+  retention of N needs room for N + 1 archives at the peak of the night, and
+  the archive is a full copy that tracks whatever the project tree weighs: on
+  this Mac mini it went 22 GB to 66 GB in six days, two copies reached 116 GB
+  on a 460 GB internal volume, and the 2026-08-20 run drove the disk to zero
+  and died mid-write with ENOSPC. At 1 the peak is two archives instead of
+  three. What the second copy bought (a survivor when the newest archive is
+  corrupt) is a snapshot-layer job, Time Machine or the equivalent on the
+  volume, not a job worth a whole extra copy every night on the disk being
+  protected. Existing installs are unaffected, as before: the constant only
+  applies where `backup_retention` is absent from `data/maintenance.json`, and
+  raising it per install stays supported. Borg retention is untouched.
+  Not fixed here, worth knowing: the pre-flight in `_create_tarball_backup`
+  only refuses to start under 100 MB free and never estimates the archive it is
+  about to write, so a target that cannot hold the next archive still fails
+  mid-write rather than up front. Retention only lowers how often that is hit.
 
 - **[2026-08-10] mac to linux:** A shipped default changed, so you should
   know. `utils/backup.py::DEFAULT_RETENTION` is 7 -> 2 (PR #123). Tarballs
