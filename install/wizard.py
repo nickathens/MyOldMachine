@@ -778,6 +778,15 @@ def write_env(repo_dir: Path, config: dict):
         lines.append(f"TELEGRAM_API_ID={config.get('telegram_api_id', '')}")
         lines.append(f"TELEGRAM_API_HASH={config.get('telegram_api_hash', '')}")
 
+    # External heartbeat / down alert (optional). This has to round-trip:
+    # write_env rebuilds .env from scratch, so any key it does not know about
+    # is destroyed the next time the wizard is re-run.
+    if config.get("heartbeat_url"):
+        lines.append(f"HEARTBEAT_URL={config['heartbeat_url']}")
+        lines.append(
+            f"HEARTBEAT_INTERVAL_MIN={config.get('heartbeat_interval_min', 2)}"
+        )
+
     env_file = repo_dir / ".env"
     _atomic_env_write(env_file, "\n".join(lines) + "\n")
     ok(f"Configuration saved to {env_file}")
@@ -997,6 +1006,16 @@ def _is_miniapp_configured() -> bool:
 def _run_miniapp_setup_step(config: dict):
     from install.miniapp_setup import run_miniapp_setup_step
     run_miniapp_setup_step(config, ask=ask)
+
+
+def _is_heartbeat_configured() -> bool:
+    from install.heartbeat_setup import is_heartbeat_configured
+    return is_heartbeat_configured(REPO_DIR)
+
+
+def _run_heartbeat_setup_step(config: dict):
+    from install.heartbeat_setup import run_heartbeat_setup_step
+    run_heartbeat_setup_step(config, ask=ask)
 
 
 def _run_backup_setup_step(config: dict):
@@ -1623,6 +1642,20 @@ OPTIONAL_FEATURES = [
         "applies_to": lambda: platform.system() in ("Linux", "Darwin"),
         "is_configured": lambda c: _is_miniapp_configured(),
         "configure": lambda c: _run_miniapp_setup_step(c),
+    },
+    {
+        "key": "heartbeat",
+        "label": "Down alert (external heartbeat)",
+        "summary": (
+            "Tells you within minutes when the bot dies, the machine freezes, "
+            "or the network drops, instead of you noticing hours later. A "
+            "timer pings an uptime monitor you create (healthchecks.io free "
+            "tier or similar) while the bot is running; the pings stop when "
+            "the bot does and the monitor emails you. Needs a ping URL."
+        ),
+        "applies_to": lambda: platform.system() in ("Linux", "Darwin"),
+        "is_configured": lambda c: _is_heartbeat_configured(),
+        "configure": lambda c: _run_heartbeat_setup_step(c),
     },
 ]
 
@@ -2437,6 +2470,12 @@ def _load_config_from_env(repo_dir: Path) -> dict:
                 elif key == "TELEGRAM_API_HASH":
                     if value.strip():
                         config["telegram_api_hash"] = value
+                elif key == "HEARTBEAT_URL":
+                    if value.strip():
+                        config["heartbeat_url"] = value.strip()
+                elif key == "HEARTBEAT_INTERVAL_MIN":
+                    if value.strip():
+                        config["heartbeat_interval_min"] = value.strip()
     config.setdefault("takeover", "workstation")
     config.setdefault("bot_name", "MyOldMachine")
     config.setdefault("queue_mode", "per_user")

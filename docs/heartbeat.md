@@ -16,84 +16,89 @@ monitor stays quiet. The moment they stop, the monitor alerts you.
 
 The trick is that "stops pinging" is exactly the failure you want to catch:
 
-- Schedule it through the bot's own scheduler and the pings stop the instant the
-  bot process stops (frozen, crashed, or the machine is down), because the
-  scheduler stops with it. That is the dead-man's-switch.
-- Or schedule it with a system timer (systemd or cron) so pings survive a bot
-  crash and stop only when the machine or network is down.
+- A system timer (systemd or launchd) runs the script independently of the bot,
+  so a bot pinned under load never delays a ping. On its own such a timer keeps
+  pinging while the bot is dead, which would only ever catch "machine or network
+  down", so the installer gates it with `--require-service`: the script checks
+  the bot first and skips the ping when the bot is not running. Pings stopping
+  is then the alert, and it covers a dead bot as well as a dead machine.
+- Or schedule it through the bot's own scheduler, where no gate is needed
+  because the scheduler stops with the bot.
 
-The script uses only the standard library, sends no data beyond the ping, and
-never raises. With `HEARTBEAT_URL` unset it is a no-op, so it is safe to leave
-disabled.
+The script sends no data beyond the ping and never raises. With `HEARTBEAT_URL`
+unset it is a no-op, so it is safe to leave disabled.
 
 ## Enable it
 
-1. Create a check on any uptime monitor that works by receiving pings (for
-   example a free healthchecks.io check) and copy its ping URL. Set its period
-   and grace to match your interval; a 2 minute ping with an 8 minute grace
-   catches a real outage without firing on one slow ping.
-2. Add the URL to your `.env`:
-   ```
-   HEARTBEAT_URL=https://hc-ping.com/your-check-uuid
-   HEARTBEAT_INTERVAL_MIN=2
-   ```
-3. Schedule the script. Pick one of the two variants below.
+Re-run the installer and answer yes to **Down alert (external heartbeat)**:
 
-### Variant A: through the bot scheduler (simplest, cross-platform)
+```bash
+python install/wizard.py --repo-dir /path/to/MyOldMachine
+```
 
-Ask the bot to run it on an interval:
+It asks for the ping URL and an interval, installs the schedule for your
+platform, writes `HEARTBEAT_URL` to `.env`, and sends one real ping so you can
+see the check flip to "up" before you walk away.
+
+Get the URL first: create a check on any dead-man's-switch monitor (a free
+healthchecks.io check works), set its period to your interval and its grace to
+a few times that, and copy the ping URL. A 2 minute ping with an 8 minute grace
+catches a real outage without firing on one slow ping.
+
+What gets installed:
+
+| Platform | Installed | Gated by |
+|---|---|---|
+| Linux | `/etc/systemd/system/myoldmachine-heartbeat.{service,timer}` | `--require-service myoldmachine.service` |
+| macOS | `~/Library/LaunchAgents/com.myoldmachine.heartbeat.plist` | `--require-service com.myoldmachine.bot` |
+
+Only the timer is enabled on Linux. The `.service` is a oneshot and stays
+unenabled so it fires from the timer and nowhere else.
+
+### The gate, and why it is not in the unit file
+
+`--require-service NAME` makes the script check the bot before pinging, and
+exit 0 without pinging when the bot is down. That is what turns a
+machine-is-alive monitor into a bot-is-alive monitor.
+
+The obvious alternative, `Requisite=myoldmachine.service` in the unit, is
+wrong: `Requisite=` makes the ping unit **fail** rather than skip, so every
+interval during an outage adds an entry to `systemctl --failed` and a red line
+in the journal, during exactly the incident you want a clean signal from.
+launchd has no equivalent of `Requisite=` at all, so a gate in the unit file
+could never have covered both platforms. A skip that exits 0 is silent on both.
+
+When the service manager cannot answer at all (no systemd, no launchd, an
+unreadable launchctl), the script pings anyway and says so on stderr. That
+degrades to machine-and-network monitoring, which is what an ungated schedule
+gives you. The other choice, staying silent, would page you every interval on a
+host we simply cannot read, and an alert that cries wolf gets muted.
+
+### Doing it by hand
+
+If you would rather not re-run the installer, the rendered templates are in
+`install/templates/`: `myoldmachine-heartbeat.service`,
+`myoldmachine-heartbeat.timer`, and `com.myoldmachine.heartbeat.plist`.
+Substitute the `{{...}}` placeholders, drop them in the paths above, and:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now myoldmachine-heartbeat.timer
+```
+
+### Variant: through the bot scheduler
+
+No timer at all, and no gate needed, because the bot's own scheduler stops
+when the bot stops:
 
 ```
 /schedule every 2 minutes | /path/to/venv/bin/python /path/to/MyOldMachine/utils/heartbeat.py
 ```
 
-Pings stop when the bot stops, so this detects a frozen or dead bot and a dead
-machine. It cannot ping while the bot is down, which is the point.
-
-### Variant B: a system timer (survives a bot crash)
-
-Use this when you want to be alerted even if only the bot process dies while the
-machine stays up. On a systemd host, install a service plus timer (adjust the
-paths and the User):
-
-```ini
-# /etc/systemd/system/mom-heartbeat.service
-[Unit]
-Description=MyOldMachine heartbeat ping
-# Only ping while the bot service is running, so a dead bot stops the pings:
-Requisite=mom.service
-After=mom.service
-
-[Service]
-Type=oneshot
-User=youruser
-EnvironmentFile=/path/to/MyOldMachine/.env
-ExecStart=/path/to/venv/bin/python /path/to/MyOldMachine/utils/heartbeat.py
-```
-
-```ini
-# /etc/systemd/system/mom-heartbeat.timer
-[Unit]
-Description=Run the MyOldMachine heartbeat every 2 minutes
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=2min
-
-[Install]
-WantedBy=timers.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now mom-heartbeat.timer
-```
-
-The `Requisite=mom.service` line gates the ping on the bot being up, so this
-timer alerts you when the bot dies even though the machine is still running. Drop
-that line if you only want to detect the machine or network going down.
-
-On a non-systemd host use cron and gate on the bot yourself, or use Variant A.
+Simpler, and cross-platform on hosts with neither systemd nor launchd. The
+tradeoff is that the ping now depends on the bot's event loop staying
+responsive, so a long blocking turn can delay a ping and page you for an
+outage that is not happening.
 
 ## Test it
 

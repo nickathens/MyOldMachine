@@ -1,0 +1,20 @@
+[Unit]
+Description=MyOldMachine external heartbeat ping
+After=network-online.target
+Wants=network-online.target
+# Deliberately NO Requisite=/BindsTo= on the bot unit. Those make this unit
+# FAIL every time the bot is down, so `systemctl --failed` fills with noise
+# during exactly the outage you installed this to hear about. The gate is
+# --require-service inside heartbeat.py, which exits 0 without pinging.
+
+[Service]
+Type=oneshot
+User={{USER}}
+WorkingDirectory={{WORKING_DIR}}
+ExecStart={{PYTHON}} {{WORKING_DIR}}/utils/heartbeat.py --require-service {{BOT_SERVICE}}.service
+# heartbeat.py loads {{WORKING_DIR}}/.env itself, so no EnvironmentFile here:
+# systemd's parser is stricter than dotenv's and a quoted value would fail the
+# unit rather than the ping.
+Environment=PYTHONUNBUFFERED=1
+# Bounded start so a wedged DNS lookup can never pile runs up on the timer.
+TimeoutStartSec=60
