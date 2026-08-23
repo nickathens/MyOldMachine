@@ -549,14 +549,40 @@ class MascotPortTests(unittest.TestCase):
     deps.json, so the donor-machine guard is repeated here at the right scope.
     """
 
-    def test_named_image_models_still_resolve(self):
-        import importlib.util
+    @staticmethod
+    def _load_generate():
+        """Read the wrapper's real alias table without needing its dependencies.
 
-        spec = importlib.util.spec_from_file_location(
-            "gen_mod", SKILLS / "image-gen" / "scripts" / "generate.py"
-        )
-        gen = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(gen)
+        generate.py imports httpx at module level, and skills install their own
+        dependencies on first use, so on a fresh install httpx is absent and a
+        plain exec_module turns this text check into a red suite. Stubbing the
+        import keeps the table real: nothing here makes a request.
+        """
+        import importlib.util
+        import types
+
+        stubbed = []
+        for name in ("httpx",):
+            if name in sys.modules:
+                continue
+            try:
+                importlib.import_module(name)
+            except ImportError:
+                sys.modules[name] = types.ModuleType(name)
+                stubbed.append(name)
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "gen_mod", SKILLS / "image-gen" / "scripts" / "generate.py"
+            )
+            gen = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(gen)
+        finally:
+            for name in stubbed:
+                sys.modules.pop(name, None)
+        return gen
+
+    def test_named_image_models_still_resolve(self):
+        gen = self._load_generate()
         text = (MASCOT / "SKILL.md").read_text(errors="replace")
         for alias in ("gpt", "nano-pro", "nano2"):
             with self.subTest(alias=alias):
