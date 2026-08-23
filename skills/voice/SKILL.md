@@ -56,7 +56,23 @@ python skills/voice/scripts/transcribe.py /tmp/voice.ogg --language en
 # Transcribe any audio format
 python skills/voice/scripts/transcribe.py /path/to/audio.mp3
 python skills/voice/scripts/transcribe.py /path/to/audio.wav
+
+# Timed subtitles instead of a text blob (prints SRT to stdout)
+python skills/voice/scripts/transcribe.py /path/to/talk.mp4 --srt > /tmp/talk.srt
 ```
+
+**`--srt`:** prints an SRT subtitle document (numbered cues, `HH:MM:SS,mmm` timings)
+built from whisper's own segment boundaries, instead of the plain transcript. Use it
+whenever something downstream needs timings: a player or editor that loads a sidecar
+`.srt`, ffmpeg's own `-vf subtitles=` burn-in where the build carries libass, or feeding a
+timed script into an animation pipeline. The `video-editing` skill does **not** read SRT:
+its `text` command puts one static string on the frame. Blank segments (whisper
+emits them on silence) are dropped and the cues renumbered, so the index never gaps.
+
+**`--srt` deliberately skips the warm engine above and takes the legacy CPU path**, so it
+is slow. `hear.py` prints a finished transcript and no segment boundaries, so routing an
+SRT request through it would print plain text under a flag that promised timings.
+Everything else about the run is identical, including the memory isolation below.
 
 **Supported formats:** mp3, wav, ogg, m4a, flac, webm
 

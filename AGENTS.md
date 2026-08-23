@@ -102,9 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-08-23] linux: two skill ports, mascot (new, MIT vendor) and last30days (from the sibling bot) (PR #144)
+[2026-08-23] linux: seedance2.5 re-measured (retired price tier removed from four
+surfaces) + voice `--srt` (PR #145)
 
-(Entries removed above: #147 and #146 merged 2026-08-23.
+(Entries removed above: #144, #147 and #146 merged 2026-08-23.
 #143, #142, #141 and #140 merged 2026-08-22.
 #139 and #138 merged 2026-08-18.
 #137, #136 and #135 merged 2026-08-15.

@@ -17,7 +17,7 @@ that balloons after it starts. Where ``systemd-run`` is unavailable (macOS, or a
 Linux box with no user systemd manager) there is no scope to fall back on, so
 models heavier than 'medium' are refused rather than gambling the machine.
 
-Usage: python transcribe.py <audio_file> [--language LANG] [--model NAME]
+Usage: python transcribe.py <audio_file> [--language LANG] [--model NAME] [--srt]
 """
 import os
 import shutil
@@ -42,7 +42,9 @@ SAFE_MODELS = {
     "tiny.en", "base.en", "small.en", "medium.en",
 }
 
-USAGE = "Usage: python transcribe.py <audio_file> [--language LANG] [--model NAME]"
+USAGE = (
+    "Usage: python transcribe.py <audio_file> [--language LANG] [--model NAME] [--srt]"
+)
 
 # Warm listening engine (data/stt/stt_daemon.py): Whisper large-v3-turbo held
 # resident on the Apple GPU behind a local socket, ~1s per clip vs 5-30s for
@@ -69,7 +71,7 @@ def _try_warm_engine(audio_path, language):
 
 
 def _parse_args(argv):
-    """Return (audio_path, language, model) from argv."""
+    """Return (audio_path, language, model, srt) from argv."""
     audio_path = argv[1]
     language = None
     model = DEFAULT_MODEL
@@ -81,7 +83,33 @@ def _parse_args(argv):
         i = argv.index("--model")
         if i + 1 < len(argv):
             model = argv[i + 1]
-    return audio_path, language, model
+    return audio_path, language, model, "--srt" in argv
+
+
+def _srt_timestamp(seconds):
+    """Format a float second offset as SRT's HH:MM:SS,mmm."""
+    ms = max(0, int(round(float(seconds) * 1000)))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _format_srt(segments):
+    """Render whisper's segment list as an SRT subtitle document.
+
+    Segments with empty text are dropped (whisper emits them on silence) and the
+    surviving cues are renumbered from 1, because a gap in the index makes some
+    players stop reading the file."""
+    blocks = []
+    for seg in segments or []:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        start = _srt_timestamp(seg.get("start") or 0)
+        end = _srt_timestamp(seg.get("end") or 0)
+        blocks.append(f"{len(blocks) + 1}\n{start} --> {end}\n{text}\n")
+    return "\n".join(blocks)
 
 
 def _scope_prefix():
@@ -115,7 +143,7 @@ def _isolation_works(prefix):
         return False
 
 
-def _run_whisper(audio_path, language, model):
+def _run_whisper(audio_path, language, model, srt=False):
     """Load the model and print the transcription. Imported lazily so that
     importing this module (e.g. from tests) does not pull in torch/whisper."""
     import whisper
@@ -123,7 +151,10 @@ def _run_whisper(audio_path, language, model):
     wmodel = whisper.load_model(model, device="cpu")
     opts = {"language": language} if language else {}
     result = wmodel.transcribe(audio_path, **opts)
-    print(result["text"].strip())
+    if srt:
+        print(_format_srt(result.get("segments")))
+    else:
+        print(result["text"].strip())
 
 
 def main(argv=None):
@@ -132,11 +163,18 @@ def main(argv=None):
         print(USAGE, file=sys.stderr)
         sys.exit(1)
 
-    audio_path, language, model = _parse_args(argv)
+    audio_path, language, model, srt = _parse_args(argv)
 
     # Fast path: the warm GPU listening engine, unless the caller explicitly
     # asked for a specific legacy model.
-    if "--model" not in argv:
+    #
+    # `--srt` also has to skip it. hear.py prints a finished transcript and
+    # nothing else -- no segment boundaries -- so routing an SRT request through
+    # the warm path would print plain text under a flag that promised timings,
+    # which is worse than being slow. The daemon lives outside this repo
+    # (data/ is gitignored), so teaching it segments is not something that can
+    # be done or tested from here.
+    if "--model" not in argv and not srt:
         text = _try_warm_engine(audio_path, language)
         if text is not None:
             print(text)
@@ -172,7 +210,7 @@ def main(argv=None):
             file=sys.stderr,
         )
 
-    _run_whisper(audio_path, language, model)
+    _run_whisper(audio_path, language, model, srt)
 
 
 if __name__ == "__main__":
