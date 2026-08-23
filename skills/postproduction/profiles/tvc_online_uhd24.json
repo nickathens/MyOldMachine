@@ -1,0 +1,23 @@
+{
+  "slug": "tvc_online_uhd24",
+  "name": "Commercial online master, UHD 24p, ProRes 4444",
+  "as_of": "2026-08-23",
+  "source": "The shape a CooCoo online master has taken on recent client films. Not a published standard: it is a house default and any client delivery document overrides it.",
+  "verify": true,
+  "picture": {
+    "width": 3840, "height": 2160, "fps": "24", "scan": "progressive",
+    "codec": ["prores"], "bit_depth": 12, "chroma": "444",
+    "primaries": "bt709", "transfer": "bt709", "matrix": "bt709", "range": "tv"
+  },
+  "audio": {
+    "codec": ["pcm_s24le"], "sample_rate": 48000,
+    "channels": 2, "layout": "stereo",
+    "loudness": {"target_i": -23.0, "tol_i": 1.0, "max_tp": -1.0,
+                 "max_lra": null, "gate": "bs1770"}
+  },
+  "safe": {"action": 0.93, "title": 0.90},
+  "subtitles": {"max_lines": 2, "max_chars_per_line": 42, "max_cps": 17,
+                "min_duration_s": 1.0, "max_duration_s": 7.0,
+                "min_gap_s": 0.0833, "formats": ["srt", "vtt"]},
+  "items": ["master", "textless", "viewing_copy", "hash_ledger", "spec_sheet"]
+}

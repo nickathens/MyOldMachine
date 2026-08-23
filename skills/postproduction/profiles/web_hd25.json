@@ -1,0 +1,23 @@
+{
+  "slug": "web_hd25",
+  "name": "Web and social delivery, HD 25p, H.264",
+  "as_of": "2026-08-23",
+  "source": "A common web shape. Platforms re-encode whatever they are given, so the only hard rules here are the raster, the tags and the loudness the platform normalises to.",
+  "verify": true,
+  "picture": {
+    "width": 1920, "height": 1080, "fps": "25", "scan": "progressive",
+    "codec": ["h264", "hevc"], "bit_depth": 8, "chroma": "420",
+    "primaries": "bt709", "transfer": "bt709", "matrix": "bt709", "range": "tv"
+  },
+  "audio": {
+    "codec": ["aac", "pcm_s16le"], "sample_rate": 48000,
+    "channels": 2, "layout": "stereo",
+    "loudness": {"target_i": -16.0, "tol_i": 2.0, "max_tp": -1.0,
+                 "max_lra": null, "gate": "bs1770"}
+  },
+  "safe": {"action": 0.93, "title": 0.90},
+  "subtitles": {"max_lines": 2, "max_chars_per_line": 42, "max_cps": 17,
+                "min_duration_s": 1.0, "max_duration_s": 7.0,
+                "min_gap_s": 0.0833, "formats": ["srt", "vtt"]},
+  "items": ["master", "viewing_copy", "subtitle_sidecar"]
+}

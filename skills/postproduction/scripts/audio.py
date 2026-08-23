@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Sound: measure the loudness the platform will measure, and normalise to it.
+
+Loudness is normalised LAST, because every trim moves the integrated number,
+and it is measured on the FINAL cut, not on the mix stem.
+
+One limit stated up front, because it decides whether an answer here is worth
+anything. This measures ITU-R BS.1770 level gated loudness, which is what EBU
+R128 asks for: the whole signal, gated at -10 LU relative, with no emphasis on
+speech. The large VOD platforms specify DIALOG GATED loudness instead, which is
+a different measurement made by a different meter over the dialogue only. This
+tool cannot produce a dialog gated number and will not pretend to: against a
+dialog gated profile it reports what it measured, names the gap, and says the
+number has to come from a dialogue gated meter.
+
+  measure    integrated loudness, range, true peak
+  check      against a profile's target, with the gate checked too
+  normalise  two pass loudnorm to a target, by constant gain where possible
+  layout     channel count, order and sample rate against the delivery
+
+Usage:
+  python audio.py measure FILM.mov
+  python audio.py check FILM.mov --profile broadcast_hd_r128
+  python audio.py normalise FILM.mov --profile broadcast_hd_r128 --out OUT.mov
+  python audio.py layout FILM.mov --profile broadcast_hd_r128
+  (add --json for structured output)
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, __file__.rsplit("/", 1)[0])
+import _common as C  # noqa: E402
+
+
+def measure(path, stream="a:0"):
+    """Integrated loudness, loudness range and true peak, via ffmpeg ebur128."""
+    C.need("ffmpeg")
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-i", str(path),
+           "-map", f"0:{stream}", "-af", "ebur128=peak=true", "-f", "null", "-"]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 and "Summary" not in proc.stderr:
+        raise RuntimeError("ebur128 failed: " + proc.stderr.strip()[-400:])
+    text = proc.stderr
+
+    def grab(label, block=None):
+        pattern = rf"{label}:\s*(-?\d+(?:\.\d+)?)"
+        region = text
+        if block:
+            m = re.search(rf"{block}:(.*?)(?:\n\s*\n|$)", text, re.S)
+            region = m.group(1) if m else text
+        m = re.search(pattern, region)
+        return float(m.group(1)) if m else None
+
+    integrated = grab("I", "Integrated loudness")
+    threshold = grab("Threshold", "Integrated loudness")
+    lra = grab("LRA", "Loudness range")
+    lra_low = grab("LRA low", "Loudness range")
+    lra_high = grab("LRA high", "Loudness range")
+    peak = grab("Peak", "True peak")
+    return {"file": os.path.abspath(path), "stream": stream,
+            "integrated_lufs": integrated, "threshold_lufs": threshold,
+            "loudness_range_lu": lra, "lra_low_lufs": lra_low,
+            "lra_high_lufs": lra_high, "true_peak_dbtp": peak,
+            "gate": "bs1770",
+            "measured_with": "ffmpeg ebur128, ITU-R BS.1770 level gated",
+            "note": "Measured over the whole signal with no emphasis on speech, "
+                    "which is what EBU R128 asks for and is NOT what a dialog "
+                    "gated platform target means."}
+
+
+def check(path, profile, stream="a:0"):
+    """Hold the measurement against the profile, and check the GATE matches."""
+    loud = (profile.get("audio") or {}).get("loudness") or {}
+    got = measure(path, stream)
+    want_gate = loud.get("gate")
+    rows = []
+
+    def add(field, want, got_value, ok, note=""):
+        rows.append({"field": field, "want": want, "got": got_value,
+                     "verdict": "ok" if ok else "MISMATCH", "note": note})
+
+    if want_gate and want_gate != got["gate"]:
+        rows.append({
+            "field": "loudness gate", "want": want_gate, "got": got["gate"],
+            "verdict": "CANNOT MEASURE",
+            "note": "This profile is measured with a dialogue gated meter and "
+                    "this tool is not one. The number below is the BS.1770 "
+                    "gated loudness of the whole signal; it is not comparable "
+                    "with the target and the difference is not a constant. Get "
+                    "the dialog gated figure from the mix stage or a meter that "
+                    "does it, and record which was used."})
+    target = loud.get("target_i")
+    tol = loud.get("tol_i")
+    if target is not None and got["integrated_lufs"] is not None:
+        delta = got["integrated_lufs"] - target
+        inside = tol is None or abs(delta) <= tol + 1e-9
+        add("integrated loudness", f"{target} LUFS +/-{tol}",
+            f"{got['integrated_lufs']} LUFS", inside and want_gate == got["gate"],
+            note=f"{delta:+.2f} LU from target"
+                 + ("" if want_gate == got["gate"] else ", but see the gate above"))
+    max_tp = loud.get("max_tp")
+    if max_tp is not None and got["true_peak_dbtp"] is not None:
+        add("true peak", f"not above {max_tp} dBTP",
+            f"{got['true_peak_dbtp']} dBTP", got["true_peak_dbtp"] <= max_tp + 1e-9,
+            note="R128 allows a measurement tolerance of 0.3 dB on a 20 kHz "
+                 "limited signal, and a data reduced distribution path may set "
+                 "a lower ceiling than production.")
+    max_lra = loud.get("max_lra")
+    if max_lra is not None and got["loudness_range_lu"] is not None:
+        add("loudness range", f"not above {max_lra} LU",
+            f"{got['loudness_range_lu']} LU",
+            got["loudness_range_lu"] <= max_lra + 1e-9)
+    bad = [r for r in rows if r["verdict"] != "ok"]
+    return {"file": got["file"], "profile": profile.get("slug"),
+            "measurement": got, "rows": rows, "failing": len(bad),
+            "verdict": ("inside the profile" if not bad else
+                        f"{len(bad)} item(s) do not meet the profile")}
+
+
+def normalise(path, profile, out, stream="a:0", linear=True):
+    """Two pass loudnorm to the profile's target.
+
+    Pass one measures, pass two applies. Constant gain (linear) where the offset
+    allows it, because a delivered film should be turned up or down, not
+    reshaped. When loudnorm cannot stay linear it says so in its own output and
+    that is reported rather than swallowed.
+
+    Picture is stream copied. Sample rate and channel count are held at the
+    source's, because loudnorm resamples internally and a silent rate change is
+    a delivery fault.
+    """
+    C.need("ffmpeg")
+    loud = (profile.get("audio") or {}).get("loudness") or {}
+    target = loud.get("target_i")
+    max_tp = loud.get("max_tp")
+    if target is None:
+        raise ValueError("The profile does not name a loudness target. That is a "
+                         "project fact; ask for it.")
+    if loud.get("gate") and loud["gate"] != "bs1770":
+        raise ValueError(
+            f"This profile wants a {loud['gate']} gated target. Normalising to it "
+            "with a BS.1770 gated meter would land the film in the wrong place. "
+            "Do this at the mix stage with a meter that gates on dialogue.")
+
+    import spec as SPEC
+    info = SPEC.probe(path)
+    aud = (info.get("audio") or [{}])[0]
+    rate = aud.get("sample_rate") or 48000
+    lra = loud.get("max_lra") or 11.0
+
+    first = ["ffmpeg", "-nostdin", "-hide_banner", "-i", str(path),
+             "-map", f"0:{stream}",
+             "-af", f"loudnorm=I={target}:TP={max_tp or -1.0}:LRA={lra}:"
+                    "print_format=json",
+             "-f", "null", "-"]
+    proc = subprocess.run(first, capture_output=True, text=True)
+    m = re.search(r"\{[^{}]*\"input_i\".*?\}", proc.stderr, re.S)
+    if not m:
+        raise RuntimeError("loudnorm's first pass produced no measurement: "
+                           + proc.stderr.strip()[-400:])
+    measured = json.loads(m.group(0))
+
+    af = (f"loudnorm=I={target}:TP={max_tp or -1.0}:LRA={lra}"
+          f":measured_I={measured['input_i']}"
+          f":measured_TP={measured['input_tp']}"
+          f":measured_LRA={measured['input_lra']}"
+          f":measured_thresh={measured['input_thresh']}"
+          f":offset={measured['target_offset']}"
+          f":linear={'true' if linear else 'false'}:print_format=summary")
+    second = ["ffmpeg", "-nostdin", "-hide_banner", "-y", "-i", str(path),
+              "-map", "0", "-c", "copy", "-c:a", "pcm_s24le", "-ar", str(rate),
+              "-af", af, str(out)]
+    proc2 = subprocess.run(second, capture_output=True, text=True)
+    if proc2.returncode != 0:
+        raise RuntimeError("The normalising pass failed: "
+                           + proc2.stderr.strip()[-500:])
+    kind = re.search(r"Normalization Type:\s*(\w+)", proc2.stderr)
+    kind = kind.group(1).lower() if kind else "unknown"
+    stayed_linear = kind == "linear"
+    after = measure(out, stream)
+    return {"in": os.path.abspath(path), "out": os.path.abspath(out),
+            "target_i": target, "max_tp": max_tp,
+            "first_pass": measured, "after": after,
+            "linear_requested": linear, "normalisation_type": kind,
+            "stayed_linear": stayed_linear,
+            "verdict": f"{after['integrated_lufs']} LUFS, true peak "
+                       f"{after['true_peak_dbtp']} dBTP after normalising",
+            "note": ("Constant gain applied: the mix was moved, not reshaped."
+                     if stayed_linear else
+                     f"loudnorm reports normalisation type '{kind}', not linear. "
+                     "Dynamic mode reshapes the mix rather than moving it, which "
+                     "on a delivered film is a mix decision and not a technical "
+                     "one. Say so before delivering, or go back to the mix."),
+            "warning": "Verify this file: measuring the OUTPUT is the only proof "
+                       "the normalisation landed, and the picture must be "
+                       "re-checked too because the container was rewritten."}
+
+
+def layout(path, profile=None):
+    """Channel layout, order and sample rate against the delivery."""
+    import spec as SPEC
+    info = SPEC.probe(path)
+    streams = info.get("audio") or []
+    rows = []
+    want = (profile or {}).get("audio") or {}
+    for a in streams:
+        row = dict(a)
+        row["issues"] = []
+        if want.get("sample_rate") and a.get("sample_rate") != want["sample_rate"]:
+            row["issues"].append(f"sample rate {a.get('sample_rate')} against "
+                                 f"{want['sample_rate']}")
+        if want.get("channels") and a.get("channels") != want["channels"]:
+            row["issues"].append(f"{a.get('channels')} channels against "
+                                 f"{want['channels']}")
+        if want.get("layout") and a.get("layout") != want["layout"]:
+            row["issues"].append(f"layout {a.get('layout')} against {want['layout']}")
+        rows.append(row)
+    return {"file": info["file"], "streams": rows,
+            "stream_count": len(rows),
+            "note": "Channel ORDER inside a layout is a delivery fact that no "
+                    "probe can confirm: a file can be tagged 5.1 with the centre "
+                    "and the LFE swapped and every tool will agree with it. "
+                    "Confirm the order against the mix's own routing sheet."}
+
+
+def main(argv=None):
+    ap = C.parser_for(__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    me = sub.add_parser("measure", help="Loudness, range and true peak")
+    me.add_argument("file")
+    me.add_argument("--stream", default="a:0")
+    C.add_json(me)
+
+    ck = sub.add_parser("check", help="Against a profile")
+    ck.add_argument("file")
+    ck.add_argument("--profile", required=True)
+    ck.add_argument("--stream", default="a:0")
+    C.add_json(ck)
+
+    no = sub.add_parser("normalise", help="Two pass loudnorm to the target")
+    no.add_argument("file")
+    no.add_argument("--profile", required=True)
+    no.add_argument("--out", required=True)
+    no.add_argument("--stream", default="a:0")
+    no.add_argument("--allow-dynamic", action="store_true",
+                    help="Let loudnorm reshape the mix if constant gain cannot "
+                         "reach the target")
+    C.add_json(no)
+
+    la = sub.add_parser("layout", help="Channels, order and rate")
+    la.add_argument("file")
+    la.add_argument("--profile")
+    C.add_json(la)
+
+    args = ap.parse_args(argv)
+    import spec as SPEC
+
+    if args.cmd == "measure":
+        res = measure(args.file, args.stream)
+        return C.emit(res, args.json, _print_measure)
+    if args.cmd == "check":
+        res = check(args.file, SPEC.load_profile(args.profile), args.stream)
+        return C.emit(res, args.json, lambda r: (
+            _print_measure(r["measurement"]),
+            print(),
+            [print(f"  [{row['verdict']}] {row['field']}: want {row['want']}, "
+                   f"got {row['got']}" + (f"\n      {row['note']}" if row["note"] else ""))
+             for row in r["rows"]],
+            print(f"\n  {r['verdict']}")))
+    if args.cmd == "normalise":
+        res = normalise(args.file, SPEC.load_profile(args.profile), args.out,
+                        args.stream, not args.allow_dynamic)
+        return C.emit(res, args.json, lambda r: (
+            print(f"  {r['verdict']}"), print(f"  {r['note']}"),
+            print(f"  {r['warning']}")))
+    if args.cmd == "layout":
+        prof = SPEC.load_profile(args.profile) if args.profile else None
+        res = layout(args.file, prof)
+        return C.emit(res, args.json, lambda r: (
+            [print(f"  stream {s['index']}: {s['codec']} {s['sample_rate']} Hz, "
+                   f"{s['channels']} ch ({s['layout']})"
+                   + ("" if not s["issues"] else "\n      " + "; ".join(s["issues"])))
+             for s in r["streams"]],
+            print(f"\n  {r['note']}")))
+    return 0
+
+
+def _print_measure(m):
+    print(f"{os.path.basename(m['file'])} stream {m['stream']}")
+    print(f"  integrated      {m['integrated_lufs']} LUFS "
+          f"(gate threshold {m['threshold_lufs']})")
+    print(f"  loudness range  {m['loudness_range_lu']} LU "
+          f"({m['lra_low_lufs']} to {m['lra_high_lufs']})")
+    print(f"  true peak       {m['true_peak_dbtp']} dBTP")
+    print(f"  measured with   {m['measured_with']}")
+    print(f"  {m['note']}")
+
+
+if __name__ == "__main__":
+    sys.exit(C.main_guard(main))
