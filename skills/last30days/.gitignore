@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# runtime config/state never belongs in the repo
+.env
+last-run.json
