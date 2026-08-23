@@ -79,6 +79,12 @@ reports both, because one of them dies under a lossy codec:
   untagged input converts the picture rather than labelling it, and the
   conversion destroys the very signature being measured. See failure 43.
 
+Neither rule can answer from a handful of samples, so below sixteen distinct
+codes the reading returns `measurable: false` and the printed line reads
+UNPROVEN where the carried depth goes. A slate, a black frame or a title card
+sits there, and the default reads three frames from frame 0. See failures 44
+and 45.
+
 The samples have to be read in the file's OWN pixel format. Asking ffmpeg for a
 wider one runs the scaler, which range converts and dithers: the same 10 bit
 file then reports 27946 distinct codes instead of 805. Measured, not assumed.

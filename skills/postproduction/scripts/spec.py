@@ -632,8 +632,17 @@ def _print_probe(info):
 
 
 def _print_depth(r):
+    # An unmeasurable file has no carried depth, so the slot that usually holds
+    # one prints UNPROVEN instead of the declared number. Printing the declared
+    # depth there hands back an answer the engine has just declined to give,
+    # and the default invocation lands on that case often: the first frames of
+    # a real master are a slate or a black frame, and reference/07_delivery.md
+    # sends the operator here to prove the depth of a delivered file. Same rule
+    # as deliver.py's, that UNPROVEN is not a pass.
+    unproven = r.get("measurable") is False
+    carried = "UNPROVEN" if unproven else f"{r['effective_bit_depth']} bit"
     print(f"{os.path.basename(r['file'])}: declares {r['declared_bit_depth']} bit, "
-          f"carries {r['effective_bit_depth']} bit.")
+          f"carries {carried}.")
     print(f"  {r['verdict']}")
     print(f"  distinct codes {r['distinct_codes']} (gcd {r['gcd_of_codes']}), "
           f"read as {r['plane']} in {r['measured_in_pix_fmt']} over "
@@ -641,9 +650,13 @@ def _print_depth(r):
     print("  per frame: " + ", ".join(f"f{p['frame']}={p['distinct']}"
                                       for p in r["per_frame"]))
     for row in r["lattice"]:
+        # On an unmeasurable file this line still reads 100 per cent against a
+        # 25 per cent chance level, which is the shape of damning evidence. It
+        # is one sample value landing on the lattice, so it is labelled.
         print(f"  lattice {row['step']}x (source {row['candidate_bit_depth']} bit): "
               f"{row['fraction_on_lattice'] * 100:.1f} per cent of samples, "
-              f"chance level {row['chance_level'] * 100:.0f} per cent")
+              f"chance level {row['chance_level'] * 100:.0f} per cent"
+              + (" (too few codes to be evidence)" if unproven else ""))
     print(f"  {r['caveat']}")
 
 

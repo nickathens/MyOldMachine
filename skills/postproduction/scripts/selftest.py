@@ -493,6 +493,42 @@ def test_spec():
     check("nothing is claimed by a name that claims nothing",
           SPEC.claims("FILM.mov", fake) == [])
 
+    # The printed line is the read path: reference/07_delivery.md sends the
+    # operator to `spec.py depth` on a delivered master, and the default lands
+    # on frame 0, which on a real film is a slate or a black frame. An engine
+    # that declines to answer and a header that prints the declared depth
+    # anyway is UNPROVEN rendered as a pass, which is the one thing this
+    # department's own delivery note forbids.
+    import contextlib
+    import io as _io
+
+    def rendered(measurable):
+        row = {"file": "/tmp/CARD.mov", "declared_bit_depth": 10,
+               "effective_bit_depth": 10, "distinct_codes": 1,
+               "gcd_of_codes": 512, "measured_in_pix_fmt": "yuv422p10le",
+               "plane": "luma", "frames_measured": 3, "first_frame": 0,
+               "per_frame": [{"frame": 0, "distinct": 1}],
+               "lattice": [{"candidate_bit_depth": 8, "step": 4,
+                            "fraction_on_lattice": 1.0, "chance_level": 0.25}],
+               "verdict": "only 1 distinct code", "measurable": measurable,
+               "decode_path": "ffmpeg:yuv422p10le", "caveat": "."}
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            SPEC._print_depth(row)
+        return buf.getvalue()
+
+    out = rendered(False)
+    check("an unmeasurable depth prints UNPROVEN, not the declared number",
+          "carries UNPROVEN" in out and "carries 10 bit" not in out,
+          out.splitlines()[0])
+    check("and its 100 per cent lattice line is labelled as not evidence",
+          "too few codes to be evidence" in out,
+          [ln.strip() for ln in out.splitlines() if "lattice 4x" in ln][0][-46:])
+    ok = rendered(True)
+    check("a measured depth still prints the number it measured",
+          "carries 10 bit" in ok and "UNPROVEN" not in ok,
+          ok.splitlines()[0])
+
 
 def test_route_and_standards():
     section("Routing and standards")
@@ -754,6 +790,24 @@ def test_media():
             check("a flat 10 bit card is called unmeasurable, not promoted",
                   dc["effective_bit_depth"] == 10 and dc["measurable"] is False,
                   f"{dc['distinct_codes']} distinct codes: {dc['verdict'][:60]}")
+
+        # The card above has ONE code, so it only pins the floor against being
+        # removed: set to 2 it still declines, and the value 16 goes untested.
+        # A slate is not one code, it is a handful, and the gcd guard cannot
+        # help when that handful happens to be multiples of 4. Eight such codes,
+        # lossless so the alphabet survives the encode, is the case the floor
+        # alone stands between an honest 10 bit card and an accusation. With
+        # the on-lattice clip above at 20 codes pinning the floor from over, the
+        # number is now bracketed rather than free.
+        slate = build_raw_clip("slate.mkv", [512 + 4 * i for i in range(8)], FFV1)
+        if not slate:
+            check("the few-code card could be built", False)
+        else:
+            ds = SPEC.measured_depth(slate, 2)
+            check("a few-code 10 bit card is below the evidence floor",
+                  ds["measurable"] is False and ds["effective_bit_depth"] == 10,
+                  f"{ds['distinct_codes']} codes, gcd {ds['gcd_of_codes']}, "
+                  f"floor {SPEC._DEPTH_MIN_CODES}")
         tl = PROVE.timeline(clip)
         check("an unspliced clip has a uniform timeline", tl["uniform"])
         check("every ProRes frame is a keyframe", tl["all_keyframes"])

@@ -105,7 +105,8 @@ provider.
 [2026-08-23] mac: postproduction depth controls, the colour flag that
 converts, and the flat frame accused of being 8 bit (PR #147).
 
-(Entries removed above: #143, #142, #141 and #140 merged 2026-08-22.
+(Entries removed above: #146 merged 2026-08-23.
+#143, #142, #141 and #140 merged 2026-08-22.
 #139 and #138 merged 2026-08-18.
 #137, #136 and #135 merged 2026-08-15.
 #133 merged 2026-08-13. #128 merged 2026-08-12.

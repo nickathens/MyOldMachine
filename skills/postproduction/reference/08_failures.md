@@ -1086,3 +1086,47 @@ has. Both rules here were happy to answer from a single sample, and the answer
 was an accusation against a deliverable. Where the material carries no
 information, the honest verdict is that the question is not measurable on it,
 which is a different output from either yes or no.
+
+---
+
+## 45. The engine declined, and the line above it answered anyway
+
+**Symptom.** The depth reading on a flat 10 bit card, with the evidence floor
+from failure 44 already in place and working, printed this:
+
+```
+card.mov: declares 10 bit, carries 10 bit.
+  only 1 distinct code, too few to tell promoted content from native.
+  lattice 4x (source 8 bit): 100.0 per cent of samples, chance level 25 per cent
+```
+
+Three lines, and the first and the third both answer a question the second one
+says cannot be answered. The header hands back the declared depth as though it
+had been measured. The lattice line reads 100 per cent against a 25 per cent
+chance level, which is the shape of damning evidence, and it is one sample
+value landing on a multiple of four.
+
+**Cause.** The floor was added to the engine and not to the renderer. The
+engine returns `measurable: false` and leaves `effective_bit_depth` at the
+declared value, because a missing number would break a caller that does
+arithmetic on it. The printer read that field without reading the flag beside
+it. Nothing in the suite covered the printed line, so the whole rendering path
+was free.
+
+**Why it matters more than a cosmetic slip.** `reference/07_delivery.md` sends
+the operator to `spec.py depth` to prove the depth of a delivered master rather
+than trust the pixel format tag. The default reads three frames from frame 0,
+and the first frames of a real film are a slate, a black frame or a title card.
+So the default invocation, at the delivery gate, on ordinary material, lands on
+exactly the case that cannot be measured and printed a clean bill for it.
+
+**Fix.** The header prints UNPROVEN in the slot where the carried depth goes,
+and the lattice line carries "too few codes to be evidence". Both are pinned by
+tests on the rendered text, which needed no clip: the printer takes a plain
+dict, so the checks run offline and on a bare interpreter with them.
+
+**The general form.** When an instrument learns to say "I cannot tell", every
+surface that reports it has to learn the same word on the same day. UNPROVEN is
+not a pass, and a renderer that prints the declared value into the measured
+slot converts one into the other silently. Grep for every reader of the field
+the new flag qualifies, not only for the callers of the function.
