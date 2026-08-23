@@ -31,6 +31,20 @@ SCRIPT_DIR = ROOT / "skills" / "image-gen" / "scripts"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+# generate.py imports httpx at module level, and skills install their own
+# dependencies on first use, so on a fresh install httpx is absent and this
+# module fails to import -- taking every test in the file with it, silently,
+# as one collection error rather than a red assertion. Stub it: these tests
+# read the wrapper's tables and never make a request, so the numbers they
+# compare against stay the real ones.
+if "httpx" not in sys.modules:
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        import types
+
+        sys.modules["httpx"] = types.ModuleType("httpx")
+
 import generate  # noqa: E402
 
 MODELS_DIR = ROOT / "skills" / "image-gen" / "models"

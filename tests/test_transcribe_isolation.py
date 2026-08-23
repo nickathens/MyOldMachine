@@ -12,7 +12,9 @@ installed plus a host with systemd-run and is exercised manually.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -149,25 +151,44 @@ class SrtSkipsTheWarmEngineTests(unittest.TestCase):
     reading the daemon.
     """
 
+    WARM_TEXT = "warm engine transcript"
+
     def _run_main(self, argv):
-        """Drive main() with isolation and whisper both stubbed out."""
+        """Drive main() with isolation and whisper both stubbed out.
+
+        stdout is captured rather than left to the terminal: main() prints
+        whatever the warm engine returned, and a test suite that leaks it into
+        the run output hides a real one behind noise."""
         calls = {}
+
+        def warm(*a, **k):
+            calls["warm"] = (a, k)
+            return self.WARM_TEXT
+
+        def whisper(*a, **k):
+            calls["whisper"] = (a, k)
+
+        out = io.StringIO()
         with mock.patch.dict(tmod.os.environ, {"WHISPER_ISOLATED": "1"}, clear=False), \
-             mock.patch.object(tmod, "_try_warm_engine",
-                               side_effect=lambda *a, **k: calls.setdefault("warm", True) or "warm text"), \
-             mock.patch.object(tmod, "_run_whisper",
-                               side_effect=lambda *a, **k: calls.setdefault("whisper", (a, k))):
+             mock.patch.object(tmod, "_try_warm_engine", side_effect=warm), \
+             mock.patch.object(tmod, "_run_whisper", side_effect=whisper), \
+             contextlib.redirect_stdout(out):
             tmod.main(argv)
-        return calls
+        return calls, out.getvalue()
 
     def test_plain_run_uses_the_warm_engine(self):
         # The control. Without it, a bypass that fires for every run would pass.
-        calls = self._run_main(["transcribe.py", "a.ogg"])
-        self.assertTrue(calls.get("warm"), "the warm engine is no longer the default path")
+        calls, printed = self._run_main(["transcribe.py", "a.ogg"])
+        self.assertIn("warm", calls, "the warm engine is no longer the default path")
         self.assertNotIn("whisper", calls)
+        # And its answer is what reaches the caller, so a warm path that runs
+        # but whose result is dropped cannot pass as "the fast path works".
+        self.assertEqual(printed.strip(), self.WARM_TEXT)
 
     def test_srt_run_bypasses_it_and_asks_whisper_for_segments(self):
-        calls = self._run_main(["transcribe.py", "a.ogg", "--srt"])
+        calls, printed = self._run_main(["transcribe.py", "a.ogg", "--srt"])
+        self.assertNotIn(self.WARM_TEXT, printed,
+                         "the warm engine's segment-less text reached an --srt caller")
         self.assertNotIn("warm", calls, "--srt was routed through the segment-less warm engine")
         self.assertIn("whisper", calls, "--srt did not reach the legacy whisper path")
         args, _ = calls["whisper"]
