@@ -1018,3 +1018,71 @@ nobody watching. One human gesture per shape, not one per shot.
 function list cannot tell them apart. Before promising a step runs with nobody at
 the screen, call it on a real clip and look at what it returns. An AI verb in an
 API is usually the second half of a gesture, not a replacement for it.
+
+---
+
+## 43. A colour flag that converts instead of tagging, and the control that measured ffmpeg
+
+**Symptom.** A depth check that passed on one machine failed on another with no
+change to the code between them. The check builds an 8 bit test pattern, writes
+it into a 10 bit ProRes container and asserts that the detector calls the result
+promoted. On Linux it read 0.9098 of its luma on the multiple of 4 lattice. On
+the Mac the identical command read 0.3175, and the same detector then called the
+same content native 10 bit.
+
+**Cause.** The clip was written with `-colorspace bt709 -color_range tv`, which
+reads like metadata and is not. Where the source carries no colour tags, ffmpeg
+inserts a scaler between the untagged input and the tagged output, and that
+scaler performs a real colour matrix conversion. A matrix multiply lands every
+sample off the 4x lattice, so the promotion signature the check was written to
+find had been destroyed by the act of writing the file. The two machines differ
+only in ffmpeg version: the older build tagged, the newer one converts.
+Isolated by building the same clip five ways. With no colour flags at all,
+0.9098. With `-color_range tv` alone, 0.9098. With `-colorspace bt709` present,
+0.3175, whether or not the range flag is there. Tagging the SOURCE with
+`setparams` and keeping both output flags, 0.9098 again, and 594 distinct codes
+on both machines, which is the Linux reading to the digit.
+
+**Fix.** Tag the source, so the conversion is a nothing and the promotion stays
+the pure multiply it claims to be. Then build the negative control from raw
+bytes rather than from a filter, so the property under test is in the file
+rather than in what ffmpeg decided to do. And assert the SEPARATION between the
+two controls, not just their verdicts: labels alone still pass if a future build
+moves both readings together.
+
+**The general form.** A flag that looks like metadata may be an instruction. If
+a control's value changes when nothing about the subject changed, the control is
+measuring the tool chain, and every threshold calibrated against it is really a
+threshold on that machine's build. Ask what the file went through between the
+content and the measurement.
+
+---
+
+## 44. The flat frame accused of being 8 bit
+
+**Symptom.** A genuine 10 bit master read as 8 bit content in a 10 bit
+container, decisively, with the verdict "on a lossless path that is decisive".
+The frame in question was a slate.
+
+**Cause.** Two rules decide the depth. The first counts distinct codes: a
+promotion is injective, so 8 bit content promoted losslessly still carries at
+most 256 of them. The converse does not hold and was being used as if it did. A
+flat card, a black frame, a title card or a lockup carries a handful of codes
+honestly, and the rule read that as promotion. The second rule, the lattice
+fraction, fails the same way from the other side: a single sample value that
+happens to be a multiple of 4 sits on the 4x lattice 100 per cent of the time.
+
+**Fix.** Two guards, and they catch different files. A promotion multiplies
+every code by the step, so every code is a multiple of it: where the greatest
+common divisor of the codes is not, no promotion can have produced them however
+few they are. That catches the card at code 513 and does nothing for the card at
+512. The second guard is an evidence floor, 16 distinct codes, below which the
+tool returns `measurable: false` and declines to answer at all. Sixteen codes
+all landing on the lattice by luck is a 1 in 4^15 event; one code landing on it
+is a coin with one side.
+
+**The general form.** A test whose evidence can run out needs to know when it
+has. Both rules here were happy to answer from a single sample, and the answer
+was an accusation against a deliverable. Where the material carries no
+information, the honest verdict is that the question is not measurable on it,
+which is a different output from either yes or no.

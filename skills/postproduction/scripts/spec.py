@@ -41,6 +41,11 @@ import _common as C  # noqa: E402
 _SAMPLES_PER_PIXEL = {"420": 1.5, "422": 2.0, "444": 3.0, "440": 2.0,
                       "411": 1.5, "410": 1.25, "gray": 1.0, "rgb": 3.0}
 
+# How many distinct luma codes a picture must carry before a depth verdict is
+# evidence rather than an accident. All 16 landing on the 4x lattice by luck is
+# a 1 in 4^15 event; one code landing on it is a coin that only has one side.
+_DEPTH_MIN_CODES = 16
+
 PROFILE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "profiles")
 
@@ -322,14 +327,24 @@ def measured_depth(path, frames=3, start=0):
 
     1. DISTINCT CODES. Promotion is injective, so a lossless 10 bit file made
        from 8 bit content still carries at most 256 distinct values. Decisive
-       when it holds, and it only holds on a lossless path.
+       when it holds, and it only holds on a lossless path. The converse is
+       NOT true and this rule used to assume it was: a flat card carries few
+       codes honestly. Guarded twice below, by the gcd and by an evidence
+       floor.
     2. LATTICE FRACTION. Promoting 8 bit to 10 bit multiplies by 4, so every
        sample lands on a multiple of 4. A lossy re-encode moves samples off
        that lattice but not far: measured on this machine, 2026-08-23, an 8 bit
-       clip promoted and written as ProRes HQ kept 95.2 per cent of its luma on
-       the multiple-of-4 lattice, while native 10 bit ProRes sat at 31.5 per
-       cent against a 25 per cent chance level. That separation is what the
+       clip promoted and written as ProRes HQ kept 90.98 per cent of its luma
+       on the multiple-of-4 lattice over 594 distinct codes, while a ramp
+       written at 10 bit steps through the same encode sat at 25.00 per cent,
+       the 25 per cent chance level exactly. That separation is what the
        verdict below reads.
+
+    Both controls must be written from a source that is already colour tagged.
+    `-colorspace` against an untagged input does not label the file, it runs a
+    colour matrix conversion, and that lands every sample off the lattice: the
+    same promoted clip then reads 31.75 per cent and passes for native. See
+    reference/08_failures.md, failure 43.
 
     The samples must be read in the file's OWN pixel format. Asking ffmpeg for
     a wider one runs the scaler, which range converts and dithers: the same 10
@@ -403,12 +418,29 @@ def measured_depth(path, frames=3, start=0):
         if n <= (1 << bits):
             distinct_fits = bits
             break
-    if distinct_fits < declared:
+    # Below this many distinct codes the picture carries no evidence either
+    # way, and both rules below will happily answer anyway: a flat card at
+    # code 512 puts 100 per cent of its samples on the 4x lattice from a
+    # single value. Measured here 2026-08-23, a genuine 10 bit flat card was
+    # called 8 bit content by rule 1 -- a slate, a black frame or a title card
+    # on a real master, accused of a promotion that never happened.
+    measurable = n >= _DEPTH_MIN_CODES
+    if not measurable:
+        verdict = (f"only {n} distinct code{'' if n == 1 else 's'}, too few to "
+                   f"tell promoted content from native. Not measurable on "
+                   f"this material.")
+    elif distinct_fits < declared and gcd and not gcd % (1 << (declared - distinct_fits)):
+        # The gcd guard is what makes rule 1 a promotion test rather than an
+        # alphabet test. Promotion multiplies every code by the step, so every
+        # code is a multiple of it. Codes that are NOT all multiples cannot
+        # have come from a promotion however few of them there are.
         effective = distinct_fits
-        verdict = (f"carries only {n} distinct codes, which fits in "
+        verdict = (f"carries only {n} distinct code{'' if n == 1 else 's'}, "
+                   f"every one a multiple of "
+                   f"{1 << (declared - distinct_fits)}, which fits in "
                    f"{distinct_fits} bit against a declared {declared}. On a "
                    f"lossless path that is decisive.")
-    else:
+    elif measurable:
         for row in lattice:
             if row["fraction_on_lattice"] >= 0.90:
                 effective = row["candidate_bit_depth"]
@@ -427,6 +459,7 @@ def measured_depth(path, frames=3, start=0):
             "distinct_codes": n, "per_frame": per_frame,
             "gcd_of_codes": gcd, "lattice": lattice,
             "effective_bit_depth": effective, "verdict": verdict,
+            "measurable": measurable,
             "decode_path": f"ffmpeg:{pix} (no scaler, no dither)",
             "caveat": "A flat or graded-to-flat frame carries few codes "
                       "honestly, and a heavy re-encode fills the alphabet. "

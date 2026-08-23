@@ -73,8 +73,11 @@ reports both, because one of them dies under a lossy codec:
 - LATTICE FRACTION. Promoting 8 to 10 multiplies by 4, so every sample lands on
   a multiple of 4. A lossy re-encode moves samples off that lattice but not far.
   Calibrated on this machine, 2026-08-23: an 8 bit clip promoted and written as
-  ProRes HQ kept 95.2 per cent of its luma on the multiple of 4 lattice, while
-  native 10 bit ProRes sat at 31.5 per cent against a 25 per cent chance level.
+  ProRes HQ kept 90.98 per cent of its luma on the multiple of 4 lattice, while
+  a ramp written at 10 bit steps sat at 25.00 per cent, the chance level exactly.
+  Both clips must be written from a TAGGED source: `-colorspace` against an
+  untagged input converts the picture rather than labelling it, and the
+  conversion destroys the very signature being measured. See failure 43.
 
 The samples have to be read in the file's OWN pixel format. Asking ffmpeg for a
 wider one runs the scaler, which range converts and dithers: the same 10 bit

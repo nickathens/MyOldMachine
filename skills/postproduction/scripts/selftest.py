@@ -623,36 +623,137 @@ def test_media():
         depth = SPEC.measured_depth(clip, 2)
         check("the measured depth is read in the file's own pixel format",
               depth["measured_in_pix_fmt"] == "yuv422p10le")
-        # testsrc2 is generated at 8 bit (lavfi hands out yuv420p), so the clip
-        # above IS 8 bit content in a 10 bit container: 91 per cent of its luma
-        # sits on the 4x lattice. Asking the detector to call that "not
-        # promoted" asserted something false, and it could only ever pass where
-        # the encode path happened to dither enough samples off the lattice --
-        # a check passing for the wrong reason, on the one instrument whose
-        # whole job is to catch promotion. It is the POSITIVE control instead,
-        # and the negative one needs content that genuinely carries the depth:
-        # a blur run AT 10 bit fills the lattice honestly.
-        lat = (depth["lattice"] or [{}])[0].get("fraction_on_lattice")
-        check("8 bit content in a 10 bit container is called promoted",
-              depth["effective_bit_depth"] == 8,
-              f"{depth['distinct_codes']} distinct codes, {lat} on the 4x lattice")
-        native = os.path.join(tmp, "native10.mov")
-        built = subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
-             "testsrc2=size=320x180:rate=24:duration=1,format=yuv422p10le,"
-             "gblur=sigma=0.7", "-c:v", "prores_ks", "-profile:v", "3",
-             "-pix_fmt", "yuv422p10le", "-colorspace", "bt709",
-             "-color_range", "tv", native], capture_output=True)
-        if built.returncode != 0:
-            check("a genuine 10 bit clip could be built", False,
-                  built.stderr.decode()[:200])
+
+        # The depth controls get their OWN clips, and the reason is a trap that
+        # cost an afternoon. testsrc2 is generated at 8 bit (lavfi hands out
+        # yuv420p), so promoting it into a 10 bit container makes 8 bit content
+        # in a 10 bit container, which is the positive control this suite
+        # needs. But writing it with `-colorspace bt709` does not tag the file,
+        # it CONVERTS it: from ffmpeg 9 the filtergraph inserts a real colour
+        # matrix conversion between an untagged source and a tagged output, and
+        # a matrix multiply lands every sample off the 4x lattice. The same
+        # command reads 0.9098 on the lattice on ffmpeg 7 and 0.3175 on
+        # ffmpeg 9, so the control asserted the ffmpeg build rather than the
+        # detector. `setparams` tags the SOURCE, the conversion is then a
+        # nothing, and the promotion is the pure x4 shift it claims to be. The
+        # `clip` above keeps its untagged colour handling because the flag
+        # check three lines up is about exactly that.
+        tagged = "setparams=colorspace=bt709:color_primaries=bt709:" \
+                 "color_trc=bt709:range=tv"
+
+        def build_depth_clip(name, chain, codec):
+            out = os.path.join(tmp, name)
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                 "testsrc2=size=320x180:rate=24:duration=1", "-vf", chain]
+                + codec + ["-pix_fmt", "yuv422p10le", "-colorspace", "bt709",
+                           "-color_range", "tv", out], capture_output=True)
+            return out if r.returncode == 0 else None
+
+        def build_raw_clip(name, codes, codec):
+            """A clip whose luma codes are exactly the ones asked for.
+
+            Nothing negotiates a pixel format on this path and no scaler runs,
+            so the property being tested is in the bytes rather than in what
+            ffmpeg decided to do with them.
+            """
+            out = os.path.join(tmp, name)
+            raw = os.path.join(tmp, name + ".raw")
+            row = bytearray()
+            for x in range(320):
+                row += int(codes[x % len(codes)]).to_bytes(2, "little")
+            grey = b"\x00\x02" * (320 // 2 * 180)
+            with open(raw, "wb") as fh:
+                for _ in range(4):
+                    fh.write(bytes(row) * 180)
+                    fh.write(grey)
+                    fh.write(grey)
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo",
+                 "-pix_fmt", "yuv422p10le", "-s", "320x180", "-r", "24",
+                 "-i", raw] + codec + ["-pix_fmt", "yuv422p10le", out],
+                capture_output=True)
+            return out if r.returncode == 0 else None
+
+        PRORES = ["-c:v", "prores_ks", "-profile:v", "3"]
+        promoted = build_depth_clip("promoted.mov", tagged, PRORES)
+        # The negative control has to be content that is 10 bit BY
+        # CONSTRUCTION, and blurring the promoted clip is not it: every input
+        # sample is a multiple of 4, so most averages are too. Measured here,
+        # a 10 bit gblur over promoted content still left 76.3 per cent on the
+        # lattice, which clears the 0.90 verdict by 0.14 and would flap from
+        # one ffmpeg build to the next. A ramp written at 10 bit steps
+        # traverses codes no promotion can produce, and it is low frequency,
+        # so it survives the lossy generation instead of being quantised back
+        # onto the lattice.
+        ramp10 = [64 + round(i * 876 / 319) for i in range(320)]
+        native = build_raw_clip("native10.mov", ramp10, PRORES)
+        if not (promoted and native):
+            check("the depth control clips could be built", False)
         else:
-            d10 = SPEC.measured_depth(native, 2)
+            dp = SPEC.measured_depth(promoted, 2)
+            dn = SPEC.measured_depth(native, 2)
+            fp = (dp["lattice"] or [{}])[0].get("fraction_on_lattice")
+            fn = (dn["lattice"] or [{}])[0].get("fraction_on_lattice")
+            # Both clips carry more than 256 codes after a lossy generation, so
+            # this pair exercises the LATTICE rule. The lossless pair below is
+            # what exercises the distinct-code rule.
+            check("8 bit content in a 10 bit container is called promoted",
+                  dp["effective_bit_depth"] == 8,
+                  f"{dp['distinct_codes']} distinct codes, {fp} on the 4x lattice")
             check("a genuine 10 bit clip is not called promoted",
-                  d10["effective_bit_depth"] == 10,
-                  f"{d10['distinct_codes']} distinct codes, "
-                  f"{(d10['lattice'] or [{}])[0].get('fraction_on_lattice')} "
-                  "on the 4x lattice")
+                  dn["effective_bit_depth"] == 10,
+                  f"{dn['distinct_codes']} distinct codes, {fn} on the 4x lattice")
+            # Asserting the verdicts alone would still pass if a future ffmpeg
+            # moved both readings together. The separation is the instrument.
+            check("and the two readings are separated, not merely labelled",
+                  fp is not None and fn is not None and fp - fn > 0.40,
+                  f"{fp} against {fn}")
+
+        # The distinct-code rule, which the lossy pair above cannot reach, and
+        # its guard. Identical alphabets, 19 codes each; the only difference is
+        # whether those codes are multiples of 4, which is what a promotion
+        # makes them. FFV1 is lossless, so the alphabet survives the encode.
+        FFV1 = ["-c:v", "ffv1"]
+        on_lat = build_raw_clip("onlattice.mkv", [64 + 4 * i for i in range(20)], FFV1)
+        off_lat = build_raw_clip("offlattice.mkv", [65 + 11 * i for i in range(20)], FFV1)
+        if not (on_lat and off_lat):
+            check("the lossless code control clips could be built", False)
+        else:
+            d_on, d_off = SPEC.measured_depth(on_lat, 2), SPEC.measured_depth(off_lat, 2)
+            check("a lossless promotion is decided by its distinct codes",
+                  d_on["effective_bit_depth"] == 8 and d_on["gcd_of_codes"] % 4 == 0,
+                  f"{d_on['distinct_codes']} codes, gcd {d_on['gcd_of_codes']}")
+            # Without the gcd guard this file is called 8 bit content purely
+            # because it carries few codes, which is an alphabet test, not a
+            # promotion test. No promotion can produce a code that is not a
+            # multiple of the step.
+            check("codes that are not multiples of 4 are not called a promotion",
+                  d_off["effective_bit_depth"] == 10,
+                  f"{d_off['distinct_codes']} codes, gcd {d_off['gcd_of_codes']}, "
+                  f"{(d_off['lattice'] or [{}])[0].get('fraction_on_lattice')} on the lattice")
+
+        # A flat card carries no depth evidence at all, and both rules will
+        # answer anyway if allowed to: one sample value sits on the 4x lattice
+        # 100 per cent of the time and its gcd is itself. Code 512 is chosen
+        # because it is a multiple of 4, which is what makes it the case the
+        # gcd guard cannot catch and the evidence floor must. On a real master
+        # this is a slate, a black frame or a title card, and the wrong answer
+        # accuses a genuine 10 bit deliverable of a promotion that never
+        # happened.
+        card = os.path.join(tmp, "card.mov")
+        made = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+             "color=c=black:s=320x180:r=24:d=1,format=yuv422p10le,"
+             "geq=lum=512:cb=512:cr=512", "-c:v", "prores_ks", "-profile:v", "3",
+             "-pix_fmt", "yuv422p10le", card], capture_output=True)
+        if made.returncode != 0:
+            check("a flat card could be built", False, made.stderr.decode()[:200])
+        else:
+            dc = SPEC.measured_depth(card, 2)
+            check("a flat 10 bit card is called unmeasurable, not promoted",
+                  dc["effective_bit_depth"] == 10 and dc["measurable"] is False,
+                  f"{dc['distinct_codes']} distinct codes: {dc['verdict'][:60]}")
         tl = PROVE.timeline(clip)
         check("an unspliced clip has a uniform timeline", tl["uniform"])
         check("every ProRes frame is a keyframe", tl["all_keyframes"])
