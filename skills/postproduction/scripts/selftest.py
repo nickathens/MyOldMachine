@@ -623,9 +623,36 @@ def test_media():
         depth = SPEC.measured_depth(clip, 2)
         check("the measured depth is read in the file's own pixel format",
               depth["measured_in_pix_fmt"] == "yuv422p10le")
-        check("a genuine 10 bit clip is not called promoted",
-              depth["effective_bit_depth"] == 10,
-              f"{depth['distinct_codes']} distinct codes")
+        # testsrc2 is generated at 8 bit (lavfi hands out yuv420p), so the clip
+        # above IS 8 bit content in a 10 bit container: 91 per cent of its luma
+        # sits on the 4x lattice. Asking the detector to call that "not
+        # promoted" asserted something false, and it could only ever pass where
+        # the encode path happened to dither enough samples off the lattice --
+        # a check passing for the wrong reason, on the one instrument whose
+        # whole job is to catch promotion. It is the POSITIVE control instead,
+        # and the negative one needs content that genuinely carries the depth:
+        # a blur run AT 10 bit fills the lattice honestly.
+        lat = (depth["lattice"] or [{}])[0].get("fraction_on_lattice")
+        check("8 bit content in a 10 bit container is called promoted",
+              depth["effective_bit_depth"] == 8,
+              f"{depth['distinct_codes']} distinct codes, {lat} on the 4x lattice")
+        native = os.path.join(tmp, "native10.mov")
+        built = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+             "testsrc2=size=320x180:rate=24:duration=1,format=yuv422p10le,"
+             "gblur=sigma=0.7", "-c:v", "prores_ks", "-profile:v", "3",
+             "-pix_fmt", "yuv422p10le", "-colorspace", "bt709",
+             "-color_range", "tv", native], capture_output=True)
+        if built.returncode != 0:
+            check("a genuine 10 bit clip could be built", False,
+                  built.stderr.decode()[:200])
+        else:
+            d10 = SPEC.measured_depth(native, 2)
+            check("a genuine 10 bit clip is not called promoted",
+                  d10["effective_bit_depth"] == 10,
+                  f"{d10['distinct_codes']} distinct codes, "
+                  f"{(d10['lattice'] or [{}])[0].get('fraction_on_lattice')} "
+                  "on the 4x lattice")
         tl = PROVE.timeline(clip)
         check("an unspliced clip has a uniform timeline", tl["uniform"])
         check("every ProRes frame is a keyframe", tl["all_keyframes"])
