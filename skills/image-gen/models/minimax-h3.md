@@ -70,9 +70,12 @@ model's own default quality, H3 is eighth:
 | `cinematic3`, `cinematic3.5`, `marketing` | 5.0 | | `veo3.1` | 2.75 |
 | `seedance`, `grok-video1.5` | 4.5 | | `happy-horse`, `seedance-mini` | 2.5 |
 
-One qualifier on the top row **[live 2026-08-10]**: `seedance2.5` charges 6.5/s only for a plain
-`t2v` roll. Any job it runs from a video reference, meaning an edit or an extension, is 4.0/s,
-exactly level with H3. The gap this table shows closes the moment there is a clip to work from.
+One correction to the top row **[re-measured live 2026-08-19, re-verified 2026-08-23]**:
+`seedance2.5` used to drop to 4.0/s for any job run from a video reference, which used to put the
+two models on the same rate. **That discount is gone.** It charges 6.5/s at 720p in every mode, so
+the gap this table shows holds whether or not there is a clip to work from. What moves its bill
+instead is duration: a `video_edit` is charged the source clip's own length rather than the length
+you ask for.
 
 What is still true, and is the real constraint: **there is no 768p draft tier on this route, so
 every roll is a full-price 2K roll.** Models below it in that table mostly have a cheap resolution

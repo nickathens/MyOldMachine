@@ -41,10 +41,12 @@ The file is what moves the price, not any mode setting: this model has no `mode`
 either way. Quote a continuation at the headline rate and you
 understate a 20 s piece by 150 credits, so always `--cost` with the reference actually attached.
 
-This is the mirror image of `seedance_2_5`, which *drops* from 6.5 to 4 credits/s on the same
-trigger. On a 720p continuation the ranking inverts outright: Flux 3 is 13/s against Seedance 2.5's
-4, so the model that is dearer for `t2v` is the cheaper of the two the moment there is a clip to
-work from. See `seedance-2-5.md`.
+This used to be the mirror image of `seedance_2_5`, which *dropped* from 6.5 to 4 credits/s on the
+same trigger. **Seedance's discount is gone [re-measured live 2026-08-23]**: it charges 6.5/s at
+720p in every mode. The ranking still inverts, by half as much as it did. For a plain roll Flux 3 is
+the cheaper of the two, 5.5 against 6.5; the moment there is a clip to work from Flux 3 is 13/s
+against Seedance's unchanged 6.5. Compare on `video_extension`, which bills the duration you ask
+for, because `video_edit` bills the source clip's own length instead. See `seedance-2-5.md`.
 
 **The draft mode is the thing we are missing.** BFL's own workflow is: render a cheap low resolution
 draft, iterate on it, then send the cached draft back for a full quality enhance. Our route has no
@@ -180,7 +182,7 @@ there is no draft mode, iterate at 720p and short durations, then commit once at
 
 Those figures are for a roll from scratch. A **video continuation is 13/s at 720p**, so the same
 20 s piece is 260, and iterating on one is dear enough that the cheap pass belongs on
-`seedance_2_5` at 4/s instead.
+`seedance_2_5` at 6.5/s instead, which halves it.
 
 ```bash
 python skills/image-gen/scripts/generate.py "..." --video -m flux-video --duration 10 --cost

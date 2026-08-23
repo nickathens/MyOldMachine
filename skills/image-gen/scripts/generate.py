@@ -283,7 +283,10 @@ MODEL_PARAMS = {
     },
     "seedance_2_5": {
         "mode": {"options": ["t2v", "omni_reference", "video_edit", "video_extension"], "default": "t2v"},
-        "resolution": {"options": ["480p", "720p"], "default": "720p"},
+        # 1080p (9.0 cr/s) and bitrate_mode both went live between 2026-08-10 and
+        # 2026-08-19; the old table said neither existed. 4k is still refused.
+        "resolution": {"options": ["480p", "720p", "1080p"], "default": "720p"},
+        "bitrate_mode": {"options": ["standard", "high"], "default": "standard"},
         "generate_audio": {"type": "bool", "default": True},
         "extension_mode": {"options": ["backward", "forward"], "default": None},
     },
