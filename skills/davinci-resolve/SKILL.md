@@ -59,13 +59,24 @@ On the free edition these commands fail with a clear message pointing to the two
 
 ## Installing Resolve itself
 
-Not in Homebrew (the cask was retired). Blackmagic requires a name and email registration for the free download, so the installer script needs real details:
+Not in Homebrew (the cask was retired). Blackmagic requires a name and email registration for either download, so the installer script needs real details:
 
 ```bash
 bash skills/davinci-resolve/scripts/install_resolve.sh --first Jane --last Doe --email jane@example.com
+bash skills/davinci-resolve/scripts/install_resolve.sh --studio --first Jane --last Doe --email jane@example.com
 ```
 
-Downloads the latest free edition (~3.5 GB), installs the pkg with sudo, cleans up. To uninstall, the download DMG ships an "Uninstall Resolve" app.
+Free is about 3.5 GB, Studio about 8.4 GB. Both install to `/Applications/DaVinci Resolve/`, and the Studio package replaces the free app in place: nothing needs uninstalling first, and projects and preferences survive the swap. A part-downloaded or already-downloaded zip is resumed or reused rather than fetched again, and a short download is refused rather than installed. To uninstall, the DMG ships an "Uninstall Resolve" app.
+
+**Headless.** macOS sudo needs a terminal to ask for a password and a detached background session has none, so export `SUDO_ASKPASS` pointing at a helper that prints the password and the whole install runs unattended. With no helper set the script uses plain `sudo` and behaves exactly as it always did.
+
+**Studio activation is the one step that needs a person.** The key is entered at first launch, in the setup wizard, on the screen. There is no documented headless path for it. Keep the key in the Keychain, never in a file in this repo, which is public:
+
+```bash
+python utils/credentials_cli.py get --service davinci-resolve-studio
+```
+
+**Which edition is installed** cannot be read from the bundle identifier, which is the same for both. `resolve_api.py status` answers it the only way that counts, by trying the external API, which only Studio exposes.
 
 ## Examples
 

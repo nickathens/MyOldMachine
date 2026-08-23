@@ -102,7 +102,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(Nothing open right now.)
+[2026-08-23] mac: postproduction resolution department, and Studio support
+in the Resolve installer (PR #146).
 
 (Entries removed above: #143, #142, #141 and #140 merged 2026-08-22.
 #139 and #138 merged 2026-08-18.

@@ -1,0 +1,24 @@
+{
+  "slug": "vod_uhd_dialog_gated",
+  "name": "Large VOD platform, UHD, dialog gated audio",
+  "as_of": "2026-08-23",
+  "source": "Netflix Sound Mix Specifications v1.3 and the English Timed Text Style Guide, both fetched 2026-08-23. Every platform differs and the numbers move; confirm against the platform's own current page before delivering.",
+  "verify": true,
+  "picture": {
+    "width": 3840, "height": 2160, "fps": "24000/1001", "scan": "progressive",
+    "codec": ["prores"], "bit_depth": 10, "chroma": "422",
+    "primaries": "bt709", "transfer": "bt709", "matrix": "bt709", "range": "tv"
+  },
+  "audio": {
+    "codec": ["pcm_s24le"], "sample_rate": 48000,
+    "channels": 6, "layout": "5.1",
+    "loudness": {"target_i": -27.0, "tol_i": 2.0, "max_tp": -2.0,
+                 "max_lra": null, "gate": "dialog"}
+  },
+  "safe": {"action": 0.93, "title": 0.90},
+  "subtitles": {"max_lines": 2, "max_chars_per_line": 42, "max_cps": 20,
+                "min_duration_s": 0.8333, "max_duration_s": 7.0,
+                "min_gap_s": 0.0833, "formats": ["ttml", "itt"]},
+  "items": ["master", "textless", "audio_stems", "subtitle_sidecar",
+            "audio_description", "spec_sheet", "viewing_copy", "hash_ledger"]
+}

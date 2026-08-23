@@ -1,0 +1,25 @@
+{
+  "slug": "broadcast_hd_r128",
+  "name": "European broadcast HD, EBU R128 audio",
+  "as_of": "2026-08-23",
+  "source": "EBU R128 v5 (2023) and EBU R95 rev 1 (2016), both read in the primary text. Raster, codec and container are TYPICAL and belong to the broadcaster's own delivery document.",
+  "verify": true,
+  "picture": {
+    "width": 1920, "height": 1080, "fps": "25", "scan": "progressive",
+    "codec": ["prores", "dnxhd", "mpeg2video"], "bit_depth": 10,
+    "chroma": "422",
+    "primaries": "bt709", "transfer": "bt709", "matrix": "bt709", "range": "tv"
+  },
+  "audio": {
+    "codec": ["pcm_s24le", "pcm_s16le"], "sample_rate": 48000,
+    "channels": 2, "layout": "stereo",
+    "loudness": {"target_i": -23.0, "tol_i": 0.2, "max_tp": -1.0,
+                 "max_lra": null, "gate": "bs1770"}
+  },
+  "safe": {"action": 0.93, "title": 0.90},
+  "subtitles": {"max_lines": 2, "max_chars_per_line": 37, "max_cps": 17,
+                "min_duration_s": 1.0, "max_duration_s": 7.0,
+                "min_gap_s": 0.08, "formats": ["stl", "ttml", "srt"]},
+  "items": ["master", "textless", "audio_stems", "subtitle_sidecar",
+            "spec_sheet", "viewing_copy"]
+}

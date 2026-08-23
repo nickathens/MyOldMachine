@@ -1,0 +1,17 @@
+{
+  "check": {
+    "ffmpeg": "ffmpeg -version",
+    "ffprobe": "ffprobe -version",
+    "post-venv": "test -x $HOME/.venvs/post/bin/python && $HOME/.venvs/post/bin/python -c 'import PIL, numpy, cv2, scipy'"
+  },
+  "brew": [
+    "ffmpeg"
+  ],
+  "apt": [
+    "ffmpeg"
+  ],
+  "weight": "medium",
+  "min_ram_gb": 2,
+  "min_disk_gb": 3,
+  "install_note": "Most engines here are standard library Python plus ffmpeg and ffprobe, which is the only hard requirement. Three want more, and they go in this skill's OWN environment, never the bot's: the supers legibility audit renders a glyph mask and measures real pixels, comp.py does tracking, keying and warping, and upres.py reads power spectra and optical flow. One command sets both up: python3 -m venv ~/.venvs/post && ~/.venvs/post/bin/pip install pillow numpy opencv-python-headless scipy (about 350 MB; Pillow MIT-CMU, numpy BSD-3, OpenCV Apache-2.0, SciPy BSD-3, all clean for paid client work). Run supers.py audit, comp.py and upres.py with ~/.venvs/post/bin/python; everything else runs with the system python3. selftest.py runs either way and skips the compositing and resolution sections with an explanation when that environment is missing. The colour department calls the colorgrade skill, which keeps its own environment at ~/.venvs/colorgrade."
+}
