@@ -102,7 +102,7 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-08-23] linux: two skill ports, mascot (new, MIT vendor) and last30days (from the sibling bot)
+[2026-08-23] linux: two skill ports, mascot (new, MIT vendor) and last30days (from the sibling bot) (PR #144)
 
 (Entries removed above: #147 and #146 merged 2026-08-23.
 #143, #142, #141 and #140 merged 2026-08-22.
