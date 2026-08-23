@@ -64,11 +64,20 @@ ffmpeg behaviour this skill relies on was measured against that build.
 These are not standards. They are calibrations, made here, with the date, so
 that a later reading can be compared with them.
 
-**Bit depth lattice separation, 2026-08-23.** An 8 bit clip promoted to
-yuv422p10le and written as ProRes HQ kept 95.2 per cent of its luma samples on
-the multiple of 4 lattice; native 10 bit ProRes sat at 31.5 per cent against a
-25 per cent chance level; a lossless v210 promotion carried 200 distinct codes
-with a gcd of 4. This is what `spec.py depth` reads.
+**Bit depth lattice separation, 2026-08-23, remeasured the same day.** An 8
+bit test pattern promoted to yuv422p10le and written as ProRes HQ kept 90.98 per
+cent of its luma samples on the multiple of 4 lattice, over 594 distinct codes.
+A ramp written at 10 bit steps and put through the same encode sat at 25.00 per
+cent, which is the chance level exactly. A lossless promotion carried 20 codes
+with a gcd of 4, and 20 codes with a gcd of 1 read as native. This is what
+`spec.py depth` reads, and the four clips are the controls in `selftest.py`.
+
+The first version of this calibration read 95.2 and 31.5 per cent, and both
+figures came from clips written with `-colorspace bt709` against an untagged
+source, which converts rather than tags. The promoted clip measured after that
+conversion reads 31.75 per cent, so the two numbers were closer to each other
+than either was to the thing being measured. Tag the source with `setparams`
+and the reading is reproducible on any build. See failure 43.
 
 **Scaler contamination, 2026-08-23.** The same 10 bit ProRes clip reports 805
 distinct luma codes read in its own pixel format and 27946 read through
