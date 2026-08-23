@@ -12,9 +12,12 @@ installed plus a host with systemd-run and is exercised manually.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 TRANSCRIBE = ROOT / "skills" / "voice" / "scripts" / "transcribe.py"
@@ -26,18 +29,29 @@ spec.loader.exec_module(tmod)  # cheap: whisper import is deferred into _run_whi
 
 class ParseArgsTests(unittest.TestCase):
     def test_defaults(self):
-        audio, lang, model = tmod._parse_args(["transcribe.py", "a.ogg"])
+        audio, lang, model, srt = tmod._parse_args(["transcribe.py", "a.ogg"])
         self.assertEqual(audio, "a.ogg")
         self.assertIsNone(lang)
         self.assertEqual(model, tmod.DEFAULT_MODEL)
+        self.assertFalse(srt)
 
     def test_language_and_model_flags(self):
-        audio, lang, model = tmod._parse_args(
+        audio, lang, model, srt = tmod._parse_args(
             ["transcribe.py", "a.ogg", "--language", "el", "--model", "small"]
         )
         self.assertEqual(audio, "a.ogg")
         self.assertEqual(lang, "el")
         self.assertEqual(model, "small")
+        self.assertFalse(srt)
+
+    def test_srt_flag_is_parsed_anywhere_in_argv(self):
+        _, _, _, srt = tmod._parse_args(["transcribe.py", "a.ogg", "--srt"])
+        self.assertTrue(srt)
+        _, lang, _, srt = tmod._parse_args(
+            ["transcribe.py", "a.ogg", "--srt", "--language", "el"]
+        )
+        self.assertTrue(srt)
+        self.assertEqual(lang, "el")
 
 
 class ScopePrefixTests(unittest.TestCase):
@@ -78,6 +92,107 @@ class SafeModelGateTests(unittest.TestCase):
     def test_heavy_models_are_not_safe(self):
         for m in ("large", "large-v2", "large-v3", "turbo"):
             self.assertNotIn(m, tmod.SAFE_MODELS)
+
+
+class SrtFormatTests(unittest.TestCase):
+    """--srt exists so a transcript can drive a subtitle track (caption and
+    whiteboard workflows want timings, not one text blob). The formatter is
+    pure, so it is checked here without loading whisper."""
+
+    def test_timestamp_format(self):
+        self.assertEqual(tmod._srt_timestamp(0), "00:00:00,000")
+        self.assertEqual(tmod._srt_timestamp(1.5), "00:00:01,500")
+        self.assertEqual(tmod._srt_timestamp(61.25), "00:01:01,250")
+        self.assertEqual(tmod._srt_timestamp(3725.007), "01:02:05,007")
+        # 0.9996s is where rounding and truncation disagree (999.6 ms). Without
+        # this line a truncating implementation passes every other case here.
+        self.assertEqual(tmod._srt_timestamp(0.9996), "00:00:01,000")
+
+    def test_negative_offset_clamps_to_zero(self):
+        self.assertEqual(tmod._srt_timestamp(-0.4), "00:00:00,000")
+
+    def test_document_shape(self):
+        out = tmod._format_srt([
+            {"start": 0.0, "end": 2.5, "text": " Hello there "},
+            {"start": 2.5, "end": 4.0, "text": "second cue"},
+        ])
+        self.assertEqual(
+            out,
+            "1\n00:00:00,000 --> 00:00:02,500\nHello there\n\n"
+            "2\n00:00:02,500 --> 00:00:04,000\nsecond cue\n",
+        )
+
+    def test_blank_segments_dropped_and_indices_stay_contiguous(self):
+        out = tmod._format_srt([
+            {"start": 0.0, "end": 1.0, "text": "one"},
+            {"start": 1.0, "end": 2.0, "text": "   "},
+            {"start": 2.0, "end": 3.0, "text": "two"},
+        ])
+        self.assertEqual([ln for ln in out.split("\n") if ln.isdigit()], ["1", "2"])
+        self.assertNotIn("00:00:01,000 -->", out)
+
+    def test_empty_and_missing_segments(self):
+        self.assertEqual(tmod._format_srt([]), "")
+        self.assertEqual(tmod._format_srt(None), "")
+
+    def test_missing_timings_default_to_zero(self):
+        out = tmod._format_srt([{"text": "no timings"}])
+        self.assertEqual(out, "1\n00:00:00,000 --> 00:00:00,000\nno timings\n")
+
+
+class SrtSkipsTheWarmEngineTests(unittest.TestCase):
+    """The warm listening engine returns text with no segment boundaries.
+
+    This is the port-specific hazard: the bot has no warm path, MOM does, and
+    `hear.py` prints a finished transcript and nothing else. Routing an SRT
+    request through it would print plain text under a flag that promised
+    timings, which is worse than being slow. `hear.py` lives under `data/`,
+    which is gitignored, so this can only be pinned at the branch, not by
+    reading the daemon.
+    """
+
+    WARM_TEXT = "warm engine transcript"
+
+    def _run_main(self, argv):
+        """Drive main() with isolation and whisper both stubbed out.
+
+        stdout is captured rather than left to the terminal: main() prints
+        whatever the warm engine returned, and a test suite that leaks it into
+        the run output hides a real one behind noise."""
+        calls = {}
+
+        def warm(*a, **k):
+            calls["warm"] = (a, k)
+            return self.WARM_TEXT
+
+        def whisper(*a, **k):
+            calls["whisper"] = (a, k)
+
+        out = io.StringIO()
+        with mock.patch.dict(tmod.os.environ, {"WHISPER_ISOLATED": "1"}, clear=False), \
+             mock.patch.object(tmod, "_try_warm_engine", side_effect=warm), \
+             mock.patch.object(tmod, "_run_whisper", side_effect=whisper), \
+             contextlib.redirect_stdout(out):
+            tmod.main(argv)
+        return calls, out.getvalue()
+
+    def test_plain_run_uses_the_warm_engine(self):
+        # The control. Without it, a bypass that fires for every run would pass.
+        calls, printed = self._run_main(["transcribe.py", "a.ogg"])
+        self.assertIn("warm", calls, "the warm engine is no longer the default path")
+        self.assertNotIn("whisper", calls)
+        # And its answer is what reaches the caller, so a warm path that runs
+        # but whose result is dropped cannot pass as "the fast path works".
+        self.assertEqual(printed.strip(), self.WARM_TEXT)
+
+    def test_srt_run_bypasses_it_and_asks_whisper_for_segments(self):
+        calls, printed = self._run_main(["transcribe.py", "a.ogg", "--srt"])
+        self.assertNotIn(self.WARM_TEXT, printed,
+                         "the warm engine's segment-less text reached an --srt caller")
+        self.assertNotIn("warm", calls, "--srt was routed through the segment-less warm engine")
+        self.assertIn("whisper", calls, "--srt did not reach the legacy whisper path")
+        args, _ = calls["whisper"]
+        self.assertIs(args[3], True, f"_run_whisper was not told to emit SRT: {args!r}")
 
 
 if __name__ == "__main__":

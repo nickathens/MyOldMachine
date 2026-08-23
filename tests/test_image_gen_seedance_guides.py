@@ -6,9 +6,17 @@ while `generate.py`'s catalog agrees with them. Nothing else checks that pairing
 pin guide *filenames*, but a guide that documents a 5s floor against a wrapper
 that allows 4 passes both.
 
-Every claim here was measured against `higgsfield generate cost` on CLI 1.1.23 on
+Every claim here was measured against `higgsfield generate cost` on CLI 1.1.23:
+the Seedance 2.5 numbers on 2026-08-19 and re-verified 2026-08-23, the rest on
 2026-08-09. Each test that reads guide text asserts its anchor was found, so a
 reformat fails loudly instead of quietly matching nothing.
+
+The catalogue drifts server side while these tables are written by hand, and it
+has drifted twice already: a 2026-08-10 revision of this file pinned a
+video-reference discount tier and a 4000-character prompt ceiling that both
+stopped existing. Guards that only pin what the guide currently says will pass a
+stale guide, so the ones below that matter pin arithmetic (rate times duration)
+and pin the retired claims **absent** from every surface that used to carry them.
 """
 from __future__ import annotations
 
@@ -23,6 +31,20 @@ SCRIPT_DIR = ROOT / "skills" / "image-gen" / "scripts"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+# generate.py imports httpx at module level, and skills install their own
+# dependencies on first use, so on a fresh install httpx is absent and this
+# module fails to import -- taking every test in the file with it, silently,
+# as one collection error rather than a red assertion. Stub it: these tests
+# read the wrapper's tables and never make a request, so the numbers they
+# compare against stay the real ones.
+if "httpx" not in sys.modules:
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        import types
+
+        sys.modules["httpx"] = types.ModuleType("httpx")
+
 import generate  # noqa: E402
 
 MODELS_DIR = ROOT / "skills" / "image-gen" / "models"
@@ -30,6 +52,20 @@ GUIDE_25 = MODELS_DIR / "seedance-2-5.md"
 GUIDE_20 = MODELS_DIR / "seedance.md"
 GUIDE_H3 = MODELS_DIR / "minimax-h3.md"
 SKILL_MD = ROOT / "skills" / "image-gen" / "SKILL.md"
+GUIDE_FLUX = MODELS_DIR / "flux-3-video.md"
+
+
+def rate_rows(case):
+    """`{rate: models cell}` for every row of SKILL.md's credits/s table."""
+    table = re.search(r"^\| Credits/s \| Models \|\n\|[-| ]+\|\n((?:\|.*\|\n)+)",
+                      SKILL_MD.read_text(encoding="utf-8"), re.M)
+    case.assertIsNotNone(table, "could not find the credits/s table in SKILL.md")
+    rows = {}
+    for line in table.group(1).strip().splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        case.assertEqual(len(cells), 2, msg=f"malformed rate row: {line!r}")
+        rows[float(cells[0])] = cells[1]
+    return rows
 
 
 class TestSeedance25GuideMatchesTheWrapper(unittest.TestCase):
@@ -56,52 +92,52 @@ class TestSeedance25GuideMatchesTheWrapper(unittest.TestCase):
         # The 2026-08-07 catalog sweep recorded 5. `--duration 3` is what the API
         # actually rejects, and 4 quotes 26 credits at 720p.
         self.assertEqual(generate.VIDEO_DURATIONS["seedance_2_5"]["min"], 4)
-        self.assertIn("greater than or\nequal to 4", self.text.replace("\r", ""))
+        self.assertIn("duration: Input should be greater than or equal to 4", self.text)
 
     def test_documented_resolutions_match_model_params(self):
+        # 1080p went live between 2026-08-10 and 2026-08-19 and the old row said
+        # it did not exist, so the wrapper hid a resolution the API accepts.
         params = generate.MODEL_PARAMS["seedance_2_5"]
-        self.assertEqual(params["resolution"]["options"], ["480p", "720p"])
-        row = re.search(r"^\| Resolution \|.*\|\s*\*\*480p or 720p only\.\*\*", self.text, re.M)
+        self.assertEqual(params["resolution"]["options"], ["480p", "720p", "1080p"])
+        row = re.search(r"^\| Resolution \|.*\|\s*\*\*480p, 720p, 1080p\*\*\. 4K rejected",
+                        self.text, re.M)
         self.assertIsNotNone(row, "could not find the Resolution row in the hard specs table")
+        self.assertIn("Invalid values: resolution=4k (allowed: 480p,720p,1080p)", self.text,
+                      msg="the guide no longer quotes the measured 4K rejection")
 
-    def test_quoted_costs_are_linear_at_the_documented_rate(self):
-        """Every credit figure in the cost paragraph must be rate x seconds.
+    def test_bitrate_mode_is_offered_again(self):
+        # Rejected as an unknown param on 2026-08-10, back in the schema by
+        # 2026-08-19 and still there on 2026-08-23, proven by an out-of-enum
+        # rejection rather than by the schema listing it. The wrapper's table is
+        # what the Mini App renders, so a param the API takes and the wrapper
+        # hides is a capability nobody can reach.
+        params = generate.MODEL_PARAMS["seedance_2_5"]
+        self.assertIn("bitrate_mode", params, "bitrate_mode is live again")
+        self.assertEqual(params["bitrate_mode"]["options"], ["standard", "high"])
+        self.assertRegex(self.text, r"bitrate_mode\s+standard, high")
+        self.assertIn("Invalid values: bitrate_mode=bogus (allowed: standard,high)", self.text)
 
-        A hand-typed table is exactly where a transposed digit hides, and the
-        figures are what someone budgets a shoot against.
-        """
-        para = re.search(r"\*\*Cost, measured not estimated.*?length\.", self.text, re.S)
-        self.assertIsNotNone(para, "could not find the measured cost paragraph")
-        body = para.group(0)
-        self.assertIn("480p is", body, "cost paragraph no longer splits by resolution")
-        at_720, at_480 = body.split("480p is", 1)
-
-        def pairs(chunk):
-            return [(float(c), int(s)) for c, s in
-                    re.findall(r"(\d+(?:\.\d+)?)\s+(?:credits\s+)?for\s+(?:the\s+)?(\d+)\s*s", chunk)]
-
-        seen_720, seen_480 = pairs(at_720), pairs(at_480)
-        self.assertGreaterEqual(len(seen_720), 4, f"only parsed {seen_720} at 720p")
-        self.assertGreaterEqual(len(seen_480), 3, f"only parsed {seen_480} at 480p")
-        for credits, seconds in seen_720:
-            self.assertAlmostEqual(credits, 6.5 * seconds, places=6,
-                                   msg=f"720p: {credits} for {seconds}s is not 6.5/s")
-        for credits, seconds in seen_480:
-            self.assertAlmostEqual(credits, 3.0 * seconds, places=6,
-                                   msg=f"480p: {credits} for {seconds}s is not 3.0/s")
-
-    def test_the_cheapest_and_dearest_rolls_sit_on_the_bounds(self):
-        dur = generate.VIDEO_DURATIONS["seedance_2_5"]
-        self.assertIn(f"{6.5 * dur['min']:g} credits for the {dur['min']} s minimum", self.text)
-        self.assertIn(f"{6.5 * dur['max']:g} for the {dur['max']} s maximum", self.text)
+    def test_the_prompt_length_row_no_longer_states_a_ceiling(self):
+        # 4000 characters was a hard submit-time rejection on 2026-08-10 and is
+        # not enforced now. The row is the first thing read, so a stale ceiling
+        # there makes people cut good prompts in half.
+        row = re.search(r"^\| Prompt length \|.*$", self.text, re.M)
+        self.assertIsNotNone(row, "could not find the Prompt length row in the hard specs table")
+        self.assertIn("no ceiling found", row.group(0))
+        self.assertNotIn("4000 characters, hard", self.text)
 
 
-class TestCarryTableConflicts(unittest.TestCase):
-    """The carry table names eight things that do not transfer from 2.0.
+class TestSeedance20HabitsThatDoNotCarry(unittest.TestCase):
+    """The habits that do not transfer from 2.0, checked in both directions.
 
-    Both directions are checked. Absent-on-2.5 alone would pass for a param that
-    exists on neither model, which would make the warning noise rather than a
-    trap; present-on-2.0 is what proves the habit is real.
+    Absent-on-2.5 alone would pass for a param that exists on neither model,
+    which makes the warning noise rather than a trap; present-on-2.0 is what
+    proves the habit is real.
+
+    `bitrate_mode` used to be in this list and is deliberately no longer: it was
+    rejected as an unknown param on 2026-08-10 and is a real 2.5 param now, so it
+    is asserted **present on both** instead. Leaving it in the rejected list
+    would teach a limit that no longer exists.
     """
 
     @classmethod
@@ -110,17 +146,19 @@ class TestCarryTableConflicts(unittest.TestCase):
         cls.p20 = generate.MODEL_PARAMS["seedance_2_0"]
         cls.p25 = generate.MODEL_PARAMS["seedance_2_5"]
 
-    def test_the_carry_table_is_present(self):
-        self.assertIn("## What carries from Seedance 2.0", self.text)
-        self.assertIn("| From `seedance.md` | On 2.5 | Basis |", self.text)
-
     def test_rejected_params_are_absent_from_2_5(self):
-        for param in ("genre", "bitrate_mode"):
+        for param in ("genre",):
             self.assertNotIn(param, self.p25, msg=f"{param} is documented as rejected on 2.5")
 
     def test_rejected_params_are_real_2_0_params(self):
-        for param in ("genre", "bitrate_mode"):
+        for param in ("genre",):
             self.assertIn(param, self.p20, msg=f"{param} must exist on 2.0 or the warning is noise")
+
+    def test_bitrate_mode_is_no_longer_in_the_rejected_set(self):
+        for params in (self.p20, self.p25):
+            self.assertIn("bitrate_mode", params)
+        self.assertNotIn("Unknown params: bitrate_mode", self.text,
+                         msg="the guide still teaches bitrate_mode as rejected on 2.5")
 
     def test_mode_means_capability_on_2_5_and_a_speed_tier_on_2_0(self):
         self.assertEqual(sorted(self.p20["mode"]["options"]), ["fast", "std"])
@@ -130,18 +168,16 @@ class TestCarryTableConflicts(unittest.TestCase):
             self.assertNotIn(tier, self.p25["mode"]["options"],
                              msg="a 2.0 speed tier leaked into 2.5's mode enum")
 
-    def test_the_three_rejections_are_quoted_verbatim(self):
-        for line in (
-            "Invalid values: mode=fast (allowed: t2v,omni_reference,video_edit,video_extension)",
-            "Unknown params: genre",
-            "Unknown params: bitrate_mode",
-        ):
+    def test_the_surviving_rejections_are_quoted_verbatim(self):
+        for line in ("Unknown params: genre", "Invalid values: mode=fast"):
             self.assertIn(line, self.text, msg=f"missing the measured rejection: {line}")
 
     def test_the_reference_ceiling_is_the_2_5_number_not_the_2_0_one(self):
         # 2.0 is 9 images / 12 files total; 2.5 is 30 images / 50 total. Carrying
         # the smaller ceiling silently caps what the model can be given.
-        self.assertIn("**30 images and 50 total**", self.text)
+        flat = self.text.replace("\n", " ")
+        self.assertIn("up to 30 images, 10 video clips, 10 audio clips", flat)
+        self.assertIn("Fifty files is the ceiling", flat)
 
 
 class TestSeedance20GuideCorrections(unittest.TestCase):
@@ -208,50 +244,61 @@ class TestKeyframeCaveat(unittest.TestCase):
             self.assertIn(name, params)
 
     def test_both_guides_carry_the_warning(self):
-        self.assertIn("`--cost` cannot check any of this",
-                      GUIDE_25.read_text(encoding="utf-8"))
+        flat = GUIDE_25.read_text(encoding="utf-8").replace("\n", " ")
+        self.assertIn("the wrapper's `--cost` lies about anything with media in it", flat)
         self.assertIn("never forwards the keyframe flags",
                       GUIDE_20.read_text(encoding="utf-8"))
 
 
-class TestPromptCeiling(unittest.TestCase):
-    """The 4000-character ceiling, and the unit it is counted in.
+class TestTheRetiredPromptCeiling(unittest.TestCase):
+    """4000 characters was a hard rejection on 2026-08-10. It is not enforced now.
 
-    The ceiling itself is cheap to state and cheap to get wrong in the one way
-    that costs you work: counting bytes. The API counts Unicode characters, so a
-    byte count over-reports every non-ASCII prompt -- measured live, a 4000
-    character Greek prompt is 7525 bytes, which `wc -c` calls 88 percent over a
-    limit the API accepts without complaint. A guide that says `wc -c` makes
-    people cut good prompts in half, so the wrong tool is asserted absent, not
-    merely the right one present.
+    Re-probed 2026-08-19 and again 2026-08-23: prompts of 4001, 8000 and 40000
+    characters all quote without complaint. What that proves is narrower than it
+    looks and the guide has to say so, because **an empty prompt also quotes
+    without complaint** (32.5 credits at five seconds), so the quote path never
+    looks at the prompt field at all. The validator also answers one error at a
+    time, local enum checks ahead of server-side range checks: send
+    `--resolution 4k` and `--duration 99` together and only the resolution error
+    comes back.
+
+    So the guard is two-sided. The retired ceiling must be gone from the guide,
+    and the weaker claim that replaced it must carry its own limits rather than
+    reading as proof about `generate create`.
     """
 
     @classmethod
     def setUpClass(cls):
         cls.text = GUIDE_25.read_text(encoding="utf-8")
 
-    def test_the_ceiling_is_stated_in_the_specs_table(self):
-        row = re.search(r"^\| Prompt length \|.*\|\s*\*\*4000 characters, hard\*\*", self.text, re.M)
-        self.assertIsNotNone(row, "could not find the Prompt length row in the hard specs table")
+    def test_the_retired_ceiling_is_not_still_taught(self):
+        for dead in ("4000 characters, hard",
+                     "prompt: String should have at most 4000 characters",
+                     "4000\ncharacters is accepted, 4001 is rejected"):
+            self.assertNotIn(dead, self.text, msg=f"the guide still teaches: {dead!r}")
 
-    def test_the_boundary_is_walked_on_both_sides(self):
-        # 4000 alone would not distinguish "at most 4000" from "under 4000".
-        self.assertIn("4000\ncharacters is accepted, 4001 is rejected", self.text)
+    def test_the_lifted_limit_is_stated_with_the_probe_that_backs_it(self):
+        flat = self.text.replace("\n", " ")
+        self.assertIn("4001, 8000 and 40000 characters", flat)
 
-    def test_the_rejection_wording_is_quoted_verbatim(self):
-        self.assertIn("`prompt: String should have at most 4000 characters`", self.text)
+    def test_the_claim_carries_its_own_limits(self):
+        """A clean quote is not proof about the paid path, and the guide says so."""
+        flat = self.text.replace("\n", " ")
+        self.assertIn("an empty prompt also quotes without complaint", flat,
+                      msg="the guide no longer records that the quote path skips the prompt field")
+        self.assertIn("one error at a time", flat,
+                      msg="the guide no longer records that the validator reports one error")
+        self.assertIn("generate create", flat,
+                      msg="the guide does not distinguish the quote path from the paid path")
 
-    def test_it_prescribes_character_counting_not_byte_counting(self):
-        self.assertIn("wc -m", self.text)
-        self.assertIn("**Use `wc -m`, never `wc -c`.**", self.text)
-
-    def test_no_byte_counting_command_sits_in_a_copyable_block(self):
+    def test_no_byte_counting_command_survives_in_a_copyable_block(self):
         """`wc -c` may be named in prose as the wrong tool, never offered as a command.
 
-        Prose can hedge; a fenced block is what gets copied and run. The earlier
+        Prose can hedge; a fenced block is what gets copied and run. An earlier
         version of this guide shipped `tr '\\n' ' ' < prompt.txt | wc -c` as the
-        prescribed count -- and the `tr` was a no-op besides, since swapping a
-        newline for a space leaves the byte count untouched.
+        prescribed count, and the `tr` was a no-op besides, since swapping a
+        newline for a space leaves the byte count untouched. The ceiling it
+        served is gone, but the block must not come back with the next revision.
         """
         in_fence, fenced = False, []
         for line in self.text.splitlines():
@@ -262,108 +309,129 @@ class TestPromptCeiling(unittest.TestCase):
                 fenced.append(line)
         offenders = [ln for ln in fenced if "wc -c" in ln]
         self.assertEqual(offenders, [], msg=f"byte counting offered as a command: {offenders}")
-        # And the counting block that does exist must be the character one.
-        self.assertTrue(any("wc -m" in ln for ln in fenced),
-                        msg="no `wc -m` command block found in the guide")
-
-    def test_the_measured_byte_inflation_is_self_consistent(self):
-        m = re.search(r"a (\d+)[- ]character Greek\s*\n?prompt is (\d+) bytes", self.text)
-        self.assertIsNotNone(m, "could not find the measured Greek byte count")
-        chars, byts = int(m.group(1)), int(m.group(2))
-        self.assertEqual(chars, 4000)
-        pct = round((byts - chars) / chars * 100)
-        self.assertIn(f"{pct} percent\nover the limit", self.text,
-                      msg=f"{byts} bytes for {chars} chars is {pct}% over, not what the guide says")
-
-    def test_it_warns_that_the_estimator_does_not_enforce_it(self):
-        # The trap is a clean quote read as a green light. `generate cost` takes
-        # any length, so only `generate create` can refuse an over-long prompt.
-        self.assertIn("**`generate cost` does not enforce it**", self.text)
 
 
-class TestVideoReferencePricingTier(unittest.TestCase):
-    """Two price tiers, selected by the presence of a video reference.
+class TestSeedance25PriceModel(unittest.TestCase):
+    """One rate per resolution, in every mode **[2026-08-19, re-verified 2026-08-23]**.
 
-    Measured live on 2026-08-10: 6.5 credits/s at 720p and 3 at 480p with no
-    video reference, 4 and 2 with one, in every mode that accepts one. The tier
-    follows the file, not the mode name -- `omni_reference` carrying a video
-    reference is charged the lower rate, which is why the table below is keyed on
-    the reference rather than on the mode.
+    The 2026-08-10 revision of this file pinned a second, cheaper tier that any
+    job carrying a video reference dropped into: 4.0 credits/s at 720p against
+    6.5, and 2.0 at 480p against 3.0. **That tier no longer exists.** An
+    `omni_reference` job carrying a clip quotes 32.5 for five seconds, to the
+    cent what a plain `t2v` roll quotes. 480p itself fell from 3.0 to 2.5, and
+    1080p appeared at 9.0.
+
+    What differs between modes is which duration is billed, not the rate.
+    `video_edit` ignores the duration passed and charges the source clip's own
+    length with a four second floor: a 2 s clip quotes 26 whether 4 s or 30 s is
+    asked for, an 8 s clip quotes 52 whether 5 s or 20 s is. Every other mode
+    charges the duration requested. Both measurement rounds ran to an unchanged
+    credit balance, so none of it cost anything.
     """
 
-    T2V_720, T2V_480 = 6.5, 3.0
-    VREF_720, VREF_480 = 4.0, 2.0
+    RATES = {"480p": 2.5, "720p": 6.5, "1080p": 9.0}
+    RETIRED_VREF_720, RETIRED_VREF_480 = 4.0, 2.0
 
     @classmethod
     def setUpClass(cls):
         cls.text = GUIDE_25.read_text(encoding="utf-8")
 
-    def test_the_stated_rates_are_the_measured_ones(self):
-        self.assertIn("**4\ncredits/s at 720p**", self.text)
-        self.assertIn("**2 credits/s at 480p**", self.text)
+    def guide_rates(self):
+        """`{resolution: credits/s}` read out of the guide rather than retyped."""
+        table = re.search(
+            r"^\| Resolution \| Credits per second \|\n\|[-| ]+\|\n((?:\|.*\|\n)+)",
+            self.text, re.M)
+        self.assertIsNotNone(table, "could not find the per second rate table")
+        rows = {}
+        for line in table.group(1).strip().splitlines():
+            cells = [c.strip().replace("*", "") for c in line.strip().strip("|").split("|")]
+            self.assertEqual(len(cells), 2, msg=f"malformed rate row: {line!r}")
+            rows[cells[0]] = float(cells[1])
+        return rows
 
-    def test_the_discount_percentages_match_the_rates(self):
-        at_720 = round((self.T2V_720 - self.VREF_720) / self.T2V_720 * 100)
-        at_480 = round((self.T2V_480 - self.VREF_480) / self.T2V_480 * 100)
-        self.assertIn(f"{at_720} percent off at 720p, {at_480} at 480p", self.text,
-                      msg=f"rates give {at_720}% / {at_480}% off")
+    def test_the_guide_states_one_rate_per_resolution(self):
+        self.assertEqual(self.guide_rates(), self.RATES)
 
-    def test_every_row_of_the_price_table_is_rate_times_five_seconds(self):
-        """The table is hand-typed, and it is what a job gets budgeted against."""
-        table = re.search(r"^\| 5 s job \| 720p \| 480p \|\n(?:\|[-| ]+\|\n)((?:\|.*\|\n)+)",
-                          self.text, re.M)
-        self.assertIsNotNone(table, "could not find the 5 s price table")
+    def test_the_rate_table_covers_every_resolution_the_wrapper_offers(self):
+        offered = generate.MODEL_PARAMS["seedance_2_5"]["resolution"]["options"]
+        self.assertEqual(sorted(self.guide_rates()), sorted(offered),
+                         msg="a resolution the wrapper offers has no documented price")
+
+    def test_the_price_grid_is_rate_times_duration(self):
+        """Hand-typed, and it is what a job gets budgeted against."""
+        table = re.search(
+            r"^\| Duration \| 480p \| 720p \| 1080p \|\n(?:\|[-| ]+\|\n)((?:\|.*\|\n)+)",
+            self.text, re.M)
+        self.assertIsNotNone(table, "could not find the duration price grid")
+        rates = self.guide_rates()
         rows = [r for r in table.group(1).strip().splitlines() if r.strip()]
-        self.assertEqual(len(rows), 5, msg=f"expected 5 priced rows, got {rows}")
-
-        seen_vref = seen_plain = 0
+        self.assertGreaterEqual(len(rows), 4, msg=f"only {len(rows)} priced rows")
         for row in rows:
             cells = [c.strip().replace("*", "") for c in row.strip().strip("|").split("|")]
-            self.assertEqual(len(cells), 3, msg=f"malformed row: {row!r}")
-            label, at720, at480 = cells[0], float(cells[1]), float(cells[2])
-            carries_video = ("video reference" in label
-                            or "video_edit" in label or "video_extension" in label)
-            rate720 = self.VREF_720 if carries_video else self.T2V_720
-            rate480 = self.VREF_480 if carries_video else self.T2V_480
-            self.assertAlmostEqual(at720, rate720 * 5, places=6,
-                                   msg=f"{label}: {at720} at 720p is not {rate720}/s x 5 s")
-            self.assertAlmostEqual(at480, rate480 * 5, places=6,
-                                   msg=f"{label}: {at480} at 480p is not {rate480}/s x 5 s")
-            seen_vref += carries_video
-            seen_plain += not carries_video
-        # Both tiers must be represented, or the table proves nothing.
-        self.assertEqual((seen_vref, seen_plain), (3, 2),
-                         msg=f"expected 3 video-reference rows and 2 without, got {seen_vref}/{seen_plain}")
+            self.assertEqual(len(cells), 4, msg=f"malformed price row: {row!r}")
+            seconds = float(cells[0].rstrip(" s"))
+            for res, quoted in zip(("480p", "720p", "1080p"), cells[1:]):
+                self.assertAlmostEqual(
+                    float(quoted), rates[res] * seconds, places=6,
+                    msg=f"{seconds} s at {res}: {quoted} is not {rates[res]}/s")
 
-    def test_the_table_covers_every_mode_the_wrapper_offers(self):
-        table = re.search(r"^\| 5 s job \| 720p \| 480p \|.*?\n\n", self.text, re.M | re.S)
-        self.assertIsNotNone(table)
-        for mode in generate.MODEL_PARAMS["seedance_2_5"]["mode"]["options"]:
-            self.assertIn(mode, table.group(0), msg=f"price table omits mode {mode}")
+    def test_the_grid_prices_both_ends_of_the_legal_range(self):
+        dur = generate.VIDEO_DURATIONS["seedance_2_5"]
+        seconds = {int(s) for s in re.findall(r"^\| (\d+) s \| [\d.]+ \| [\d.]+ \| [\d.]+ \|$",
+                                              self.text, re.M)}
+        self.assertIn(dur["min"], seconds, "the grid does not price the shortest legal roll")
+        self.assertIn(dur["max"], seconds, "the grid does not price the longest legal roll")
 
-    def test_the_lower_tier_is_linear(self):
-        para = re.search(r"Linear at the lower rate as well:(.*?)extension\.", self.text, re.S)
-        self.assertIsNotNone(para, "could not find the lower-tier linearity sentence")
-        pairs = [(float(c), int(s)) for c, s in
-                 re.findall(r"(\d+(?:\.\d+)?) for (?:the )?(\d+) s", para.group(1))]
-        self.assertGreaterEqual(len(pairs), 4, f"only parsed {pairs}")
-        for credits, seconds in pairs:
-            self.assertAlmostEqual(credits, self.VREF_720 * seconds, places=6,
-                                   msg=f"{credits} for {seconds}s is not {self.VREF_720}/s")
+    def test_video_edit_bills_the_source_clip_not_the_request(self):
+        # The one rule that can move a budget fivefold, so it may not live only
+        # in a paragraph: an 8 s source is 52 at 720p where a 30 s request reads
+        # 195.
+        flat = self.text.replace("\n", " ")
+        self.assertIn("`video_edit`: `duration` is ignored", flat)
+        self.assertIn("length of the source clip", flat)
+        self.assertIn("four second floor", flat)
 
-    def test_the_thirty_second_comparison_uses_both_rates(self):
-        dur = generate.VIDEO_DURATIONS["seedance_2_5"]["max"]
-        self.assertIn(f"costs {self.T2V_720 * dur:g} as `t2v` costs **{self.VREF_720 * dur:g}**",
-                      self.text)
+    def test_the_billing_examples_are_the_rate_times_the_billed_length(self):
+        """The worked figures recomputed, so a transposed digit cannot survive."""
+        rate = self.RATES["720p"]
+        floor = generate.VIDEO_DURATIONS["seedance_2_5"]["min"]
+        table = re.search(
+            r"^\| Source clip \| Requested duration \| Quote at 720p \|\n(?:\|[-| ]+\|\n)((?:\|.*\|\n)+)",
+            self.text, re.M)
+        self.assertIsNotNone(table, "could not find the video_edit billing table")
+        rows = [r for r in table.group(1).strip().splitlines() if r.strip()]
+        self.assertGreaterEqual(len(rows), 2, "one row proves nothing about ignoring the request")
+        sources = set()
+        for row in rows:
+            cells = [c.strip().replace("*", "") for c in row.strip().strip("|").split("|")]
+            self.assertEqual(len(cells), 3, msg=f"malformed billing row: {row!r}")
+            source = float(re.match(r"([\d.]+)", cells[0]).group(1))
+            quoted = float(re.match(r"([\d.]+)", cells[2]).group(1))
+            self.assertAlmostEqual(
+                quoted, rate * max(source, floor), places=6,
+                msg=f"{cells[0]} source quoted {quoted}, not {rate}/s x max(source, {floor})")
+            sources.add(source)
+        self.assertTrue(any(s < floor for s in sources),
+                        msg=f"no row is under the {floor} s floor, so the floor is untested")
+        self.assertTrue(any(s > floor for s in sources),
+                        msg="every row sits on the floor, so 'bills the source' is untested")
 
-    def test_the_overstatement_warning_is_the_arithmetic_difference(self):
-        dur = generate.VIDEO_DURATIONS["seedance_2_5"]["max"]
-        gap = (self.T2V_720 - self.VREF_720) * dur
-        self.assertIn(f"overstates a 30 s job by {gap:g} credits", self.text)
+    def test_no_surface_still_advertises_the_retired_discount(self):
+        # The discount was real on 2026-08-10 and was quoted on four surfaces. A
+        # correction that lands on one leaves the other three quietly lying, and
+        # SKILL.md is the surface a model is picked from before any guide opens.
+        dead_rate = f"**{self.RETIRED_VREF_720:g}/s at 720p and {self.RETIRED_VREF_480:g} at 480p**"
+        for path in (GUIDE_25, GUIDE_H3, SKILL_MD, GUIDE_FLUX):
+            body = path.read_text(encoding="utf-8")
+            self.assertNotIn("exactly level with H3", body, msg=path.name)
+            self.assertNotIn(dead_rate, body, msg=path.name)
+        rows = rate_rows(self)
+        self.assertNotIn("seedance2.5", rows.get(self.RETIRED_VREF_720, ""),
+                         msg="SKILL.md still files seedance2.5 under the retired 4.0/s row")
 
     def test_audio_is_documented_as_free(self):
         # Measured on/off in both resolutions and all four modes: identical quote.
-        self.assertIn("**`generate_audio` changes nothing.**", self.text)
+        self.assertIn("Turning it off costs exactly the same", self.text)
 
 
 class TestImplicitModeTrap(unittest.TestCase):
@@ -371,47 +439,59 @@ class TestImplicitModeTrap(unittest.TestCase):
 
     The rule is written against the `mode` parameter and the CLI omits the
     parameter when the flag is absent, so the default path never evaluates it:
-    a video reference is accepted and billed at the lower rate. This is the
-    dangerous shape -- it succeeds rather than failing -- so the guide has to
-    say it in both the mode section and the don't-list.
+    a video reference is accepted at quote and clears validation at submit, in a
+    mode nobody chose. This is the dangerous shape, because it succeeds rather
+    than failing, and it survived both re-probes. Re-verified 2026-08-23:
+    `--mode t2v` with a clip is refused with "mode 't2v' does not accept
+    reference media", and the same call with the flag dropped quotes 32.5.
     """
 
     @classmethod
     def setUpClass(cls):
         cls.text = GUIDE_25.read_text(encoding="utf-8")
 
-    def test_the_t2v_section_qualifies_the_rejection(self):
-        self.assertIn("**But only when you say `t2v` out loud", self.text)
+    def test_the_trap_has_its_own_section(self):
+        self.assertIn("#### The silent trap", self.text)
+        flat = self.text.replace("\n", " ")
+        self.assertIn("the CLI omits the parameter entirely when you do not pass the flag", flat)
 
-    def test_the_dont_list_carries_it(self):
-        self.assertIn("**Do not omit `--mode` when you attach a reference.**", self.text)
+    def test_the_rejection_it_bypasses_is_quoted_verbatim(self):
+        self.assertIn("mode 't2v' does not accept reference media", self.text)
 
-    def test_the_rule_ordering_is_recorded(self):
-        # Mode rules run before field rules, so a doubly-invalid request reports
-        # only the mode error. That is why the default path looks silent.
-        self.assertIn("run *before* the field rules", self.text)
+    def test_the_cheatsheet_carries_it(self):
+        # A reader who opens only the one-page summary still has to be told.
+        self.assertIn("**Always pass `--mode` explicitly.**", self.text)
 
     def test_the_wrapper_still_cannot_quote_a_video_reference(self):
         """The guide tells you to skip `generate.py --cost`; that must stay true."""
         self.assertNotIn("video_references", inspect.signature(generate.estimate_cost).parameters)
-        self.assertIn("never forwards media references", self.text)
+        flat = self.text.replace("\n", " ")
+        self.assertIn("never forwards `--start-image`, `--end-image` or video references", flat)
 
     def test_resolution_is_still_dropped_for_video_quotes(self):
         src = inspect.getsource(generate.main)
         self.assertIn('resolution=args.resolution if kind == "image" else None', src,
                       msg="main() now forwards resolution for video; drop the guide's warning")
-        self.assertIn("drops\n`--resolution` for video kinds", self.text)
+        flat = self.text.replace("\n", " ")
+        self.assertIn("it drops `--resolution` for video models", flat)
+
+    def test_the_documented_escape_hatch_is_the_wrapper_flag_that_exists(self):
+        """The guide tells you to push resolution through `--extra`, so it must.
+
+        `--resolution` on the wrapper is the image side and rejects `480p` in
+        argparse, before anything reaches the API.
+        """
+        self.assertIn('--extra \'{"resolution":"480p"}\'', self.text)
+        self.assertIn("--extra", inspect.getsource(generate.main))
 
 
-class TestTheSelectionSurfacesCarryBothTiers(unittest.TestCase):
-    """`SKILL.md`'s credits/s table is where a model is picked, before any guide is opened.
+class TestTheSelectionSurfacesCarryTheCorrection(unittest.TestCase):
+    """`SKILL.md`'s credits/s table is where a model is picked, before any guide opens.
 
-    The video reference tier is the one fact that changes that pick: at 4.0/s
-    `seedance2.5` stops being the dearest model on the route and ties `h3`. A
-    correction that lands only in `seedance-2-5.md` leaves the decision it was
-    meant to change still reading the superseded ranking, so the selection table
-    and the head to head in `minimax-h3.md` are pinned here against the rate the
-    model guide itself states.
+    A correction that lands only in `seedance-2-5.md` leaves the decision it was
+    meant to change still reading the superseded ranking. Three surfaces carried
+    the retired discount and all three are pinned here: the selection table, the
+    note under it, and the head to head in `minimax-h3.md`.
     """
 
     @classmethod
@@ -420,77 +500,62 @@ class TestTheSelectionSurfacesCarryBothTiers(unittest.TestCase):
         cls.h3 = GUIDE_H3.read_text(encoding="utf-8")
         cls.guide = GUIDE_25.read_text(encoding="utf-8")
 
-    def rate_rows(self):
-        """`{rate: models cell}` for every row of the credits/s table."""
-        table = re.search(r"^\| Credits/s \| Models \|\n\|[-| ]+\|\n((?:\|.*\|\n)+)",
-                          self.skill, re.M)
-        self.assertIsNotNone(table, "could not find the credits/s table in SKILL.md")
-        rows = {}
-        for line in table.group(1).strip().splitlines():
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            self.assertEqual(len(cells), 2, msg=f"malformed rate row: {line!r}")
-            rows[float(cells[0])] = cells[1]
-        return rows
-
-    def documented_video_reference_rate(self):
-        """The 720p video reference rate, read out of the model guide."""
-        m = re.search(r"drops from 6\.5 to \*\*(\d+(?:\.\d+)?)\s+credits/s at 720p\*\*", self.guide)
-        self.assertIsNotNone(m, "could not read the video reference rate out of seedance-2-5.md")
+    def guide_720_rate(self):
+        """The 720p rate, read out of the model guide rather than retyped."""
+        m = re.search(r"^\| 720p \| \*\*([\d.]+)\*\* \|$", self.guide, re.M)
+        self.assertIsNotNone(m, "could not read the 720p rate out of seedance-2-5.md")
         return float(m.group(1))
 
-    def test_the_selection_table_files_seedance_under_the_cheaper_rate(self):
-        rate, rows = self.documented_video_reference_rate(), self.rate_rows()
-        self.assertIn(rate, rows,
-                      msg=f"SKILL.md has no {rate}/s row to file the cheaper tier under")
-        self.assertIn("seedance2.5", rows[rate],
-                      msg=f"the {rate}/s row does not name seedance2.5: {rows[rate]!r}")
+    def test_the_selection_table_files_seedance_under_the_measured_rate(self):
+        rate, rows = self.guide_720_rate(), rate_rows(self)
+        self.assertIn(rate, rows, msg=f"SKILL.md has no {rate}/s row")
+        self.assertIn("seedance2.5", rows[rate], msg=f"the {rate}/s row: {rows[rate]!r}")
 
-    def test_the_headline_row_no_longer_reads_as_the_only_price(self):
-        rows = self.rate_rows()
-        self.assertIn(6.5, rows, msg="the 6.5/s row is gone from SKILL.md")
-        self.assertIn("seedance2.5", rows[6.5])
-        self.assertIn("t2v", rows[6.5],
-                      msg=f"the 6.5/s row still reads as the model's only price: {rows[6.5]!r}")
+    def test_the_headline_row_states_the_other_two_resolutions(self):
+        """6.5 alone is a trap now that 480p and 1080p are priced differently."""
+        rows = rate_rows(self)
+        cell = rows[self.guide_720_rate()]
+        for res in ("480p", "1080p"):
+            self.assertIn(res, cell, msg=f"the row does not price {res}: {cell!r}")
 
-    def test_level_with_h3_and_below_flux_are_arithmetic_not_assertion(self):
-        """The guide's ranking claim is only true while this table backs it."""
-        rate, rows = self.documented_video_reference_rate(), self.rate_rows()
-        for claim in ("level with `h3`", "below `flux-video`"):
-            self.assertIn(claim, self.guide.replace("\n", " "),
-                          msg=f"seedance-2-5.md no longer claims it lands {claim}")
-        h3_rate = next((r for r, cell in rows.items() if "`h3`" in cell), None)
-        flux_rate = next((r for r, cell in rows.items() if "`flux-video`" in cell), None)
-        self.assertEqual(h3_rate, rate, msg=f"h3 is {h3_rate}/s, so 'level with h3' is wrong")
-        self.assertGreater(flux_rate, rate,
-                           msg=f"flux-video is {flux_rate}/s, so 'below flux-video' is wrong")
+    def test_the_row_no_longer_reads_as_t2v_only(self):
+        # "plain `t2v` only" was true while the discount existed. It is not now,
+        # and left there it sends a reader looking for a tier that is gone.
+        rows = rate_rows(self)
+        self.assertNotIn("t2v", rows[self.guide_720_rate()],
+                         msg="the 6.5/s row still qualifies itself as t2v only")
 
-    def test_the_two_tier_note_states_both_resolutions(self):
-        """Both discounted rates, and both are read out of the model guide."""
-        m = re.search(r"and from 3 to \*\*(\d+(?:\.\d+)?) credits/s at 480p\*\*", self.guide)
-        self.assertIsNotNone(m, "could not read the 480p video reference rate out of the guide")
-        at_720, at_480 = self.documented_video_reference_rate(), float(m.group(1))
-        note = re.search(r"Two models re-price when a `video_references` file is attached"
-                         r".*?`seedance-2-5\.md` first\.", self.skill, re.S)
-        self.assertIsNotNone(note, "SKILL.md has no two-tier note under the table")
-        self.assertIn(f"**{at_720:.1f}/s at 720p and {at_480:.1f} at 480p**", note.group(0),
-                      msg="the two-tier note does not state the guide's measured rates")
+    def test_the_video_edit_billing_rule_reaches_the_selection_surface(self):
+        flat = self.skill.replace("\n", " ")
+        self.assertIn("`video_edit` ignores the `duration` you pass", flat)
+        self.assertIn("source clip's own length", flat)
 
-    def test_the_overstatement_figure_is_the_arithmetic_difference(self):
-        """Same sum in both files, derived here so neither can drift alone."""
-        dur = generate.VIDEO_DURATIONS["seedance_2_5"]["max"]
-        gap = (6.5 - self.documented_video_reference_rate()) * dur
-        self.assertIn(f"overstate a {dur} s job by {gap:g} credits", self.skill)
-        self.assertIn(f"overstates a {dur} s job by {gap:g} credits", self.guide)
+    def test_the_note_states_the_measured_rates(self):
+        """Every rate in the note is the one the model guide states."""
+        note = re.search(r"`seedance2\.5` \*\*used to\*\* drop.*?`seedance-2-5\.md`",
+                         self.skill, re.S)
+        self.assertIsNotNone(note, "SKILL.md has no seedance correction note under the table")
+        body = note.group(0)
+        for res, rate in (("480p", 2.5), ("720p", 6.5), ("1080p", 9.0)):
+            self.assertIn(f"{rate:g}", body, msg=f"the note omits the {res} rate")
 
-    def test_the_head_to_head_table_carries_the_qualifier(self):
+    def test_the_worked_example_is_the_rate_times_the_source(self):
+        """The 8 s / 52 pairing, recomputed so a typo cannot survive."""
+        rate = self.guide_720_rate()
+        m = re.search(r"an (\d+) s clip is ([\d.]+) at 720p", self.skill)
+        self.assertIsNotNone(m, "SKILL.md dropped the worked video_edit figure")
+        source, quoted = int(m.group(1)), float(m.group(2))
+        self.assertAlmostEqual(quoted, rate * source, places=6)
+
+    def test_the_head_to_head_records_that_the_gap_no_longer_closes(self):
         """`minimax-h3.md` prints the two rates directly against each other.
 
-        Without the qualifier that table says h3 is 38 percent cheaper than
-        seedance2.5 even for an edit, where the two are identical.
+        With the old qualifier it said the two tie for an edit. They do not.
         """
         self.assertIn("| `seedance2.5` | 6.5 | | **`h3`** | **4.0** |", self.h3)
-        self.assertIn("exactly level with H3", self.h3)
-        self.assertIn("only for a plain\n`t2v` roll", self.h3)
+        flat = self.h3.replace("\n", " ")
+        self.assertIn("That discount is gone.", flat)
+        self.assertNotIn("exactly level with H3", self.h3)
 
 
 class TestFluxVideoCarriesTheOppositeTier(unittest.TestCase):
@@ -522,14 +587,22 @@ class TestFluxVideoCarriesTheOppositeTier(unittest.TestCase):
         self.assertIn("no video reference", row.group(1),
                       msg=f"the 5.5/s row still reads as the only price: {row.group(1)!r}")
 
-    def test_the_note_names_both_models_and_neither_as_the_only_one(self):
-        self.assertNotIn("is the only model here with two tiers", self.skill,
-                         msg="SKILL.md still claims a single model re-prices; flux-video does too")
-        note = re.search(r"Two models re-price when a `video_references` file is attached"
+    def test_the_note_names_flux_as_the_one_that_re_prices(self):
+        """seedance2.5 left this list on 2026-08-19; flux-video is what remains.
+
+        Both directions matter. Dropping flux-video would hide the only live
+        trigger left, and leaving seedance2.5 in would teach a tier that is gone,
+        so the note has to name flux-video as the mechanism and seedance2.5 only
+        as the correction.
+        """
+        note = re.search(r"One model re-prices when a `video_references` file is attached"
                          r".*?only a video does\.", self.skill, re.S)
-        self.assertIsNotNone(note, "SKILL.md has no two-model tier note")
-        for model in ("`seedance2.5`", "`flux-video`"):
-            self.assertIn(model, note.group(0), msg=f"the tier note does not name {model}")
+        self.assertIsNotNone(note, "SKILL.md has no video-reference tier note")
+        body = note.group(0)
+        self.assertIn("`flux-video` climbs to", body, "the note dropped the live trigger")
+        self.assertIn("`seedance2.5` **used to**", body,
+                      "the note does not record that seedance2.5 left this list")
+        self.assertNotIn("is the only model here with two tiers", self.skill)
 
     def test_the_note_states_the_measured_upward_rates(self):
         note = re.search(r"`flux-video` climbs to \*\*(\d+(?:\.\d+)?)/s at 720p "
@@ -580,16 +653,27 @@ class TestFluxVideoCarriesTheOppositeTier(unittest.TestCase):
             self.assertIn(control, self.flux, msg=f"the guide does not record the control: {control}")
 
     def test_the_two_guides_cross_reference_the_inverted_ranking(self):
-        """At 13 against 4, the t2v ranking of these two reverses outright."""
-        self.assertIn("13/s against Seedance 2.5's\n4", self.flux)
-        self.assertIn("seedance-2-5.md", self.flux)
-        seedance_loaded = float(re.search(r"drops from 6\.5 to \*\*(\d+(?:\.\d+)?)\s+credits/s",
-                                          (MODELS_DIR / "seedance-2-5.md").read_text(encoding="utf-8")
-                                          ).group(1))
-        self.assertGreater(self.RATES["720p"][1], seedance_loaded,
+        """The inversion survived the correction; the magnitude halved.
+
+        It used to be 13 against Seedance's discounted 4. Seedance no longer
+        discounts, so it is 13 against 6.5: still inverted, half as far. Both
+        halves are recomputed from the rate the other guide states, so neither
+        file can drift alone.
+        """
+        seedance = float(re.search(r"^\| 720p \| \*\*([\d.]+)\*\* \|$",
+                                   (MODELS_DIR / "seedance-2-5.md").read_text(encoding="utf-8"),
+                                   re.M).group(1))
+        plain, loaded = self.RATES["720p"]
+        self.assertGreater(loaded, seedance,
                            msg="flux is no longer the dearer of the two on a continuation")
-        self.assertLess(self.RATES["720p"][0], 6.5,
+        self.assertLess(plain, seedance,
                         msg="flux is no longer the cheaper of the two on a plain roll")
+        flat = self.flux.replace("\n", " ")
+        self.assertIn("seedance-2-5.md", self.flux)
+        self.assertIn(f"Flux 3 is {loaded:g}/s", flat,
+                      msg="the flux guide no longer states the loaded rate in the comparison")
+        self.assertIn(f"against Seedance's unchanged {seedance:g}", flat,
+                      msg="the flux guide still compares against the retired discounted rate")
 
 
 if __name__ == "__main__":
