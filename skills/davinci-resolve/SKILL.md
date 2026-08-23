@@ -9,7 +9,7 @@ Platform scope: on Linux only build_fcpxml.py applies (it needs just Python and 
 - **Free edition** (what gets installed by default): scripts run only INSIDE the app, from the Workspace, Scripts menu or the Console. An outside process cannot connect to it. Automation still works via two bridges below.
 - **Studio edition** (paid license/dongle): full external scripting, so the bot can launch Resolve (even headless with -nogui), build projects and render with nobody at the screen.
 
-`resolve_api.py status` reports which situation the machine is in. Never assume; run it.
+`resolve_api.py status` reports which situation the machine is in. Never assume; run it. On Studio it answers with the product's own name, `DaVinci Resolve Studio 21.0.4.5`, which is the only reading that settles the question.
 
 ## Bridge 1: one-click jobs (works on free)
 
@@ -76,7 +76,26 @@ Free is about 3.5 GB, Studio about 8.4 GB. Both install to `/Applications/DaVinc
 python utils/credentials_cli.py get --service davinci-resolve-studio
 ```
 
+Activation is logged. `grep -i "licen" ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/logs/davinci_resolve.log` prints `Activated lic type:1`, whether the activation succeeded, and how many activations the key has left. Read it rather than asking.
+
+**A key has a finite number of activations and a wipe spends one.** Before erasing a machine, replacing its drive or moving the licence, deactivate first from inside Resolve; recovering a spent activation afterwards means writing to Blackmagic support.
+
 **Which edition is installed** cannot be read from the bundle identifier, which is the same for both. `resolve_api.py status` answers it the only way that counts, by trying the external API, which only Studio exposes.
+
+## The Studio AI calls, measured
+
+Verified from an external process 2026-08-23 on a real clip in a real timeline, licence live.
+
+| call | result | meaning |
+|---|---|---|
+| `Stabilize()` | True | runs unattended |
+| `SmartReframe()` | True | runs unattended |
+| `SetSetting('superScale', 2, sharp, nr)` | True | ints, not strings; a string returns False |
+| `CreateMagicMask("F")` | **False**, in 0.0 s | needs a stroke that already exists |
+
+`CreateMagicMask` propagates a stroke, it does not paint one. With no stroke on the clip the honest answer is False, and it looks exactly like the free edition refusing a Studio call. The unattended route is Fusion's own `MagicMask` node: its `Strokes` input serialises to a plain text `.setting` file, so a stroke painted once becomes a reusable template, and the node's `TrackForward` and `TrackReverse` inputs run the tracking. One gesture per shape, not one per shot. Full write up in the postproduction skill, `reference/06_compositing.md`.
+
+Some AI calls need an Extras download before they work at all (IntelliSearch, Slate ID, Speech Generator, extended transcription languages). Those come from the Extras Download Manager inside the app, and a missing one also returns False.
 
 ## Examples
 
@@ -92,3 +111,4 @@ python utils/credentials_cli.py get --service davinci-resolve-studio
 - The job file lives at ~/Library/Application Support/CooCoo/resolve_job.json; the menu script writes its result back into it.
 - Timeline fps must be decided before clips land; changing it later is a Resolve limitation.
 - Verified on this machine 2026-07-18: Resolve 21.0.2 free edition; external API connection refused (as documented), menu-script bridge and fcpxml import are the working paths.
+- Verified on this machine 2026-08-23: Resolve **Studio** 21.0.4, licence activated at the screen. External API reachable from outside, `GetProductName` returns `DaVinci Resolve Studio`. Project create, media import, timeline build, Fusion comp access, `Stabilize`, `SmartReframe`, Super Scale settings and project delete all confirmed working end to end from a detached process. The two free-edition bridges still work and are still the right answer on any machine without a licence.

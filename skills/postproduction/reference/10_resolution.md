@@ -381,12 +381,20 @@ and enlargement stays a Super Scale job or a stills job.
 ### Ground: Resolve Super Scale, read 2026-08-23
 
 From `Developer/Scripting/README.txt` inside the installed application, against
-Resolve 21.0.4. **Studio only**, and on the free edition a Studio call returns
-false rather than raising, so the return value of every Set call is the only
-sign of which edition you are on.
+Resolve 21.0.4, and then MEASURED on this machine 2026-08-23 against a live
+Studio licence from an external Python process. **Studio only**, and on the free
+edition a Studio call returns false rather than raising, so the return value of
+every Set call is the only sign of which edition you are on.
 
     project.SetSetting('superScale', N)          0=Auto, 1=none, 2/3/4 = 2x/3x/4x
     clip.SetClipProperty('Super Scale', N)       1=none, 2/3/4 = 2x/3x/4x
+
+**N is an integer here and a string everywhere else in this API.** Measured:
+`SetSetting('superScale', '2')` returns False and the setting stays at 1;
+`SetSetting('superScale', 2, 0.5, 0.3)` returns True and `GetSetting` then reads
+back `2`. Since a False return is also what the free edition gives, a wrong type
+looks exactly like a licence problem. Read the setting back; never trust the
+return value alone. Failure 41.
 
 The project setting has an Auto value and the clip property does not. For 2x
 Enhanced, **exactly four arguments** or it silently falls back to plain 2x:

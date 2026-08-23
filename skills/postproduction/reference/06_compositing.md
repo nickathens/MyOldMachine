@@ -740,19 +740,35 @@ pipeline is always: something that says WHICH pixels, then something that says
 HOW MUCH. Segmentation, then matting.
 
 **Route A, Resolve Studio Magic Mask.** The cheapest route on a machine that
-already runs Resolve, and it is scriptable, so it does not need a person at the
-screen. On a `TimelineItem`: `CreateMagicMask(mode)` where mode is `"F"`
-(forward), `"B"` (backward) or `"BI"` (bidirectional), and `RegenerateMagicMask()`
-to re-solve after adjusting strokes. Verified in the Resolve 21 scripting README
-on 2026-08-23.
+already runs Resolve. On a `TimelineItem`: `CreateMagicMask(mode)` where mode is
+`"F"` (forward), `"B"` (backward) or `"BI"` (bidirectional), and
+`RegenerateMagicMask()` to re-solve after adjusting strokes.
 
-Two cautions. It is a STUDIO function, and Blackmagic's own note in that README
-is that an API call referencing a Studio function from the free version returns
-False. Not an exception, not a message: a False that a naive script will read as
-"no mask this frame" and carry on. Any wrapper around this must treat False as a
-hard stop and check the edition first. And Magic Mask's output is a mask that
-Resolve then softens in its own graph; taking it out of Resolve as alpha means
-rendering it out, not reading it back through the API.
+**It needs one gesture at the screen, and the API cannot supply it.** Measured
+here 2026-08-23 with a live Studio licence and the external API connected:
+`CreateMagicMask("F")` on a real clip returned False in 0.0 seconds, while
+`Stabilize()` and `SmartReframe()` on the same item in the same session both
+returned True. The verb PROPAGATES a stroke, it does not paint one, and with no
+stroke on the clip there is nothing to propagate. Failure 42.
+
+The route that does run unattended is the Fusion node, not the timeline verb.
+Fusion's registry carries a `MagicMask` tool (confirmed present, 622 tools). Its
+`Strokes` input has datatype `MagicMaskStrokes`, which Python cannot construct,
+but the node serialises with `SaveSettings` to a plain text `.setting` file
+carrying a `MagicMaskStrokes { }` block verbatim, and `LoadSettings` reads one
+back. So a stroke painted ONCE becomes a template whose coordinates are editable
+as text, and the node's own `TrackForward` and `TrackReverse` inputs run the
+propagation with nobody watching. Budget one human gesture per shape, not one
+per shot, and never per frame.
+
+Two more cautions. It is a STUDIO function, and Blackmagic's own note in the
+scripting README is that an API call referencing a Studio function from the free
+version returns False. Not an exception, not a message: a False that a naive
+script will read as "no mask this frame" and carry on. Any wrapper around this
+must treat False as a hard stop and check the edition first, which
+`resolve_api.py status` does by asking the product its own name. And Magic Mask's
+output is a mask that Resolve then softens in its own graph; taking it out of
+Resolve as alpha means rendering it out, not reading it back through the API.
 
 **Route B, segmentation into matting, outside Resolve.** For the WHICH half, the
 current model is **SAM 3** (Meta, released 2025-11-20), which changed the shape

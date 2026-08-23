@@ -267,6 +267,15 @@ strongest, is the reason `grain` reports sigma per channel.
   sharpness and a noise reduction float in [0.0, 1.0]), and Blackmagic's own
   statement that a Studio function called from the free version returns False
   rather than raising.
+- **The same API, MEASURED rather than read, on 2026-08-23**, from an external
+  Python process against DaVinci Resolve Studio 21.0.4 with the licence live on
+  this machine: a scratch project created and deleted, a real clip imported and
+  cut to a timeline, a Fusion comp opened on it. `Stabilize()` and
+  `SmartReframe()` returned True; `CreateMagicMask("F")` returned False in 0.0 s
+  with no stroke on the clip; `SetSetting('superScale', '2')` returned False and
+  the int form returned True. Fusion's registry carries a `MagicMask` tool whose
+  `Strokes` input is datatype `MagicMaskStrokes` and serialises to a plain text
+  `.setting`. Failures 41 and 42.
 - **SeedVR2**, ICLR 2026, ByteDance, read on 2026-08-23. **Apache 2.0**, so
   clean for paid client work with no permission to seek. Its own repository
   states that one H100 80G handles 100 frames at 720x1280 and that 1080p and 2K

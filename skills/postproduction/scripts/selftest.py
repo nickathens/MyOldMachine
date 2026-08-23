@@ -857,6 +857,11 @@ def test_resolution_engine():
     check("2x Enhanced passes exactly four arguments",
           r["clip_property"]["call"] ==
           "clip.SetClipProperty('Super Scale', 2, 0.5, 0.2)")
+    # Measured 2026-08-23 on a live Studio licence: a STRING is refused with a
+    # bare False, which is also what the free edition returns. Failure 41.
+    trap = r["project_setting"].get("type_trap", "")
+    check("the project setting states its integer-only type trap",
+          "INTEGER" in trap and "returns False" in trap)
     for bad in (lambda: U.superscale(3, 0.5, 0.2), lambda: U.superscale(2, 1.5)):
         try:
             bad()

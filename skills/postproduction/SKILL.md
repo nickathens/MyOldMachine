@@ -5,7 +5,7 @@ colour, supers, subtitles, sound, mastering, delivery and archive. One ordered
 spine, a gate on every step, proof not description.
 
 Deterministic engines that check themselves, dated standards with their sources
-named, and a failure log of forty faults that each reached a real film.
+named, and a failure log of forty two faults that each reached a real film.
 
 **Before using:** read `SCOPE.md`. It never approves, never sends, never
 downscales, and never deletes a master until the survivors are verified.
@@ -291,7 +291,7 @@ an explanation when it is run without that environment, so run it with
 - `reference/05_sound.md` R128 read in the primary text, and the platform gates
 - `reference/06_compositing.md` tracking, mattes, premultiply, screen comps
 - `reference/07_delivery.md` masters, splices, proofs, viewing copies, archive
-- `reference/08_failures.md` **THE FAILURE LOG.** Thirty nine faults, each one
+- `reference/08_failures.md` **THE FAILURE LOG.** Forty two faults, each one
   measured on a real film and then fixed. Start here when something is wrong.
 - `reference/09_sources.md` every source with its date and verification state
 - `reference/10_resolution.md` effective resolution, boiling, and the routes

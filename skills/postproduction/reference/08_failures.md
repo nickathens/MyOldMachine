@@ -963,3 +963,58 @@ this is what happens when that ceiling does not exist.
 sufficient. A nearest neighbour enlargement reduces back to the source exactly,
 beating every real resampler, and is unusable; the detail bands are what catch
 it, at 1.27 to 1.45 against the control. Never read this check alone.
+
+## 41. A Studio setting refused the value it documents, because of its type
+
+Measured on this machine 2026-08-23, against a live DaVinci Resolve Studio
+21.0.4 licence, from an external Python process.
+
+**Symptom.** `project.SetSetting('superScale', '2')` returned **False** and the
+setting stayed at 1. Every other project setting in the same API takes a string,
+`GetSetting` hands one back, and the call raises nothing: a False return is the
+only sign anything happened.
+
+**Cause.** This one setting is an enumerated integer. The string is refused
+silently. `SetSetting('superScale', 2, 0.5, 0.3)`, the 2x Enhanced form with
+sharpness and noise reduction as floats, returned True on the same clip in the
+same session, and `GetSetting` then read back `2`.
+
+**Fix.** Pass the integer, and read the setting back afterwards rather than
+trusting the return value. Both forms are now in `10_resolution.md` with the
+measured result beside each.
+
+**The general form.** A False return from a Studio API is documented to mean
+"you are on the free edition", so it reads as a licence problem and sends you
+looking at the wrong thing entirely. It also means a wrong argument type. Never
+diagnose an edition from one refused call: `resolve_api.py status` answers it
+once, by asking the product its own name.
+
+## 42. The AI mask call that cannot make a mask
+
+Measured on this machine 2026-08-23, Studio licence active, external API
+connected, on a real clip cut into a timeline.
+
+**Symptom.** `TimelineItem.CreateMagicMask("F")` returned **False**, instantly,
+0.0 seconds. `Stabilize()` and `SmartReframe()` on the same item in the same
+session both returned True, so the licence and the connection were not the
+problem. The README's own note against the call points at the Studio and AI
+prerequisites section, which lists neither Magic Mask nor a missing Extra.
+
+**Cause.** The call does not create a selection. It tracks one that already
+exists. Magic Mask is a stroke the artist paints on the subject, and the API
+verb propagates that stroke forward, backward or both. With no stroke on the
+clip there is nothing to propagate, and the honest answer is False.
+
+**Fix, and the route that does work.** Fusion carries a `MagicMask` tool in its
+own registry, 622 tools, confirmed present. Its `Strokes` input has datatype
+`MagicMaskStrokes`, which cannot be built from Python, but the node serialises
+to a plain text `.setting` file that carries a `MagicMaskStrokes { }` block
+verbatim. So a stroke painted ONCE at the screen becomes a template whose
+coordinates are then editable as text and loadable with `LoadSettings`, and the
+node's own `TrackForward` and `TrackReverse` inputs run the propagation with
+nobody watching. One human gesture per shape, not one per shot.
+
+**The general form.** "Scriptable" and "autonomous" are different claims, and a
+function list cannot tell them apart. Before promising a step runs with nobody at
+the screen, call it on a real clip and look at what it returns. An AI verb in an
+API is usually the second half of a gesture, not a replacement for it.

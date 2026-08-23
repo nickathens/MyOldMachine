@@ -779,7 +779,15 @@ def superscale(scale=2, sharpness=None, noise=None):
                    "made from free returns false rather than raising, so ALWAYS "
                    "check the return value.",
         "project_setting": {"key": "superScale", "values": proj,
-                            "call": "project.SetSetting('superScale', 2)"},
+                            "call": "project.SetSetting('superScale', 2)",
+                            "type_trap": "The value is an INTEGER here and a "
+                                         "string everywhere else in this API. "
+                                         "Measured 2026-08-23 on a live Studio "
+                                         "licence: SetSetting('superScale', '2') "
+                                         "returns False and the setting stays "
+                                         "at 1; SetSetting('superScale', 2, 0.5, "
+                                         "0.3) returns True and GetSetting then "
+                                         "reads back '2'."},
         "clip_property": {"key": "Super Scale", "values": clip, "call": call},
         "enhanced": {
             "how": "Exactly four arguments, or it silently falls back to plain "
@@ -790,14 +798,17 @@ def superscale(scale=2, sharpness=None, noise=None):
             "Set the property on the MEDIA POOL ITEM, before the clip is cut in. "
             "Super Scale is a decode-side setting, so it feeds everything "
             "downstream of it including the grade.",
-            "Check the return value of every Set call. A false here is the only "
-            "sign you are on the free edition.",
+            "Check the return value of every Set call, then READ THE SETTING "
+            "BACK. A false means the free edition OR a wrong argument type, and "
+            "the two are indistinguishable from the return value alone.",
             "Render, then bring the result back to `upres.py verify`. Resolve "
             "will not tell you whether the result boils or whether it invented "
             "detail; that measurement is this skill's job.",
         ],
         "source": "Developer/Scripting/README.txt inside the installed "
-                  "application, read 2026-08-23 against Resolve 21.0.4.",
+                  "application, read 2026-08-23 against Resolve 21.0.4, and the "
+                  "calls then measured the same day from an external process "
+                  "against a live Studio licence on this machine.",
         "driving_it": "The davinci-resolve skill owns the connection "
                       "(scripts/resolve_api.py status | launch | render). This "
                       "command states the property, not the plumbing.",
@@ -929,6 +940,7 @@ def main(argv=None):
             print(f"  {r['edition']}\n"),
             print(f"  project: {r['project_setting']['call']}"),
             print(f"           {r['project_setting']['values']}"),
+            print(f"           {r['project_setting']['type_trap']}"),
             print(f"  clip:    {r['clip_property']['call']}"),
             print(f"           {r['clip_property']['values']}"),
             print(f"\n  2x Enhanced: {r['enhanced']['how']}"),

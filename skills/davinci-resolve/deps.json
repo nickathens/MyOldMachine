@@ -8,5 +8,5 @@
   "weight": "heavy",
   "min_ram_gb": 8,
   "min_disk_gb": 10,
-  "install_note": "DaVinci Resolve itself is NOT in Homebrew (cask retired). Install via scripts/install_resolve.sh (~3.5 GB download, ~6 GB installed; Blackmagic requires name+email registration for the free edition; Apple Silicon needs Rosetta 2, the script handles it). Skill scripts are stdlib-only Python plus ffprobe."
+  "install_note": "DaVinci Resolve itself is NOT in Homebrew (cask retired). Install via scripts/install_resolve.sh (~3.5 GB download, ~6 GB installed; Blackmagic requires name+email registration for either edition (Studio is ~8.4 GB and replaces the free app in place; its key is entered once at the screen); Apple Silicon needs Rosetta 2, the script handles it). Skill scripts are stdlib-only Python plus ffprobe."
 }
