@@ -830,6 +830,31 @@ def test_resolution_engine():
     check("the stable limit sits below the boiling limit",
           _res_consts()[0] < _res_consts()[1])
 
+    # The downscale back check, and the one input that has no ceiling. A same
+    # raster job is a stage 3 restore, which is a first class use of this
+    # department: the control IS the source there, so every control reading is
+    # infinite and the mean of no finite readings is a nan. A nan printed as a
+    # number and, because every comparison against a nan is False, it also
+    # switched the strike off in silence.
+    d = U.downscale_back(57.05, 61.20, same_raster=False)
+    check("a candidate inside the resampler's own loss passes",
+          d["verdict"] == "PASS" and d["deficit_db"] == 4.15,
+          f"deficit {d['deficit_db']} dB")
+    d = U.downscale_back(40.0, 61.20, same_raster=False)
+    check("and one well below that ceiling strikes",
+          d["verdict"] == "STRIKE", f"deficit {d['deficit_db']} dB")
+    d = U.downscale_back(47.05, None, same_raster=True)
+    check("a same raster job is UNPROVEN, never a pass",
+          d["verdict"] == "UNPROVEN" and d["deficit_db"] is None)
+    check("and it says out loud that there is no ceiling",
+          "no ceiling" in d["note"] and "UNPROVEN" in d["note"])
+    check("nothing in that line prints as a nan",
+          "nan" not in U._downscale_line(d).lower(),
+          U._downscale_line(d))
+    check("the boundary is the limit itself, not one side of it",
+          U.downscale_back(55.2, 55.2 + U.DEFICIT_STRIKE_DB,
+                           same_raster=False)["verdict"] == "PASS")
+
 
 def _res_consts():
     import _res as R

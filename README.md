@@ -10,7 +10,7 @@ One command installs it. After that you talk to it on your phone, and because it
 
 - **Runs on hardware most software has given up on.** A decade old laptop, a machine with 1GB of RAM paired with a small local model, a Raspberry Pi. If it boots, it can host this.
 - **14 AI providers, including free and fully local ones.** Switch between them from your phone, no reinstall, no SSH.
-- **80 skills**, from image generation and stem separation to Greek legal drafting, market backtesting, image-to-Three.js reconstruction, and DaVinci Resolve. Each installs its own dependencies the first time you use it.
+- **81 skills**, from image generation and stem separation to Greek legal drafting, market backtesting, image-to-Three.js reconstruction, and DaVinci Resolve. Each installs its own dependencies the first time you use it.
 - **A graphical Mini App inside Telegram** for the things a chat box is clumsy at.
 - **It remembers you.** A private memory per user that grows into a real model of how you work.
 - **Serves a whole household.** Many Telegram users on one machine, each with separate memory, data, and reminders.
@@ -239,7 +239,7 @@ If you have seen [OpenClaw](https://github.com/openclaw/openclaw), you might won
 | **AI providers** | 14: Claude CLI, Codex CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, Z.ai, OpenRouter, Ollama, Ollama Cloud, Claude API, FCC | Primarily OpenAI, configurable profiles |
 | **Free or local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier, Gemini free tier, FCC on free backends | No built in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, and more) |
-| **Skills** | 80 skills with auto installing dependencies and resource aware hooks | 100+ AgentSkills |
+| **Skills** | 81 skills with auto installing dependencies and resource aware hooks | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux or macOS, runs on 1GB of RAM with small Ollama models | Modern hardware recommended |
 | **Ownership** | Independent, MIT licensed | OpenAI acquired (March 2026) |
 | **MCP support** | Client, connects to any MCP server for unlimited tool expansion | Native MCP client support |
@@ -542,7 +542,7 @@ A middleware layer runs before and after every skill invocation. It prevents res
 | Temp file cleanup | stems, video-editing, image-editing, audio-editing, lighthouse |
 | Docker cleanup | docker-services |
 
-Hooks work with all providers, not just Claude. For the Claude CLI they use the native hook system (PreToolUse, PostToolUse, Stop events). For every other provider they are embedded in the tool execution layer. 29 skills carry a per skill `hooks.json`, and the rest are light enough not to need one.
+Hooks work with all providers, not just Claude. For the Claude CLI they use the native hook system (PreToolUse, PostToolUse, Stop events). For every other provider they are embedded in the tool execution layer. 30 skills carry a per skill `hooks.json`, and the rest are light enough not to need one.
 
 ## Health monitoring
 

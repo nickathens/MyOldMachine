@@ -409,6 +409,81 @@ def temporal(src, cand, frames=8, start=None, bits=8):
 # ---------------------------------------------------------------- verify
 
 
+# 6 dB is a factor of four in power. Below it a candidate is inside the
+# resampler's own round trip loss; above it the picture moved further from the
+# source than enlarging it would have.
+DEFICIT_STRIKE_DB = 6.0
+
+
+def downscale_back(candidate_psnr, control_psnr, same_raster):
+    """The fidelity reading, and what it says when there is no ceiling to read.
+
+    The candidate reduced to the source raster should BE the source, and the
+    neutral resample's OWN round trip is the ceiling, because a resampler is not
+    lossless either and demanding zero where a resample cannot give zero fails a
+    correct file.
+
+    At the same raster there is no round trip to make. The control IS the source,
+    every control reading is infinite, and there is no ceiling at all -- so the
+    check cannot be made and says so. That is the stage 3 restore case, which is
+    a first class use of this department, and it is not a rare corner: any repair
+    or regrade measured against its own source lands here. Averaging the
+    infinities away instead produced a nan, which printed as a number AND
+    disabled the strike below in silence, because every comparison against a nan
+    is False.
+
+    `candidate_psnr` and `control_psnr` are means over the finite readings, or
+    None when nothing finite was left.
+    """
+    out = {"verdict": "PASS",
+           "candidate_psnr_db": (round(candidate_psnr, 2)
+                                 if candidate_psnr is not None else None),
+           "control_ceiling_db": (round(control_psnr, 2)
+                                  if control_psnr is not None else None),
+           "deficit_db": None,
+           "note": "Read the deficit, never the level. A noisy plate round trips "
+                   "at 43 dB where a smooth one reaches 57, so the same absolute "
+                   "number is near ceiling on one file and poor on another."}
+    if same_raster:
+        out["verdict"] = "UNPROVEN"
+        out["note"] = (
+            "UNPROVEN: the candidate is at the source's own raster, so the "
+            "neutral control IS the source and its round trip is lossless. There "
+            "is no ceiling to read the candidate against, and this check cannot "
+            "bound a same raster job. The level against the source is still "
+            "reported and is worth reading, but the fidelity question belongs to "
+            "the department that made the change: a grade to `prove.py`, a repair "
+            "to its own before and after.")
+        return out
+    if candidate_psnr is None:
+        out["verdict"] = "PASS"
+        out["note"] = ("The candidate reduces back to the source EXACTLY, which "
+                       "is better than the neutral resample's own round trip. "
+                       "Nothing was invented. " + out["note"])
+        return out
+    if control_psnr is None:
+        out["verdict"] = "UNPROVEN"
+        out["note"] = ("UNPROVEN: the neutral control round tripped losslessly at "
+                       "a raster where it should not have, so there is no ceiling "
+                       "to read against.")
+        return out
+    out["deficit_db"] = round(control_psnr - candidate_psnr, 2)
+    if out["deficit_db"] > DEFICIT_STRIKE_DB:
+        out["verdict"] = "STRIKE"
+    return out
+
+
+def _downscale_line(d):
+    """One printed line for that check, with no nan in it, ever."""
+    lvl, ceil = d.get("candidate_psnr_db"), d.get("control_ceiling_db")
+    if d.get("verdict") == "UNPROVEN":
+        where = f"{lvl} dB against the source" if lvl is not None else "no reading"
+        return f"{where}, UNPROVEN: no ceiling to read it against"
+    if lvl is None:
+        return f"exact against the source, against a ceiling of {ceil} dB"
+    return f"{lvl} dB against a ceiling of {ceil} dB"
+
+
 def verify(src, cand, frames=8, start=None, bits=8):
     """The whole gate: what changed, whether it was faithful, whether it holds."""
     R = _need_res()
@@ -505,21 +580,19 @@ def verify(src, cand, frames=8, start=None, bits=8):
     # cannot give zero fails a correct file.
     p_cand = [R.psnr(R.resize(c, src_size), s) for c, s in zip(fb, fa)]
     p_ctrl = [R.psnr(R.resize(c, src_size), s) for c, s in zip(control, fa)]
-    mc = float(np.mean([v for v in p_cand if np.isfinite(v)])) if p_cand else None
-    mk = float(np.mean([v for v in p_ctrl if np.isfinite(v)])) if p_ctrl else None
-    deficit = (mk - mc) if (mc is not None and mk is not None) else None
-    out["checks"]["downscale_back"] = {
-        "candidate_psnr_db": round(mc, 2) if mc is not None else None,
-        "control_ceiling_db": round(mk, 2) if mk is not None else None,
-        "deficit_db": round(deficit, 2) if deficit is not None else None,
-        "note": "Read the deficit, never the level. A noisy plate round trips at "
-                "43 dB where a smooth one reaches 57, so the same absolute "
-                "number is near ceiling on one file and poor on another."}
-    if deficit is not None and deficit > 6.0:
-        strikes.append(f"The candidate is {deficit:.1f} dB below the neutral "
-                       "resample's own round trip, so it moved the picture "
-                       "further from the source than simply enlarging it would "
-                       "have. Whatever it added is not what was there.")
+    fin_cand = [v for v in p_cand if np.isfinite(v)]
+    fin_ctrl = [v for v in p_ctrl if np.isfinite(v)]
+    dsb = downscale_back(float(np.mean(fin_cand)) if fin_cand else None,
+                         float(np.mean(fin_ctrl)) if fin_ctrl else None,
+                         out_size == src_size)
+    out["checks"]["downscale_back"] = dsb
+    if dsb["verdict"] == "STRIKE":
+        strikes.append(f"The candidate is {dsb['deficit_db']:.1f} dB below the "
+                       "neutral resample's own round trip, so it moved the "
+                       "picture further from the source than simply enlarging it "
+                       "would have. Whatever it added is not what was there.")
+    elif dsb["verdict"] == "UNPROVEN":
+        notes.append("DOWNSCALE BACK: " + dsb["note"])
 
     # 7. Detail by luminance band, both directions. The sign flips with the
     # material, so a single global figure hides half the faults.
@@ -778,8 +851,8 @@ def main(argv=None):
         return C.emit(res, args.json, lambda r: (
             print(f"  {r['verdict']}   {r['source_raster']} -> "
                   f"{r['candidate_raster']}  frames {r['frames_measured']}"),
-            print(f"  downscale back {r['checks']['downscale_back']['candidate_psnr_db']} dB "
-                  f"against a ceiling of {r['checks']['downscale_back']['control_ceiling_db']} dB"),
+            print(f"  downscale back "
+                  f"{_downscale_line(r['checks']['downscale_back'])}"),
             print(f"  temporal {r['checks']['temporal'].get('verdict')} "
                   f"(ratio {r['checks']['temporal'].get('ratio')})"),
             print("\n  STRIKES:") if r["strikes"] else None,

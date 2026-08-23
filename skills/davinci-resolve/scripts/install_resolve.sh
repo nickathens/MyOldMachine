@@ -112,9 +112,18 @@ else
 fi
 
 WORK="/tmp/resolve_install"
+# Emptied first. The glob below has to be wide enough to match the Studio DMG,
+# which makes it wide enough to match the free one too, and `head -1` takes the
+# alphabetically first: a free DMG left here by an earlier or interrupted run
+# would win over the Studio DMG that was just unzipped, install the FREE
+# edition, and then be reported as Studio by the version read at the end. The
+# zip is what is expensive to fetch and it lives outside this directory, so
+# clearing it costs one unzip and removes the ambiguity entirely.
+rm -rf "$WORK"
 mkdir -p "$WORK"
 unzip -o -q "$ZIP" -d "$WORK"
 DMG=$(ls "$WORK"/DaVinci_Resolve*_Mac.dmg | head -1)
+[[ -z "$DMG" ]] && { echo "No disk image inside $ZIP" >&2; exit 1; }
 
 if ! arch -x86_64 /usr/bin/true 2>/dev/null && [[ "$(uname -m)" == "arm64" ]]; then
   echo "Installing Rosetta 2 (required by the Resolve installer on Apple Silicon)..."
