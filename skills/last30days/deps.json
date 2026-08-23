@@ -1,0 +1,12 @@
+{
+  "apt": ["yt-dlp", "gh"],
+  "brew": ["yt-dlp", "gh"],
+  "pacman": ["yt-dlp", "github-cli"],
+  "apk": ["yt-dlp", "github-cli"],
+  "check": {
+    "yt-dlp": "yt-dlp --version",
+    "gh": "gh --version"
+  },
+  "weight": "light",
+  "install_note": "The engine itself is pure Python 3.12 stdlib with zero pip dependencies. yt-dlp powers the YouTube source and the gh CLI powers the GitHub source; without them those two sources simply report off in --diagnose and the other three still work. gh also needs 'gh auth login' once. Optional API keys for X, TikTok, Instagram and Bluesky go in ~/.config/last30days/.env (chmod 600), never in the repo."
+}

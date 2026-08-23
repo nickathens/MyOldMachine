@@ -26,14 +26,17 @@ SKILLS = REPO / "skills"
 
 sys.path.insert(0, str(REPO))
 
-# name -> (licence file, token that must appear in it, entry point)
+# name -> (licence file, token that must appear in it, entry point, or None for
+# a vendored skill that ships no scripts and is pure instruction text)
 VENDORED = {
     "img2threejs": ("LICENSE", "Apache License", "forge/next.py"),
+    "last30days": ("LICENSE", "MIT License", "scripts/last30days.py"),
+    "mascot": ("LICENSE", "MIT License", None),
 }
 
 # Skills ported in from the donor machine. MOM installs on strangers' machines,
 # so an operator's name, home directory or private project must not ride along.
-PORTED_SKILLS = ("img2threejs", "remotion", "google-workspace")
+PORTED_SKILLS = ("img2threejs", "remotion", "google-workspace", "last30days")
 DONOR_MARKERS = (
     "claude-telegram-bot",
     "/home/ntouri",
@@ -97,7 +100,10 @@ class VendoredSkillIntegrityTests(unittest.TestCase):
 
     def test_entry_point_exists_and_runs(self):
         """SKILL.md names an entry point; a moved script makes the doc a lie."""
+        ran = 0
         for name, (_, _, entry) in VENDORED.items():
+            if entry is None:  # instruction-only skill, nothing to execute
+                continue
             with self.subTest(skill=name):
                 root = SKILLS / name
                 self.assertTrue((root / entry).is_file(), f"{name}: {entry} is missing")
@@ -111,12 +117,26 @@ class VendoredSkillIntegrityTests(unittest.TestCase):
                 self.assertEqual(
                     proc.returncode, 0, f"{name}: {entry} --help failed: {proc.stderr}"
                 )
+                ran += 1
+        # Without this the None branch above can widen into a blanket skip and
+        # the whole guard passes while executing nothing.
+        self.assertEqual(
+            ran,
+            sum(1 for entry in VENDORED.values() if entry[2] is not None),
+            "the entry-point check skipped a skill that declares one",
+        )
 
     def test_skill_md_records_provenance(self):
-        """A vendored skill without an upstream pin cannot be updated safely."""
+        """A vendored skill without an upstream pin cannot be updated safely.
+
+        The pin may live in SKILL.md or in a sibling VENDOR.md; last30days keeps
+        its whole vendoring record in the latter."""
         for name in VENDORED:
             with self.subTest(skill=name):
                 text = (SKILLS / name / "SKILL.md").read_text(errors="replace")
+                vendor = SKILLS / name / "VENDOR.md"
+                if vendor.is_file():
+                    text += vendor.read_text(errors="replace")
                 self.assertIn("github.com", text, f"{name}: no upstream URL recorded")
                 self.assertIn("commit", text.lower(), f"{name}: no upstream commit pinned")
 
@@ -511,6 +531,69 @@ class ImpeccableAccessibilityFoldTests(unittest.TestCase):
                         marker,
                         text,
                         f"{md.relative_to(REPO)} names the donor machine",
+                    )
+
+
+MASCOT = SKILLS / "mascot"
+
+
+class MascotPortTests(unittest.TestCase):
+    """The mascot skill is instruction text only, so nothing about it fails loudly.
+
+    Its one executable surface is the image-gen aliases its commands name, and its
+    one load-bearing craft rule is the instruction never to tell the generator it
+    is drawing a logo (models answer that word with flat clip art and invented
+    text). Both are a tidy-up away from disappearing with no error anywhere.
+
+    Like impeccable it is deliberately outside PORTED_SKILLS, which also demands a
+    deps.json, so the donor-machine guard is repeated here at the right scope.
+    """
+
+    def test_named_image_models_still_resolve(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "gen_mod", SKILLS / "image-gen" / "scripts" / "generate.py"
+        )
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        text = (MASCOT / "SKILL.md").read_text(errors="replace")
+        for alias in ("gpt", "nano-pro", "nano2"):
+            with self.subTest(alias=alias):
+                self.assertIn(f"`{alias}`", text, f"SKILL.md stopped naming {alias}")
+
+        # Read the aliases out of the document rather than trusting the list
+        # above: a table row or an example command that names a model the
+        # wrapper does not know fails at run time with "unknown model".
+        named = set(re.findall(r"-m ([A-Za-z0-9._-]+)", text))
+        named |= {row for row in re.findall(r"^\| `([a-z0-9-]+)` \|", text, re.M)}
+        self.assertGreaterEqual(len(named), 3, "no model aliases found in SKILL.md")
+        for alias in sorted(named):
+            with self.subTest(alias=alias):
+                self.assertIn(
+                    alias, gen.MODEL_ALIASES,
+                    f"SKILL.md tells the model to run -m {alias}, which generate.py "
+                    "does not know",
+                )
+
+    def test_the_never_say_logo_rule_survives(self):
+        text = (MASCOT / "SKILL.md").read_text(errors="replace")
+        self.assertIn("Never tell the image model that the image is a logo", text)
+        self.assertIn("Create one complete full-bleed 1:1 square image.", text)
+
+    def test_mit_permission_notice_travels(self):
+        licence = (MASCOT / "LICENSE").read_text(errors="replace")
+        self.assertIn("Permission is hereby granted", licence)
+        self.assertIn("WITHOUT WARRANTY OF ANY KIND", licence)
+        self.assertIn("s1dashu", licence)
+
+    def test_no_donor_machine_paths_ride_along(self):
+        for md in sorted(MASCOT.rglob("*.md")):
+            text = md.read_text(errors="replace").lower()
+            for marker in DONOR_MARKERS:
+                with self.subTest(file=md.name, marker=marker):
+                    self.assertNotIn(
+                        marker, text, f"{md.relative_to(REPO)} names the donor machine"
                     )
 
 
