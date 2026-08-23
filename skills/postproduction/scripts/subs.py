@@ -114,7 +114,7 @@ def read(path):
 def _read_srt(text):
     events = []
     for chunk in re.split(r"\r?\n\s*\r?\n", text.strip()):
-        lines = [l for l in chunk.splitlines() if l.strip() != ""]
+        lines = [ln for ln in chunk.splitlines() if ln.strip() != ""]
         if not lines:
             continue
         if not _ARROW.search(lines[0]) and lines[0].strip().isdigit():
@@ -123,7 +123,7 @@ def _read_srt(text):
             continue
         left, right = _ARROW.split(lines[0], 1)
         events.append({"start": parse_time(left), "end": parse_time(right),
-                       "lines": [l.rstrip() for l in lines[1:]], "style": None})
+                       "lines": [ln.rstrip() for ln in lines[1:]], "style": None})
     return events
 
 
@@ -131,7 +131,7 @@ def _read_vtt(text):
     events = []
     body = re.sub(r"^WEBVTT.*?(\r?\n\r?\n)", "", text, count=1, flags=re.S)
     for chunk in re.split(r"\r?\n\s*\r?\n", body.strip()):
-        lines = [l for l in chunk.splitlines() if l.strip() != ""]
+        lines = [ln for ln in chunk.splitlines() if ln.strip() != ""]
         if not lines:
             continue
         if lines and lines[0].upper().startswith(("NOTE", "STYLE", "REGION")):
@@ -146,7 +146,7 @@ def _read_vtt(text):
         right = settings[0]
         style = settings[1] if len(settings) > 1 else None
         events.append({"start": parse_time(left), "end": parse_time(right),
-                       "lines": [l.rstrip() for l in lines[1:]], "style": style})
+                       "lines": [ln.rstrip() for ln in lines[1:]], "style": style})
     return events
 
 
@@ -178,7 +178,7 @@ def _read_ttml(text):
         lines.append("".join(current))
         events.append({"start": parse_time(begin),
                        "end": parse_time(end) if end else parse_time(begin) + 2.0,
-                       "lines": [l.strip() for l in lines if l.strip() != ""],
+                       "lines": [ln.strip() for ln in lines if ln.strip() != ""],
                        "style": p.get("region")})
     return events
 
@@ -224,7 +224,7 @@ def _write_ttml(events):
         return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     rows = []
     for e in events:
-        body = "<br/>".join(esc(l) for l in e["lines"])
+        body = "<br/>".join(esc(ln) for ln in e["lines"])
         rows.append(f'      <p begin="{fmt_time(e["start"], ".")}" '
                     f'end="{fmt_time(e["end"], ".")}">{body}</p>')
     return ('<?xml version="1.0" encoding="UTF-8"?>\n'

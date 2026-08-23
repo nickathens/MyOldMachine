@@ -918,3 +918,48 @@ texture on a cloud sky at 1.86x and deleted a star field at 0.61x.
 against an absolute number: a noisy star field round trips at 43.10 dB where a
 smooth cloud frame reaches 56.91, so 38.60 dB is near ceiling on one and poor on
 the other. Same trap as failure 3.
+
+---
+
+## 40. The fidelity gate that condemned an honest enlargement, and the twin that let one through
+
+**Symptom, first half.** `upres.py verify` struck a lossless Lanczos enlargement
+of a real graded 1080p job at 7.1 dB below the neutral ceiling, reporting
+"whatever it added is not what was there". The candidate had added nothing: it
+was the source, enlarged, encoded losslessly.
+
+**Cause.** The reading was taken in RGB. The source was 4:2:0, so its chroma
+lives at half raster; ffmpeg enlarged in YUV and reconstructed that chroma its
+own way, while the control enlarged the decoded RGB. The deficit was almost
+entirely the two chroma reconstructions disagreeing. Three files isolate it:
+4:2:0 to 4:2:0 reads 7.07, 4:2:0 to 4:4:4 reads 7.42, 4:4:4 to 4:4:4 reads 0.73.
+It is the SOURCE's subsampling that does it.
+
+**Fix.** Gate on luma. The same honest file reads 0.76 dB there and the real
+faults still read 8.6 to 9.8, so the fault is an order of magnitude clear of the
+nuisance instead of buried under it. The RGB number is kept as evidence beside
+it; colour is watched by the colour tag and colour drift checks, which is where
+it belongs.
+
+**Symptom, second half.** At the SAME raster the same check printed "against a
+ceiling of nan dB" and passed. The control is the source there, so every control
+reading is infinite, the mean of no finite readings is a nan, and every
+comparison against a nan is False: the strike could not fire. Restore at size is
+this department's own stage 3 job, so this was not a corner.
+
+**Fix.** UNPROVEN with the reason, never a pass, and the decision moved into a
+pure function so it can be tested with no file at all.
+
+**The general form, and it is the department's own rule turned on itself.**
+Before setting a threshold, ask what else moves the number. If a nuisance moves
+it further than the fault does, the threshold is measuring the nuisance: here the
+chroma path moved it 7.07 dB where the fault moves it 8.6, so the gate was
+closer to a coin toss than to an instrument. That is failure 10 and failure 37
+again, in a check written after both. And a reading with nothing to read against
+is not a pass: reading a master against its own neutral ceiling is failure 3, and
+this is what happens when that ceiling does not exist.
+
+**One more trap in the same check.** An exact reduction is necessary and not
+sufficient. A nearest neighbour enlargement reduces back to the source exactly,
+beating every real resampler, and is unusable; the detail bands are what catch
+it, at 1.27 to 1.45 against the control. Never read this check alone.

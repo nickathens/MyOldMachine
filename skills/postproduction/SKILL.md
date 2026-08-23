@@ -5,7 +5,7 @@ colour, supers, subtitles, sound, mastering, delivery and archive. One ordered
 spine, a gate on every step, proof not description.
 
 Deterministic engines that check themselves, dated standards with their sources
-named, and a failure log of thirty nine faults that each reached a real film.
+named, and a failure log of forty faults that each reached a real film.
 
 **Before using:** read `SCOPE.md`. It never approves, never sends, never
 downscales, and never deletes a master until the survivors are verified.

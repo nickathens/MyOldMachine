@@ -324,7 +324,7 @@ def audit(frame_path, spec, block_id=None, ring=6):
                             f"{below * 100:.1f} per cent of this line's glyph "
                             f"surround is within dE {DE_FLOOR} of the ink"),
             })
-        worst = max((l.get("fraction_below_floor", 0.0) for l in per_line),
+        worst = max((ln.get("fraction_below_floor", 0.0) for ln in per_line),
                     default=0.0)
         results.append({
             "block": block["id"], "safe": block["safe"], "lines": per_line,

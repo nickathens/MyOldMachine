@@ -241,6 +241,50 @@ round trip is the ceiling, and it is content dependent: a noisy star field round
 trips at 43.10 dB where a smooth cloud frame reaches 56.91, so 38.60 dB is near
 ceiling on one file and poor on the other. `verify` prints both and the gap.
 
+**And read it on LUMA.** A 4:2:0 source carries its chroma at half raster, every
+real enlarger resamples in YUV, and this control resamples in RGB, so the two
+reconstruct that chroma differently. Measured in RGB on a real 1080p graded job,
+that difference alone read **7.07 dB** on a candidate that was a lossless Lanczos
+enlargement of the source. The strike sits at 6, so an enlargement that invented
+nothing was condemned for inventing. The same file reads **0.76 dB** on luma.
+Chroma is not left unwatched: the colour tag check and the colour drift check are
+what watch it, and the RGB deficit is carried in the result as evidence, never as
+a verdict. Isolating the cause took three files: 4:2:0 source to 4:2:0 candidate
+7.07, 4:2:0 source to 4:4:4 candidate 7.42, 4:4:4 source to 4:4:4 candidate 0.73.
+It is the SOURCE's subsampling that does it, not the candidate's.
+
+**Where the 6 dB limit comes from.** Four materials (two graded commercials, a 4K
+master, and a worst case grain plate), each reduced by half and enlarged back by
+five kernels, measured as a deficit against the cv2 Lanczos control:
+
+| candidate | delphi | optex | nexus | grain |
+|---|---|---|---|---|
+| ffmpeg lanczos | -0.30 | 0.44 | -0.18 | 0.24 |
+| ffmpeg spline | 0.86 | 1.33 | 1.05 | 1.03 |
+| ffmpeg bicubic | 1.54 | 2.14 | 1.92 | 1.71 |
+| ffmpeg bilinear | 8.95 | 8.46 | 9.43 | 7.24 |
+| sharpened (invents) | 10.57 | 8.02 | 9.89 | 6.90 |
+| blurred (deletes) | 9.15 | 9.00 | 9.65 | 7.85 |
+| shifted 3 px | 25.47 | 23.01 | 26.57 | 21.99 |
+
+Every honest kernel worth using lands under 2.2 and every fault lands over 6.9.
+The limit sits in that gap, and it is the gap that justifies it, not the
+arithmetic of 6 dB being a factor of four.
+
+**An exact reduction is necessary and not sufficient.** A nearest neighbour
+enlargement reduces back to the source EXACTLY, better than any real resampler,
+and is unusable. The detail bands are what catch it: on a real clip all four
+bands read 1.27 to 1.45 against the control, the same signature as a
+hallucinating model. Never read this check on its own.
+
+**Two inputs leave nothing to read against, and each says UNPROVEN rather than a
+number.** The candidate at the source's own raster, where the control IS the
+source and there is no ceiling; and two files that disagree about the clock,
+where frame N of one is a different moment of the world from frame N of the
+other. In the second case every pixel check in `verify` is demoted to a note,
+because a wrong clock reported as invented texture is a true verdict with a false
+cause, and the cause is what gets acted on.
+
 ---
 
 ## 4. Detail by luminance band, because the sign flips with the material

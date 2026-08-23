@@ -344,7 +344,7 @@ def test_supers():
     check("the last line's em box bottom lands on the anchor",
           abs((last["em_top"] + 102) - 1992) < 1e-6,
           f"{last['em_top'] + 102}")
-    widest = max(l["ink_box"][0] + l["ink_box"][2] for l in block["lines"])
+    widest = max(ln["ink_box"][0] + ln["ink_box"][2] for ln in block["lines"])
     check("the widest line's ink right edge lands on the anchor",
           abs(widest - 3634) < 1e-6, f"{widest}")
     check("lines are one pitch apart",
@@ -640,6 +640,45 @@ def test_media():
         floor = PROVE.generation_floor(clip, clip, 3)
         check("and its generation floor against itself is zero",
               floor["max_abs_diff"] == 0)
+        _media_honest_enlargement(tmp)
+
+
+def _media_honest_enlargement(tmp):
+    """An honest enlargement of a 4:2:0 source must not be called a fake.
+
+    The whole department turns on this one: a lossless Lanczos enlargement
+    invents nothing, and before the luma fix it was struck at 7.1 dB on real
+    graded footage for "adding what was not there". The cause was the chroma
+    path, not the picture. This builds the same shape of file and requires the
+    fidelity check to keep its hands off it.
+    """
+    import upres as U
+    small = os.path.join(tmp, "small.mp4")
+    big = os.path.join(tmp, "big.mp4")
+    for cmd in (
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         "testsrc2=size=640x360:rate=24:duration=0.5", "-c:v", "libx264",
+         "-qp", "0", "-pix_fmt", "yuv420p", small],
+        ["ffmpeg", "-y", "-v", "error", "-i", small, "-vf",
+         "scale=1280:720:flags=lanczos", "-c:v", "libx264", "-qp", "0",
+         "-pix_fmt", "yuv420p", big]):
+        if subprocess.run(cmd, capture_output=True).returncode != 0:
+            check("an honest enlargement could be built", False)
+            return
+    try:
+        res = U.verify(small, big, frames=4)
+    except Exception as exc:                                # pragma: no cover
+        check("an honest enlargement can be verified", False, str(exc))
+        return
+    d = res["checks"]["downscale_back"]
+    check("an honest 4:2:0 enlargement is not struck for inventing detail",
+          d["verdict"] == "PASS",
+          f"{d['verdict']}, luma deficit {d['deficit_db']} dB, "
+          f"RGB deficit {d['rgb_deficit_db']} dB")
+    check("and the RGB reading is the one that would have condemned it",
+          d["rgb_deficit_db"] is not None
+          and d["rgb_deficit_db"] > (d["deficit_db"] or 0.0),
+          f"RGB {d['rgb_deficit_db']} against luma {d['deficit_db']}")
 
 
 # ---------------------------------------------------------------- resolution
@@ -727,7 +766,6 @@ def _moving(n=7, W=960, H=540, dx=7, dy=3, seed=11):
     """A textured world panned by an exact integer step, so flow has ground truth."""
     import cv2
     import numpy as np
-    import _res as R
     rng = np.random.default_rng(seed)
     big = _natural(2000, 1200, seed=seed)
     for _ in range(60):
@@ -827,8 +865,9 @@ def test_resolution_engine():
             check("an impossible Super Scale setting is refused", True)
     check("every route names its licence and its stage",
           all(v.get("licence") and v.get("stage") for v in U.ROUTES.values()))
-    check("the stable limit sits below the boiling limit",
-          _res_consts()[0] < _res_consts()[1])
+    if _comp_available():
+        check("the stable limit sits below the boiling limit",
+              _res_consts()[0] < _res_consts()[1])
 
     # The downscale back check, and the one input that has no ceiling. A same
     # raster job is a stage 3 restore, which is a first class use of this
@@ -854,6 +893,55 @@ def test_resolution_engine():
     check("the boundary is the limit itself, not one side of it",
           U.downscale_back(55.2, 55.2 + U.DEFICIT_STRIKE_DB,
                            same_raster=False)["verdict"] == "PASS")
+
+    # The other input with nothing to read against: two files that disagree
+    # about the clock. Frame N of one is a different moment of the world from
+    # frame N of the other, so a 24 dB deficit there is not evidence about the
+    # enlargement at all. Reported as a strike it would be a true verdict with a
+    # false cause, and the cause is what gets acted on: it sends someone back to
+    # re-run an upscale that was never wrong.
+    d = U.downscale_back(30.0, 54.0, same_raster=False, same_clock=False)
+    check("a wrong clock makes the reading UNPROVEN, not a strike",
+          d["verdict"] == "UNPROVEN" and d["deficit_db"] is None)
+    check("and the printed line names the clock as the reason",
+          "clocks disagree" in U._downscale_line(d)
+          and "nan" not in U._downscale_line(d).lower(),
+          U._downscale_line(d))
+    d = U.downscale_back(None, 54.0, same_raster=False)
+    check("an exact reduction is necessary, and said to be not sufficient",
+          d["verdict"] == "PASS" and "not sufficient" in d["note"]
+          and "nearest neighbour" in d["note"])
+    d = U.downscale_back(54.0, 54.5, same_raster=False, rgb_deficit_db=9.9)
+    check("the RGB deficit rides along as evidence and never gates",
+          d["verdict"] == "PASS" and d["rgb_deficit_db"] == 9.9
+          and d["measured_on"] == "luma")
+
+    # Why that reading is taken on luma. A 4:2:0 source carries its chroma at
+    # half raster, and every real enlarger resamples in YUV while this control
+    # resamples in RGB, so the two reconstruct that chroma differently. On a real
+    # 1080p job that difference alone read 7.07 dB, which is more than the strike
+    # above, and it condemned a lossless Lanczos enlargement for inventing detail
+    # it had never touched; the same file reads 0.76 dB on luma. Here is the
+    # mechanism with the luma held exactly, by construction: R and B moved
+    # against each other in the Rec.709 ratio cancel in luma and cannot cancel in
+    # RGB.
+    if not _comp_available():
+        print("  SKIP the luma demonstration needs numpy "
+              "(see the compositing note above)")
+        return
+    import numpy as np
+    import _res as R
+    base = _natural(64, 36, seed=3)
+    src = np.dstack([base, base, base]).astype(np.float32)
+    delta = (_natural(64, 36, seed=9) - 0.5) * 0.05
+    cand = src.copy()
+    cand[..., 0] += delta
+    cand[..., 2] -= delta * (0.2126 / 0.0722)
+    check("a chroma only difference cancels in luma down to float32's own floor",
+          R.psnr(R.gray(cand), R.gray(src)) > 120.0,
+          f"{R.psnr(R.gray(cand), R.gray(src)):.0f} dB")
+    check("and the same difference is plain in RGB",
+          R.psnr(cand, src) < 40.0, f"{R.psnr(cand, src):.1f} dB")
 
 
 def _res_consts():

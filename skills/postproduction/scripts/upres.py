@@ -411,41 +411,76 @@ def temporal(src, cand, frames=8, start=None, bits=8):
 
 # 6 dB is a factor of four in power. Below it a candidate is inside the
 # resampler's own round trip loss; above it the picture moved further from the
-# source than enlarging it would have.
+# source than enlarging it would have. Calibrated on four materials (two graded
+# commercials, a 4K master and a worst case grain plate), reduced and enlarged
+# by five kernels each: an honest Lanczos, spline or bicubic enlargement reads
+# 0.0 to 2.1 dB, and every fault reads 6.9 or more. The gap is real and the
+# limit sits inside it.
 DEFICIT_STRIKE_DB = 6.0
 
 
-def downscale_back(candidate_psnr, control_psnr, same_raster):
-    """The fidelity reading, and what it says when there is no ceiling to read.
+def downscale_back(candidate_psnr, control_psnr, same_raster,
+                   same_clock=True, rgb_deficit_db=None):
+    """The fidelity reading, and what it says when there is nothing to read against.
 
     The candidate reduced to the source raster should BE the source, and the
     neutral resample's OWN round trip is the ceiling, because a resampler is not
     lossless either and demanding zero where a resample cannot give zero fails a
     correct file.
 
-    At the same raster there is no round trip to make. The control IS the source,
-    every control reading is infinite, and there is no ceiling at all -- so the
-    check cannot be made and says so. That is the stage 3 restore case, which is
-    a first class use of this department, and it is not a rare corner: any repair
-    or regrade measured against its own source lands here. Averaging the
-    infinities away instead produced a nan, which printed as a number AND
-    disabled the strike below in silence, because every comparison against a nan
-    is False.
+    BOTH readings are taken on LUMA, not on RGB. A 4:2:0 source carries its
+    chroma at half raster, and every real enlarger resamples in YUV while this
+    control resamples in RGB, so the two reconstruct that chroma differently.
+    That difference alone read 7.07 dB on a real 1080p job, which is more than
+    the strike below, and it struck a lossless Lanczos enlargement for inventing
+    detail it had never touched. The same file reads 0.76 dB on luma while the
+    real faults read 8.6 to 9.8, so the fault is an order of magnitude clear of
+    the nuisance instead of buried under it. Chroma is not left unwatched: the
+    colour tags and the colour drift check are what watch it, and the RGB
+    deficit is carried here as evidence, never as a verdict.
+
+    Two inputs leave nothing to read against, and each says so rather than
+    returning a number:
+
+    * The clocks disagree. Frame N of one file is a different moment of the
+      world from frame N of the other, so this is not a comparison at all.
+    * The candidate is at the source's own raster. There is no round trip to
+      make, the control IS the source, every control reading is infinite, and
+      there is no ceiling. That is the stage 3 restore case, a first class use
+      of this department. Averaging the infinities away instead produced a nan,
+      which printed as a number AND disabled the strike in silence, because
+      every comparison against a nan is False.
 
     `candidate_psnr` and `control_psnr` are means over the finite readings, or
     None when nothing finite was left.
     """
     out = {"verdict": "PASS",
+           "measured_on": "luma",
            "candidate_psnr_db": (round(candidate_psnr, 2)
                                  if candidate_psnr is not None else None),
            "control_ceiling_db": (round(control_psnr, 2)
                                   if control_psnr is not None else None),
            "deficit_db": None,
+           "rgb_deficit_db": rgb_deficit_db,
+           "unproven_reason": None,
            "note": "Read the deficit, never the level. A noisy plate round trips "
                    "at 43 dB where a smooth one reaches 57, so the same absolute "
-                   "number is near ceiling on one file and poor on another."}
+                   "number is near ceiling on one file and poor on another. The "
+                   "RGB deficit beside it carries the chroma path as well and is "
+                   "evidence, not a verdict."}
+    if not same_clock:
+        out["verdict"] = "UNPROVEN"
+        out["unproven_reason"] = "the clocks disagree"
+        out["note"] = (
+            "UNPROVEN: the two files disagree about the clock, so frame N of one "
+            "is not frame N of the other and this reading compares two different "
+            "moments of the world. It cannot bound the enlargement in either "
+            "direction. The clock is already a strike above; fix the rate and the "
+            "count, then measure the pixels.")
+        return out
     if same_raster:
         out["verdict"] = "UNPROVEN"
+        out["unproven_reason"] = "no ceiling at the same raster"
         out["note"] = (
             "UNPROVEN: the candidate is at the source's own raster, so the "
             "neutral control IS the source and its round trip is lossless. There "
@@ -459,10 +494,14 @@ def downscale_back(candidate_psnr, control_psnr, same_raster):
         out["verdict"] = "PASS"
         out["note"] = ("The candidate reduces back to the source EXACTLY, which "
                        "is better than the neutral resample's own round trip. "
-                       "Nothing was invented. " + out["note"])
+                       "Necessary and not sufficient: a nearest neighbour "
+                       "enlargement also reduces back exactly and is unusable, so "
+                       "read the detail bands before calling this clean. "
+                       + out["note"])
         return out
     if control_psnr is None:
         out["verdict"] = "UNPROVEN"
+        out["unproven_reason"] = "the control round tripped losslessly"
         out["note"] = ("UNPROVEN: the neutral control round tripped losslessly at "
                        "a raster where it should not have, so there is no ceiling "
                        "to read against.")
@@ -478,10 +517,10 @@ def _downscale_line(d):
     lvl, ceil = d.get("candidate_psnr_db"), d.get("control_ceiling_db")
     if d.get("verdict") == "UNPROVEN":
         where = f"{lvl} dB against the source" if lvl is not None else "no reading"
-        return f"{where}, UNPROVEN: no ceiling to read it against"
+        return f"{where}, UNPROVEN: {d.get('unproven_reason')}"
     if lvl is None:
-        return f"exact against the source, against a ceiling of {ceil} dB"
-    return f"{lvl} dB against a ceiling of {ceil} dB"
+        return f"exact against the source, against a ceiling of {ceil} dB (luma)"
+    return f"{lvl} dB against a ceiling of {ceil} dB (luma)"
 
 
 def verify(src, cand, frames=8, start=None, bits=8):
@@ -569,7 +608,15 @@ def verify(src, cand, frames=8, start=None, bits=8):
             "The clock differs between the two files, so every pixel measurement "
             "below is comparing frame N of one against a DIFFERENT moment in the "
             "other. Read them as evidence that something is wrong, never as a "
-            "measurement of the enlargement.")
+            "measurement of the enlargement. Nothing below can raise a strike of "
+            "its own while that is true: a wrong clock would otherwise be "
+            "reported as invented texture or a colour drift, which is a true "
+            "verdict with a false cause, and the cause is what gets acted on.")
+
+    def _fault(msg):
+        """A pixel fault is a strike, or a note when the clock makes it unreadable."""
+        (strikes if comparable else notes).append(
+            msg if comparable else "UNPROVEN, the clocks disagree: " + msg)
     out_size = (b["width"], b["height"])
     src_size = (a["width"], a["height"])
     control = [R.resize(f, out_size) for f in fa]
@@ -578,19 +625,33 @@ def verify(src, cand, frames=8, start=None, bits=8):
     # the source. The neutral resample's own round trip is the ceiling, because
     # the resampler is not lossless either and demanding zero where a resample
     # cannot give zero fails a correct file.
-    p_cand = [R.psnr(R.resize(c, src_size), s) for c, s in zip(fb, fa)]
-    p_ctrl = [R.psnr(R.resize(c, src_size), s) for c, s in zip(control, fa)]
-    fin_cand = [v for v in p_cand if np.isfinite(v)]
-    fin_ctrl = [v for v in p_ctrl if np.isfinite(v)]
-    dsb = downscale_back(float(np.mean(fin_cand)) if fin_cand else None,
-                         float(np.mean(fin_ctrl)) if fin_ctrl else None,
-                         out_size == src_size)
+    red_cand = [R.resize(c, src_size) for c in fb]
+    red_ctrl = [R.resize(c, src_size) for c in control]
+
+    def _mean_finite(vals):
+        fin = [v for v in vals if np.isfinite(v)]
+        return float(np.mean(fin)) if fin else None
+
+    y_cand = _mean_finite([R.psnr(R.gray(r), R.gray(s))
+                           for r, s in zip(red_cand, fa)])
+    y_ctrl = _mean_finite([R.psnr(R.gray(r), R.gray(s))
+                           for r, s in zip(red_ctrl, fa)])
+    rgb_cand = _mean_finite([R.psnr(r, s) for r, s in zip(red_cand, fa)])
+    rgb_ctrl = _mean_finite([R.psnr(r, s) for r, s in zip(red_ctrl, fa)])
+    rgb_def = (round(rgb_ctrl - rgb_cand, 2)
+               if (rgb_cand is not None and rgb_ctrl is not None) else None)
+    dsb = downscale_back(y_cand, y_ctrl, out_size == src_size,
+                         same_clock=comparable, rgb_deficit_db=rgb_def)
     out["checks"]["downscale_back"] = dsb
     if dsb["verdict"] == "STRIKE":
         strikes.append(f"The candidate is {dsb['deficit_db']:.1f} dB below the "
-                       "neutral resample's own round trip, so it moved the "
-                       "picture further from the source than simply enlarging it "
-                       "would have. Whatever it added is not what was there.")
+                       "neutral resample's own round trip on luma, so it moved "
+                       "the picture further from the source than simply enlarging "
+                       "it would have. The detail bands say which way: above the "
+                       "control is invented texture, below it is detail removed, "
+                       "and bands that read ok with a deficit this size mean the "
+                       "enlargement itself used a poor kernel (a bilinear one "
+                       "reads 6.9 to 9.4 dB here).")
     elif dsb["verdict"] == "UNPROVEN":
         notes.append("DOWNSCALE BACK: " + dsb["note"])
 
@@ -613,16 +674,16 @@ def verify(src, cand, frames=8, start=None, bits=8):
     out["checks"]["detail_bands"] = bands
     for bnd in bands:
         if bnd["verdict"] == "invented":
-            strikes.append(f"Luminance band {bnd['band']} carries "
-                           f"{bnd['ratio']:.2f} times the neutral resample's "
-                           "fine detail. That is invented micro texture, and on "
-                           "a flat surface it reads as worms.")
+            _fault(f"Luminance band {bnd['band']} carries "
+                   f"{bnd['ratio']:.2f} times the neutral resample's "
+                   "fine detail. That is invented micro texture, and on "
+                   "a flat surface it reads as worms.")
         elif bnd["verdict"] == "deleted":
-            strikes.append(f"Luminance band {bnd['band']} carries only "
-                           f"{bnd['ratio']:.2f} of the neutral resample's fine "
-                           "detail. The model read that band's real texture as "
-                           "noise and removed it. A star field is the case that "
-                           "made this check exist.")
+            _fault(f"Luminance band {bnd['band']} carries only "
+                   f"{bnd['ratio']:.2f} of the neutral resample's fine "
+                   "detail. The model read that band's real texture as "
+                   "noise and removed it. A star field is the case that "
+                   "made this check exist.")
 
     # 8. Colour drift. Against the control, which by construction has none.
     drift = [round(float(np.mean([f[..., c] for f in fb]) -
@@ -631,9 +692,9 @@ def verify(src, cand, frames=8, start=None, bits=8):
     out["checks"]["colour_drift_levels"] = {"r": drift[0], "g": drift[1],
                                             "b": drift[2]}
     if max(abs(d) for d in drift) > 1.0:
-        strikes.append(f"The picture drifted {drift} code levels against the "
-                       "neutral resample. Plain ESRGAN drifts about two levels "
-                       "cool on a clean render; that is this fault.")
+        _fault(f"The picture drifted {drift} code levels against the "
+               "neutral resample. Plain ESRGAN drifts about two levels "
+               "cool on a clean render; that is this fault.")
 
     # 9. Did the enlargement put anything ABOVE the source's own Nyquist?
     ea = R.effective_resolution(fa[0], src_size)

@@ -754,7 +754,7 @@ def horizon_from_vanishing_point(lines):
     taller person's eyes plot ABOVE the horizon and a shorter person's below,
     and that check costs nothing.
     """
-    ls = [np.asarray(l, dtype=np.float64) for l in lines]
+    ls = [np.asarray(ln, dtype=np.float64) for ln in lines]
     if len(ls) < 2:
         raise ValueError("need at least two lines")
     vps = []

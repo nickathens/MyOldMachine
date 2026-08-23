@@ -122,8 +122,17 @@ WORK="/tmp/resolve_install"
 rm -rf "$WORK"
 mkdir -p "$WORK"
 unzip -o -q "$ZIP" -d "$WORK"
-DMG=$(ls "$WORK"/DaVinci_Resolve*_Mac.dmg | head -1)
-[[ -z "$DMG" ]] && { echo "No disk image inside $ZIP" >&2; exit 1; }
+# Matched as a glob rather than through `ls`, so the refusal below is the thing
+# that actually fires when the zip holds no disk image. Under `set -e` an `ls`
+# that matches nothing exits the script first and the message is never reached.
+shopt -s nullglob
+DMGS=("$WORK"/DaVinci_Resolve*_Mac.dmg)
+shopt -u nullglob
+if [[ ${#DMGS[@]} -eq 0 ]]; then
+  echo "No disk image inside $ZIP" >&2
+  exit 1
+fi
+DMG="${DMGS[0]}"
 
 if ! arch -x86_64 /usr/bin/true 2>/dev/null && [[ "$(uname -m)" == "arm64" ]]; then
   echo "Installing Rosetta 2 (required by the Resolve installer on Apple Silicon)..."

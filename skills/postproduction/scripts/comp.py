@@ -50,7 +50,6 @@ Run this file with ~/.venvs/post/bin/python.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 
@@ -217,7 +216,7 @@ def cmd_track(args):
             print()
         tx = d.get("texture") or {}
         if tx.get("verdict") == "BLIND SPOT":
-            print(f"  texture           BLIND SPOT")
+            print("  texture           BLIND SPOT")
             print(f"      {tx['reason']}")
         elif tx.get("flat_fraction") is not None:
             print(f"  texture           {100 * (1 - tx['flat_fraction']):.0f}% of "
@@ -458,7 +457,7 @@ def cmd_aspect(args):
               "outline: force the solve through any\n  assumed aspect you like "
               "and R does not move.")
         r = d["rectangle_aspect"]
-        print(f"\nthe rectangle's TRUE aspect")
+        print("\nthe rectangle's TRUE aspect")
         print(f"  verdict           {r['verdict']}")
         if r.get("aspect"):
             print(f"  aspect            {r['aspect']:.4f}")

@@ -32,7 +32,6 @@ import os
 import re
 import subprocess
 import sys
-from fractions import Fraction
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import _common as C  # noqa: E402
