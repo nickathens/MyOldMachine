@@ -71,7 +71,7 @@ def get_system_uptime_seconds() -> Optional[float]:
     """System uptime in seconds since boot, or None if unreadable.
 
     Measured from the SYSTEM's boot (kern.boottime on macOS, /proc/uptime on
-    Linux), NOT the bot's start time. Used to suppress CPU/RAM/swap alerts while
+    Linux), NOT the bot's start time. Used to suppress CPU/RAM/pressure alerts while
     the machine is still in its post-boot settling window.
     """
     try:
@@ -280,10 +280,29 @@ def build_health_report(bot_dir: Optional[Path] = None) -> str:
     mem = get_memory_usage()
     lines.append(f"RAM: {mem['used_gb']}/{mem['total_gb']} GB ({mem['percent']}%)")
 
-    # Swap
+    # Memory pressure — the reading that actually says whether the machine is
+    # struggling. Shown above swap on purpose, because swap is the misleading one.
+    #
+    # Unknown is PRINTED, not hidden. Staying silent is the right answer for the
+    # ALERT (a check that cannot see must not invent a verdict), but this is the
+    # status report, and hiding the line is the opposite of the same principle:
+    # on a machine where the reading is unavailable, memory alerting is switched
+    # off, and this line is the only place an operator could ever notice that.
+    # The state is reachable on MOM's own target hardware: PSI needs a 4.20+
+    # kernel and psi=1 on some distros, and the macOS branch returns unknown
+    # whenever that sysctl is missing or unparseable.
+    pressure = get_memory_pressure()
+    if pressure == PRESSURE_UNKNOWN:
+        lines.append("Memory pressure: unknown (unreadable here — memory alerting is off)")
+    else:
+        lines.append(f"Memory pressure: {pressure}")
+
+    # Swap. Deliberately no percentage: on macOS the total is grown on demand,
+    # so used/total pins itself near 90% and means nothing. Absolute GB does
+    # mean something — it is how much has been paged out.
     swap = get_swap_usage()
     if swap["total_gb"] > 0:
-        lines.append(f"Swap: {swap['used_gb']:.1f}/{swap['total_gb']:.1f} GB ({swap['percent']}%)")
+        lines.append(f"Swap in use: {swap['used_gb']:.1f} GB")
 
     # Disk
     disk = get_disk_usage("/")
@@ -360,15 +379,121 @@ def get_swap_usage() -> dict:
         return {"total_gb": 0, "used_gb": 0, "free_gb": 0, "percent": 0}
 
 
+# --- Memory pressure -------------------------------------------------------
+#
+# Swap USE PERCENT is not a health signal on macOS and must never gate an
+# alert. macOS grows swap on demand, one 1 GB swapfile at a time, and only
+# adds the next file when the existing ones are nearly full. `vm.swapusage`
+# total is therefore a since-boot high-water mark of what the OS has already
+# allocated, not a capacity. used/total consequently sits near 90% permanently
+# on any Mac that swaps at all, and the ratio cannot come out low no matter how
+# healthy the machine is. It has no discriminating power, so it produced a
+# steady stream of alerts on a machine reading NORMAL memory pressure with
+# most of its RAM free.
+#
+# The signal that CAN say otherwise is memory pressure: on macOS the kernel
+# publishes its own verdict, and on Linux PSI reports real stall time.
+PRESSURE_NORMAL = "normal"
+PRESSURE_WARN = "warn"
+PRESSURE_CRITICAL = "critical"
+PRESSURE_UNKNOWN = "unknown"
+
+# Ordered least-severe first; index position is the comparison.
+_PRESSURE_ORDER = [PRESSURE_NORMAL, PRESSURE_WARN, PRESSURE_CRITICAL]
+
+# macOS: kern.memorystatus_vm_pressure_level is 1 NORMAL / 2 WARN / 4 CRITICAL
+# (the dispatch_source_memorypressure flags). See newosxbook.com/articles/
+# MemoryPressure.html.
+_DARWIN_PRESSURE_LEVELS = {1: PRESSURE_NORMAL, 2: PRESSURE_WARN, 4: PRESSURE_CRITICAL}
+
+# Linux: /proc/pressure/memory "full avgN" is the share of wall-clock time in
+# which EVERY non-idle task was stalled on memory — i.e. thrashing. Unlike the
+# macOS level these cutoffs are ours: the kernel exports the raw stall time and
+# neither the kernel docs nor Facebook's PSI docs publish a threshold, so they
+# are deliberately conservative and labelled as heuristic wherever they appear.
+_PSI_FULL_WARN = 5.0       # percent of the last 60s with all tasks stalled
+_PSI_FULL_CRITICAL = 20.0
+
+# A single reading of an undebounced kernel flag is the same mistake the CPU
+# check was rewritten to stop making. But the health check only runs every 4
+# hours, and a memory-pressure event does not last 4 hours — it resolves or it
+# kills something — so the consecutive-checks guard used for CPU would simply
+# never see one. Instead we debounce INSIDE one check: take a short burst and
+# report only the level that every sample in the burst held.
+_PRESSURE_SAMPLES = 5
+_PRESSURE_SAMPLE_INTERVAL = 0.5  # seconds; whole burst ~2s, run in an executor
+
+
+def _read_pressure_once() -> str:
+    """One instantaneous memory-pressure reading, or PRESSURE_UNKNOWN."""
+    try:
+        if platform.system() == "Darwin":
+            result = subprocess.run(
+                ["sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+                capture_output=True, text=True, timeout=5
+            )
+            m = re.search(r"(\d+)", result.stdout)
+            if not m:
+                return PRESSURE_UNKNOWN
+            # Unknown numeric levels must not be guessed at in either
+            # direction; an unrecognised level reads as unknown, not normal.
+            return _DARWIN_PRESSURE_LEVELS.get(int(m.group(1)), PRESSURE_UNKNOWN)
+
+        with open("/proc/pressure/memory", encoding="utf-8") as f:
+            for line in f:
+                if not line.startswith("full"):
+                    continue
+                m = re.search(r"avg60=([\d.]+)", line)
+                if not m:
+                    return PRESSURE_UNKNOWN
+                stalled = float(m.group(1))
+                if stalled >= _PSI_FULL_CRITICAL:
+                    return PRESSURE_CRITICAL
+                if stalled >= _PSI_FULL_WARN:
+                    return PRESSURE_WARN
+                return PRESSURE_NORMAL
+        return PRESSURE_UNKNOWN
+    except Exception:
+        # PSI needs kernel 4.20+ and psi=1 on some distros; sysctl can be
+        # missing in a container. Unreadable is unknown, never "fine".
+        return PRESSURE_UNKNOWN
+
+
+def get_memory_pressure() -> str:
+    """Sustained memory pressure: normal / warn / critical / unknown.
+
+    Takes a short burst of samples and returns the worst level held by ALL of
+    them, so a momentary blip reads normal while a real condition survives. Any
+    unreadable sample makes the whole burst unknown, and unknown never alerts —
+    a check that cannot see must stay silent rather than invent a verdict.
+    """
+    worst_held = PRESSURE_CRITICAL
+    for i in range(_PRESSURE_SAMPLES):
+        if i:
+            time.sleep(_PRESSURE_SAMPLE_INTERVAL)
+        level = _read_pressure_once()
+        if level == PRESSURE_UNKNOWN:
+            return PRESSURE_UNKNOWN
+        if _PRESSURE_ORDER.index(level) < _PRESSURE_ORDER.index(worst_held):
+            worst_held = level
+        if worst_held == PRESSURE_NORMAL:
+            break  # cannot get any lower; stop burning the interval
+    return worst_held
+
+
 def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
     """
     Check for critical conditions that should trigger alerts.
     Returns list of alert messages (empty if all OK).
 
-    Disk and network are judged from second one. CPU, RAM and swap are only
-    judged once the machine is past its post-boot settling window, because a
-    booting machine's processor and memory readings are transient noise — that
-    is what produced the daily post-restart "CPU at 100%" false alarm.
+    Disk and network are judged from second one. CPU, RAM and memory pressure
+    are only judged once the machine is past its post-boot settling window,
+    because a booting machine's processor and memory readings are transient
+    noise — that is what produced the daily post-restart "CPU at 100%" false
+    alarm.
+
+    Memory is judged by PRESSURE, never by swap use percent; see
+    get_memory_pressure() for why that ratio cannot report a healthy machine.
     """
     global _consecutive_net_failures, _consecutive_cpu_breaches
     alerts = []
@@ -380,7 +505,7 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
     elif disk["free_gb"] < 5:
         alerts.append(f"WARNING: Low disk space — {disk['free_gb']} GB free")
 
-    # --- Boot-sensitive: CPU / RAM / swap. Suppress until the machine settles ---
+    # --- Boot-sensitive: CPU / RAM / memory pressure. Suppress until settled ---
     uptime = get_system_uptime_seconds()
     settled = uptime is None or uptime >= _SETTLING_WINDOW_SECONDS
     if settled:
@@ -390,9 +515,19 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
         elif mem["percent"] > 90:
             alerts.append(f"WARNING: RAM at {mem['percent']}% — {mem['free_gb']} GB free")
 
-        swap = get_swap_usage()
-        if swap["total_gb"] > 0 and swap["percent"] > 80:
-            alerts.append(f"WARNING: Swap at {swap['percent']}% — {swap['used_gb']:.1f}/{swap['total_gb']:.1f} GB")
+        # Memory pressure, NOT swap use percent. See get_memory_pressure() for
+        # why the swap ratio is a numb instrument that can only read ~90%.
+        pressure = get_memory_pressure()
+        if pressure in (PRESSURE_WARN, PRESSURE_CRITICAL):
+            severity = "CRITICAL" if pressure == PRESSURE_CRITICAL else "WARNING"
+            swap = get_swap_usage()
+            # Swap used is reported as CONTEXT once pressure has already spoken
+            # — how much has been paged out. It is never the trigger, and the
+            # ratio is omitted entirely because it carries no information.
+            alerts.append(
+                f"{severity}: Memory pressure {pressure} — "
+                f"{mem['free_gb']} GB RAM free, {swap['used_gb']:.1f} GB swapped out"
+            )
 
         # Real CPU busy%, and only after N consecutive breaches (mirrors the
         # network guard) so a single transient spike never speaks.
@@ -408,7 +543,7 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
         else:
             _consecutive_cpu_breaches = 0
     else:
-        # Still waking up: do not judge CPU/RAM/swap, and clear any pre-reboot
+        # Still waking up: do not judge CPU/RAM/pressure, and clear any pre-reboot
         # breach streak so it cannot carry across the boot.
         _consecutive_cpu_breaches = 0
 
@@ -428,9 +563,24 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # Track which alerts have been sent to avoid repeated notifications.
-# Key: alert message prefix (e.g. "CRITICAL: Disk"), Value: timestamp last sent.
+# Key: the alert's KIND, built by _alert_key() below (severity + wording with
+# every number replaced, e.g. "CRITICAL: Disk almost full"). Value: timestamp
+# last sent. NOTE: this window only throttles anything if it spans more than one
+# health-check interval; see the comment on _ALERT_COOLDOWN_SECONDS.
 _alert_cooldowns: dict[str, float] = {}
-_ALERT_COOLDOWN_SECONDS = 4 * 3600  # Don't repeat the same alert for 4 hours
+# Don't repeat the same alert for 4 hours.
+#
+# Read this together with bot.py::_HEALTH_CHECK_INTERVAL, which is ALSO 4 hours.
+# check_critical() therefore only runs once per window, so at the current
+# cadence this guard has nothing to suppress: a persistent condition speaks on
+# every check either way. Fixing _alert_key() below made the guard CORRECT — it
+# was keying on the reading, so it could never have matched — but correct is not
+# the same as active. Raising this above one check interval is what would make
+# it bite (12h = twice a day, 24h = once); that is a policy call, not a bug fix,
+# so it is left where it was. tests/test_health_pressure_alert.py pins the
+# relationship in both directions so this cannot be quietly mistaken for a
+# working throttle.
+_ALERT_COOLDOWN_SECONDS = 4 * 3600
 
 # Track consecutive network failures — only alert after 2+ in a row
 _consecutive_net_failures: int = 0
@@ -440,24 +590,44 @@ _NET_FAILURE_THRESHOLD = 2  # Require this many consecutive failures before aler
 # every restart. Three guards now gate it: (1) get_cpu_usage measures REAL
 # busy%, not load average; (2) we require N consecutive breaching checks, like
 # the network guard above, so one transient spike stays silent; (3) check_critical
-# skips CPU/RAM/swap entirely until the machine is past its post-boot settling
+# skips CPU/RAM/pressure entirely until the machine is past its post-boot settling
 # window (below).
 _CPU_BUSY_THRESHOLD = 95.0    # Percent BUSY (not load) that counts as a breach
 _CPU_BREACH_THRESHOLD = 3     # Consecutive breaching checks before we alert
 _consecutive_cpu_breaches: int = 0
 
 # A freshly booted machine runs every login item, launch agent, Spotlight and
-# the bot itself at once, so CPU/RAM/swap read as transient noise for a few
+# the bot itself at once, so CPU/RAM/pressure read as transient noise for a few
 # minutes. Suppress those alerts until system uptime clears this window. Disk
 # and network alerts stay live from second one — they are not distorted by boot.
 _SETTLING_WINDOW_SECONDS = 5 * 60
 
 
+# Any run of digits (with optional decimal part) — the varying half of every
+# alert message. Stripping these is what makes the cooldown key stable BY
+# CONSTRUCTION: no measured value can survive the substitution, so no future
+# alert wording can quietly reintroduce the bug below.
+_ALERT_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
 def _alert_key(alert_msg: str) -> str:
-    """Extract a stable key from an alert message for cooldown tracking."""
-    # Use the part before the dash for grouping: "CRITICAL: Disk almost full"
-    parts = alert_msg.split("—")
-    return parts[0].strip() if parts else alert_msg
+    """Extract a stable key from an alert message for cooldown tracking.
+
+    The key must depend on the KIND of alert and nothing else. Splitting on the
+    em dash alone was not enough: only the disk alerts happen to be worded with
+    every number after the dash. "WARNING: Swap at 89.5%" and "WARNING: Swap at
+    91.0%" kept the reading inside the key, so they were two different keys,
+    neither silenced the other, and the 4-hour cooldown never engaged for swap,
+    RAM or CPU. The CPU message has no em dash at all, so its key was the entire
+    message including the busy percent, the breach count and the load average.
+
+    So: drop the detail after the em dash, then strip every number from what is
+    left. Severity words stay in the key, which is deliberate — a WARNING and a
+    CRITICAL about the same subsystem are different alerts and an escalation
+    must not be muted by the warning that preceded it.
+    """
+    head = alert_msg.split("—")[0]
+    return _ALERT_NUMBER_RE.sub("#", head).strip()
 
 
 async def run_health_check(send_fn, admin_user_ids: list[int],
