@@ -237,6 +237,35 @@ class ReadPressureOnceTests(unittest.TestCase):
                "avg300=20.00 total=1\n")
         self.assertEqual(self._linux(psi), health.PRESSURE_CRITICAL)
 
+    # The two Linux cutoffs are OURS, not the kernel's, so they are the one
+    # part of this check that a future edit can move. The tests above are
+    # written as `_PSI_FULL_WARN + 1`, which moves with the constant: they pin
+    # that a threshold exists and leave its entire interior free. Editing warn
+    # from 5.0 to 0.5 — a Linux flood, which is the exact failure this file
+    # exists to prevent — passes every one of them. So both cutoffs are also
+    # bracketed from both sides by LITERAL readings, and the boundary itself is
+    # pinned, which is what makes `>=` meaningful rather than incidental.
+    def _linux_full(self, avg60):
+        return self._linux(
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+            f"full avg10=0.00 avg60={avg60:.2f} avg300=0.00 total=0\n"
+        )
+
+    def test_linux_just_below_warn_is_normal(self):
+        self.assertEqual(self._linux_full(4.0), health.PRESSURE_NORMAL)
+
+    def test_linux_exactly_at_warn_is_warn(self):
+        self.assertEqual(self._linux_full(5.0), health.PRESSURE_WARN)
+
+    def test_linux_just_below_critical_is_still_only_warn(self):
+        self.assertEqual(self._linux_full(19.0), health.PRESSURE_WARN)
+
+    def test_linux_exactly_at_critical_is_critical(self):
+        self.assertEqual(self._linux_full(20.0), health.PRESSURE_CRITICAL)
+
+    def test_linux_well_above_critical_is_critical(self):
+        self.assertEqual(self._linux_full(60.0), health.PRESSURE_CRITICAL)
+
     def test_linux_missing_psi_file_is_unknown(self):
         # PSI needs kernel 4.20+ and psi=1 on some distros.
         with patch.object(health.platform, "system", return_value="Linux"), \
@@ -372,6 +401,231 @@ class CooldownEngagesTests(unittest.IsolatedAsyncioTestCase):
             health._alert_cooldowns[key] -= health._ALERT_COOLDOWN_SECONDS + 1
         await self._run_with_alerts(["WARNING: RAM at 92.0% — 1.1 GB free"])
         self.assertEqual(len(self.sent), 2)
+
+
+class HealthReportTests(unittest.TestCase):
+    """/health output. Nothing pinned this before, and the swap line changed."""
+
+    def setUp(self):
+        self._patchers = [
+            patch.object(health, "get_disk_usage", return_value=_OK_DISK),
+            patch.object(health, "get_memory_usage", return_value=_OK_MEM),
+            patch.object(health, "get_swap_usage", return_value=_PINNED_SWAP),
+            patch.object(health, "get_load_average", return_value="1.00, 1.00, 1.00"),
+            patch.object(health, "get_network_status", return_value=True),
+        ]
+        for pt in self._patchers:
+            pt.start()
+        self.addCleanup(lambda: [pt.stop() for pt in self._patchers])
+
+    def _report(self, pressure):
+        with patch.object(health, "get_memory_pressure", return_value=pressure):
+            return health.build_health_report()
+
+    def test_normal_pressure_is_reported(self):
+        self.assertIn("Memory pressure: normal", self._report(health.PRESSURE_NORMAL))
+
+    def test_unknown_pressure_is_reported_as_unknown_not_hidden(self):
+        # Unknown never alerts, so on a machine that cannot read it, memory
+        # alerting is switched OFF. This line is the only place an operator
+        # could notice that, so it must not vanish. (Silence is right for the
+        # ALERT; a status report that omits what it could not measure is the
+        # opposite of the same principle.)
+        report = self._report(health.PRESSURE_UNKNOWN)
+        self.assertIn("Memory pressure: unknown", report)
+        self.assertIn("alerting is off", report)
+
+    def test_swap_is_absolute_gb_with_no_ratio(self):
+        # The ratio is what could only ever read ~90%; it must not come back
+        # into the report either, where it would read as a live 89.5% warning.
+        report = self._report(health.PRESSURE_NORMAL)
+        self.assertIn("Swap in use: 7.2 GB", report)
+        self.assertNotIn("89.5", report)
+
+    def test_a_machine_with_no_swap_shows_no_swap_line(self):
+        with patch.object(health, "get_swap_usage",
+                          return_value={"total_gb": 0, "used_gb": 0,
+                                        "free_gb": 0, "percent": 0}):
+            self.assertNotIn("Swap in use", self._report(health.PRESSURE_NORMAL))
+
+
+def _read_bot_health_check_interval() -> int:
+    """bot.py::_HEALTH_CHECK_INTERVAL, read from the AST of the real file.
+
+    Read rather than assumed, and read structurally rather than by grepping the
+    source text, so a rename surfaces as a failure here instead of silently
+    skipping the comparison this class exists to make.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "bot.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if "_HEALTH_CHECK_INTERVAL" not in names:
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant):
+            return int(value.value)
+        if (isinstance(value, ast.BinOp) and isinstance(value.op, ast.Mult)
+                and isinstance(value.left, ast.Constant)
+                and isinstance(value.right, ast.Constant)):
+            return int(value.left.value) * int(value.right.value)
+        raise AssertionError(f"unhandled shape for _HEALTH_CHECK_INTERVAL: "
+                             f"{ast.dump(value)}")
+    raise AssertionError("bot.py no longer defines _HEALTH_CHECK_INTERVAL at "
+                         "module level; this comparison needs re-pointing")
+
+
+class CooldownVersusCheckCadenceTests(unittest.IsolatedAsyncioTestCase):
+    """A stable key is necessary for the cooldown. It is not sufficient.
+
+    Fixing _alert_key() made the 4-hour guard CORRECT — it had been keying on
+    the reading, so it could never match itself. It did not make the guard
+    ACTIVE: bot.py runs check_critical() once every 4 hours and the window is
+    also 4 hours, so the window has already expired by the time the next check
+    could possibly repeat an alert. A persistent condition therefore speaks on
+    every check, before the fix and after it.
+
+    That is worth pinning rather than leaving as prose, because "there is a
+    4-hour cooldown" reads like a throttle and currently is not one. These tests
+    replay bot.py::_health_monitor_loop's real cadence on a virtual clock.
+    """
+
+    _PERSISTENT = "WARNING: Memory pressure warn — 1.2 GB RAM free, 7.2 GB swapped out"
+
+    # bot.py's own loop shape, mirrored here.
+    _LOOP_SLEEP = 300
+    _STARTUP_DELAY = 5 * 60
+    _CHECK_COST = 3.0   # top samples ~1s, plus curl probes and the pressure burst
+    _SEND_COST = 0.5
+
+    async def _replay(self, *, days, cooldown, check_interval,
+                      message_for_check=None, alert_key=None):
+        """Return (check_times, send_times) over `days` of the real loop."""
+        health._alert_cooldowns.clear()
+        # NOT zero. run_health_check reads the last-sent time with
+        # _alert_cooldowns.get(key, 0), so a virtual clock starting near zero
+        # reads the missing entry as "sent a moment ago" and swallows the first
+        # alert. Real wall-clock time is ~1.7e9, where that sentinel is
+        # harmless. Starting the replay there keeps the model faithful.
+        clock = [1_700_000_000.0]
+        check_times: list[float] = []
+        send_times: list[float] = []
+
+        async def send_fn(uid, text):
+            send_times.append(clock[0])
+            return True
+
+        def fake_check_critical(bot_dir=None):
+            clock[0] += self._CHECK_COST   # the check costs time before it answers
+            n = len(check_times)
+            check_times.append(clock[0])
+            msg = (message_for_check(n) if message_for_check
+                   else self._PERSISTENT)
+            return [msg]
+
+        patches = [
+            patch.object(health, "_ALERT_COOLDOWN_SECONDS", cooldown),
+            patch.object(health.time, "time", lambda: clock[0]),
+            patch.object(health, "check_critical", fake_check_critical),
+        ]
+        if alert_key is not None:
+            patches.append(patch.object(health, "_alert_key", alert_key))
+
+        for pt in patches:
+            pt.start()
+        try:
+            horizon = clock[0] + days * 86400
+            clock[0] += self._STARTUP_DELAY
+            last_check = None
+            while clock[0] < horizon:
+                now = clock[0]
+                if last_check is None or now - last_check >= check_interval:
+                    last_check = now
+                    before = len(send_times)
+                    await health.run_health_check(send_fn, [1], None)
+                    if len(send_times) > before:
+                        clock[0] += self._SEND_COST
+                clock[0] += self._LOOP_SLEEP
+        finally:
+            for pt in patches:
+                pt.stop()
+        return check_times, send_times
+
+    @staticmethod
+    def _expected_sends(check_times, cooldown):
+        """Second, independent implementation of the cooldown decision."""
+        count, last = 0, None
+        for t in check_times:
+            if last is None or t - last >= cooldown:
+                count += 1
+                last = t
+        return count
+
+    def test_the_shipped_window_does_not_span_a_second_check(self):
+        interval = _read_bot_health_check_interval()
+        self.assertLessEqual(
+            health._ALERT_COOLDOWN_SECONDS, interval,
+            "The alert cooldown now spans more than one health-check interval, "
+            "which means it finally throttles something. That is the policy "
+            "change described on _ALERT_COOLDOWN_SECONDS in core/health.py — a "
+            "deliberate one, not a bug. Update this test and the one below "
+            "together with it."
+        )
+
+    async def test_a_persistent_condition_speaks_on_every_check(self):
+        interval = _read_bot_health_check_interval()
+        checks, sends = await self._replay(
+            days=3, cooldown=health._ALERT_COOLDOWN_SECONDS,
+            check_interval=interval,
+        )
+        self.assertGreater(len(checks), 10)          # the replay really ran
+        self.assertEqual(len(sends), len(checks))    # and every check spoke
+        self.assertEqual(len(sends),
+                         self._expected_sends(checks, health._ALERT_COOLDOWN_SECONDS))
+
+    async def test_a_window_spanning_two_checks_does_throttle(self):
+        # The mechanism is sound; it is the value that is inert. Proving this
+        # is what stops the test above being read as "cooldowns do not work".
+        interval = _read_bot_health_check_interval()
+        checks, sends = await self._replay(
+            days=3, cooldown=2 * interval, check_interval=interval,
+        )
+        self.assertEqual(len(sends), self._expected_sends(checks, 2 * interval))
+        self.assertLess(len(sends), len(checks))
+        self.assertGreater(len(sends), 0)
+
+    async def test_the_stable_key_is_what_makes_a_longer_window_work(self):
+        # Positive control for the fix itself, at a window long enough to bite.
+        # Same drifting readings, same 24-hour window, only the key differs.
+        interval = _read_bot_health_check_interval()
+
+        def drifting(n):
+            # The HISTORICAL swap wording, which is the shape that defeated the
+            # old key: the reading sits BEFORE the em dash, so splitting on the
+            # dash left it inside the key. Deliberately not the replacement
+            # pressure wording — that one puts every number after the dash, so
+            # the old key would have handled it and the control would prove
+            # nothing. (Checked: it returns 2 sends either way.)
+            return f"WARNING: Swap at {89.5 + n * 0.1:.1f}% — {7.2:.1f}/8.0 GB"
+
+        def old_key(alert_msg):
+            # The pre-fix implementation, verbatim.
+            parts = alert_msg.split("—")
+            return parts[0].strip() if parts else alert_msg
+
+        _, fixed = await self._replay(
+            days=3, cooldown=24 * 3600, check_interval=interval,
+            message_for_check=drifting,
+        )
+        checks, broken = await self._replay(
+            days=3, cooldown=24 * 3600, check_interval=interval,
+            message_for_check=drifting, alert_key=old_key,
+        )
+        self.assertEqual(len(broken), len(checks))   # old key: never suppressed
+        self.assertLess(len(fixed), len(broken))     # new key: actually throttles
 
 
 if __name__ == "__main__":

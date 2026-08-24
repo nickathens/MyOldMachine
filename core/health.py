@@ -282,8 +282,19 @@ def build_health_report(bot_dir: Optional[Path] = None) -> str:
 
     # Memory pressure — the reading that actually says whether the machine is
     # struggling. Shown above swap on purpose, because swap is the misleading one.
+    #
+    # Unknown is PRINTED, not hidden. Staying silent is the right answer for the
+    # ALERT (a check that cannot see must not invent a verdict), but this is the
+    # status report, and hiding the line is the opposite of the same principle:
+    # on a machine where the reading is unavailable, memory alerting is switched
+    # off, and this line is the only place an operator could ever notice that.
+    # The state is reachable on MOM's own target hardware: PSI needs a 4.20+
+    # kernel and psi=1 on some distros, and the macOS branch returns unknown
+    # whenever that sysctl is missing or unparseable.
     pressure = get_memory_pressure()
-    if pressure != PRESSURE_UNKNOWN:
+    if pressure == PRESSURE_UNKNOWN:
+        lines.append("Memory pressure: unknown (unreadable here — memory alerting is off)")
+    else:
         lines.append(f"Memory pressure: {pressure}")
 
     # Swap. Deliberately no percentage: on macOS the total is grown on demand,
@@ -552,9 +563,24 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # Track which alerts have been sent to avoid repeated notifications.
-# Key: alert message prefix (e.g. "CRITICAL: Disk"), Value: timestamp last sent.
+# Key: the alert's KIND, built by _alert_key() below (severity + wording with
+# every number replaced, e.g. "CRITICAL: Disk almost full"). Value: timestamp
+# last sent. NOTE: this window only throttles anything if it spans more than one
+# health-check interval; see the comment on _ALERT_COOLDOWN_SECONDS.
 _alert_cooldowns: dict[str, float] = {}
-_ALERT_COOLDOWN_SECONDS = 4 * 3600  # Don't repeat the same alert for 4 hours
+# Don't repeat the same alert for 4 hours.
+#
+# Read this together with bot.py::_HEALTH_CHECK_INTERVAL, which is ALSO 4 hours.
+# check_critical() therefore only runs once per window, so at the current
+# cadence this guard has nothing to suppress: a persistent condition speaks on
+# every check either way. Fixing _alert_key() below made the guard CORRECT — it
+# was keying on the reading, so it could never have matched — but correct is not
+# the same as active. Raising this above one check interval is what would make
+# it bite (12h = twice a day, 24h = once); that is a policy call, not a bug fix,
+# so it is left where it was. tests/test_health_pressure_alert.py pins the
+# relationship in both directions so this cannot be quietly mistaken for a
+# working throttle.
+_ALERT_COOLDOWN_SECONDS = 4 * 3600
 
 # Track consecutive network failures — only alert after 2+ in a row
 _consecutive_net_failures: int = 0
