@@ -102,7 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(Nothing open right now.)
+[2026-08-24] mac: health alerts — swap use percent cannot read low on
+macOS, so it alerted on every check; replaced with memory pressure, and
+fixed `_alert_key` keeping the varying reading in the cooldown key
+(`core/health.py`). (PR #TBD)
 
 (Entries removed above: #145, #144, #147 and #146 merged 2026-08-23.
 #143, #142, #141 and #140 merged 2026-08-22.
