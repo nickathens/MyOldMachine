@@ -105,7 +105,7 @@ provider.
 [2026-08-24] mac: health alerts — swap use percent cannot read low on
 macOS, so it alerted on every check; replaced with memory pressure, and
 fixed `_alert_key` keeping the varying reading in the cooldown key
-(`core/health.py`). (PR #TBD)
+(`core/health.py`). (PR #149)
 
 (Entries removed above: #145, #144, #147 and #146 merged 2026-08-23.
 #143, #142, #141 and #140 merged 2026-08-22.
