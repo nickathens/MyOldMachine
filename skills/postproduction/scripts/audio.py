@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 import _common as C  # noqa: E402
@@ -204,7 +205,132 @@ def normalise(path, profile, out, stream="a:0", linear=True):
                        "re-checked too because the container was rewritten."}
 
 
-def clipping(path, stream="a:0", ceiling=0.995, run=2):
+# The whole decode is never held in memory, and the block reader below is the
+# reason, not a style choice.
+#
+# Measured on this Mac, 31 Aug 2026, on the code this replaces, which took
+# ffmpeg's entire f32 decode back through `capture_output=True` and then copied
+# it again into an `array`: peak RSS ran at a flat 14.2 bytes per SAMPLE.
+#
+#     10 min stereo    57.6 M samples   0.829 GB   2.08 s
+#      5 min 5.1       86.4 M samples   1.233 GB   3.04 s
+#     20 min stereo   115.2 M samples   1.637 GB   4.12 s
+#
+# Dead linear, so a 90 minute 5.1 master at 48 kHz is 1.56 G samples and about
+# 22 GB of peak on a 24 GB machine: an out of memory kill, not a slow run.
+# SKILL.md offers this as a master gate, so that is exactly the file it was
+# written for. Streamed, the peak is one block and does not move with length.
+#
+# The CPU side is the smaller half here and the larger half elsewhere: this
+# machine ran the per sample Python loop at 28 M samples/s, the same code on the
+# review machine (Linux, 31 Aug 2026) at 7.9 M/s, which is 3.3 minutes for that
+# master. So numpy is used where it is installed and a block at a time Python
+# path where it is not. numpy is NOT imported at the top of this file on
+# purpose: everything else here is standard library, and a hard import would
+# change which interpreter can run the sound department at all.
+CLIP_BLOCK_FRAMES = 1 << 20
+
+try:  # optional, and the Python path below is a full replacement for it
+    import numpy as _np
+except Exception:  # pragma: no cover - exercised by the fallback check
+    _np = None
+
+
+def _clip_state(ch, ceiling, run):
+    return {"ceiling": float(ceiling), "run": int(run), "frames": 0,
+            "worst": 0.0,
+            "ch": [{"hits": 0, "runs": 0, "longest": 0, "cur": 0}
+                   for _ in range(ch)]}
+
+
+def _clip_scan_np(buf, ch, st):
+    """One block, vectorised. Runs carry across the block join."""
+    a = _np.frombuffer(buf, dtype="<f4").reshape(-1, ch)
+    if a.size == 0:
+        return
+    av = _np.abs(a)
+    w = float(av.max())
+    if w > st["worst"]:
+        st["worst"] = w
+    st["frames"] += int(a.shape[0])
+    if w < st["ceiling"]:
+        # Nothing here can be on the ceiling, so no run survives this block.
+        for cs in st["ch"]:
+            cs["cur"] = 0
+        return
+    run, n = st["run"], int(a.shape[0])
+    hot = av >= st["ceiling"]
+    pad = _np.zeros(n + 2, dtype=_np.int8)
+    for c in range(ch):
+        cs, m = st["ch"][c], hot[:, c]
+        cs["hits"] += int(m.sum())
+        pad[1:-1] = m
+        d = _np.diff(pad)
+        starts, ends = _np.flatnonzero(d == 1), _np.flatnonzero(d == -1)
+        if starts.size == 0:
+            cs["cur"] = 0
+            continue
+        lens = (ends - starts).astype(_np.int64)
+        carry = cs["cur"]
+        # A run beginning at sample 0 is the SAME run the last block ended on,
+        # so its real length includes the carry -- and if it had already
+        # reached `run` back there it was already counted, so it must not be
+        # counted twice.
+        joined = bool(starts[0] == 0)
+        if joined:
+            lens[0] += carry
+        counted = int((lens >= run).sum())
+        if joined and carry >= run and lens[0] >= run:
+            counted -= 1
+        cs["runs"] += counted
+        cs["longest"] = max(cs["longest"], int(lens.max()))
+        cs["cur"] = int(lens[-1]) if int(ends[-1]) == n else 0
+
+
+def _clip_scan_py(buf, ch, st):
+    """The same block with no numpy, and the same answer.
+
+    max() and min() over an array.array are C loops; the per sample loop under
+    them is not. A block with nothing near the ceiling is the common case even
+    in a bad file, and skipping it there is what keeps this affordable.
+    """
+    import array
+    a = array.array("f")
+    a.frombytes(buf)
+    if not len(a):
+        return
+    st["frames"] += len(a) // ch
+    hi, lo = max(a), min(a)
+    w = hi if hi > -lo else -lo
+    if w > st["worst"]:
+        st["worst"] = w
+    if w < st["ceiling"]:
+        for cs in st["ch"]:
+            cs["cur"] = 0
+        return
+    ceiling, run = st["ceiling"], st["run"]
+    for c in range(ch):
+        cs = st["ch"][c]
+        cur, hits, runs, longest = cs["cur"], cs["hits"], cs["runs"], cs["longest"]
+        for i in range(c, len(a), ch):
+            v = a[i]
+            if (-v if v < 0 else v) >= ceiling:
+                hits += 1
+                cur += 1
+                # `== run`, not `>= run`, and that is what carries the join for
+                # free: a run already past `run` when the block ended never
+                # equals it again, so it cannot be counted a second time.
+                if cur == run:
+                    runs += 1
+                if cur > longest:
+                    longest = cur
+            else:
+                cur = 0
+        cs.update(hits=hits, runs=runs, longest=longest, cur=cur)
+
+
+def clipping(path, stream="a:0", ceiling=0.995, run=2, block=CLIP_BLOCK_FRAMES,
+             use_numpy=None):
     """Count samples on the ceiling, and the RUNS of them, which is the tell.
 
     A true peak number cannot answer this. A file driven into a limiter and
@@ -223,6 +349,12 @@ def clipping(path, stream="a:0", ceiling=0.995, run=2):
     decode is 32 bit float so nothing is clipped by the instrument itself, and
     every channel is counted separately as well as together, because a fault
     that lives in one channel is invisible in a sum.
+
+    The decode is STREAMED: see the note above CLIP_BLOCK_FRAMES for what the
+    version that held it whole cost on a feature. `block` is the block size in
+    sample frames and only exists so a check can drive the block join through
+    the middle of a run; `use_numpy` likewise forces one arithmetic path or the
+    other, and the two are required to agree exactly.
     """
     C.need("ffmpeg")
     idx = int(stream.split(":")[-1]) if ":" in stream else 0
@@ -232,36 +364,44 @@ def clipping(path, stream="a:0", ceiling=0.995, run=2):
     ch = int(rows[idx].get("channels") or 1)
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path),
            "-map", f"0:{stream}", "-f", "f32le", "-acodec", "pcm_f32le", "-"]
-    proc = subprocess.run(cmd, capture_output=True)
-    if proc.returncode != 0 or not proc.stdout:
-        raise RuntimeError("Could not decode the audio: "
-                           + proc.stderr.decode("utf-8", "replace")[:300])
-    import array
-    a = array.array("f")
-    a.frombytes(proc.stdout[:len(proc.stdout) // 4 * 4])
-    total = len(a) // ch
-    per = []
-    worst = 0.0
-    for c in range(ch):
-        hits = runs = longest = cur = 0
-        for i in range(c, len(a), ch):
-            v = a[i]
-            av = -v if v < 0 else v
-            if av > worst:
-                worst = av
-            if av >= ceiling:
-                hits += 1
-                cur += 1
-                if cur == run:
-                    runs += 1
-                if cur > longest:
-                    longest = cur
-            else:
-                cur = 0
-        per.append({"channel": c, "samples_at_ceiling": hits,
-                    "runs_of_%d_or_more" % run: runs,
-                    "longest_run": longest,
-                    "ppm_of_channel": round(1e6 * hits / total, 2) if total else 0})
+    st = _clip_state(ch, ceiling, run)
+    np_path = (_np is not None) if use_numpy is None else bool(use_numpy)
+    if np_path and _np is None:
+        raise RuntimeError("numpy was asked for and is not installed here.")
+    scan = _clip_scan_np if np_path else _clip_scan_py
+    size = max(1, int(block)) * ch * 4
+    with tempfile.TemporaryFile() as err:
+        # stderr goes to a FILE, never a pipe. A pipe nobody drains stops
+        # ffmpeg dead the moment the 64 KB kernel buffer fills, which is the
+        # deadlock prove.py::_walk_digests was carrying; a file cannot fill,
+        # and unlike DEVNULL it can still be read back for the error message.
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
+        rest = b""
+        try:
+            while True:
+                buf = proc.stdout.read(size)
+                if not buf:
+                    break
+                if rest:
+                    buf, rest = rest + buf, b""
+                keep = len(buf) // (ch * 4) * (ch * 4)
+                if keep != len(buf):
+                    buf, rest = buf[:keep], buf[keep:]
+                if buf:
+                    scan(buf, ch, st)
+        finally:
+            proc.stdout.close()
+            rc = proc.wait()
+        if rc != 0 or not st["frames"]:
+            err.seek(0)
+            raise RuntimeError("Could not decode the audio: "
+                               + err.read().decode("utf-8", "replace")[:300])
+    total, worst = st["frames"], st["worst"]
+    per = [{"channel": c, "samples_at_ceiling": cs["hits"],
+            "runs_of_%d_or_more" % run: cs["runs"],
+            "longest_run": cs["longest"],
+            "ppm_of_channel": round(1e6 * cs["hits"] / total, 2) if total else 0}
+           for c, cs in enumerate(st["ch"])]
     hits = sum(x["samples_at_ceiling"] for x in per)
     runs = sum(x["runs_of_%d_or_more" % run] for x in per)
     longest = max([x["longest_run"] for x in per] or [0])
@@ -291,7 +431,9 @@ def clipping(path, stream="a:0", ceiling=0.995, run=2):
         "samples_at_ceiling": hits, "runs": runs, "longest_run": longest,
         "ppm_of_all_samples": round(ppm, 2),
         "per_channel": per,
-        "decode_path": "ffmpeg:f32le (no clipping in the instrument)",
+        "decode_path": "ffmpeg:f32le streamed in %d frame blocks, %s "
+                       "(no clipping in the instrument)"
+                       % (block, "numpy" if np_path else "python"),
         "verdict": verdict,
         "limit": "This counts flat topping. It does not say the sound is WRONG, "
                  "and it says nothing about the loudness: run 'measure' for "

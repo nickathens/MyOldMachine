@@ -163,10 +163,16 @@ ffmpeg and ffprobe are the only hard requirement.
   rather than absorbing it); `timeline` to find a spliced master's joins;
   `seek --frame N` to reach a frame on one, no longer derived but TRIED against
   the file until a candidate returns the right picture, and refusing where none
-  does; `length` to hold a master's frame count against the film it revises,
+  does (a head walk up to frame 300, and past that a rule calibrated on a short
+  head walk with the number proved by the file's own timestamps, because the
+  walk is O(N) and a late frame of a 90 minute 4K master is minutes to hours;
+  `--walk` forces the walk anyway and every answer says which it used);
+  `length` to hold a master's frame count against the film it revises,
   which is the only thing that catches a mux letting the sound decide the
   picture's length; `packets --compare` to prove a cut without decoding; `tags` to walk the colour metadata
-  across every join; `floor` for the generation floor.
+  across every join; `floor` for the generation floor, which pays the seek proof
+  twice because it reads two files and now takes `--walk` and `--no-verify` like
+  everything else instead of refusing on anything it cannot fully prove.
 - **Supers**: `supers.py metrics` reads a font's own numbers with no
   dependencies; `plan` derives the family geometry from two anchors; `safe`
   checks against EBU R95; `contrast --ink --ground` is the demonstration that
@@ -182,7 +188,10 @@ ffmpeg and ffprobe are the only hard requirement.
   measures BS.1770 level gated loudness and refuses to pretend to be a dialogue
   gated meter. `clipping` counts samples on the ceiling and the RUNS of them,
   per channel, which is the only thing that tells a limiter's flat top from a
-  decode overshoot: both read a compliant true peak.
+  decode overshoot: both read a compliant true peak. It STREAMS the decode: the
+  version before 31 Aug 2026 held the whole thing in memory at a measured 14.2
+  bytes a sample, which is about 22 GB on a 90 minute 5.1 master, and this is
+  offered as a master gate.
 - **Resolution**: `upres.py` owns the two questions the header cannot answer.
   `effres FILE` reads the picture's own spectrum and says whether it CARRIES the
   raster it claims, names the source raster an enlargement is consistent with,

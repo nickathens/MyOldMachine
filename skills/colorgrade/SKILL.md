@@ -399,6 +399,21 @@ inverts the measured curve; `correct_timestep=False` reproduces a pre 2026-08-31
 build byte for byte. A plain 2x rebuild asks 0.5 and gets 0.520, which is why
 this only ever bit fractional phase work: retimes, cadence rebuilds, slow motion.
 
+**That curve is a DEFAULT, not a constant, and its middle does not travel.**
+Three shots measured: all three lose about a tenth of a gap at both ends, and
+the band from about 0.6 to 0.85 is the shot's own. Correcting a shot that
+answers differently rescues its ends (0.093 of a gap to 0.004 at wanted phase
+0.10) and spoils its middle (0.005 to 0.059 at 0.75), so it stays on by default
+and it is worth a minute to measure before a fractional phase rebuild that has
+to be exact:
+
+```
+$PY scripts/cgtimestep.py SHOT.mov --pairs 4,5 18,19 30,31
+```
+
+It prints the shot's own curve to pass as `timestep_curve=`, and what each of
+the three choices would cost on that shot: no correction, the default, its own.
+
 **The retime smoother extends the ramp at the ends, it does not repeat the last
 value.** Cumulative travel at a constant speed is a straight line, so padding it
 `mode="edge"` flattens it inside the window at both ends and the smoother

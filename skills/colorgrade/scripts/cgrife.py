@@ -140,9 +140,36 @@ def _yuv_to_rgb_t(planes, x0, x1, H):
 # t=0.5, which the curve delivers almost exactly, which is why it went unseen
 # through every earlier job.
 #
-# The ends of the curve are the network's timestep conditioning and are expected
-# to hold for RIFE 4.25 generally. The middle is gentler and may vary by shot,
-# so re-measure and pass `timestep_curve=` where the phase has to be exact.
+# THIS IS A DEFAULT, NOT A CONSTANT, and the part of it that travels is not the
+# part it would be natural to assume. A second shot was measured the same day,
+# also 24 fps, also RIFE 4.25:
+#
+#     asked                  0.10   0.25   0.50   0.75   0.90
+#     this curve            0.003  0.211  0.520  0.832  1.000
+#     a second real shot    0.007  0.205  0.480  0.755  0.999
+#     a synthetic pattern   0.000  0.177  0.454  0.748  1.000
+#
+# Three responses, one conclusion: the ends are the network and the upper middle
+# is the shot. The 0.832 in the top row is the odd one out, not the rule.
+#
+# The flat ENDS are the network's timestep conditioning and they hold. The
+# middle is the SHOT'S and does not. Applying THIS curve to a shot that answers
+# like the second one, error in the phase delivered:
+#
+#     wanted phase          0.10   0.25   0.50   0.60   0.75   0.90
+#     uncorrected          0.093  0.045  0.020  0.010  0.005  0.099
+#     corrected with this  0.004  0.011  0.039  0.046  0.059  0.067
+#
+# So it rescues the ends, where nearly all of the damage is and where a slot
+# straddling a source frame lands, and it makes the middle worse, by up to about
+# six hundredths of a gap. That is the trade, and it is why this stays on by
+# default rather than being either trusted or dropped: the ends are the fault
+# the correction was built for and they reproduced on both shots.
+#
+# `cgtimestep.py` measures the shot's own curve in about a minute. Run it before
+# any fractional phase rebuild that has to be exact, and pass what it prints as
+# `timestep_curve=`. It prints what each of the three choices would cost on that
+# shot as well, so the decision is measured rather than argued.
 TIMESTEP_CURVE = (
     (0.0, 0.003), (0.1, 0.003), (0.2, 0.147), (0.3, 0.275), (0.4, 0.403),
     (0.5, 0.520), (0.6, 0.639), (0.7, 0.760), (0.8, 0.903), (0.9, 1.000),

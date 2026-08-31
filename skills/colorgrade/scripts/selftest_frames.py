@@ -149,6 +149,50 @@ def main():
           abs(delivered(0.5) - 0.5) < 0.03,
           f"a plain 2x rebuild asks 0.5 and gets {delivered(0.5):.3f}")
 
+    # ---- the curve is a default, not a constant -------------------------
+    # The reviewer's objection to the correction being on by default, turned
+    # into arithmetic: a shot whose real response is NOT the one the curve was
+    # measured on is corrected in the wrong direction, silently, and no gate
+    # anywhere measured the phase a job actually delivered. Both curves here are
+    # real measurements off real shots, 31 Aug 2026, so this needs no media and
+    # no torch. cgtimestep.py is the tool that measures a third.
+    import cgtimestep
+    second = ((0.0, 0.0), (0.10, 0.007), (0.25, 0.205), (0.50, 0.480),
+              (0.75, 0.755), (0.90, 0.999), (1.0, 1.0))
+    body = [(a, g) for a, g in second if 0 < a < 1]
+    raw_w, _ = cgtimestep.cost(body, None)
+    def_w, _ = cgtimestep.cost(body, cgrife.TIMESTEP_CURVE)
+    own_w, _ = cgtimestep.cost(body, second)
+    check("a shot's own measured curve inverts to nothing on that shot",
+          own_w < 1e-6, f"worst {own_w:.6f} of a gap")
+    check("the built in curve does NOT, on a shot that answers differently",
+          def_w > 0.05,
+          f"worst {def_w:.3f} of a gap against {own_w:.3f} for that shot's own")
+
+    def _err(curve, want, model):
+        A = np.array([a for a, _ in curve])
+        G = np.array([g for _, g in curve])
+        ask = want if model is None else cgrife.solve_timestep(want, model)
+        return abs(float(np.interp(ask, A, G)) - want)
+
+    check("correcting a foreign shot rescues its ends",
+          _err(second, 0.10, cgrife.TIMESTEP_CURVE) < 0.3
+          * _err(second, 0.10, None),
+          f"{_err(second, 0.10, None):.3f} of a gap uncorrected at phase 0.10, "
+          f"{_err(second, 0.10, cgrife.TIMESTEP_CURVE):.3f} corrected")
+    check("and spoils its middle, which is why this is measured per shot",
+          _err(second, 0.75, cgrife.TIMESTEP_CURVE) > 5
+          * _err(second, 0.75, None),
+          f"{_err(second, 0.75, None):.3f} of a gap uncorrected at phase 0.75, "
+          f"{_err(second, 0.75, cgrife.TIMESTEP_CURVE):.3f} corrected")
+    check("and cgtimestep says so in words when the default is a net loss",
+          cgtimestep.cost(body, None)[0] < cgtimestep.cost(body, ((0.0, 0.0),
+              (0.5, 0.9), (1.0, 1.0)))[0],
+          f"a curve that is wrong everywhere costs "
+          f"{cgtimestep.cost(body, ((0.0, 0.0), (0.5, 0.9), (1.0, 1.0)))[0]:.3f} "
+          f"against {raw_w:.3f} for no correction at all")
+
+
     # ---- plane handling -------------------------------------------------
     y, u, v = Y.planes(a, spec)
     check("the three planes are the right shape and size",
