@@ -703,6 +703,41 @@ quietly wrong on the next.
 
 ---
 
+## 27. The retime smoother parked the camera at both ends of every shot
+
+**Symptom.** A retime that passed every local instrument was rejected by eye,
+described as the shot stopping and then going faster. The complaint was about
+the ends, and every spike test looks at neighbourhoods.
+
+**Cause.** `cgmotion.plan` smoothed the CUMULATIVE travel curve with a box
+filter padded `mode="edge"`. Cumulative travel at a constant speed is a straight
+RAMP, and repeating its end value into the pad flattens that ramp inside the
+window at both ends, so the smoother reports the camera as nearly stopped there
+and the retime built on it really does slow down. Measured on a pure ramp of
+10 px a frame at window 25:
+
+    mode="edge"          head 5.20    middle 10.00   tail 5.20
+    mode="reflect"       head 0.40    middle 10.00   tail 0.40
+    ramp extension       head 10.00   middle 10.00   tail 10.00
+
+Nearly half the real speed, at exactly the two places a viewer reads as the shot
+hesitating before it goes. On a held frame timeline, which is the shape this is
+actually for, edge padding read 4.80 against a truth of 10.00.
+
+**Fix.** `smooth_cumulative` extends the ramp at the slope the curve already has
+at each end. The slope is measured over the WINDOW'S OWN SPAN and never over one
+step, because on a held frame timeline the first step is often exactly zero and
+a one step slope would silently reproduce `mode="edge"` on precisely the shots
+this exists for.
+
+**The general form.** A padding mode is an assumption about what the signal does
+outside the data, and the right one depends on what the signal IS. `edge` is
+right for a level and wrong for a ramp. Anything cumulative, any position, any
+running total, has a slope at its ends that the pad has to carry. And the fault
+lives only at the ends, so a spike test scored against a neighbourhood cannot
+see it: it needs a check that looks at the first and last gap specifically.
+---
+
 ## Where the rest of the failures live
 
 The picture faults found on a split screen series are in `05_picture.md`: per

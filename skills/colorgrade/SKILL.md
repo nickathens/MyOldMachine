@@ -399,6 +399,14 @@ inverts the measured curve; `correct_timestep=False` reproduces a pre 2026-08-31
 build byte for byte. A plain 2x rebuild asks 0.5 and gets 0.520, which is why
 this only ever bit fractional phase work: retimes, cadence rebuilds, slow motion.
 
+**The retime smoother extends the ramp at the ends, it does not repeat the last
+value.** Cumulative travel at a constant speed is a straight line, so padding it
+`mode="edge"` flattens it inside the window at both ends and the smoother
+reports the camera as nearly stopped there. Measured on a 10 px a frame ramp,
+edge padding gave 5.20 at the head and tail against 10.00 in the middle: nearly
+half the shot's speed, at exactly the two places a viewer reads as hesitation.
+`03_failures.md` entry 27.
+
 `reference/07_frames.md` is the full method.
 
 ### A colour step inside a shot
