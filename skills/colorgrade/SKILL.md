@@ -390,6 +390,15 @@ sharpening off. If the build says RAFT, expect rejections and read them as the
 fallback being honest. `CG_FRAME_ENGINE` forces one; forcing `rife` when it is
 absent is an error rather than a silent downgrade.
 
+**The timestep RIFE delivers is not the one you ask for**, and the tool now
+corrects for that. Measured 2026-08-31: ask 0.1 and the picture moves 0.003, ask
+0.9 and it moves the whole gap. Flat at both ends, so every gap that straddles a
+source frame carries about a third of the ground it should, and NO DUPLICATE
+COUNT OR STALL TEST CAN SEE IT because nothing is repeated. `solve_timestep`
+inverts the measured curve; `correct_timestep=False` reproduces a pre 2026-08-31
+build byte for byte. A plain 2x rebuild asks 0.5 and gets 0.520, which is why
+this only ever bit fractional phase work: retimes, cadence rebuilds, slow motion.
+
 `reference/07_frames.md` is the full method.
 
 ### A colour step inside a shot

@@ -5,7 +5,7 @@ colour, supers, subtitles, sound, mastering, delivery and archive. One ordered
 spine, a gate on every step, proof not description.
 
 Deterministic engines that check themselves, dated standards with their sources
-named, and a failure log of forty two faults that each reached a real film.
+named, and a failure log of fifty one faults that each reached a real film.
 
 **Before using:** read `SCOPE.md`. It never approves, never sends, never
 downscales, and never deletes a master until the survivors are verified.
@@ -68,6 +68,12 @@ than ten gaps that somebody filled.
   files before the render, and the delivered file agrees with the prediction.
 - **When a check cannot separate two candidates, say it bounds but cannot rank**
   and move the ranking to a measurement with real ground.
+- **A recipe is a measurement with a date on it.** Anything of the form "the
+  seek for frame N is", "the flag that means", "the timestep that gives" was
+  read off a machine, and the machine gets updated underneath it. Re-prove it
+  against the machine in front of you, inside the tool, cheaply enough that
+  nobody is tempted to skip it. Failures 46 and 49 are the same fault in two
+  different engines.
 - **Nothing is sent until the send confirms.**
 
 ## The spec gate: ask before you render
@@ -155,8 +161,11 @@ ffmpeg and ffprobe are the only hard requirement.
   and mtime; `predict` to derive the changed frame set from the LAYER files and
   `expect` to hold the delivered file against it (it FAILS on a constant offset
   rather than absorbing it); `timeline` to find a spliced master's joins;
-  `seek --frame N` for the only correct way to reach a frame on one; `packets
-  --compare` to prove a cut without decoding; `tags` to walk the colour metadata
+  `seek --frame N` to reach a frame on one, no longer derived but TRIED against
+  the file until a candidate returns the right picture, and refusing where none
+  does; `length` to hold a master's frame count against the film it revises,
+  which is the only thing that catches a mux letting the sound decide the
+  picture's length; `packets --compare` to prove a cut without decoding; `tags` to walk the colour metadata
   across every join; `floor` for the generation floor.
 - **Supers**: `supers.py metrics` reads a font's own numbers with no
   dependencies; `plan` derives the family geometry from two anchors; `safe`
@@ -169,9 +178,11 @@ ffmpeg and ffprobe are the only hard requirement.
   re-timed or re-labelled), finds collisions with the supers, and prints a burn
   in command with its geometry stated. Nothing in this toolkit could read a
   subtitle before it.
-- **Sound**: `audio.py measure`, `check`, `normalise`, `layout`. It measures
-  BS.1770 level gated loudness and refuses to pretend to be a dialogue gated
-  meter.
+- **Sound**: `audio.py measure`, `check`, `normalise`, `layout`, `clipping`. It
+  measures BS.1770 level gated loudness and refuses to pretend to be a dialogue
+  gated meter. `clipping` counts samples on the ceiling and the RUNS of them,
+  per channel, which is the only thing that tells a limiter's flat top from a
+  decode overshoot: both read a compliant true peak.
 - **Resolution**: `upres.py` owns the two questions the header cannot answer.
   `effres FILE` reads the picture's own spectrum and says whether it CARRIES the
   raster it claims, names the source raster an enlargement is consistent with,
@@ -291,7 +302,7 @@ an explanation when it is run without that environment, so run it with
 - `reference/05_sound.md` R128 read in the primary text, and the platform gates
 - `reference/06_compositing.md` tracking, mattes, premultiply, screen comps
 - `reference/07_delivery.md` masters, splices, proofs, viewing copies, archive
-- `reference/08_failures.md` **THE FAILURE LOG.** Forty two faults, each one
+- `reference/08_failures.md` **THE FAILURE LOG.** Fifty one faults, each one
   measured on a real film and then fixed. Start here when something is wrong.
 - `reference/09_sources.md` every source with its date and verification state
 - `reference/10_resolution.md` effective resolution, boiling, and the routes
@@ -344,6 +355,11 @@ an explanation when it is run without that environment, so run it with
   Calibrated against synthetic ground truth and re-checked on real encodes in
   `selftest.py`; the flow sign convention and the unbounded ratio it hid are
   failures 36 and 37.
+- **Stage 9a (shipped).** The instrument audit: the frame seek re-proved
+  against the decoder instead of derived from a recipe, the mux length gate,
+  and the clipping meter. All three came out of faults that every existing
+  check passed, and each one ships with a self test that requires the OLD
+  behaviour to be measurably wrong as well as the new one to be right.
 - **Stage 10.** OpenTimelineIO for real AAF and FCPXML interchange, on the first
   job that actually has one.
 - **Stage 11.** A house profile per recurring client, supplied by the user from

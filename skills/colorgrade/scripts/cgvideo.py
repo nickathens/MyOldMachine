@@ -142,7 +142,7 @@ def sample_frames(media: Media, width=320, every=1, max_frames=None):
     if every > 1:
         vf = f"select=not(mod(n\\,{every})),{vf}"
     cmd = [FFMPEG, "-v", "error", "-i", media.path, "-vf", vf,
-           "-vsync", "0", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+           "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     frame_bytes = width * h * 3
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                          bufsize=frame_bytes * 4)

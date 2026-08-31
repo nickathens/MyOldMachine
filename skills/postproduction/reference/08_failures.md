@@ -1130,3 +1130,190 @@ surface that reports it has to learn the same word on the same day. UNPROVEN is
 not a pass, and a renderer that prints the declared value into the measured
 slot converts one into the other silently. Grep for every reader of the field
 the new flag qualifies, not only for the callers of the function.
+
+---
+
+## 46. The interpolator did not deliver the phase it was asked for
+
+**Symptom.** A held-frame slow motion was rebuilt at true fractional phases, so
+every slot was a distinct picture and no frame was repeated. It still pulsed,
+gently, at the rate of the original source frames.
+
+**Cause.** The frame interpolator's timestep is not the fraction of the move it
+delivers. Measured on three source pairs of the shot:
+
+    asked  0.0  0.1  0.2  0.3  0.4  0.5  0.6  0.7  0.8  0.9  1.0
+    got   .003 .003 .147 .275 .403 .520 .639 .760 .903 1.00 1.00
+
+Flat at both ends. A slot asked for 0.93 of a pair lands on the next source
+frame outright, and the following slot, asked for 0.29 of the NEXT pair, has
+already travelled 0.27. So every gap that straddles a source frame carries about
+a third of the ground it should.
+
+**Fix.** Measure the curve on the material and invert it: ask for the timestep
+that DELIVERS the phase wanted. On that shot it took the moving panel from three
+effectively frozen gaps and a worst step of 2.17x median to zero and 1.95x. Put
+the inversion in the tool, not in a note: the lesson was written down and the
+tool was still passing the raw value the same hour.
+
+**The general form.** A control input is a request, not a measurement. Before
+building anything on a parameter, measure what the machine does with it across
+its range. **No duplicate count or stall test can see this fault** because
+nothing is repeated and every frame is distinct: only tracked displacement per
+gap shows it.
+
+---
+
+## 47. One flow field across a split screen
+
+**Symptom.** A rebuilt split screen showed one subject's motion bleeding faintly
+into the other subject's half.
+
+**Cause.** A single optical flow field was estimated across the whole frame. The
+two halves are unrelated pictures that happen to share a raster, so the field
+smeared motion across the divider.
+
+**Fix.** Find the divider's own centre in the picture rather than assuming the
+midpoint, warp each panel independently, and composite. On that frame the left
+content ended 9 px before centre, a static gap ran 15 px, and the right panel
+started 7 px after.
+
+**The general form.** A frame is not necessarily one scene. Anything that
+estimates a global field over the picture, flow, exposure, grain, stabilisation,
+needs to be told where the seams are.
+
+---
+
+## 48. The check broke itself and reported the disk empty
+
+**Symptom.** A post-deletion verification loop reported that all eight surviving
+4K masters were zero bytes, which would have meant the cleanup had destroyed
+every live head on the job.
+
+**Cause.** The loop read each manifest line into a shell variable named `path`.
+Under zsh that name is bound to the interpreter's own `PATH`, so the first
+iteration replaced the search path with a filename and every `stat` afterwards
+was not found. The size lookup had a `|| echo 0` fallback, which turned "command
+missing" into "file is empty".
+
+**Fix.** The files were listed directly before the report was believed; they
+were intact. Rename the variable, and call absolute binaries inside verification
+loops so a broken environment fails loudly.
+
+**The general form.** A tolerant fallback inside an instrument converts its own
+breakage into a confident measurement about the thing it was pointed at. Reserve
+fallbacks for values, never for whether the tool ran. When a check reports a
+catastrophe, confirm the catastrophe by another route before acting on it.
+
+---
+
+## 49. The seek that had been one frame late for as long as anyone had looked
+
+**Symptom.** None. That is the entry. Every still pulled by frame number out of
+every master on this machine was the frame after the one it was named for, and
+nothing downstream noticed, because a frame that is one late is still a frame
+and every count still agreed.
+
+**Cause.** Two faults, both measured 2026-08-31 against ffmpeg 9.0.1, on
+numbered clips built so a frame can be identified from its own pixels.
+
+**One: packet order is not display order.** `ffprobe -show_packets` hands them
+over in DECODE order. On any long GOP file with B frames the Nth packet is not
+the Nth picture, so indexing that list by frame number reads a different
+frame's timestamp. Asking a 48 frame h264 file for frame 0 computed a seek that
+landed on frame 2.
+
+**Two: the midpoint rule is a measurement of a decoder, not a rule.** Seeking to
+a time strictly inside frame N now returns frame N+1, on ProRes and on h264
+alike, at every frame tested. On the LAST frame the midpoint lies past the end
+of the picture and the seek returns nothing at all. Measured on the pre-fix
+code, four frames asked for on each of two codecs, eight of eight wrong:
+
+    long GOP    asked 0, 7, 12, 31   ->   got 2, 8, 13, nothing
+    all intra   asked 0, 7, 12, 31   ->   got 1, 8, 13, nothing
+
+**How it survived.** The self test check on it read `start < seek < end`. It
+asserted the ARITHMETIC of the number the function returned and never once
+looked at the picture that came back, so it passed throughout. This is the
+department's own recurring fault wearing a different hat: a true number about a
+different quantity than the one asked.
+
+**Fix.** Timestamps are sorted into display order, and the file reports when
+that mattered. The seek is no longer derived and asserted: candidates are
+generated, each one is TRIED, and the one whose picture matches frame N walked
+from the HEAD of the file is the answer. `verified` says whether that happened,
+and where no candidate lands the tool refuses rather than returning a plausible
+number. `floor` refuses outright on an unverified seek, because a generation
+floor read off the wrong frame is a confident measurement of the wrong picture.
+
+The head walk is the only thing on the machine entitled to say which picture
+frame N is, because it never asks the decoder to jump. It runs at a tiny raster
+and hashes the bytes: that answers "is this the same picture", never "what level
+is it", so it stays an identity instrument and never a colour one.
+
+**The general form.** A recipe that reads off a machine is a measurement with a
+date on it, and the machine gets updated underneath it. Anything of the form
+"the seek for frame N is", "the flag that means", "the timestep that gives" has
+to be re-proved against the machine in front of you, by the tool, every time,
+and cheaply enough that nobody is tempted to skip it. See failure 46, which is
+the same fault in the interpolator.
+
+---
+
+## 50. The sound decided how long the film was
+
+**Symptom.** A master went out one frame shorter than the film the client
+already had, and every check in the build passed.
+
+**Cause.** The renderer muxed finished picture against the delivered master's
+PCM with `-shortest`. The audio was 51.578688 s; 1238 frames at 24 fps is
+51.583333 s. Four milliseconds. `-shortest` cut the PICTURE to the sound and the
+master came out at 1237 frames.
+
+**Why nothing saw it.** Every frame check in that build compares index to index,
+and a film that is one frame short passes all of them on the 1237 frames it does
+have. Nothing in a bit identity proof asks how many frames there are supposed to
+be. The hash taken afterwards is a confident record of a truncated film.
+
+**Fix.** `prove.py length FILE --against PREVIOUS.mov` (or `--frames N`), run
+BEFORE the master is hashed. It strikes on a changed frame count or a changed
+rate, and on a single file it flags the fingerprint the fault leaves: the
+picture ENDING BEFORE ITS OWN SOUND. Reproduced in the self test by muxing one
+clip against one four millisecond short PCM two ways: `-shortest` gives 47
+frames and sits 0.90 of a frame short of its sound, a plain mux gives 48 and
+sits 0.10 of a frame long.
+
+Never use `-shortest` on a mux whose picture is the deliverable. Mux with no
+length flag. If a container really needs equal lengths, pad the audio; never
+trim the picture. A four millisecond mismatch is normal and harmless. Letting it
+decide the picture length is not.
+
+---
+
+## 51. A client's returned sound was our own mix, driven into the ceiling
+
+**Symptom.** A cut came back from a client with what looked like a new mix on
+it, louder and fuller.
+
+**Cause.** It was our mix at a fitted gain of exactly 1.98981, which is
++5.98 dB, clipped flat wherever it hit the top. 65,611 samples sat on the
+ceiling in 26,076 consecutive pairs, against 408 samples and no runs in ours.
+
+**Why the meter said nothing.** A true peak number cannot answer this. A file
+driven into a limiter and flattened reads a perfectly compliant peak, and a
+clean AAC decode overshoots on a few hundred isolated samples and is fine. The
+two are told apart only by whether the samples at the ceiling are CONSECUTIVE.
+No picture check and no duration check can see it either.
+
+**Fix.** `audio.py clipping FILE` counts samples at the ceiling and the RUNS of
+them, per channel and together, decoding to 32 bit float so the instrument
+itself clips nothing. Every channel is counted separately as well as together,
+because a fault living in one channel is invisible in a sum.
+
+**And the reason it was our own mix that mattered.** Fit `theirs = k * ours` on
+the span both files share, EXCLUDING samples already at the ceiling, and the
+divergence point falls out sample accurate. On that job it landed on the same
+frame their picture changed, so the answer was our own audio up to that frame
+and their new tail from it, divided back by the fitted gain. Their tail had zero
+clipped samples. Measure the ceiling before carrying a client's sound into a
+master, and say plainly that their version was louder and why it was not used.

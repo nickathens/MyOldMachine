@@ -108,7 +108,7 @@ def stream(path, a, b, x0=None, x1=None, scale=None, pix="gray"):
     chain = ",".join([f"select='between(n\\,{int(a)}\\,{int(b)})'"] + after)
 
     raw = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", path, "-vf", chain, "-vsync", "0",
+        ["ffmpeg", "-v", "error", "-i", path, "-vf", chain, "-fps_mode", "passthrough",
          "-f", "rawvideo", "-pix_fmt", pix, "-"],
         capture_output=True, check=True).stdout
 

@@ -524,7 +524,7 @@ def survivor_motion(st, survivors, args):
     p = subprocess.run(
         [FFMPEG, "-v", "error", "-i", st["input"],
          "-vf", f"select='between(n\\,{a}\\,{e})',scale={w}:{h}",
-         "-vsync", "0", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
+         "-fps_mode", "passthrough", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
         capture_output=True)
     n = w * h
     have = len(p.stdout) // n
@@ -1218,7 +1218,7 @@ def _approved(args, st, spec, jobs):
 def _one_frame(path, spec, n):
     p = subprocess.run(
         [FFMPEG, "-v", "error", "-i", path, "-vf", f"select=eq(n\\,{n})",
-         "-vsync", "0", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"],
+         "-fps_mode", "passthrough", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"],
         capture_output=True)
     if len(p.stdout) < spec.frame_bytes:
         return None

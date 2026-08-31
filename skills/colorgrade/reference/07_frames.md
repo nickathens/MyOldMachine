@@ -383,6 +383,47 @@ real rotation and zoom, scale 1.0 also won outright on all three scores. It is
 also faster, because the padding unit is 64 over the scale and a smaller unit
 pads less: 0.61s against 1.80s per 4K frame. There is no axis on which 0.5 wins.
 
+**The timestep is not the fraction of the move it delivers, and the tool now
+corrects for that.** Measured 2026-08-31 on RIFE 4.25, by tracking the delivered
+displacement against the source pair on three pairs of a real 24 fps shot:
+
+    asked  0.0  0.1  0.2  0.3  0.4  0.5  0.6  0.7  0.8  0.9  1.0
+    got   .003 .003 .147 .275 .403 .520 .639 .760 .903 1.00 1.00
+
+Flat at both ends. Ask for 0.93 of a pair and the frame lands on the next source
+frame outright; the following slot, asked for 0.29 of the NEXT pair, has already
+travelled 0.27. Every gap that straddles a source frame therefore carries about
+a third of the ground it should, which reads as a gentle pulse at the source
+cadence. NO DUPLICATE COUNT AND NO STALL TEST CAN SEE IT, because nothing is
+repeated and every frame is distinct.
+
+`cgrife.solve_timestep` inverts this curve, so `flow_mask` and `warp_planes`
+take the phase you WANT and ask the network for whatever delivers it. It is on
+by default; `correct_timestep=False` reproduces a build made before 2026-08-31
+byte for byte. THE EXACT ENDPOINTS ARE PINNED: phase 0 still asks for 0 and
+phase 1 for 1, so a slot landing on a source frame is conditioned the way the
+network conditions its own ends. That is free, because the curve is flat there
+and 0.0 and 0.1 deliver the same movement, and it is worth having: without the
+pin, a rebuild at phase 1 sat 0.0172 code levels off its own source frame
+instead of 0.0070. On the shot it was found on, the correction took the moving panel
+from three effectively frozen gaps and a worst step of 2.17x the median to zero
+and 1.95x.
+
+Two things follow. **A plain 2x rebuild was never much affected**: it asks for
+0.5 and gets 0.520, which is why this hid through every earlier job. It bites
+FRACTIONAL PHASE work, which is retimes, cadence rebuilds and slow motion.
+**And the ends of the curve are the network's own timestep conditioning**, so
+they are expected to hold for RIFE 4.25 generally, while the middle is gentler
+and may vary by shot. Where the phase has to be exact, re-measure on the
+material and pass `timestep_curve=`.
+
+**A split screen is two flow fields, never one.** `warp_planes` takes a column
+band for exactly this reason. Two unrelated pictures sharing one raster will
+have one subject's motion dragged into the other's half by a single global
+field. Find the divider's own centre in the picture rather than assuming the
+midpoint: on one real frame the left content ended 9 px before centre, a static
+gap ran 15 px, and the right panel started 7 px after.
+
 `CG_FRAME_ENGINE` forces `rife` or `raft`. Forcing `rife` when it is not
 installed is an error rather than a silent downgrade, so that a delivery built
 by the fallback can never be mistaken for one built properly.

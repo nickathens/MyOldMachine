@@ -116,8 +116,86 @@ def _yuv_to_rgb_t(planes, x0, x1, H):
     return torch.from_numpy(rgb).permute(2, 0, 1)[None].to(device())
 
 
-def flow_mask(i0, i1, t, scale=SCALE):
-    """RIFE's own flow and fusion mask, at full resolution."""
+# RIFE's timestep is not the fraction of the move it delivers.
+#
+# Measured 31 Aug 2026 on RIFE 4.25, three source pairs of a real 24 fps shot,
+# by tracking the delivered displacement against the source pair it was built
+# from:
+#
+#     asked  0.0  0.1  0.2  0.3  0.4  0.5  0.6  0.7  0.8  0.9  1.0
+#     got   .003 .003 .147 .275 .403 .520 .639 .760 .903 1.00 1.00
+#
+# Flat at both ends. A slot asked for 0.93 of a pair lands on the NEXT source
+# frame outright, and the following slot, asked for 0.29 of the next pair, has
+# already travelled 0.27. So every gap that straddles a source frame carries
+# about a third of the ground it should.
+#
+# NO DUPLICATE COUNT OR STALL TEST CAN SEE THIS. Nothing is repeated, every
+# frame is distinct, and every one is wrong by a fraction. It shows only in
+# tracked displacement per gap. On that shot the correction took the moving
+# panel from three effectively frozen gaps and a worst step of 2.17x the median
+# to zero frozen gaps and 1.95x.
+#
+# This only bites a FRACTIONAL PHASE rebuild. A plain 2x interpolation asks for
+# t=0.5, which the curve delivers almost exactly, which is why it went unseen
+# through every earlier job.
+#
+# The ends of the curve are the network's timestep conditioning and are expected
+# to hold for RIFE 4.25 generally. The middle is gentler and may vary by shot,
+# so re-measure and pass `timestep_curve=` where the phase has to be exact.
+TIMESTEP_CURVE = (
+    (0.0, 0.003), (0.1, 0.003), (0.2, 0.147), (0.3, 0.275), (0.4, 0.403),
+    (0.5, 0.520), (0.6, 0.639), (0.7, 0.760), (0.8, 0.903), (0.9, 1.000),
+    (1.0, 1.000),
+)
+
+
+def solve_timestep(t, curve=TIMESTEP_CURVE):
+    """The timestep to ASK for so that RIFE DELIVERS phase `t`.
+
+    Inverts the measured curve over its strictly increasing part. Outside that
+    part the curve is flat and carries no information, so the nearest end of the
+    usable range is returned: asking harder than 0.9 buys nothing at all.
+
+    THE EXACT ENDPOINTS ARE PINNED and pass through untouched. Phase 0 asks for
+    0 and phase 1 asks for 1, because a slot that lands exactly on a source
+    frame should be conditioned the way the network conditions its own
+    endpoints. This costs nothing in delivered motion, which is the whole
+    reason it is safe: the curve gives 0.003 for both 0.0 and 0.1, and 1.000 for
+    both 0.9 and 1.0, so the phase that comes back is the same either way.
+    Measured on a real pair, dropping the pin cost 0.0070 to 0.0172 code levels
+    against the source frame at t=1. Small, and there is no reason to pay it.
+    """
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    asked = [a for a, _ in curve]
+    got = [g for _, g in curve]
+    lo = 0
+    while lo + 1 < len(got) and got[lo + 1] <= got[lo]:
+        lo += 1
+    hi = len(got) - 1
+    while hi - 1 > lo and got[hi - 1] >= got[hi]:
+        hi -= 1
+    xs, ys = got[lo:hi + 1], asked[lo:hi + 1]
+    if t <= xs[0]:
+        return ys[0]
+    if t >= xs[-1]:
+        return ys[-1]
+    return float(np.interp(t, xs, ys))
+
+
+def flow_mask(i0, i1, t, scale=SCALE, correct_timestep=True,
+              timestep_curve=TIMESTEP_CURVE):
+    """RIFE's own flow and fusion mask, at full resolution.
+
+    `t` is the phase WANTED, not the number handed to the network. With
+    `correct_timestep` the measured curve above is inverted first, which is what
+    makes a fractional phase rebuild land where it was asked to. Pass
+    `correct_timestep=False` to reproduce a build made before 31 Aug 2026 byte
+    for byte.
+    """
     import torch
     net = _load()
     F = _F
@@ -128,7 +206,9 @@ def flow_mask(i0, i1, t, scale=SCALE):
     x = torch.cat((pad(i0), pad(i1)), 1).to(device())
     sl = [16 / scale, 8 / scale, 4 / scale, 2 / scale, 1 / scale]
     with torch.no_grad():
-        flow_l, mask_t, _ = net(x, timestep=float(t), scale_list=sl)
+        ts = (solve_timestep(float(t), timestep_curve)
+              if correct_timestep else float(t))
+        flow_l, mask_t, _ = net(x, timestep=ts, scale_list=sl)
     return flow_l[4][:, :, :h, :w], torch.sigmoid(mask_t)[:, :, :h, :w]
 
 
@@ -150,14 +230,25 @@ def _warp(plane, flow, full_w, H, sample="bicubic"):
                          padding_mode="border", align_corners=True)
 
 
-def warp_planes(pa, pb, t, x0, x1, H, scale=SCALE, sample="bicubic"):
-    """The rebuilt y, u and v for columns [x0, x1), as uint8 arrays."""
+def warp_planes(pa, pb, t, x0, x1, H, scale=SCALE, sample="bicubic",
+                correct_timestep=True, timestep_curve=TIMESTEP_CURVE):
+    """The rebuilt y, u and v for columns [x0, x1), as uint8 arrays.
+
+    `t` is the phase WANTED between pa and pb. See `solve_timestep`.
+
+    `x0` and `x1` are a COLUMN BAND, and that is not a convenience. A split
+    screen is two unrelated pictures sharing one raster, so one flow field
+    estimated across the whole frame drags one panel's motion into the other.
+    Call this once per panel with that panel's own columns.
+    """
     import torch
     _load()
     F = _F
     ra = _yuv_to_rgb_t(pa, x0, x1, H)
     rb = _yuv_to_rgb_t(pb, x0, x1, H)
-    flow, mask = flow_mask(ra, rb, t, scale=scale)
+    flow, mask = flow_mask(ra, rb, t, scale=scale,
+                           correct_timestep=correct_timestep,
+                           timestep_curve=timestep_curve)
     pw = x1 - x0
     out = []
     for i in range(3):

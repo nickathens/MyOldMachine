@@ -9,7 +9,9 @@ folder, and it is the reason this skill exists. Its rules are not style:
   A threshold of zero measures the codec, not the film: read every difference
   against the frame's own generation floor.
   A spliced master's timeline is broken at its joins, so never seek by
-  arithmetic; read the file's own packet timestamps.
+  arithmetic; read the file's own packet timestamps, and then PROVE the seek
+  landed, because packet order is not display order and the decoder's own
+  behaviour has changed under us.
   A new check must pass on an already approved file before it is believed.
 
 Commands:
@@ -20,7 +22,8 @@ Commands:
   predict    derive the predicted changed frames from the LAYER files
   expect     hold a found set against a predicted set
   timeline   packet timestamps, joins, and whether the timeline is uniform
-  seek       the correct -ss for frame N, read off this file's own packets
+  seek       the -ss for frame N, tried against the file until it lands
+  length     did the picture survive the mux, or did the sound cut it
   packets    packet size sequence, and prove a cut without decoding
   tags       walk the colour metadata across the whole file
   floor      the generation floor: what a re-encode costs where nothing changed
@@ -33,6 +36,7 @@ Usage:
   python prove.py expect --predicted 233,234,235 --found found.json
   python prove.py timeline MASTER.mov
   python prove.py seek MASTER.mov --frame 795
+  python prove.py length v9.mov --against v8.mov
   python prove.py packets MASTER.mov --compare SRC.mov --at 96
   python prove.py tags MASTER.mov
   python prove.py floor delivered.mov revised.mov --frame 795 --box 0,0,400,200
@@ -311,37 +315,298 @@ def timeline(path, stream="v:0"):
     }
 
 
-def seek_for_frame(path, frame, stream="v:0"):
-    """The -ss that lands strictly inside frame N, read off this file's packets.
+def _probe_raster(path, stream="v:0"):
+    """Width and height, for building a small identity raster."""
+    d = C.ffprobe_json(path, ["-select_streams", stream, "-show_entries",
+                              "stream=width,height", "-of", "json"])
+    st = (d.get("streams") or [{}])[0]
+    return int(st.get("width") or 0), int(st.get("height") or 0)
 
-    Every recipe of the form (N + a half) / fps is a measurement of the file it
-    was written on, not a rule. On one master a recipe that had worked on every
-    earlier film landed on N+1 and the splice came out two frames short; the
-    obvious repair landed inside N-1 and every copied frame was a frame early,
-    with the frame COUNT correct both times.
+
+def _walk_digests(path, upto, probe_w=96, stream="v:0"):
+    """Digests of frames 0..upto, walked from the HEAD with no seek at all.
+
+    This is the only thing on the machine entitled to say which picture frame N
+    is, because it never asks the decoder to jump. The raster is tiny and the
+    digest is of the scaled bytes: this answers "is this the same picture", not
+    "what level is it", so it is an identity instrument and never a colour one.
+    """
+    import hashlib
+    W, H = _probe_raster(path, stream)
+    if not W or not H:
+        raise RuntimeError("Could not read the picture size.")
+    w = min(probe_w, W)
+    h = max(2, int(round(H * w / W)) // 2 * 2)
+    per = w * h * 3
+    C.need("ffmpeg")
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path),
+           "-vf", f"scale={w}:{h}:flags=bilinear",
+           "-frames:v", str(upto + 1),
+           "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            bufsize=per * 4)
+    out = []
+    try:
+        while len(out) <= upto:
+            buf = proc.stdout.read(per)
+            if not buf or len(buf) < per:
+                break
+            out.append(hashlib.sha256(buf).hexdigest())
+    finally:
+        proc.stdout.close()
+        proc.wait()
+    return out, (w, h)
+
+
+def _digest_at_seek(path, seconds, probe_wh, stream="v:0"):
+    """The digest of whatever ONE frame a seek to `seconds` actually returns."""
+    import hashlib
+    w, h = probe_wh
+    per = w * h * 3
+    C.need("ffmpeg")
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{seconds:.9f}",
+           "-i", str(path), "-vf", f"scale={w}:{h}:flags=bilinear",
+           "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    buf = subprocess.run(cmd, capture_output=True).stdout[:per]
+    if len(buf) < per:
+        return None
+    return hashlib.sha256(buf).hexdigest()
+
+
+def length(path, expect_frames=None, against=None, stream="v:0"):
+    """Did the picture survive the mux, or did the sound decide its length?
+
+    The fault this exists for, measured on a real delivery 2026-08-28. A supers
+    renderer muxed finished picture against the master's PCM with `-shortest`.
+    The audio was 51.578688 s; 1238 frames at 24 fps is 51.583333 s. Four
+    milliseconds. `-shortest` cut the PICTURE to the sound and the master went
+    out at 1237 frames, one frame shorter than the film the client already had.
+
+    Nothing downstream saw it. Every frame check in that build compared index to
+    index, and a film that is one frame short passes all of them on the 1237
+    frames it does have. A hash of it is a confident record of a truncated film.
+
+    So the count is asserted BEFORE anything else runs, either against a number
+    you name or against the film this one is a revision of. A four millisecond
+    picture and sound mismatch is normal and harmless; letting it decide the
+    picture length is not. Mux with no length flag and pad the audio if a
+    container really needs them equal. Never trim the picture.
+    """
+    def read(p):
+        d = C.ffprobe_json(p, ["-show_entries",
+                               "stream=codec_type,nb_frames,r_frame_rate,duration,"
+                               "sample_rate,channels:format=duration",
+                               "-of", "json"])
+        v = a = None
+        for st in d.get("streams") or []:
+            if st.get("codec_type") == "video" and v is None:
+                v = st
+            if st.get("codec_type") == "audio" and a is None:
+                a = st
+        n = (v or {}).get("nb_frames")
+        if n and str(n).isdigit():
+            n = int(n)
+        elif v:
+            # Not every container carries nb_frames. Counting this file's own
+            # video packets is the fallback, and it is the same number the
+            # timeline command works from.
+            n = len(packets(p, stream)["packets"])
+        else:
+            n = None
+        r = C.rate((v or {}).get("r_frame_rate", "0/1")) if v else None
+        return {
+            "file": os.path.abspath(p),
+            "frames": n,
+            "rate": str(r) if r else None,
+            "picture_s": float(n / r) if n and r else None,
+            "audio_s": float((a or {}).get("duration") or 0) or None,
+            "container_s": float((d.get("format") or {}).get("duration") or 0) or None,
+        }
+
+    me = read(path)
+    out = dict(me)
+    strikes, notes = [], []
+    if me["frames"] is None:
+        raise RuntimeError("No video stream, so there is no picture length to prove.")
+
+    if me["audio_s"] and me["picture_s"]:
+        d = me["picture_s"] - me["audio_s"]
+        out["picture_minus_audio_s"] = round(d, 6)
+        out["picture_minus_audio_frames"] = round(d * float(C.rate(me["rate"])), 4)
+        # The signature: the picture ends where the sound does, to well inside a
+        # frame, AND the sound was the shorter of the two. That is what -shortest
+        # leaves behind.
+        one_frame = 1.0 / float(C.rate(me["rate"]))
+        if d < -one_frame * 0.02:
+            notes.append(
+                f"The picture ENDS BEFORE THE SOUND, by {-d * 1000:.1f} ms "
+                f"({-d / one_frame:.2f} of a frame). That is the wrong way round "
+                "for a deliverable and it is what -shortest leaves behind: the "
+                "sound decided the picture length. Measured on the real fault, "
+                "the picture came back 0.90 of a frame short of its own sound "
+                "where a correct mux of the same two streams sat 0.10 of a frame "
+                "long. It is not proof on its own, so hold the frame count "
+                "against the film this replaces.")
+
+    if against:
+        ref = read(against)
+        out["against"] = ref
+        if ref["frames"] is not None and ref["frames"] != me["frames"]:
+            strikes.append(
+                f"FRAME COUNT CHANGED: {me['frames']} against {ref['frames']} in "
+                f"{os.path.basename(against)}, a difference of "
+                f"{me['frames'] - ref['frames']:+d} frame(s). If this revision "
+                "was not meant to change the length, the film is truncated and "
+                "every index to index check will still pass on it.")
+        if ref["rate"] and me["rate"] and ref["rate"] != me["rate"]:
+            strikes.append(f"RATE CHANGED: {me['rate']} against {ref['rate']}.")
+
+    if expect_frames is not None and me["frames"] != expect_frames:
+        strikes.append(
+            f"FRAME COUNT IS NOT WHAT WAS ASKED FOR: {me['frames']} against "
+            f"{expect_frames}, a difference of {me['frames'] - expect_frames:+d}.")
+
+    out["strikes"] = strikes
+    out["notes"] = notes
+    out["verdict"] = (
+        "; ".join(strikes) if strikes else
+        (f"{me['frames']} frames at {me['rate']} fps. "
+         + ("Length agrees with everything it was held against."
+            if (against or expect_frames is not None) else
+            "NOTHING WAS COMPARED. A frame count on its own proves nothing: "
+            "pass --frames or --against so this can fail.")))
+    out["ok"] = not strikes
+    return out
+
+
+def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96):
+    """The -ss that really lands on frame N, CALIBRATED against this file.
+
+    Two faults, both measured on this machine on 2026-08-31, ffmpeg 9.0.1:
+
+    ONE. Packet order is not display order. `ffprobe -show_packets` hands them
+    over in decode order, so on any long GOP file with B frames the Nth packet
+    is not the Nth picture. Indexing that list by frame number was reading a
+    different frame's timestamp entirely. Proved on a 48 frame h264 file whose
+    packet order and display order disagreed, where the old code asked for
+    frame 12 and computed a seek that landed on frame 14. Sorting the
+    timestamps fixes it, and `pts_in_packet_order` below reports when it
+    mattered.
+
+    TWO. The midpoint rule is a measurement of a decoder, not a rule. Seeking
+    to a time strictly inside frame N now returns frame N+1, on ProRes and on
+    h264 alike, at every frame tested, and on the LAST frame it returns nothing
+    at all because the midpoint lies past the end of the picture. Every still
+    grabbed with the old recipe is one frame late, and the frame count is
+    correct both times, so nothing downstream noticed.
+
+    So the seek is no longer derived and asserted. Candidates are generated,
+    each one is TRIED, and the one whose picture matches frame N walked from the
+    head of the file is the answer. `verified` says whether that happened.
+    Pass `verify=False` only when the walk is too expensive to afford, and read
+    the result as UNPROVEN when you do.
     """
     info = packets(path, stream)
     pk, tb = info["packets"], info["time_base"]
-    ptss = [int(p["pts"]) for p in pk if p.get("pts") not in (None, "N/A")]
+    raw = [int(p["pts"]) for p in pk if p.get("pts") not in (None, "N/A")]
+    if not raw:
+        raise RuntimeError("No packet timestamps. Wrong stream, or an empty file.")
+    ptss = sorted(raw)
+    reordered = raw != ptss
     if frame < 0 or frame >= len(ptss):
         raise ValueError(f"Frame {frame} is outside this file's {len(ptss)} packets.")
+    durs = [int(p["duration"]) for p in pk if p.get("duration") not in (None, "N/A")]
+    modal = max(set(durs), key=durs.count) if durs else 1
     this = ptss[frame]
-    nxt = ptss[frame + 1] if frame + 1 < len(ptss) else this + int(
-        pk[frame].get("duration") or 1)
-    midpoint = (this + nxt) / 2
-    return {
+    nxt = ptss[frame + 1] if frame + 1 < len(ptss) else this + modal
+    span = nxt - this
+
+    # Ordered by what was measured to work, not by what reads well. The frame's
+    # own start is first because that is what lands on this decoder today; the
+    # old midpoint is kept as a candidate so a decoder that goes back to the old
+    # behaviour is still served, and so the result can say which one it was.
+    cands = [
+        ("frame start", float(this * tb)),
+        ("a quarter frame before the start", float(max(0, this - span / 4) * tb)),
+        ("midpoint of the frame (the pre 2026-08-31 rule)", float((this + nxt) / 2 * tb)),
+        ("midpoint of the frame before", float((ptss[max(0, frame - 1)] + this) / 2 * tb)),
+    ]
+
+    out = {
         "file": info["file"], "frame": frame,
         "pts_ticks": this, "next_pts_ticks": nxt,
         "time_base": str(tb),
-        "seek_seconds": float(midpoint * tb),
         "frame_start_s": float(this * tb),
         "frame_end_s": float(nxt * tb),
-        "ffmpeg": f"ffmpeg -ss {float(midpoint * tb):.9f} -i {info['file']} "
-                  f"-frames:v 1 -c copy out.mov",
-        "note": "Every ProRes and DNx frame is a keyframe, so a copy starting at "
-                "this instant starts on frame N whatever the timeline does. "
-                "On a long GOP file -ss before -i is not frame exact.",
+        "pts_in_packet_order": not reordered,
+        "frames_in_file": len(ptss),
     }
+    if reordered:
+        out["packet_order_warning"] = (
+            "Packet order is NOT display order on this file, so any tool that "
+            "indexes -show_packets output by frame number is reading the wrong "
+            "picture's timestamp. These are sorted.")
+
+    if not verify:
+        name, sec = cands[0]
+        out.update({
+            "seek_seconds": sec, "landed_on": name, "verified": False,
+            "verdict": "UNPROVEN: verification was switched off. This seek was "
+                       "derived, not measured, and a derived seek has been "
+                       "wrong on this machine.",
+        })
+    else:
+        truth, wh = _walk_digests(path, min(frame + 1, len(ptss) - 1), probe_w, stream)
+        if len(truth) <= frame:
+            raise RuntimeError(
+                f"Walked only {len(truth)} frames from the head, so frame "
+                f"{frame} could not be identified. The file is shorter than "
+                "its packet count claims.")
+        want = truth[frame]
+        neighbours = {i: truth[i] for i in (frame - 1, frame, frame + 1)
+                      if 0 <= i < len(truth)}
+        ambiguous = len(set(neighbours.values())) < len(neighbours)
+        tried = []
+        hit = None
+        for name, sec in cands:
+            got = _digest_at_seek(path, sec, wh, stream)
+            landed = ([i for i, d in enumerate(truth) if d == got] or [None])[0] \
+                if got else None
+            tried.append({"candidate": name, "seek_seconds": sec,
+                          "returned_a_frame": got is not None,
+                          "matches_frame": landed, "correct": got == want})
+            if got == want and hit is None:
+                hit = (name, sec)
+        out["candidates_tried"] = tried
+        out["neighbours_distinguishable"] = not ambiguous
+        if hit:
+            out.update({
+                "seek_seconds": hit[1], "landed_on": hit[0], "verified": True,
+                "verdict": (f"Verified against a head walk: this seek returns "
+                            f"frame {frame}."
+                            + ("" if not ambiguous else
+                               " NOTE: frame {0} and at least one neighbour are the"
+                               " same picture here, so content cannot tell them"
+                               " apart. The seek is right about the PICTURE and"
+                               " unproven about the LABEL.".format(frame))),
+            })
+        else:
+            out.update({
+                "seek_seconds": None, "landed_on": None, "verified": False,
+                "verdict": (f"UNPROVEN: none of the {len(cands)} candidate seeks "
+                            f"returned frame {frame}. Do not seek on this file. "
+                            "Walk it from the head, or cut on packet indices "
+                            "with -f segment -segment_frames."),
+            })
+
+    sec = out.get("seek_seconds")
+    out["ffmpeg"] = (f"ffmpeg -ss {sec:.9f} -i {info['file']} -frames:v 1 "
+                     "-c copy out.mov" if sec is not None else None)
+    out["note"] = ("Every ProRes and DNx frame is a keyframe, so a copy starting "
+                   "at this instant starts on frame N whatever the timeline "
+                   "does. On a long GOP file -ss before -i is not frame exact, "
+                   "which is why this is verified rather than derived.")
+    return out
 
 
 def prove_cut(piece, source, at, stream="v:0"):
@@ -480,6 +745,12 @@ def generation_floor(a, b, frame, box=None, stream="v:0"):
     planes = []
     for path in (a, b):
         s = seek_for_frame(path, frame, stream)
+        if not s.get("verified") or s.get("seek_seconds") is None:
+            raise RuntimeError(
+                f"Cannot reach frame {frame} of {path} by seeking: "
+                + s["verdict"] + " A floor read off the wrong frame is a "
+                "confident number about the wrong picture, so this refuses "
+                "rather than returning one.")
         crop = []
         if box:
             x, y, w, h = box
@@ -569,9 +840,19 @@ def main(argv=None):
     tl.add_argument("file")
     C.add_json(tl)
 
-    sk = sub.add_parser("seek", help="The correct -ss for a frame")
+    ln = sub.add_parser("length", help="Frame count, and whether the sound cut it")
+    ln.add_argument("file")
+    ln.add_argument("--frames", type=int, help="The count this file must have")
+    ln.add_argument("--against", help="The film this one is a revision of")
+    C.add_json(ln)
+
+    sk = sub.add_parser("seek", help="The correct -ss for a frame, verified")
     sk.add_argument("file")
     sk.add_argument("--frame", type=int, required=True)
+    sk.add_argument("--no-verify", action="store_true",
+                    help="Skip the head walk that proves the seek landed. The "
+                         "answer then comes back UNPROVEN, because a derived "
+                         "seek has been wrong on this machine.")
     C.add_json(sk)
 
     pk = sub.add_parser("packets", help="Packet sizes, and prove a cut")
@@ -643,14 +924,40 @@ def main(argv=None):
             print(f"  all frames are keyframes: {r['all_keyframes']}"),
             print(f"  picture span {r['picture_span_s']:.3f}s"),
             print(f"\n  {r['verdict']}")))
-    if args.cmd == "seek":
-        res = seek_for_frame(args.file, args.frame)
+    if args.cmd == "length":
+        res = length(args.file, args.frames, args.against)
         return C.emit(res, args.json, lambda r: (
-            print(f"Frame {r['frame']} runs {r['frame_start_s']:.6f}s to "
-                  f"{r['frame_end_s']:.6f}s (pts {r['pts_ticks']})."),
-            print(f"  seek to {r['seek_seconds']:.9f}"),
-            print(f"  {r['ffmpeg']}"),
-            print(f"  {r['note']}")))
+            print(f"  {r['frames']} frames at {r['rate']} fps "
+                  f"= {r['picture_s']:.6f}s of picture"),
+            print(f"  sound {r['audio_s']:.6f}s" if r["audio_s"] else
+                  "  no sound in this file"),
+            print(f"  picture minus sound {r['picture_minus_audio_s']:+.6f}s "
+                  f"({r['picture_minus_audio_frames']:+.4f} frames)"
+                  if r.get("picture_minus_audio_s") is not None else ""),
+            [print(f"  {n}") for n in r["notes"]],
+            print(f"\n  {'OK  ' if r['ok'] else 'STRIKE  '}{r['verdict']}")))
+    if args.cmd == "seek":
+        res = seek_for_frame(args.file, args.frame, verify=not args.no_verify)
+
+        def _show(r):
+            print(f"Frame {r['frame']} of {r['frames_in_file']} runs "
+                  f"{r['frame_start_s']:.6f}s to {r['frame_end_s']:.6f}s "
+                  f"(pts {r['pts_ticks']}).")
+            if not r["pts_in_packet_order"]:
+                print(f"  {r['packet_order_warning']}")
+            for t in r.get("candidates_tried", []):
+                landed = ("nothing" if t["matches_frame"] is None
+                          else f"frame {t['matches_frame']}")
+                print(f"  [{'x' if t['correct'] else ' '}] {t['candidate']}"
+                      f"  ->  {landed}")
+            if r["seek_seconds"] is not None:
+                print(f"  seek to {r['seek_seconds']:.9f}   ({r['landed_on']})")
+                print(f"  {r['ffmpeg']}")
+            if r.get("neighbours_distinguishable") is False:
+                print("  the neighbouring frames are the same picture here")
+            print(f"  {r['verdict']}")
+            print(f"  {r['note']}")
+        return C.emit(res, args.json, _show)
     if args.cmd == "packets":
         if args.compare is not None:
             if args.at is None:

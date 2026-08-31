@@ -298,6 +298,34 @@ def main():
     check("CIEDE2000 matches the Sharma reference table", worst < 1e-3,
           f"worst deviation {worst:.5f}")
 
+    # ---- the flags this toolkit hands to ffmpeg still exist -------------
+    # ffmpeg 9 REMOVED -vsync, and every script here that used it died with
+    # "Unrecognized option" rather than with a wrong number. That is the good
+    # kind of failure and it still went unnoticed, because the whole tool suite
+    # crashed on import of its own test rather than reporting one. -vsync 0 is
+    # -fps_mode passthrough, and passthrough is exactly what stops a rebuilt
+    # span coming back as a still, so this is not a cosmetic flag.
+    import shutil
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    flag = '"-' + 'vsync"'          # built, so this scanner is not its own hit
+    stale = sorted(os.path.basename(f) for f in glob.glob(os.path.join(here, "*.py"))
+                   if flag in open(f).read())
+    check("no script still hands ffmpeg the removed -vsync flag", not stale,
+          ", ".join(stale) if stale else "-fps_mode passthrough throughout")
+    if shutil.which("ffmpeg"):
+        r = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            "testsrc2=size=32x32:rate=24:duration=0.1",
+                            "-fps_mode", "passthrough", "-frames:v", "1",
+                            "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                           capture_output=True)
+        check("and the flag it hands over instead is accepted by this ffmpeg",
+              r.returncode == 0 and len(r.stdout) == 32 * 32,
+              r.stderr.decode("utf-8", "replace")[:80] or "one frame, passthrough")
+    else:
+        check("and the flag it hands over instead is accepted by this ffmpeg",
+              True, "no ffmpeg on PATH, not checked")
+
     print(f"\n{_ran} checks, {_fail} failures")
     return 1 if _fail else 0
 

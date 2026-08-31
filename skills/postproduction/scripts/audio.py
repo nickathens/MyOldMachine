@@ -17,12 +17,15 @@ number has to come from a dialogue gated meter.
   check      against a profile's target, with the gate checked too
   normalise  two pass loudnorm to a target, by constant gain where possible
   layout     channel count, order and sample rate against the delivery
+  clipping   samples on the ceiling, and the RUNS of them, which a true peak
+             number cannot see
 
 Usage:
   python audio.py measure FILM.mov
   python audio.py check FILM.mov --profile broadcast_hd_r128
   python audio.py normalise FILM.mov --profile broadcast_hd_r128 --out OUT.mov
   python audio.py layout FILM.mov --profile broadcast_hd_r128
+  python audio.py clipping RETURNED_CUT.mov
   (add --json for structured output)
 """
 from __future__ import annotations
@@ -201,6 +204,101 @@ def normalise(path, profile, out, stream="a:0", linear=True):
                        "re-checked too because the container was rewritten."}
 
 
+def clipping(path, stream="a:0", ceiling=0.995, run=2):
+    """Count samples on the ceiling, and the RUNS of them, which is the tell.
+
+    A true peak number cannot answer this. A file driven into a limiter and
+    flattened reads a perfectly compliant peak and is destroyed; a clean AAC
+    decode overshoots 0 dBFS on a few hundred isolated samples and is fine. The
+    two are told apart by whether the samples at the ceiling are CONSECUTIVE.
+
+    Measured on a real returned cut, 2026-08-31: a client's re-export of our own
+    mix, at a fitted gain of exactly 1.98981 (+5.98 dB), carried 65,611 samples
+    on the ceiling in 26,076 consecutive pairs. Our own master, the same
+    programme, carried 408 samples on the ceiling and no runs worth the name.
+    Two orders of magnitude, on a measurement no picture check and no duration
+    check can see, and both files pass a true peak gate.
+
+    `ceiling` is a fraction of full scale, `run` the shortest run counted. The
+    decode is 32 bit float so nothing is clipped by the instrument itself, and
+    every channel is counted separately as well as together, because a fault
+    that lives in one channel is invisible in a sum.
+    """
+    C.need("ffmpeg")
+    idx = int(stream.split(":")[-1]) if ":" in stream else 0
+    rows = layout(path)["streams"]
+    if idx >= len(rows):
+        raise ValueError(f"This file has {len(rows)} audio stream(s), not {idx + 1}.")
+    ch = int(rows[idx].get("channels") or 1)
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path),
+           "-map", f"0:{stream}", "-f", "f32le", "-acodec", "pcm_f32le", "-"]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError("Could not decode the audio: "
+                           + proc.stderr.decode("utf-8", "replace")[:300])
+    import array
+    a = array.array("f")
+    a.frombytes(proc.stdout[:len(proc.stdout) // 4 * 4])
+    total = len(a) // ch
+    per = []
+    worst = 0.0
+    for c in range(ch):
+        hits = runs = longest = cur = 0
+        for i in range(c, len(a), ch):
+            v = a[i]
+            av = -v if v < 0 else v
+            if av > worst:
+                worst = av
+            if av >= ceiling:
+                hits += 1
+                cur += 1
+                if cur == run:
+                    runs += 1
+                if cur > longest:
+                    longest = cur
+            else:
+                cur = 0
+        per.append({"channel": c, "samples_at_ceiling": hits,
+                    "runs_of_%d_or_more" % run: runs,
+                    "longest_run": longest,
+                    "ppm_of_channel": round(1e6 * hits / total, 2) if total else 0})
+    hits = sum(x["samples_at_ceiling"] for x in per)
+    runs = sum(x["runs_of_%d_or_more" % run] for x in per)
+    longest = max([x["longest_run"] for x in per] or [0])
+    ppm = 1e6 * hits / (total * ch) if total else 0
+    import math
+    dbfs = 20 * math.log10(worst) if worst > 0 else float("-inf")
+    if runs == 0:
+        verdict = ("No flat topping. %d sample(s) reached the ceiling and none "
+                   "of them ran on. This is what a clean decode looks like."
+                   % hits)
+    elif longest >= 8 or ppm > 100:
+        verdict = ("CLIPPED. %d samples on the ceiling in %d run(s), longest %d "
+                   "samples. This is a signal that was pushed into the ceiling "
+                   "and flattened there, not a decode overshoot. Do not carry "
+                   "it into a master. If it came back from a client, fit it "
+                   "against our own mix before assuming it is a new sound."
+                   % (hits, runs, longest))
+    else:
+        verdict = ("%d samples on the ceiling in %d short run(s), longest %d. "
+                   "Borderline: listen to it, and compare against the mix it "
+                   "came from before deciding." % (hits, runs, longest))
+    return {
+        "file": os.path.abspath(path), "stream": stream,
+        "channels": ch, "samples_per_channel": total,
+        "ceiling_fraction": ceiling, "run_length_counted": run,
+        "peak_sample": round(worst, 6), "peak_sample_dbfs": round(dbfs, 3),
+        "samples_at_ceiling": hits, "runs": runs, "longest_run": longest,
+        "ppm_of_all_samples": round(ppm, 2),
+        "per_channel": per,
+        "decode_path": "ffmpeg:f32le (no clipping in the instrument)",
+        "verdict": verdict,
+        "limit": "This counts flat topping. It does not say the sound is WRONG, "
+                 "and it says nothing about the loudness: run 'measure' for "
+                 "that. A quiet file can be clipped and a loud one clean.",
+    }
+
+
 def layout(path, profile=None):
     """Channel layout, order and sample rate against the delivery."""
     import spec as SPEC
@@ -258,6 +356,15 @@ def main(argv=None):
     la.add_argument("--profile")
     C.add_json(la)
 
+    cl = sub.add_parser("clipping", help="Samples on the ceiling, and their runs")
+    cl.add_argument("file")
+    cl.add_argument("--stream", default="a:0")
+    cl.add_argument("--ceiling", type=float, default=0.995,
+                    help="Fraction of full scale counted as the ceiling")
+    cl.add_argument("--run", type=int, default=2,
+                    help="Shortest run of consecutive ceiling samples counted")
+    C.add_json(cl)
+
     args = ap.parse_args(argv)
     import spec as SPEC
 
@@ -288,6 +395,21 @@ def main(argv=None):
                    + ("" if not s["issues"] else "\n      " + "; ".join(s["issues"])))
              for s in r["streams"]],
             print(f"\n  {r['note']}")))
+    if args.cmd == "clipping":
+        res = clipping(args.file, args.stream, args.ceiling, args.run)
+        return C.emit(res, args.json, lambda r: (
+            print(f"  peak sample     {r['peak_sample']:.6f} "
+                  f"({r['peak_sample_dbfs']:+.2f} dBFS)"),
+            print(f"  on the ceiling  {r['samples_at_ceiling']} of "
+                  f"{r['samples_per_channel'] * r['channels']} samples "
+                  f"({r['ppm_of_all_samples']} ppm)"),
+            print(f"  runs            {r['runs']}, longest {r['longest_run']} "
+                  f"samples"),
+            [print(f"    ch {c['channel']}: {c['samples_at_ceiling']} on the "
+                   f"ceiling, longest run {c['longest_run']}")
+             for c in r["per_channel"]],
+            print(f"\n  {r['verdict']}"),
+            print(f"  {r['limit']}")))
     return 0
 
 
