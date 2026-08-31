@@ -343,7 +343,12 @@ def _walk_digests(path, upto, probe_w=96, stream="v:0"):
            "-vf", f"scale={w}:{h}:flags=bilinear",
            "-frames:v", str(upto + 1),
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    # stderr is DEVNULL, not PIPE, and that is load bearing. This function
+    # never reads stderr, and it closes stdout and then blocks in wait(). A pipe
+    # nobody drains stops ffmpeg the moment the 64 KB kernel buffer fills, so a
+    # file that emits more than that in decode warnings deadlocks here with no
+    # timeout to break it. There is nothing to lose: the messages were discarded.
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             bufsize=per * 4)
     out = []
     try:
@@ -563,32 +568,46 @@ def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96):
                 f"{frame} could not be identified. The file is shorter than "
                 "its packet count claims.")
         want = truth[frame]
-        neighbours = {i: truth[i] for i in (frame - 1, frame, frame + 1)
-                      if 0 <= i < len(truth)}
-        ambiguous = len(set(neighbours.values())) < len(neighbours)
+        # The picture is the only evidence there is, so the LABEL is proved only
+        # when this picture appears ONCE in everything walked. Neighbours are the
+        # obvious case and they were all this used to test, but a repeat anywhere
+        # else in the walk satisfies `got == want` exactly as well: a black head,
+        # a flash, a plate that comes back. Measured on a 24 frame file whose
+        # frame 12 repeats frame 0, the neighbours-only test read
+        # "distinguishable", the verdict said "this seek returns frame 12", and
+        # every correct candidate reported having matched frame 0.
+        same_picture = [i for i, d in enumerate(truth) if d == want]
+        ambiguous = len(same_picture) > 1
         tried = []
         hit = None
         for name, sec in cands:
             got = _digest_at_seek(path, sec, wh, stream)
-            landed = ([i for i, d in enumerate(truth) if d == got] or [None])[0] \
-                if got else None
+            # Every index this picture matches, not the first. The first one is a
+            # confident wrong answer whenever the picture repeats.
+            landed = [i for i, d in enumerate(truth) if d == got] if got else []
             tried.append({"candidate": name, "seek_seconds": sec,
                           "returned_a_frame": got is not None,
-                          "matches_frame": landed, "correct": got == want})
+                          "matches_frames": landed, "correct": got == want})
             if got == want and hit is None:
                 hit = (name, sec)
         out["candidates_tried"] = tried
-        out["neighbours_distinguishable"] = not ambiguous
+        out["picture_unique_in_walk"] = not ambiguous
+        out["frames_sharing_this_picture"] = same_picture if ambiguous else []
         if hit:
             out.update({
                 "seek_seconds": hit[1], "landed_on": hit[0], "verified": True,
-                "verdict": (f"Verified against a head walk: this seek returns "
-                            f"frame {frame}."
-                            + ("" if not ambiguous else
-                               " NOTE: frame {0} and at least one neighbour are the"
-                               " same picture here, so content cannot tell them"
-                               " apart. The seek is right about the PICTURE and"
-                               " unproven about the LABEL.".format(frame))),
+                "verdict": (
+                    f"Verified against a head walk: this seek returns frame "
+                    f"{frame}." if not ambiguous else
+                    "Verified against a head walk as a PICTURE, UNPROVEN as a "
+                    "label: frames "
+                    + ", ".join(str(i) for i in same_picture)
+                    + f" are all the same picture in the {len(truth)} frames "
+                    "walked, so content cannot say which of them came back. The "
+                    "seek is right about what you get and unproven about its "
+                    "number. Cut on packet indices if the number matters. Only "
+                    "frames 0 to the target were walked, so a repeat later in "
+                    "the file is outside what this can see either way."),
             })
         else:
             out.update({
@@ -946,15 +965,19 @@ def main(argv=None):
             if not r["pts_in_packet_order"]:
                 print(f"  {r['packet_order_warning']}")
             for t in r.get("candidates_tried", []):
-                landed = ("nothing" if t["matches_frame"] is None
-                          else f"frame {t['matches_frame']}")
+                m = t["matches_frames"]
+                landed = ("nothing" if not m else f"frame {m[0]}" if len(m) == 1
+                          else "frames " + ", ".join(map(str, m))
+                          + " (one picture, several frames)")
                 print(f"  [{'x' if t['correct'] else ' '}] {t['candidate']}"
                       f"  ->  {landed}")
             if r["seek_seconds"] is not None:
                 print(f"  seek to {r['seek_seconds']:.9f}   ({r['landed_on']})")
                 print(f"  {r['ffmpeg']}")
-            if r.get("neighbours_distinguishable") is False:
-                print("  the neighbouring frames are the same picture here")
+            if r.get("picture_unique_in_walk") is False:
+                print("  frames "
+                      + ", ".join(map(str, r["frames_sharing_this_picture"]))
+                      + " are the same picture, so the number is unproven")
             print(f"  {r['verdict']}")
             print(f"  {r['note']}")
         return C.emit(res, args.json, _show)

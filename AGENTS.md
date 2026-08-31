@@ -111,7 +111,7 @@ fixed `_alert_key` keeping the varying reading in the cooldown key
 seek proved against the picture instead of derived, a mux length gate, a
 clipping meter, the RIFE timestep inversion, and the `-vsync` removal in
 ffmpeg 9 (`skills/postproduction/scripts/`, `skills/colorgrade/scripts/`).
-(PR pending)
+(PR #150)
 
 (Entries removed above: #145, #144, #147 and #146 merged 2026-08-23.
 #143, #142, #141 and #140 merged 2026-08-22.

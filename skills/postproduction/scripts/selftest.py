@@ -38,6 +38,20 @@ import supers as SUP  # noqa: E402
 
 _ran = _fail = 0
 
+SHIM_FFMPEG = r'''#!/usr/bin/env python3
+import re
+import sys
+a = " ".join(sys.argv)
+m = re.search(r"scale=(\d+):(\d+)", a)
+w, h = (int(m.group(1)), int(m.group(2))) if m else (96, 54)
+n = int(re.search(r"-frames:v (\d+)", a).group(1))
+sys.stderr.buffer.write(b"x" * 262144)
+sys.stderr.buffer.flush()
+for i in range(n):
+    sys.stdout.buffer.write(bytes([i % 251]) * (w * h * 3))
+sys.stdout.buffer.flush()
+'''
+
 
 def check(label, ok, detail=""):
     global _ran, _fail
@@ -832,19 +846,70 @@ def test_media():
         _media_honest_enlargement(tmp)
         _media_seek_is_verified(tmp)
         _media_length_and_clipping(tmp)
+        _media_walk_does_not_deadlock(tmp)
 
 
-def _numbered_clip(tmp, name, n=32, codec=("libx264", "-crf", "10"), pix="yuv420p"):
+def _media_walk_does_not_deadlock(tmp):
+    """The head walk must not block on a decoder with a lot to say.
+
+    `_walk_digests` never reads ffmpeg's stderr. It closes stdout and then waits.
+    While stderr was a PIPE, a file emitting more than the 64 KB kernel pipe
+    buffer in decode warnings stopped ffmpeg mid write, and the walk sat forever
+    reading a stdout that could no longer be filled, with no timeout to break it.
+
+    Nothing in this suite emits that much, and a corrupt file bails out after a
+    few hundred bytes rather than talking through the decode, so the decoder is
+    stood in for by a script that writes all of its stderr first and the picture
+    after. That is the same standoff and it is deterministic. It runs in a child
+    with a hard timeout, so a regression FAILS here instead of hanging the run.
+    """
+    clip = os.path.join(tmp, "numpr.mov")
+    if not os.path.exists(clip):
+        check("a clip for the walk deadlock check exists", False)
+        return
+    shim = os.path.join(tmp, "shimbin")
+    os.makedirs(shim, exist_ok=True)
+    fake = os.path.join(shim, "ffmpeg")
+    with open(fake, "w") as fh:
+        fh.write(SHIM_FFMPEG)
+    os.chmod(fake, 0o755)
+    code = ("import sys\n"
+            "sys.path.insert(0, %r)\n"
+            "import prove as P\n"
+            "d, wh = P._walk_digests(%r, 5)\n"
+            "print(len(d))\n" % (HERE, clip))
+    env = dict(os.environ, PATH=shim + os.pathsep + os.environ.get("PATH", ""))
+    try:
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, timeout=30, env=env)
+        ok = r.returncode == 0 and r.stdout.strip() == "6"
+        why = ("walked 6 frames out from under 256 KB of stderr" if ok else
+               "the walk came back wrong: " + (r.stderr.strip()[-90:] or r.stdout.strip()))
+    except subprocess.TimeoutExpired:
+        ok = False
+        why = "the walk blocked: stderr is a pipe nobody drains"
+    check("the head walk survives a decoder that fills the stderr pipe", ok, why)
+
+
+def _numbered_clip(tmp, name, n=32, codec=("libx264", "-crf", "10"), pix="yuv420p",
+                   repeat=None):
     """A clip whose every frame is a flat grey nobody else has.
 
     The point is that a frame can be IDENTIFIED from its pixels alone, so a
     seek can be held against the truth instead of against another seek.
+
+    `repeat` is `(at, of)` and makes frame `at` a copy of frame `of`, which is
+    how a black head or a plate that comes back behaves: identification by
+    content stops working at that frame while its neighbours stay distinct.
     """
     out = os.path.join(tmp, name)
     raw = os.path.join(tmp, name + ".raw")
+    vals = [10 + i * 5 for i in range(n)]
+    if repeat is not None:
+        vals[repeat[0]] = vals[repeat[1]]
     with open(raw, "wb") as fh:
-        for i in range(n):
-            fh.write(bytes([10 + i * 5]) * (320 * 180 * 3))
+        for v in vals:
+            fh.write(bytes([v]) * (320 * 180 * 3))
     cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", "320x180", "-r", "24", "-i", raw, "-c:v"] + list(codec) + \
           ["-pix_fmt", pix, out]
@@ -915,6 +980,43 @@ def _media_seek_is_verified(tmp):
               r["pts_in_packet_order"] is False,
               "so anything indexing -show_packets by frame number is misreading it")
 
+    # A picture that repeats somewhere OTHER than next door. The digest match is
+    # `got == want` and nothing else, so any earlier frame carrying the same
+    # picture satisfies it, and the ambiguity test used to look only at N-1, N
+    # and N+1. On this file that read "distinguishable" and the verdict said
+    # "this seek returns frame 12" while every correct candidate had matched
+    # frame 0. Three halves are asserted: the flag fires on the fault, the
+    # neighbours really are distinct so the old rule could not have caught it,
+    # and a clean file of the same shape does not fire.
+    dup = _numbered_clip(tmp, "dup.mov", 24, ("prores_ks", "-profile:v", "3"),
+                         "yuv422p10le", repeat=(12, 0))
+    clean = _numbered_clip(tmp, "nodup.mov", 24, ("prores_ks", "-profile:v", "3"),
+                           "yuv422p10le")
+    if dup is None or clean is None:
+        check("a clip with a repeated frame could be built", False)
+    else:
+        r = PROVE.seek_for_frame(dup, 12)
+        truth, _ = PROVE._walk_digests(dup, 13)
+        check("a picture that repeats away from its neighbours is called out",
+              r["picture_unique_in_walk"] is False
+              and r["frames_sharing_this_picture"] == [0, 12],
+              f"frames {r['frames_sharing_this_picture']} are one picture")
+        check("and the neighbours are distinct, so the old rule was blind to it",
+              len({truth[11], truth[12], truth[13]}) == 3,
+              "11, 12 and 13 are three different pictures on this file")
+        hits = [t for t in r["candidates_tried"] if t["correct"]]
+        check("and every index the picture matches is reported, not the first",
+              bool(hits) and all(t["matches_frames"] == [0, 12] for t in hits),
+              "the field used to name frame 0 for a seek that returns frame 12")
+        check("the seek still returns the right PICTURE on that file",
+              r["verified"] is True and "UNPROVEN as a label" in r["verdict"],
+              "right about what comes back, honest about its number")
+        c = PROVE.seek_for_frame(clean, 12)
+        check("and a file with no repeat is not flagged",
+              c["picture_unique_in_walk"] is True
+              and c["frames_sharing_this_picture"] == [],
+              "the same 24 frames without the repeat")
+
 
 def _media_length_and_clipping(tmp):
     """The mux that shortens the film, and the ceiling a true peak cannot see."""
@@ -954,6 +1056,27 @@ def _media_length_and_clipping(tmp):
           any("ENDS BEFORE THE SOUND" in x for x in bad["notes"])
           and not good["notes"],
           "the same two streams, muxed two ways")
+
+    # The nb_frames fallback. Every other file in this suite is MP4 or MOV and
+    # both containers carry a frame count, so the packet counter underneath was
+    # never reached by any check here. Matroska does not carry one, which is the
+    # only way in. The missing field is asserted FIRST: without that, the day
+    # ffprobe starts filling it in, this check goes on passing while measuring
+    # the fast path instead.
+    mkv = os.path.join(tmp, "len.mkv")
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", clip, "-c:v", "ffv1", mkv],
+                   capture_output=True)
+    nb = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                         "-show_entries", "stream=nb_frames", "-of",
+                         "default=nw=1:nk=1", mkv],
+                        capture_output=True, text=True).stdout.strip()
+    hidden = os.path.exists(mkv) and not nb.isdigit()
+    check("Matroska really does hide the frame count from ffprobe", hidden,
+          f"nb_frames reads {nb!r}, so length() has to count packets instead")
+    if hidden:
+        r = PROVE.length(mkv)
+        check("and the packet count fallback gets the length right",
+              r["frames"] == 48, f"counted {r['frames']} where the source has 48")
 
     # The ceiling. A limiter output reads a compliant peak and is destroyed.
     import audio as AUDIO
