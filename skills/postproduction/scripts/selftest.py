@@ -854,11 +854,11 @@ def test_media():
 CLIP_MEM_CHILD = '''\
 import resource, subprocess, sys
 sys.path.insert(0, %r)
-import audio            # imported in BOTH arms so the baseline is the same
+import audio            # imported in EVERY arm so the baseline is the same
 mode, wav = sys.argv[1], sys.argv[2]
 if mode == "stream":
     audio.clipping(wav, block=65536)
-else:
+elif mode == "whole":
     # The recipe this replaced: ffmpeg's whole f32 decode held as bytes and
     # then copied again into an array. Nothing here counts anything; the
     # counting is not what cost the memory.
@@ -869,7 +869,37 @@ else:
     a = array.array("f")
     a.frombytes(p.stdout[:len(p.stdout) // 4 * 4])
     assert len(a) > 0
-print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+# mode "null" reads nothing and allocates nothing. It is the instrument's own
+# floor, and the check above will not read a ratio until the arms clear it.
+
+
+def peak_kb():
+    """This process's own peak, in kB, and NOT ru_maxrss on Linux.
+
+    ru_maxrss is INHERITED ACROSS fork AND exec on Linux: the kernel keeps
+    signal->maxrss through execve, so a child reports its parent's peak
+    whenever the parent's is the larger. Measured on the review machine
+    1 Sep 2026: a child that allocates nothing, spawned from a 400 MB parent,
+    reported 421180 kB; a sibling that allocated 200 MB reported the same
+    421180. The instrument was blind in both directions.
+
+    VmHWM is a property of the mm, and execve makes a new mm, so it resets:
+    the same two children read 9516 and 214364. macOS has no /proc and does
+    reset ru_maxrss on exec, so it falls back there -- in BYTES on darwin,
+    normalised here so the two platforms are the same unit.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except OSError:
+        pass
+    r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return r // 1024 if sys.platform == "darwin" else r
+
+
+print(peak_kb())
 '''
 
 
@@ -1087,7 +1117,13 @@ def _media_clipping_is_streamed(tmp):
                   f"{r['samples_at_ceiling']} samples, {r['runs']} runs")
 
     # Peak memory against file length. The ratio is what is asserted, not the
-    # number, so the units of ru_maxrss and the size of the interpreter cancel.
+    # number, so the size of the interpreter cancels -- but only once the
+    # instrument can see the allocation at all, which is what the `null` arm and
+    # the first check below establish. See CLIP_MEM_CHILD.peak_kb: read with
+    # ru_maxrss, this whole block passed on macOS and was blind on Linux, where
+    # BOTH arms came back pinned to the parent suite's own 401616 kB peak. The
+    # control failed loudly at 1.00, and the check that matters -- the streamed
+    # peak not growing -- PASSED at 1.00 for exactly the wrong reason.
     wavs = {}
     for secs in (10, 60):
         w = os.path.join(tmp, f"mem{secs}.wav")
@@ -1102,21 +1138,37 @@ def _media_clipping_is_streamed(tmp):
         return
     code = CLIP_MEM_CHILD % (HERE,)
     peaks = {}
-    for mode in ("stream", "whole"):
+    for mode in ("null", "stream", "whole"):
         for secs, w in wavs.items():
             p = subprocess.run([sys.executable, "-c", code, mode, w],
                                capture_output=True, text=True, timeout=300)
             peaks[(mode, secs)] = (int(p.stdout.strip() or 0)
                                    if p.returncode == 0 else 0)
+    floor = max(peaks[("null", k)] for k in wavs)
+    # Nothing below is evidence until this holds. A meter swamped by a fixed
+    # baseline reads 1.00 whatever the code under it does, which is a PASS on
+    # the streaming check and a fabricated one.
+    check("the memory meter can see an allocation this size at all",
+          floor > 0 and peaks[("whole", 60)] > floor * 1.5,
+          f"a child that allocates nothing peaks at {floor} kB, the whole-decode "
+          f"arm on the long file at {peaks[('whole', 60)]} kB")
     grew = {m: (peaks[(m, 60)] / peaks[(m, 10)] if peaks[(m, 10)] else 0)
             for m in ("stream", "whole")}
     check("the whole-decode recipe this replaced does grow with the file",
           grew["whole"] > 2.5,
-          f"six times the samples cost {grew['whole']:.2f} times the peak")
+          f"six times the samples cost {grew['whole']:.2f} times the peak "
+          f"({peaks[('whole', 10)]} to {peaks[('whole', 60)]})")
     check("and the streamed count does not",
           0 < grew["stream"] < 1.15,
           f"six times the samples cost {grew['stream']:.2f} times the peak "
           f"({peaks[('stream', 10)]} to {peaks[('stream', 60)]})")
+    # The ratio says the streamed peak does not MOVE. This says what it IS: a
+    # ratio alone is satisfied by an implementation that holds the whole file
+    # every time, which is flat too.
+    check("and the streamed peak on the long file is a fraction of the whole one",
+          0 < peaks[("stream", 60)] < peaks[("whole", 60)] * 0.5,
+          f"{peaks[('stream', 60)]} kB streamed against "
+          f"{peaks[('whole', 60)]} kB held whole")
 
 
 def _media_walk_does_not_deadlock(tmp):
