@@ -847,6 +847,328 @@ def test_media():
         _media_seek_is_verified(tmp)
         _media_length_and_clipping(tmp)
         _media_walk_does_not_deadlock(tmp)
+        _media_clipping_is_streamed(tmp)
+        _media_seek_without_walking(tmp)
+
+
+CLIP_MEM_CHILD = '''\
+import resource, subprocess, sys
+sys.path.insert(0, %r)
+import audio            # imported in EVERY arm so the baseline is the same
+mode, wav = sys.argv[1], sys.argv[2]
+if mode == "stream":
+    audio.clipping(wav, block=65536)
+elif mode == "whole":
+    # The recipe this replaced: ffmpeg's whole f32 decode held as bytes and
+    # then copied again into an array. Nothing here counts anything; the
+    # counting is not what cost the memory.
+    import array
+    p = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", wav,
+                        "-map", "0:a:0", "-f", "f32le", "-acodec", "pcm_f32le",
+                        "-"], capture_output=True)
+    a = array.array("f")
+    a.frombytes(p.stdout[:len(p.stdout) // 4 * 4])
+    assert len(a) > 0
+# mode "null" reads nothing and allocates nothing. It is the instrument's own
+# floor, and the check above will not read a ratio until the arms clear it.
+
+
+def peak_kb():
+    """This process's own peak, in kB, and NOT ru_maxrss on Linux.
+
+    ru_maxrss is INHERITED ACROSS fork AND exec on Linux: the kernel keeps
+    signal->maxrss through execve, so a child reports its parent's peak
+    whenever the parent's is the larger. Measured on the review machine
+    1 Sep 2026: a child that allocates nothing, spawned from a 400 MB parent,
+    reported 421180 kB; a sibling that allocated 200 MB reported the same
+    421180. The instrument was blind in both directions.
+
+    VmHWM is a property of the mm, and execve makes a new mm, so it resets:
+    the same two children read 9516 and 214364. macOS has no /proc and does
+    reset ru_maxrss on exec, so it falls back there -- in BYTES on darwin,
+    normalised here so the two platforms are the same unit.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except OSError:
+        pass
+    r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return r // 1024 if sys.platform == "darwin" else r
+
+
+print(peak_kb())
+'''
+
+
+def _media_seek_without_walking(tmp):
+    """A deep seek has to be provable without decoding everything before it.
+
+    The head walk is the strongest instrument there is and it is O(N): measured
+    31 Aug 2026, 1308 frames/s on 1080p ProRes 422 HQ and 346 on 4K here, 147 on
+    1080p on the review machine, and `generation_floor` pays it twice because it
+    reads two files. On a 3000 frame fixture the walk went 0.32 s at frame 200
+    to 1.57 s at frame 2999 while the calibrated proof stayed flat at 0.28 s,
+    and both returned the same seek at every depth.
+
+    What is checked here is not the speed, which is a property of the machine,
+    but the three things that make the cheap proof a proof at all: that it
+    AGREES with the walk, that the instrument carrying it SEES the fault the
+    walk was built to catch, and that it REFUSES rather than guesses when the
+    head cannot calibrate or the decoder comes back one frame late.
+    """
+    import prove as P
+    for tag, codec, pix in (("calpr.mov", ("prores_ks", "-profile:v", "3"),
+                             "yuv422p10le"),
+                            ("calh264.mp4", ("libx264", "-crf", "10"), "yuv420p")):
+        clip = _numbered_clip(tmp, tag, 48, codec=codec, pix=pix)
+        if clip is None:
+            check(f"a clip for the calibrated seek checks ({tag})", False)
+            continue
+        walk = P.seek_for_frame(clip, 40, verify="walk")
+        cal = P.seek_for_frame(clip, 40, verify="calibrated", calibrate_depth=6)
+        check(f"a calibrated seek agrees with the head walk, {tag.split('.')[0]}",
+              cal["verified"] and cal["seek_seconds"] == walk["seek_seconds"],
+              f"{cal['seek_seconds']} against {walk['seek_seconds']}, rule "
+              f"'{cal.get('landed_on')}' measured on frame "
+              f"{cal.get('calibration', {}).get('calibration_frame')}")
+
+        # The instrument that carries the proof must SEE the fault. The old
+        # midpoint rule returns frame N+1 on this decoder, and the timestamp
+        # read back off the picture has to say so, or it is proving nothing.
+        info = P.packets(clip)
+        ptss = sorted(int(q["pts"]) for q in info["packets"]
+                      if q.get("pts") not in (None, "N/A"))
+        durs = [int(q["duration"]) for q in info["packets"]
+                if q.get("duration") not in (None, "N/A")]
+        modal = max(set(durs), key=durs.count) if durs else 1
+        times = dict(P._seek_candidates(ptss, 40, modal, info["time_base"]))
+        good = P._pts_at_seek(clip, times["frame start"])
+        bad = P._pts_at_seek(
+            clip, times["midpoint of the frame (the pre 2026-08-31 rule)"])
+        check(f"the timestamp read back sees the old midpoint fault, "
+              f"{tag.split('.')[0]}",
+              good == ptss[40] and bad == ptss[41],
+              f"frame start read back {good} (frame 40 is {ptss[40]}) and the "
+              f"midpoint read back {bad} (frame 41 is {ptss[41]})")
+
+        # A decoder that comes back one frame late has to be refused, not
+        # calibrated around, and there are two ways for it to happen. The whole
+        # bet of the cheap proof is that a rule measured at the head still holds
+        # at the target, so the arm that matters is a decoder that is RIGHT
+        # where it was calibrated and wrong where it was used. Both are stood in
+        # for here, and both gates have to fire.
+        real = P._pts_at_seek
+
+        def _late(deep_only):
+            def shim(p, sec, stream="v:0"):
+                v = real(p, sec, stream)
+                if v is None or (deep_only and v <= ptss[10]):
+                    return v
+                i = ptss.index(v) if v in ptss else None
+                return ptss[i + 1] if i is not None and i + 1 < len(ptss) else v
+            return shim
+
+        try:
+            P._pts_at_seek = _late(True)
+            deep = P._calibrated_seek(clip, 40, ptss, modal, info["time_base"],
+                                      "v:0", 96, 6)
+            P._pts_at_seek = _late(False)
+            everywhere = P._calibrated_seek(clip, 40, ptss, modal,
+                                            info["time_base"], "v:0", 96, 6)
+        finally:
+            P._pts_at_seek = real
+        check(f"a decoder that is right at the head and late at the target is "
+              f"refused, {tag.split('.')[0]}",
+              not deep["ok"] and "frame 41" in deep.get("why", ""),
+              deep.get("why", "IT WAS ACCEPTED")[:120])
+        check(f"and one that is late everywhere fails the calibration itself, "
+              f"{tag.split('.')[0]}",
+              not everywhere["ok"]
+              and "timestamps cannot carry" in everywhere.get("why", ""),
+              everywhere.get("why", "IT WAS ACCEPTED")[:110])
+
+        # The timestamp says frame N. The picture has to agree with it, or the
+        # two instruments are not talking about the same thing and neither one
+        # is holding the other. Stand a wrong picture in at the target.
+        realdig = P._digest_at_seek
+        try:
+            P._digest_at_seek = lambda pth, sec, wh, stream="v:0": (
+                "wrongpicture" if abs(sec - times["frame start"]) < 1e-9
+                else realdig(pth, sec, wh, stream))
+            liar = P._calibrated_seek(clip, 40, ptss, modal, info["time_base"],
+                                      "v:0", 96, 6)
+        finally:
+            P._digest_at_seek = realdig
+        check(f"a picture that disagrees with the timestamp is refused, "
+              f"{tag.split('.')[0]}",
+              not liar["ok"] and "does not sit one frame after"
+              in liar.get("why", ""),
+              liar.get("why", "IT WAS ACCEPTED")[:110])
+
+    # A head that cannot tell one frame from another cannot calibrate anything,
+    # and the answer then has to be the walk, not a guess.
+    flat = _numbered_clip(tmp, "calflat.mp4", 48, flat_head=10)
+    if flat is not None:
+        r = P.seek_for_frame(flat, 40, verify="calibrated", calibrate_depth=8)
+        check("a calibration on a head that is all one picture refuses",
+              not r["verified"] and "repeats" in r["verdict"],
+              r["verdict"][:110])
+        a = P.seek_for_frame(flat, 40, full_walk_max=4, calibrate_depth=8)
+        check("and the automatic choice falls back to the walk and says so",
+              a["verified"] and a["verification"] == "head walk"
+              and a.get("calibration_refused"),
+              f"{a['verification']}: {a.get('calibration_refused', '')[:70]}")
+
+    # The cost rule itself: cheap frames are walked, deep ones are not.
+    clip = os.path.join(tmp, "calpr.mov")
+    if os.path.exists(clip):
+        near = P.seek_for_frame(clip, 3, full_walk_max=10, calibrate_depth=6)
+        far = P.seek_for_frame(clip, 40, full_walk_max=10, calibrate_depth=6)
+        check("a frame inside the walk budget is walked and one past it is not",
+              near["verification"] == "head walk"
+              and far["verification"] == "calibrated"
+              and near["verified"] and far["verified"],
+              f"frame 3 {near['verification']}, frame 40 {far['verification']}")
+
+        # floor used to raise on an unverified seek, so there was no way to ask
+        # for a number on a file it could not prove. It answers now and stamps it.
+        try:
+            fl = P.generation_floor(clip, clip, 40, verify=False)
+            ok = (fl["max_abs_diff"] == 0 and fl["unproven"]
+                  and fl["verdict"].startswith("UNPROVEN FRAME"))
+            why = fl["verdict"][:90]
+        except Exception as e:                       # it used to raise here
+            ok, why = False, f"it refused instead: {type(e).__name__}"
+        check("the generation floor answers with the proof switched off",
+              ok, why)
+        fl2 = P.generation_floor(clip, clip, 40, verify="calibrated")
+        check("and says which way each of its two frames was proved",
+              fl2["verification"] == ["calibrated", "calibrated"]
+              and not fl2["unproven"],
+              f"{fl2['verification']}")
+
+
+def _media_clipping_is_streamed(tmp):
+    """The ceiling count must not hold the whole film in memory, and the runs
+    must survive the block joins that streaming introduces.
+
+    Measured on this Mac, 31 Aug 2026, on the code this replaced: peak RSS ran
+    at a flat 14.2 bytes per SAMPLE over three files (0.829 GB for 57.6 M
+    samples, 1.233 for 86.4, 1.637 for 115.2), which is about 22 GB for a 90
+    minute 5.1 master on a 24 GB machine. SKILL.md offers this as a master gate,
+    so that is the file it exists for.
+
+    Two properties, and each one is checked against the thing that would break
+    it. The counts must not move when the block boundary falls inside a run, so
+    the carry across the join is reverted here and required to give a DIFFERENT
+    answer. And the peak must not grow with the length of the file, so the old
+    whole-decode recipe is run beside it on the same two files and required to
+    grow.
+    """
+    import audio as AUDIO
+    wp = os.path.join(tmp, "crushed.wav")
+    if not os.path.exists(wp):
+        check("a clipped fixture for the streaming checks exists", False)
+        return
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", wp,
+                          "-map", "0:a:0", "-f", "f32le", "-acodec",
+                          "pcm_f32le", "-"], capture_output=True).stdout
+    ch, step = 2, 2 * 4
+
+    def count(block_frames, carry=True, scan=None):
+        st = AUDIO._clip_state(ch, 0.995, 2)
+        scan = scan or AUDIO._clip_scan_np
+        n = block_frames * step
+        for i in range(0, len(raw), n):
+            scan(raw[i:i + n], ch, st)
+            if not carry:
+                for cs in st["ch"]:
+                    cs["cur"] = 0
+        return (sum(c["hits"] for c in st["ch"]),
+                sum(c["runs"] for c in st["ch"]),
+                max(c["longest"] for c in st["ch"]))
+
+    whole = count(len(raw) // step)
+    paths = [("numpy", AUDIO._clip_scan_np)] if AUDIO._np is not None else []
+    paths.append(("python", AUDIO._clip_scan_py))
+    for b in (1, 13, 997):
+        for label, fn in paths:
+            check(f"the ceiling counts do not move when a block ends inside a "
+                  f"run ({b} frame blocks, {label})",
+                  count(b, scan=fn) == whole,
+                  f"{count(b, scan=fn)} against {whole} read in one block")
+    broken = count(13, carry=False)
+    check("and dropping the carry across the join really does break them",
+          broken != whole and broken[1] > whole[1],
+          f"{broken[1]} runs against the true {whole[1]}: a run split by a "
+          f"block boundary is counted twice")
+    if AUDIO._np is not None:
+        check("the numpy and the standard library arithmetic agree exactly",
+              count(997, scan=AUDIO._clip_scan_py) == whole,
+              f"{count(997, scan=AUDIO._clip_scan_py)} against {whole}")
+        for kw in ({"use_numpy": True}, {"use_numpy": False}):
+            r = AUDIO.clipping(wp, **kw)
+            check(f"and the whole function agrees with itself on the "
+                  f"{'numpy' if kw['use_numpy'] else 'python'} path",
+                  (r["samples_at_ceiling"], r["runs"], r["longest_run"]) == whole,
+                  f"{r['samples_at_ceiling']} samples, {r['runs']} runs")
+
+    # Peak memory against file length. The ratio is what is asserted, not the
+    # number, so the size of the interpreter cancels -- but only once the
+    # instrument can see the allocation at all, which is what the `null` arm and
+    # the first check below establish. See CLIP_MEM_CHILD.peak_kb: read with
+    # ru_maxrss, this whole block passed on macOS and was blind on Linux, where
+    # BOTH arms came back pinned to the parent suite's own 401616 kB peak. The
+    # control failed loudly at 1.00, and the check that matters -- the streamed
+    # peak not growing -- PASSED at 1.00 for exactly the wrong reason.
+    wavs = {}
+    for secs in (10, 60):
+        w = os.path.join(tmp, f"mem{secs}.wav")
+        r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                            f"sine=frequency=300:sample_rate=48000:duration={secs}",
+                            "-af", "pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0",
+                            "-c:a", "pcm_s16le", w], capture_output=True)
+        if r.returncode == 0:
+            wavs[secs] = w
+    if len(wavs) != 2:
+        check("two fixtures for the memory check could be built", False)
+        return
+    code = CLIP_MEM_CHILD % (HERE,)
+    peaks = {}
+    for mode in ("null", "stream", "whole"):
+        for secs, w in wavs.items():
+            p = subprocess.run([sys.executable, "-c", code, mode, w],
+                               capture_output=True, text=True, timeout=300)
+            peaks[(mode, secs)] = (int(p.stdout.strip() or 0)
+                                   if p.returncode == 0 else 0)
+    floor = max(peaks[("null", k)] for k in wavs)
+    # Nothing below is evidence until this holds. A meter swamped by a fixed
+    # baseline reads 1.00 whatever the code under it does, which is a PASS on
+    # the streaming check and a fabricated one.
+    check("the memory meter can see an allocation this size at all",
+          floor > 0 and peaks[("whole", 60)] > floor * 1.5,
+          f"a child that allocates nothing peaks at {floor} kB, the whole-decode "
+          f"arm on the long file at {peaks[('whole', 60)]} kB")
+    grew = {m: (peaks[(m, 60)] / peaks[(m, 10)] if peaks[(m, 10)] else 0)
+            for m in ("stream", "whole")}
+    check("the whole-decode recipe this replaced does grow with the file",
+          grew["whole"] > 2.5,
+          f"six times the samples cost {grew['whole']:.2f} times the peak "
+          f"({peaks[('whole', 10)]} to {peaks[('whole', 60)]})")
+    check("and the streamed count does not",
+          0 < grew["stream"] < 1.15,
+          f"six times the samples cost {grew['stream']:.2f} times the peak "
+          f"({peaks[('stream', 10)]} to {peaks[('stream', 60)]})")
+    # The ratio says the streamed peak does not MOVE. This says what it IS: a
+    # ratio alone is satisfied by an implementation that holds the whole file
+    # every time, which is flat too.
+    check("and the streamed peak on the long file is a fraction of the whole one",
+          0 < peaks[("stream", 60)] < peaks[("whole", 60)] * 0.5,
+          f"{peaks[('stream', 60)]} kB streamed against "
+          f"{peaks[('whole', 60)]} kB held whole")
 
 
 def _media_walk_does_not_deadlock(tmp):
@@ -892,7 +1214,7 @@ def _media_walk_does_not_deadlock(tmp):
 
 
 def _numbered_clip(tmp, name, n=32, codec=("libx264", "-crf", "10"), pix="yuv420p",
-                   repeat=None):
+                   repeat=None, flat_head=None):
     """A clip whose every frame is a flat grey nobody else has.
 
     The point is that a frame can be IDENTIFIED from its pixels alone, so a
@@ -901,10 +1223,17 @@ def _numbered_clip(tmp, name, n=32, codec=("libx264", "-crf", "10"), pix="yuv420
     `repeat` is `(at, of)` and makes frame `at` a copy of frame `of`, which is
     how a black head or a plate that comes back behaves: identification by
     content stops working at that frame while its neighbours stay distinct.
+
+    `flat_head` makes the first N frames one picture, which is what a real slate
+    or a fade up from black looks like. Nothing in that head can tell a wrong
+    landing from a right one, so it is what a calibration has to refuse.
     """
     out = os.path.join(tmp, name)
     raw = os.path.join(tmp, name + ".raw")
     vals = [10 + i * 5 for i in range(n)]
+    if flat_head:
+        for i in range(min(flat_head, n)):
+            vals[i] = vals[0]
     if repeat is not None:
         vals[repeat[0]] = vals[repeat[1]]
     with open(raw, "wb") as fh:

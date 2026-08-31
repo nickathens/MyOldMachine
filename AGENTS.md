@@ -102,16 +102,19 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-08-24] mac: health alerts — swap use percent cannot read low on
-macOS, so it alerted on every check; replaced with memory pressure, and
-fixed `_alert_key` keeping the varying reading in the cooldown key
-(`core/health.py`). (PR #149)
-
 [2026-08-31] mac: postproduction + colorgrade instrument audit — the frame
 seek proved against the picture instead of derived, a mux length gate, a
 clipping meter, the RIFE timestep inversion, and the `-vsync` removal in
 ffmpeg 9 (`skills/postproduction/scripts/`, `skills/colorgrade/scripts/`).
 (PR #150)
+
+[2026-09-01] mac: the two items left open by the #150 review — `audio.py
+clipping` streamed instead of holding the whole decode (measured 14.2 bytes
+a sample, ~22 GB on a 90 minute 5.1 master), a deep seek proved without
+walking the file so `prove.py floor` stops being O(N) twice over, and the
+RIFE timestep curve documented and made measurable per shot
+(`skills/postproduction/scripts/`, `skills/colorgrade/scripts/`). Stacked on
+`mac/post-colour-lessons`. (PR #151)
 
 (Entries removed above: #145, #144, #147 and #146 merged 2026-08-23.
 #143, #142, #141 and #140 merged 2026-08-22.

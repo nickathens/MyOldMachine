@@ -1317,3 +1317,72 @@ frame their picture changed, so the answer was our own audio up to that frame
 and their new tail from it, divided back by the fitted gain. Their tail had zero
 clipped samples. Measure the ceiling before carrying a client's sound into a
 master, and say plainly that their version was louder and why it was not used.
+
+---
+
+## 52. The ceiling meter would have killed the machine on a feature
+
+**Symptom.** None on any file this suite ever ran. `audio.py clipping` answered
+correctly and quickly on every fixture and on every clip of a two minute film.
+
+**Cause.** It handed ffmpeg's entire 32 bit float decode back through
+`capture_output=True` and then copied it again into an `array`, and then walked
+it one sample at a time in Python. Measured on this Mac, three files, dead
+linear: **14.2 bytes of peak memory per SAMPLE** (0.829 GB for 57.6 M samples,
+1.233 for 86.4, 1.637 for 115.2). A 90 minute 5.1 master at 48 kHz is 1.56 G
+samples, so about **22 GB** of peak on a 24 GB machine, and `SKILL.md` offers
+this as a MASTER GATE. The CPU side was the smaller half here (28 M samples/s)
+and the larger half on the Linux box (7.9 M/s, 3.3 minutes for that master).
+
+**Why nothing caught it.** Every fixture is half a second long. A resource fault
+is invisible to a check that only asks whether the number is right, and the
+number was always right.
+
+**Fix.** The decode is streamed in blocks and never held whole, with numpy where
+it is installed and a block at a time standard library path where it is not,
+because the rest of the sound department is standard library and a hard numpy
+import would change which interpreter can run it. Peak is now flat: six times
+the samples cost 1.00 times the peak, measured.
+
+**What a run counter loses when you cut the input into blocks.** A run of
+samples on the ceiling that straddles a block boundary is two runs to a counter
+that forgets, so the count nearly doubles: 1474 against the true 716 on the
+fixture. The carry is checked by reverting it and requiring a DIFFERENT answer,
+and the whole thing is checked at block sizes of 1, 13 and 997 frames against
+the same file read in one block.
+
+---
+
+## 53. A proof that costs O(N) has no way to be afforded, so it gets skipped
+
+**Symptom.** `prove.py floor` on a late frame of a long master appeared to hang.
+
+**Cause.** The seek proof walks the file from the head, decoding and digesting
+every frame before the one asked for, and `generation_floor` pays it TWICE
+because it reads two files. Measured 31 Aug 2026: 1308 frames/s on 1080p ProRes
+422 HQ and 346 on 4K on this Mac, 147 on 1080p on the review machine. So a late
+frame of a 90 minute 4K master is about 6 minutes here and about 2 hours there,
+each way. `seek` had `--no-verify`; `floor` did not plumb it and refused
+outright on an unverified seek, so there was no way to ask for a number at all.
+
+**Why the walk existed.** The picture is the only evidence a seek has, and a
+derived seek was wrong on this machine at every frame tried.
+
+**Fix.** The fault the walk catches is a property of the DECODER and the FILE,
+not of the frame index: the old midpoint rule missed 4 of 4 frames on both a
+long GOP and an all intra file, on two machines and two ffmpeg majors. So it is
+measured where it is cheap and the LABEL at the target is proved a different
+way: a short head walk picks the winning rule at a frame whose picture is unique
+there, the timestamp read back off that same picture is required to be that
+frame's own (which validates the timestamp instrument on this file), the rule is
+then applied at the target and its timestamp required to be the target's, and a
+three frame local run is required to put the target's picture one frame after
+frame N-1's. Head walk up to frame 300, calibrated past it, `--walk` forces the
+walk, and every answer says which it used. Flat 0.28 s against 0.32 to 1.57 s
+over frames 200 to 2999, same seek at every depth.
+
+**The controls.** A decoder that is right at the head and late at the target has
+to be REFUSED rather than calibrated around, and so does one that is late
+everywhere; both are stood in for and both gates fire. A head that is all one
+picture cannot calibrate anything, and the answer there falls back to the walk
+and says so.

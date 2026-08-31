@@ -323,7 +323,7 @@ def _probe_raster(path, stream="v:0"):
     return int(st.get("width") or 0), int(st.get("height") or 0)
 
 
-def _walk_digests(path, upto, probe_w=96, stream="v:0"):
+def _walk_digests(path, upto, probe_w=96, stream="v:0", start_seconds=None):
     """Digests of frames 0..upto, walked from the HEAD with no seek at all.
 
     This is the only thing on the machine entitled to say which picture frame N
@@ -339,10 +339,17 @@ def _walk_digests(path, upto, probe_w=96, stream="v:0"):
     h = max(2, int(round(H * w / W)) // 2 * 2)
     per = w * h * 3
     C.need("ffmpeg")
-    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path),
-           "-vf", f"scale={w}:{h}:flags=bilinear",
-           "-frames:v", str(upto + 1),
-           "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    # `start_seconds` walks a short run from a seek instead of from the head.
+    # It is the SAME instrument either way, which is the point: a local run and
+    # a head walk can only be held against each other if they are digests of
+    # the same scaled bytes.
+    cmd = ["ffmpeg", "-v", "error", "-nostdin"]
+    if start_seconds is not None:
+        cmd += ["-ss", f"{start_seconds:.9f}"]
+    cmd += ["-i", str(path),
+            "-vf", f"scale={w}:{h}:flags=bilinear",
+            "-frames:v", str(upto + 1),
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     # stderr is DEVNULL, not PIPE, and that is load bearing. This function
     # never reads stderr, and it closes stdout and then blocks in wait(). A pipe
     # nobody drains stops ffmpeg the moment the 64 KB kernel buffer fills, so a
@@ -484,7 +491,145 @@ def length(path, expect_frames=None, against=None, stream="v:0"):
     return out
 
 
-def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96):
+# A head walk is the strongest proof of a seek there is, and it costs a decode
+# of every frame before the one asked for. Measured 31 Aug 2026: 1308 frames/s
+# on 1080p ProRes 422 HQ and 346 on 4K on this Mac, 147 on 1080p on the review
+# machine (Linux, 31 Aug). So a late frame of a 90 minute 4K master is about 6
+# minutes here and about 2 hours there, and `generation_floor` pays it twice
+# because it reads two files. Below FULL_WALK_MAX the walk is cheap enough that
+# nothing else is worth doing; above it the calibrated proof below is used.
+FULL_WALK_MAX = 300
+CALIBRATE_DEPTH = 12
+
+
+def _seek_candidates(ptss, frame, modal, tb):
+    """The times worth trying for a frame, in the order measured to work.
+
+    The frame's own start is first because that is what lands on this decoder
+    today; the old midpoint is kept so a decoder that goes back to the old
+    behaviour is still served, and so the result can say which one it was.
+    """
+    this = ptss[frame]
+    nxt = ptss[frame + 1] if frame + 1 < len(ptss) else this + modal
+    span = nxt - this
+    return [
+        ("frame start", float(this * tb)),
+        ("a quarter frame before the start", float(max(0, this - span / 4) * tb)),
+        ("midpoint of the frame (the pre 2026-08-31 rule)", float((this + nxt) / 2 * tb)),
+        ("midpoint of the frame before", float((ptss[max(0, frame - 1)] + this) / 2 * tb)),
+    ]
+
+
+def _pts_at_seek(path, sec, stream="v:0"):
+    """The SOURCE timestamp of the picture a seek returns, read off the decoder.
+
+    `-copyts` keeps the input's own timestamps on the way out and `showinfo`
+    prints the one the decoder attached to the picture it actually emitted. It
+    is a SECOND instrument, independent of the pictures, and it is never
+    believed here until it has been held against a head walk on the same file.
+    Measured 31 Aug 2026 on this Mac: on both a ProRes and a long GOP h264 file
+    the winning seek read back frame 100's own pts and the old midpoint rule
+    read back frame 101's, so it sees the fault the walk was built to catch.
+    """
+    C.need("ffmpeg")
+    cmd = ["ffmpeg", "-v", "info", "-nostdin", "-copyts", "-ss", f"{sec:.9f}",
+           "-i", str(path), "-map", f"0:{stream}", "-frames:v", "1",
+           "-vf", "showinfo", "-f", "null", "-"]
+    # One frame, so stderr is a few hundred bytes and cannot fill a pipe.
+    p = subprocess.run(cmd, capture_output=True)
+    m = re.findall(r"\bpts:\s*(-?\d+)", p.stderr.decode("utf-8", "replace"))
+    return int(m[0]) if m else None
+
+
+def _calibrated_seek(path, frame, ptss, modal, tb, stream, probe_w, depth):
+    """Prove a deep seek from a shallow walk plus the file's own timestamps.
+
+    The fault the walk exists to catch is a property of the DECODER and the
+    FILE, not of the frame index: the old midpoint rule missed 4 of 4 frames on
+    both a long GOP and an all intra file, at every frame tried, on two
+    machines and two ffmpeg majors. So it is measured once where it is cheap,
+    and the LABEL at the target is then proved a different way.
+
+      1. Walk the head. That is absolute ground truth, by content.
+      2. Find which candidate rule returns the right picture at a calibration
+         frame whose picture is UNIQUE in that walk, so a wrong landing there
+         cannot pass as a right one.
+      3. Read the timestamp back off the picture that same seek returns and
+         require it to be the calibration frame's own. That holds the timestamp
+         instrument against the pictures, on this file, on this decoder.
+      4. Apply the winning rule at the target and require the timestamp that
+         comes back to be ptss[frame] EXACTLY. This is the proof of the number.
+      5. Decode three consecutive frames from the rule's seek for frame - 1 and
+         require the target's picture to be the middle one. This is the proof
+         that the picture and the timestamp are talking about the same thing.
+
+    Either instrument alone is an unheld instrument. Returns a dict; `ok` False
+    means the caller should fall back to the full walk, and `why` says what
+    could not be established rather than leaving it to be guessed at.
+    """
+    if frame < 2:
+        return {"ok": False, "why": "a frame this near the head is cheaper to "
+                                    "walk to than to calibrate for"}
+    walk_to = min(depth, len(ptss) - 1, frame - 1)
+    truth, wh = _walk_digests(path, walk_to, probe_w, stream)
+    if len(truth) < 3:
+        return {"ok": False, "why": f"only {len(truth)} frame(s) came back from "
+                                    "the head, so there is nothing to calibrate on"}
+    seen = {}
+    for i, d in enumerate(truth):
+        seen.setdefault(d, []).append(i)
+    uniq = [i for i, d in enumerate(truth) if len(seen[d]) == 1]
+    if not uniq:
+        return {"ok": False, "why": "every picture in the head walk repeats "
+                                    "another one, so nothing there can tell a "
+                                    "wrong landing from a right one"}
+    c = uniq[-1]
+    times = dict(_seek_candidates(ptss, c, modal, tb))
+    tried, winner = [], None
+    for name, sec in _seek_candidates(ptss, c, modal, tb):
+        got = _digest_at_seek(path, sec, wh, stream)
+        tried.append({"candidate": name, "seek_seconds": sec,
+                      "returned_a_frame": got is not None,
+                      "matches_frames": [i for i, d in enumerate(truth)
+                                         if d == got] if got else [],
+                      "correct": got == truth[c]})
+        if got == truth[c] and winner is None:
+            winner = name
+    if winner is None:
+        return {"ok": False, "why": f"no candidate seek returned frame {c}, so "
+                                    "there is no rule here to carry to the target"}
+    cal_pts = _pts_at_seek(path, times[winner], stream)
+    if cal_pts != ptss[c]:
+        return {"ok": False, "why": f"the timestamp read back at frame {c} was "
+                                    f"{cal_pts} where the file says {ptss[c]}, so "
+                                    "the timestamps cannot carry the proof here"}
+    tsec = dict(_seek_candidates(ptss, frame, modal, tb))[winner]
+    got_pts = _pts_at_seek(path, tsec, stream)
+    if got_pts != ptss[frame]:
+        at = [i for i, p in enumerate(ptss) if p == got_pts]
+        return {"ok": False, "why": f"'{winner}' works at frame {c} and does NOT "
+                                    f"work at frame {frame}: the picture that "
+                                    f"came back carries timestamp {got_pts}"
+                                    + (f", which is frame {at[0]}" if at else
+                                       ", which is not in this file")}
+    psec = dict(_seek_candidates(ptss, frame - 1, modal, tb))[winner]
+    local, _ = _walk_digests(path, 2, probe_w, stream, start_seconds=psec)
+    here = _digest_at_seek(path, tsec, wh, stream)
+    if len(local) < 2 or here != local[1]:
+        return {"ok": False, "why": "the picture at the target does not sit one "
+                                    "frame after the picture at frame "
+                                    f"{frame - 1}, so the seek and the "
+                                    "timestamp disagree about what came back"}
+    return {"ok": True, "rule": winner, "seek_seconds": tsec,
+            "calibration_frame": c, "walked": len(truth),
+            "candidates_tried": tried,
+            "pts_read_back": got_pts,
+            "neighbours_distinct": len(set(local)) == len(local),
+            "local_frames": len(local)}
+
+
+def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96,
+                   full_walk_max=FULL_WALK_MAX, calibrate_depth=CALIBRATE_DEPTH):
     """The -ss that really lands on frame N, CALIBRATED against this file.
 
     Two faults, both measured on this machine on 2026-08-31, ffmpeg 9.0.1:
@@ -506,10 +651,26 @@ def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96):
     correct both times, so nothing downstream noticed.
 
     So the seek is no longer derived and asserted. Candidates are generated,
-    each one is TRIED, and the one whose picture matches frame N walked from the
-    head of the file is the answer. `verified` says whether that happened.
-    Pass `verify=False` only when the walk is too expensive to afford, and read
-    the result as UNPROVEN when you do.
+    each one is TRIED, and the one whose picture matches frame N is the answer.
+    `verified` says whether that happened and `verification` says HOW, because
+    there are two ways and they do not prove the same thing:
+
+      "head walk"   every frame from 0 to N is decoded and digested, and the
+                    answer is the one that matches frame N's picture. Nothing
+                    is stronger and nothing is slower.
+      "calibrated"  the rule is measured on a short head walk and the number at
+                    the target is proved by the file's own timestamps, read off
+                    the picture that comes back. See `_calibrated_seek`.
+      "none"        `verify=False`. Derived, not measured, and a derived seek
+                    has been wrong on this machine.
+
+    `verify=True` picks between the first two by cost: the head walk up to
+    `full_walk_max` frames, the calibrated proof beyond it, and the head walk
+    again if the calibration cannot be established. Pass "walk" or "calibrated"
+    to force one. THIS IS A CHANGE OF BEHAVIOUR from 31 Aug 2026: `verify=True`
+    used to mean the head walk at any depth, which is about two hours on a late
+    frame of a 90 minute 4K master on the review machine, twice over inside
+    `generation_floor`, with no way to ask for anything else.
     """
     info = packets(path, stream)
     pk, tb = info["packets"], info["time_base"]
@@ -524,18 +685,7 @@ def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96):
     modal = max(set(durs), key=durs.count) if durs else 1
     this = ptss[frame]
     nxt = ptss[frame + 1] if frame + 1 < len(ptss) else this + modal
-    span = nxt - this
-
-    # Ordered by what was measured to work, not by what reads well. The frame's
-    # own start is first because that is what lands on this decoder today; the
-    # old midpoint is kept as a candidate so a decoder that goes back to the old
-    # behaviour is still served, and so the result can say which one it was.
-    cands = [
-        ("frame start", float(this * tb)),
-        ("a quarter frame before the start", float(max(0, this - span / 4) * tb)),
-        ("midpoint of the frame (the pre 2026-08-31 rule)", float((this + nxt) / 2 * tb)),
-        ("midpoint of the frame before", float((ptss[max(0, frame - 1)] + this) / 2 * tb)),
-    ]
+    cands = _seek_candidates(ptss, frame, modal, tb)
 
     out = {
         "file": info["file"], "frame": frame,
@@ -552,7 +702,12 @@ def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96):
             "indexes -show_packets output by frame number is reading the wrong "
             "picture's timestamp. These are sorted.")
 
-    if not verify:
+    mode = ("none" if verify is False else "auto" if verify is True
+            else str(verify))
+    if mode not in ("none", "auto", "walk", "calibrated"):
+        raise ValueError("verify must be True, False, 'walk' or 'calibrated'.")
+    out["verification"] = mode
+    if mode == "none":
         name, sec = cands[0]
         out.update({
             "seek_seconds": sec, "landed_on": name, "verified": False,
@@ -560,64 +715,109 @@ def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96):
                        "derived, not measured, and a derived seek has been "
                        "wrong on this machine.",
         })
-    else:
-        truth, wh = _walk_digests(path, min(frame + 1, len(ptss) - 1), probe_w, stream)
-        if len(truth) <= frame:
-            raise RuntimeError(
-                f"Walked only {len(truth)} frames from the head, so frame "
-                f"{frame} could not be identified. The file is shorter than "
-                "its packet count claims.")
-        want = truth[frame]
-        # The picture is the only evidence there is, so the LABEL is proved only
-        # when this picture appears ONCE in everything walked. Neighbours are the
-        # obvious case and they were all this used to test, but a repeat anywhere
-        # else in the walk satisfies `got == want` exactly as well: a black head,
-        # a flash, a plate that comes back. Measured on a 24 frame file whose
-        # frame 12 repeats frame 0, the neighbours-only test read
-        # "distinguishable", the verdict said "this seek returns frame 12", and
-        # every correct candidate reported having matched frame 0.
-        same_picture = [i for i, d in enumerate(truth) if d == want]
-        ambiguous = len(same_picture) > 1
-        tried = []
-        hit = None
-        for name, sec in cands:
-            got = _digest_at_seek(path, sec, wh, stream)
-            # Every index this picture matches, not the first. The first one is a
-            # confident wrong answer whenever the picture repeats.
-            landed = [i for i, d in enumerate(truth) if d == got] if got else []
-            tried.append({"candidate": name, "seek_seconds": sec,
-                          "returned_a_frame": got is not None,
-                          "matches_frames": landed, "correct": got == want})
-            if got == want and hit is None:
-                hit = (name, sec)
-        out["candidates_tried"] = tried
-        out["picture_unique_in_walk"] = not ambiguous
-        out["frames_sharing_this_picture"] = same_picture if ambiguous else []
-        if hit:
-            out.update({
-                "seek_seconds": hit[1], "landed_on": hit[0], "verified": True,
-                "verdict": (
-                    f"Verified against a head walk: this seek returns frame "
-                    f"{frame}." if not ambiguous else
-                    "Verified against a head walk as a PICTURE, UNPROVEN as a "
-                    "label: frames "
-                    + ", ".join(str(i) for i in same_picture)
-                    + f" are all the same picture in the {len(truth)} frames "
-                    "walked, so content cannot say which of them came back. The "
-                    "seek is right about what you get and unproven about its "
-                    "number. Cut on packet indices if the number matters. Only "
-                    "frames 0 to the target were walked, so a repeat later in "
-                    "the file is outside what this can see either way."),
-            })
-        else:
-            out.update({
-                "seek_seconds": None, "landed_on": None, "verified": False,
-                "verdict": (f"UNPROVEN: none of the {len(cands)} candidate seeks "
-                            f"returned frame {frame}. Do not seek on this file. "
-                            "Walk it from the head, or cut on packet indices "
-                            "with -f segment -segment_frames."),
-            })
+        return _seek_tail(out, info)
 
+    if mode == "calibrated" or (mode == "auto" and frame > full_walk_max):
+        cal = _calibrated_seek(path, frame, ptss, modal, tb, stream, probe_w,
+                               calibrate_depth)
+        if cal["ok"]:
+            out.update({
+                "verification": "calibrated",
+                "seek_seconds": cal["seek_seconds"], "landed_on": cal["rule"],
+                "verified": True,
+                "candidates_tried": cal["candidates_tried"],
+                "calibration": {k: v for k, v in cal.items()
+                                if k not in ("ok", "candidates_tried")},
+                "picture_unique_in_walk": None,
+                "frames_sharing_this_picture": [],
+                "verdict": (
+                    f"Verified WITHOUT walking the file: '{cal['rule']}' is the "
+                    f"rule that returns the right picture at frame "
+                    f"{cal['calibration_frame']}, walked from the head, and the "
+                    f"picture this seek returns carries frame {frame}'s own "
+                    f"timestamp ({cal['pts_read_back']}) and sits one frame "
+                    f"after frame {frame - 1}'s picture. The head walk is "
+                    "stronger still and costs a decode of every frame before "
+                    f"this one: pass verify='walk' for it."
+                    + ("" if cal["neighbours_distinct"] else
+                       " NOTE: frames " + f"{frame - 1}, {frame} and {frame + 1}"
+                       " are not all distinct pictures here, so a cut made on "
+                       "content alone cannot tell them apart.")),
+            })
+            return _seek_tail(out, info)
+        if mode == "calibrated":
+            out.update({
+                "candidates_tried": cal.get("candidates_tried", []),
+                "seek_seconds": None, "landed_on": None, "verified": False,
+                "verdict": "UNPROVEN: " + cal["why"] + ". Pass verify='walk' "
+                           "to decode the file from the head instead.",
+            })
+            return _seek_tail(out, info)
+        out["calibration_refused"] = cal["why"]
+
+    out["verification"] = "head walk"
+    truth, wh = _walk_digests(path, min(frame + 1, len(ptss) - 1), probe_w, stream)
+    if len(truth) <= frame:
+        raise RuntimeError(
+            f"Walked only {len(truth)} frames from the head, so frame "
+            f"{frame} could not be identified. The file is shorter than "
+            "its packet count claims.")
+    want = truth[frame]
+    # The picture is the only evidence there is, so the LABEL is proved only
+    # when this picture appears ONCE in everything walked. Neighbours are the
+    # obvious case and they were all this used to test, but a repeat anywhere
+    # else in the walk satisfies `got == want` exactly as well: a black head,
+    # a flash, a plate that comes back. Measured on a 24 frame file whose
+    # frame 12 repeats frame 0, the neighbours-only test read
+    # "distinguishable", the verdict said "this seek returns frame 12", and
+    # every correct candidate reported having matched frame 0.
+    same_picture = [i for i, d in enumerate(truth) if d == want]
+    ambiguous = len(same_picture) > 1
+    tried = []
+    hit = None
+    for name, sec in cands:
+        got = _digest_at_seek(path, sec, wh, stream)
+        # Every index this picture matches, not the first. The first one is a
+        # confident wrong answer whenever the picture repeats.
+        landed = [i for i, d in enumerate(truth) if d == got] if got else []
+        tried.append({"candidate": name, "seek_seconds": sec,
+                      "returned_a_frame": got is not None,
+                      "matches_frames": landed, "correct": got == want})
+        if got == want and hit is None:
+            hit = (name, sec)
+    out["candidates_tried"] = tried
+    out["picture_unique_in_walk"] = not ambiguous
+    out["frames_sharing_this_picture"] = same_picture if ambiguous else []
+    if hit:
+        out.update({
+            "seek_seconds": hit[1], "landed_on": hit[0], "verified": True,
+            "verdict": (
+                f"Verified against a head walk: this seek returns frame "
+                f"{frame}." if not ambiguous else
+                "Verified against a head walk as a PICTURE, UNPROVEN as a "
+                "label: frames "
+                + ", ".join(str(i) for i in same_picture)
+                + f" are all the same picture in the {len(truth)} frames "
+                "walked, so content cannot say which of them came back. The "
+                "seek is right about what you get and unproven about its "
+                "number. Cut on packet indices if the number matters. Only "
+                "frames 0 to the target were walked, so a repeat later in "
+                "the file is outside what this can see either way."),
+        })
+    else:
+        out.update({
+            "seek_seconds": None, "landed_on": None, "verified": False,
+            "verdict": (f"UNPROVEN: none of the {len(cands)} candidate seeks "
+                        f"returned frame {frame}. Do not seek on this file. "
+                        "Walk it from the head, or cut on packet indices "
+                        "with -f segment -segment_frames."),
+        })
+
+    return _seek_tail(out, info)
+
+
+def _seek_tail(out, info):
+    """The command line and the caveat, the same however the seek was proved."""
     sec = out.get("seek_seconds")
     out["ffmpeg"] = (f"ffmpeg -ss {sec:.9f} -i {info['file']} -frames:v 1 "
                      "-c copy out.mov" if sec is not None else None)
@@ -747,7 +947,16 @@ def _compare16(a, b, chunk=1 << 16):
     return worst, total, nonzero, n
 
 
-def generation_floor(a, b, frame, box=None, stream="v:0"):
+def _floor_caveat(out):
+    """Said before the number, not after it, when the frame was not proved."""
+    if not out.get("unproven"):
+        return ""
+    return ("UNPROVEN FRAME: " + "; ".join(out["unproven"])
+            + " The difference below is real and the frame it was read off is "
+              "not established. ")
+
+
+def generation_floor(a, b, frame, box=None, stream="v:0", verify=True):
     """What a re-encode costs where nothing changed: the number to compare against.
 
     A verifier that demands the untouched regions be identical fails a correct
@@ -758,18 +967,31 @@ def generation_floor(a, b, frame, box=None, stream="v:0"):
     Both frames are pulled through the same decode path, seeking by this file's
     own packet timestamps, because two decode paths disagree by one to two code
     levels on YUV to RGB conversion alone.
+
+    `verify` is handed straight to `seek_for_frame` and it is paid TWICE here,
+    once per file. Until 31 Aug 2026 it was a head walk at any depth with no way
+    to ask for anything else, so a late frame of a 90 minute master cost about
+    an hour at HD and four at 4K on the review machine. It is now the same
+    "walk it if it is cheap, calibrate it if it is not" default as everywhere
+    else, and `verify=False` is a real escape hatch rather than a refusal: the
+    number still comes back, stamped UNPROVEN, because a floor read off the
+    wrong frame is a confident number about the wrong picture.
     """
     C.need("ffmpeg")
     out = {}
     planes = []
     for path in (a, b):
-        s = seek_for_frame(path, frame, stream)
-        if not s.get("verified") or s.get("seek_seconds") is None:
+        s = seek_for_frame(path, frame, stream, verify=verify)
+        if s.get("seek_seconds") is None:
             raise RuntimeError(
                 f"Cannot reach frame {frame} of {path} by seeking: "
                 + s["verdict"] + " A floor read off the wrong frame is a "
                 "confident number about the wrong picture, so this refuses "
                 "rather than returning one.")
+        if not s.get("verified"):
+            out.setdefault("unproven", []).append(
+                f"{os.path.basename(path)}: {s['verdict']}")
+        out.setdefault("verification", []).append(s.get("verification"))
         crop = []
         if box:
             x, y, w, h = box
@@ -793,14 +1015,18 @@ def generation_floor(a, b, frame, box=None, stream="v:0"):
             "max_abs_diff": worst, "mean_abs_diff": total / n if n else 0.0,
             "scale": "16 bit, 0 to 65535",
             "seek_seconds": out.get("seeks"),
+            "verification": out.get("verification"),
+            "unproven": out.get("unproven", []),
             "decode_path": "ffmpeg:rgb48le via packet-timestamp seek",
-            "verdict": ("bit identical in this region"
-                        if worst == 0 else
-                        f"worst {worst} of 65535, mean {total / n:.2f}. If this "
-                        "region was NOT meant to change, this is the generation "
-                        "floor: read every real signal as a multiple of it. If it "
-                        "WAS meant to change, compare it with a floor measured "
-                        "somewhere the change cannot reach."),
+            "verdict": (_floor_caveat(out)
+                        + ("bit identical in this region"
+                           if worst == 0 else
+                           f"worst {worst} of 65535, mean {total / n:.2f}. If "
+                           "this region was NOT meant to change, this is the "
+                           "generation floor: read every real signal as a "
+                           "multiple of it. If it WAS meant to change, compare "
+                           "it with a floor measured somewhere the change "
+                           "cannot reach.")),
             "note": "A codec floor has a shape. ProRes quantises in slices 16 "
                     "rows tall, so new ink anywhere in a strip re-quantises the "
                     "rest of that strip and nothing outside it. Mask the slice "
@@ -813,6 +1039,13 @@ def generation_floor(a, b, frame, box=None, stream="v:0"):
 
 def _ints(s):
     return [int(x) for x in re.findall(r"-?\d+", s or "")]
+
+
+def _verify_arg(args):
+    """--no-verify beats --walk: asking for no proof is not ambiguous."""
+    if getattr(args, "no_verify", False):
+        return False
+    return "walk" if getattr(args, "walk", False) else True
 
 
 def main(argv=None):
@@ -869,9 +1102,15 @@ def main(argv=None):
     sk.add_argument("file")
     sk.add_argument("--frame", type=int, required=True)
     sk.add_argument("--no-verify", action="store_true",
-                    help="Skip the head walk that proves the seek landed. The "
-                         "answer then comes back UNPROVEN, because a derived "
-                         "seek has been wrong on this machine.")
+                    help="Prove nothing. The answer comes back UNPROVEN, "
+                         "because a derived seek has been wrong on this "
+                         "machine.")
+    sk.add_argument("--walk", action="store_true",
+                    help="Force the full head walk however deep the frame is. "
+                         "The strongest proof there is and the slowest: it "
+                         "decodes every frame before this one. Without it a "
+                         f"frame past {FULL_WALK_MAX} is proved by calibration "
+                         "instead, which does not walk the file.")
     C.add_json(sk)
 
     pk = sub.add_parser("packets", help="Packet sizes, and prove a cut")
@@ -891,6 +1130,11 @@ def main(argv=None):
     fl.add_argument("b")
     fl.add_argument("--frame", type=int, required=True)
     fl.add_argument("--box", help="x,y,w,h")
+    fl.add_argument("--no-verify", action="store_true",
+                    help="Do not prove the frame. The floor still comes back, "
+                         "stamped UNPROVEN. This used to refuse outright.")
+    fl.add_argument("--walk", action="store_true",
+                    help="Force the full head walk on BOTH files. Paid twice.")
     C.add_json(fl)
 
     args = ap.parse_args(argv)
@@ -956,7 +1200,7 @@ def main(argv=None):
             [print(f"  {n}") for n in r["notes"]],
             print(f"\n  {'OK  ' if r['ok'] else 'STRIKE  '}{r['verdict']}")))
     if args.cmd == "seek":
-        res = seek_for_frame(args.file, args.frame, verify=not args.no_verify)
+        res = seek_for_frame(args.file, args.frame, verify=_verify_arg(args))
 
         def _show(r):
             print(f"Frame {r['frame']} of {r['frames_in_file']} runs "
@@ -974,6 +1218,15 @@ def main(argv=None):
             if r["seek_seconds"] is not None:
                 print(f"  seek to {r['seek_seconds']:.9f}   ({r['landed_on']})")
                 print(f"  {r['ffmpeg']}")
+            if r.get("calibration"):
+                c = r["calibration"]
+                print(f"  proved without walking the file: rule measured on "
+                      f"frame {c['calibration_frame']} of a {c['walked']} frame "
+                      f"head walk, timestamp {c['pts_read_back']} read back at "
+                      f"the target")
+            if r.get("calibration_refused"):
+                print(f"  calibration refused, walked instead: "
+                      f"{r['calibration_refused']}")
             if r.get("picture_unique_in_walk") is False:
                 print("  frames "
                       + ", ".join(map(str, r["frames_sharing_this_picture"]))
@@ -1008,7 +1261,8 @@ def main(argv=None):
         box = _ints(args.box) if args.box else None
         if box and len(box) != 4:
             raise ValueError("--box wants x,y,w,h")
-        res = generation_floor(args.a, args.b, args.frame, box)
+        res = generation_floor(args.a, args.b, args.frame, box,
+                               verify=_verify_arg(args))
         return C.emit(res, args.json, lambda r: (
             print(f"Frame {r['frame']}, {r['box']}: "
                   f"{r['changed_samples']} of {r['samples']} samples differ"),
