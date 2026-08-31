@@ -190,6 +190,28 @@ def main():
     check("fitting the DELTA leaves pure black alone",
           black < 1.0, f"black moved {black:.2f} of 255 (fitting the map moved 2.3)")
 
+    # ---- the retime smoother must not park the camera at the ends --------
+    # Both halves are required. The ramp extension has to be right AND
+    # mode="edge" has to be shown wrong on the same curve, or this is not
+    # evidence that the padding mattered.
+    import cgmotion as M
+    for label, C, truth in (
+            ("a clean ramp", np.arange(60, dtype=float) * 10.0, 10.0),
+            ("a held frame timeline", np.repeat(np.arange(20, dtype=float) * 30.0, 3), 10.0)):
+        v = np.diff(M.smooth_cumulative(C, 25))
+        k = 12
+        old_pad = np.pad(C, k, mode="edge")
+        v_old = np.diff(np.array([old_pad[i:i + 25].mean() for i in range(len(C))]))
+        check(f"the smoother keeps the shot's speed at both ends, {label}",
+              abs(v[0] - truth) < 0.5 and abs(v[-1] - truth) < 0.5,
+              f"head {v[0]:.2f}, tail {v[-1]:.2f}, truth {truth:.2f}")
+        check(f"and mode=edge really does lose it, {label}",
+              v_old[0] < truth * 0.7 and v_old[-1] < truth * 0.7,
+              f"head {v_old[0]:.2f}, tail {v_old[-1]:.2f}")
+    flat = M.smooth_cumulative(np.zeros(40), 25)
+    check("a shot that never moves is not given movement",
+          float(np.abs(np.diff(flat)).max()) == 0.0)
+
     print(f"\n{_ran} checks, {_fail} failures")
     return 1 if _fail else 0
 

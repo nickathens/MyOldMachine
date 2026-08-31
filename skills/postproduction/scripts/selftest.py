@@ -38,6 +38,20 @@ import supers as SUP  # noqa: E402
 
 _ran = _fail = 0
 
+SHIM_FFMPEG = r'''#!/usr/bin/env python3
+import re
+import sys
+a = " ".join(sys.argv)
+m = re.search(r"scale=(\d+):(\d+)", a)
+w, h = (int(m.group(1)), int(m.group(2))) if m else (96, 54)
+n = int(re.search(r"-frames:v (\d+)", a).group(1))
+sys.stderr.buffer.write(b"x" * 262144)
+sys.stderr.buffer.flush()
+for i in range(n):
+    sys.stdout.buffer.write(bytes([i % 251]) * (w * h * 3))
+sys.stdout.buffer.flush()
+'''
+
 
 def check(label, ok, detail=""):
     global _ran, _fail
@@ -811,9 +825,16 @@ def test_media():
         tl = PROVE.timeline(clip)
         check("an unspliced clip has a uniform timeline", tl["uniform"])
         check("every ProRes frame is a keyframe", tl["all_keyframes"])
+        # This check used to read: start < seek < end. It passed for a year
+        # while the seek it was blessing returned the WRONG PICTURE, because it
+        # asserted the arithmetic of the number instead of the frame that came
+        # back. It now asks the only question worth asking, and the numbered
+        # clip checks further down are what can answer it by content.
         s = PROVE.seek_for_frame(clip, 5)
-        check("a seek lands strictly inside the frame it names",
-              s["frame_start_s"] < s["seek_seconds"] < s["frame_end_s"])
+        check("a seek is verified against the picture, not against its own sum",
+              s["verified"] and s["frame_start_s"] <= s["seek_seconds"]
+              < s["frame_end_s"],
+              f"landed on {s['landed_on']}")
         f = PROVE.framemd5(clip, use_cache=False)
         check("per frame hashes come back", f["count"] == 24)
         d = PROVE.diff_frames(clip, clip, use_cache=False)
@@ -823,6 +844,264 @@ def test_media():
         check("and its generation floor against itself is zero",
               floor["max_abs_diff"] == 0)
         _media_honest_enlargement(tmp)
+        _media_seek_is_verified(tmp)
+        _media_length_and_clipping(tmp)
+        _media_walk_does_not_deadlock(tmp)
+
+
+def _media_walk_does_not_deadlock(tmp):
+    """The head walk must not block on a decoder with a lot to say.
+
+    `_walk_digests` never reads ffmpeg's stderr. It closes stdout and then waits.
+    While stderr was a PIPE, a file emitting more than the 64 KB kernel pipe
+    buffer in decode warnings stopped ffmpeg mid write, and the walk sat forever
+    reading a stdout that could no longer be filled, with no timeout to break it.
+
+    Nothing in this suite emits that much, and a corrupt file bails out after a
+    few hundred bytes rather than talking through the decode, so the decoder is
+    stood in for by a script that writes all of its stderr first and the picture
+    after. That is the same standoff and it is deterministic. It runs in a child
+    with a hard timeout, so a regression FAILS here instead of hanging the run.
+    """
+    clip = os.path.join(tmp, "numpr.mov")
+    if not os.path.exists(clip):
+        check("a clip for the walk deadlock check exists", False)
+        return
+    shim = os.path.join(tmp, "shimbin")
+    os.makedirs(shim, exist_ok=True)
+    fake = os.path.join(shim, "ffmpeg")
+    with open(fake, "w") as fh:
+        fh.write(SHIM_FFMPEG)
+    os.chmod(fake, 0o755)
+    code = ("import sys\n"
+            "sys.path.insert(0, %r)\n"
+            "import prove as P\n"
+            "d, wh = P._walk_digests(%r, 5)\n"
+            "print(len(d))\n" % (HERE, clip))
+    env = dict(os.environ, PATH=shim + os.pathsep + os.environ.get("PATH", ""))
+    try:
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                           text=True, timeout=30, env=env)
+        ok = r.returncode == 0 and r.stdout.strip() == "6"
+        why = ("walked 6 frames out from under 256 KB of stderr" if ok else
+               "the walk came back wrong: " + (r.stderr.strip()[-90:] or r.stdout.strip()))
+    except subprocess.TimeoutExpired:
+        ok = False
+        why = "the walk blocked: stderr is a pipe nobody drains"
+    check("the head walk survives a decoder that fills the stderr pipe", ok, why)
+
+
+def _numbered_clip(tmp, name, n=32, codec=("libx264", "-crf", "10"), pix="yuv420p",
+                   repeat=None):
+    """A clip whose every frame is a flat grey nobody else has.
+
+    The point is that a frame can be IDENTIFIED from its pixels alone, so a
+    seek can be held against the truth instead of against another seek.
+
+    `repeat` is `(at, of)` and makes frame `at` a copy of frame `of`, which is
+    how a black head or a plate that comes back behaves: identification by
+    content stops working at that frame while its neighbours stay distinct.
+    """
+    out = os.path.join(tmp, name)
+    raw = os.path.join(tmp, name + ".raw")
+    vals = [10 + i * 5 for i in range(n)]
+    if repeat is not None:
+        vals[repeat[0]] = vals[repeat[1]]
+    with open(raw, "wb") as fh:
+        for v in vals:
+            fh.write(bytes([v]) * (320 * 180 * 3))
+    cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "-s", "320x180", "-r", "24", "-i", raw, "-c:v"] + list(codec) + \
+          ["-pix_fmt", pix, out]
+    if codec[0] == "libx264":
+        cmd[cmd.index("-c:v") + 2:cmd.index("-c:v") + 2] = ["-g", "8", "-bf", "2"]
+    r = subprocess.run(cmd, capture_output=True)
+    return out if r.returncode == 0 else None
+
+
+def _frame_id(path, ss=None):
+    """Which numbered frame a seek returns, read back off the picture."""
+    cmd = ["ffmpeg", "-v", "error", "-nostdin"]
+    if ss is not None:
+        cmd += ["-ss", f"{ss:.9f}"]
+    cmd += ["-i", path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    buf = subprocess.run(cmd, capture_output=True).stdout
+    if len(buf) < 320 * 180 * 3:
+        return None
+    return int(round((buf[0] - 10) / 5))
+
+
+def _media_seek_is_verified(tmp):
+    """The seek must land on the frame asked for, and must PROVE it did.
+
+    Two real faults, both measured on this machine on 2026-08-31 against
+    ffmpeg 9.0.1. Packet order is not display order, so indexing -show_packets
+    output by frame number reads another frame's timestamp on any long GOP
+    file. And the midpoint rule that was the department's standing recipe now
+    returns frame N+1 on every file tested, and returns nothing at all on the
+    last frame.
+
+    So this asserts BOTH halves: the tool now lands on the right picture, AND
+    the recipe it replaced is still measurably wrong on the same file. A check
+    that only shows the new path works is not evidence the change was needed.
+    """
+    for name, codec, pix, label in (
+            ("num264.mp4", ("libx264", "-crf", "10"), "yuv420p", "long GOP"),
+            ("numpr.mov", ("prores_ks", "-profile:v", "3"), "yuv422p10le", "all intra")):
+        clip = _numbered_clip(tmp, name, 32, codec, pix)
+        if clip is None:
+            check(f"a numbered {label} clip could be built", False)
+            continue
+        ok_all, wrong_old, last_ok = True, 0, None
+        for n in (0, 7, 12, 31):
+            r = PROVE.seek_for_frame(clip, n)
+            if not (r["verified"] and _frame_id(clip, r["seek_seconds"]) == n):
+                ok_all = False
+            old = [c for c in r["candidates_tried"] if "pre 2026" in c["candidate"]]
+            if old and not old[0]["correct"]:
+                wrong_old += 1
+            if n == 31:
+                last_ok = r["verified"]
+        check(f"the seek lands on the frame asked for, {label}", ok_all,
+              "frames 0, 7, 12 and 31 all verified against a head walk")
+        check(f"and the midpoint rule it replaced does not, {label}",
+              wrong_old >= 3,
+              f"the old recipe missed {wrong_old} of 4 frames on this file")
+        check(f"the LAST frame is reachable, {label}", bool(last_ok),
+              "the old midpoint lay past the end of the picture and returned nothing")
+
+    # Packet order really is not display order on a file with B frames, which is
+    # the fault the sort exists for. If this ever stops being true the sort is
+    # harmless, but the check above stops proving anything, so say it out loud.
+    clip = os.path.join(tmp, "num264.mp4")
+    if os.path.exists(clip):
+        r = PROVE.seek_for_frame(clip, 7, verify=False)
+        check("a B frame file is reported as out of packet order",
+              r["pts_in_packet_order"] is False,
+              "so anything indexing -show_packets by frame number is misreading it")
+
+    # A picture that repeats somewhere OTHER than next door. The digest match is
+    # `got == want` and nothing else, so any earlier frame carrying the same
+    # picture satisfies it, and the ambiguity test used to look only at N-1, N
+    # and N+1. On this file that read "distinguishable" and the verdict said
+    # "this seek returns frame 12" while every correct candidate had matched
+    # frame 0. Three halves are asserted: the flag fires on the fault, the
+    # neighbours really are distinct so the old rule could not have caught it,
+    # and a clean file of the same shape does not fire.
+    dup = _numbered_clip(tmp, "dup.mov", 24, ("prores_ks", "-profile:v", "3"),
+                         "yuv422p10le", repeat=(12, 0))
+    clean = _numbered_clip(tmp, "nodup.mov", 24, ("prores_ks", "-profile:v", "3"),
+                           "yuv422p10le")
+    if dup is None or clean is None:
+        check("a clip with a repeated frame could be built", False)
+    else:
+        r = PROVE.seek_for_frame(dup, 12)
+        truth, _ = PROVE._walk_digests(dup, 13)
+        check("a picture that repeats away from its neighbours is called out",
+              r["picture_unique_in_walk"] is False
+              and r["frames_sharing_this_picture"] == [0, 12],
+              f"frames {r['frames_sharing_this_picture']} are one picture")
+        check("and the neighbours are distinct, so the old rule was blind to it",
+              len({truth[11], truth[12], truth[13]}) == 3,
+              "11, 12 and 13 are three different pictures on this file")
+        hits = [t for t in r["candidates_tried"] if t["correct"]]
+        check("and every index the picture matches is reported, not the first",
+              bool(hits) and all(t["matches_frames"] == [0, 12] for t in hits),
+              "the field used to name frame 0 for a seek that returns frame 12")
+        check("the seek still returns the right PICTURE on that file",
+              r["verified"] is True and "UNPROVEN as a label" in r["verdict"],
+              "right about what comes back, honest about its number")
+        c = PROVE.seek_for_frame(clean, 12)
+        check("and a file with no repeat is not flagged",
+              c["picture_unique_in_walk"] is True
+              and c["frames_sharing_this_picture"] == [],
+              "the same 24 frames without the repeat")
+
+
+def _media_length_and_clipping(tmp):
+    """The mux that shortens the film, and the ceiling a true peak cannot see."""
+    import wave
+    import struct
+    import math
+    clip = _numbered_clip(tmp, "len.mp4", 48)
+    if clip is None:
+        check("a clip for the length checks could be built", False)
+        return
+    wav = os.path.join(tmp, "short.wav")
+    n = int(48000 * (48 / 24 - 0.004))          # four milliseconds short
+    w = wave.open(wav, "w")
+    w.setnchannels(2)
+    w.setsampwidth(2)
+    w.setframerate(48000)
+    w.writeframes(b"".join(struct.pack("<hh", int(8000 * math.sin(i / 50)),
+                                       int(8000 * math.sin(i / 50)))
+                           for i in range(n)))
+    w.close()
+    outs = {}
+    for tag, extra in (("shortest", ["-shortest"]), ("plain", [])):
+        o = os.path.join(tmp, f"mux_{tag}.mp4")
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", clip, "-i", wav,
+                        "-c:v", "copy", "-c:a", "aac"] + extra + [o],
+                       capture_output=True)
+        outs[tag] = o
+
+    bad = PROVE.length(outs["shortest"], against=clip)
+    good = PROVE.length(outs["plain"], against=clip)
+    check("a four millisecond short sound really does eat a picture frame",
+          bad["frames"] == 47 and good["frames"] == 48,
+          f"-shortest gave {bad['frames']} frames, a plain mux gave {good['frames']}")
+    check("and the length gate strikes it", not bad["ok"] and good["ok"],
+          bad["verdict"][:70])
+    check("the picture ending before its own sound is called out",
+          any("ENDS BEFORE THE SOUND" in x for x in bad["notes"])
+          and not good["notes"],
+          "the same two streams, muxed two ways")
+
+    # The nb_frames fallback. Every other file in this suite is MP4 or MOV and
+    # both containers carry a frame count, so the packet counter underneath was
+    # never reached by any check here. Matroska does not carry one, which is the
+    # only way in. The missing field is asserted FIRST: without that, the day
+    # ffprobe starts filling it in, this check goes on passing while measuring
+    # the fast path instead.
+    mkv = os.path.join(tmp, "len.mkv")
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", clip, "-c:v", "ffv1", mkv],
+                   capture_output=True)
+    nb = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                         "-show_entries", "stream=nb_frames", "-of",
+                         "default=nw=1:nk=1", mkv],
+                        capture_output=True, text=True).stdout.strip()
+    hidden = os.path.exists(mkv) and not nb.isdigit()
+    check("Matroska really does hide the frame count from ffprobe", hidden,
+          f"nb_frames reads {nb!r}, so length() has to count packets instead")
+    if hidden:
+        r = PROVE.length(mkv)
+        check("and the packet count fallback gets the length right",
+              r["frames"] == 48, f"counted {r['frames']} where the source has 48")
+
+    # The ceiling. A limiter output reads a compliant peak and is destroyed.
+    import audio as AUDIO
+    for tag, gain, want in (("clean", 0.9, False), ("crushed", 1.99, True)):
+        wp = os.path.join(tmp, f"{tag}.wav")
+        w = wave.open(wp, "w")
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        fr = []
+        for i in range(24000):
+            v = 0.5 * math.sin(i / 40.0) + 0.25 * math.sin(i / 7.3)
+            v = max(-1.0, min(1.0, v * gain))
+            fr.append(struct.pack("<hh", int(v * 32767), int(v * 32767)))
+        w.writeframes(b"".join(fr))
+        w.close()
+        r = AUDIO.clipping(wp)
+        check(f"flat topping is {'found' if want else 'not invented'} in the "
+              f"{tag} file",
+              (r["runs"] > 100) is want,
+              f"{r['samples_at_ceiling']} samples on the ceiling in "
+              f"{r['runs']} run(s), peak {r['peak_sample_dbfs']:+.2f} dBFS")
+        if want:
+            check("and the peak alone would have passed it", r["peak_sample"] <= 1.0,
+                  f"{r['peak_sample_dbfs']:+.2f} dBFS is inside any true peak gate")
 
 
 def _media_honest_enlargement(tmp):

@@ -624,6 +624,120 @@ instrument for what the viewer felt before arguing with the viewer.
 
 ---
 
+## 25. The interpolator did not deliver the phase it was asked for
+
+**Symptom.** A held frame slow motion was rebuilt at true fractional phases, so
+every slot carried a distinct picture and nothing was repeated anywhere. It
+still pulsed, gently, at the rate of the original source frames.
+
+**Cause.** RIFE's `timestep` is not the fraction of the move it delivers.
+Measured 2026-08-31 on RIFE 4.25, three source pairs of a real 24 fps shot, by
+tracking the delivered displacement against the pair it was built from:
+
+    asked  0.0  0.1  0.2  0.3  0.4  0.5  0.6  0.7  0.8  0.9  1.0
+    got   .003 .003 .147 .275 .403 .520 .639 .760 .903 1.00 1.00
+
+Flat at both ends. A slot asked for 0.93 of a pair lands on the NEXT source
+frame outright, and the following slot, asked for 0.29 of the next pair, has
+already travelled 0.27. So every gap that straddles a source frame carries about
+a third of the ground it should, and the pulse is at the source cadence because
+that is where the straddles are.
+
+**Why nothing here caught it.** No duplicate count and no stall test can see
+this. Nothing is repeated, every frame is distinct, and every one of them is
+wrong by a fraction. It shows only in tracked displacement per gap. And a plain
+2x interpolation asks for t=0.5, which the curve delivers at 0.520, so every
+ordinary job on this engine was very nearly right and nobody had reason to look.
+It only bites a FRACTIONAL PHASE rebuild.
+
+**Fix.** `cgrife.solve_timestep` inverts the measured curve, so the number handed
+to the network is the one that DELIVERS the phase wanted. On that shot it took
+the moving panel from three effectively frozen gaps and a worst step of 2.17x
+the median to zero frozen gaps and 1.95x. `correct_timestep=False` reproduces a
+build made before 2026-08-31 byte for byte.
+
+The self test asserts BOTH directions, and the second one is the point: it
+requires the RAW path to be measurably wrong on the same curve (0.070 of a gap
+at t=0.93). A test that only shows the corrected path is right is not evidence
+the correction was needed, and it would not notice if somebody simplified the
+inversion away.
+
+**The general form.** A control input is a request, not a measurement. Before
+building anything on a parameter, measure what the machine does with it across
+its whole range, and put the correction in the TOOL. This curve was written into
+a job folder note at 11:00 and the shared engine was still passing the raw value
+at 11:40.
+
+---
+
+## 26. ffmpeg 9 removed a flag, and a whole tool suite died on its own test
+
+**Symptom.** `scripts/selftest_tools.py` did not report a failure. It raised a
+`CalledProcessError` and stopped, so the fifteen checks after the first decode
+never ran at all and the suite had no result to give.
+
+**Cause.** `-vsync` was REMOVED in ffmpeg 9, which is what is installed on this
+machine. Four call sites across `cgframes.py`, `cgvideo.py` and `cgpanel.py`
+were passing `-vsync 0` and getting `Unrecognized option 'vsync'`.
+
+**Why it matters more than a renamed flag.** `-vsync 0` is `-fps_mode
+passthrough`, and passthrough is not decoration. Without it ffmpeg resolves to
+CFR on a rawvideo pipe and fills the output timeline from t=0 by DUPLICATING the
+first frame it holds, so a span pulled out of the middle of a film with `select`
+comes back as `n` copies of its first picture. Those four call sites were the
+ones that had it right, and the upgrade quietly disarmed them.
+
+**Fix.** All four now pass `-fps_mode passthrough`. `selftest.py` carries two
+new checks: no script in the directory still hands over the removed flag, and
+the flag handed over instead is ACCEPTED by the ffmpeg on PATH. Both matter. A
+lint alone would go stale the next time a flag is retired, and a live probe
+alone would not notice a script that had drifted back.
+
+**The general form.** A crash inside a test harness is not a failing test, it is
+a MISSING test, and it looks the same as silence from the outside. And the tools
+underneath a skill get upgraded without asking: anything the scripts hand to
+ffmpeg is an assumption about a program that changes, so it belongs in the self
+test beside the maths. Same family as failure 25 and as the frame seek in the
+postproduction skill, where a recipe read off one version of a decoder was
+quietly wrong on the next.
+
+---
+
+## 27. The retime smoother parked the camera at both ends of every shot
+
+**Symptom.** A retime that passed every local instrument was rejected by eye,
+described as the shot stopping and then going faster. The complaint was about
+the ends, and every spike test looks at neighbourhoods.
+
+**Cause.** `cgmotion.plan` smoothed the CUMULATIVE travel curve with a box
+filter padded `mode="edge"`. Cumulative travel at a constant speed is a straight
+RAMP, and repeating its end value into the pad flattens that ramp inside the
+window at both ends, so the smoother reports the camera as nearly stopped there
+and the retime built on it really does slow down. Measured on a pure ramp of
+10 px a frame at window 25:
+
+    mode="edge"          head 5.20    middle 10.00   tail 5.20
+    mode="reflect"       head 0.40    middle 10.00   tail 0.40
+    ramp extension       head 10.00   middle 10.00   tail 10.00
+
+Nearly half the real speed, at exactly the two places a viewer reads as the shot
+hesitating before it goes. On a held frame timeline, which is the shape this is
+actually for, edge padding read 4.80 against a truth of 10.00.
+
+**Fix.** `smooth_cumulative` extends the ramp at the slope the curve already has
+at each end. The slope is measured over the WINDOW'S OWN SPAN and never over one
+step, because on a held frame timeline the first step is often exactly zero and
+a one step slope would silently reproduce `mode="edge"` on precisely the shots
+this exists for.
+
+**The general form.** A padding mode is an assumption about what the signal does
+outside the data, and the right one depends on what the signal IS. `edge` is
+right for a level and wrong for a ramp. Anything cumulative, any position, any
+running total, has a slope at its ends that the pad has to carry. And the fault
+lives only at the ends, so a spike test scored against a neighbourhood cannot
+see it: it needs a check that looks at the first and last gap specifically.
+---
+
 ## Where the rest of the failures live
 
 The picture faults found on a split screen series are in `05_picture.md`: per

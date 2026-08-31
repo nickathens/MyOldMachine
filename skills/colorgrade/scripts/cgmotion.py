@@ -67,6 +67,40 @@ def travel(a, b):
     return float(np.percentile(np.linalg.norm(f, axis=2), 75))
 
 
+def smooth_cumulative(C, window):
+    """Box smooth a CUMULATIVE travel curve without parking the camera at its ends.
+
+    NOT `mode="edge"`. This curve is cumulative travel, so a shot moving at a
+    constant speed is a straight ramp, and repeating the end value into the pad
+    flattens that ramp inside the window at both ends. The smoother then reports
+    the camera as nearly stopped there, and the retime built on it really does
+    stop. Measured on a pure ramp of 10 px a frame at window 25:
+
+        mode="edge"            head 5.20   middle 10.00   tail 5.20
+        mode="reflect"         head 0.40   middle 10.00   tail 0.40
+        the ramp extension     head 10.00  middle 10.00   tail 10.00
+
+    Nearly half the real speed, at exactly the two places a viewer reads as the
+    shot hesitating before it goes.
+
+    The slope is taken over the window's own span and never over one step: on a
+    held frame timeline the first step is often exactly zero, and a one step
+    slope would silently reproduce `mode="edge"` on the shots this is for.
+    """
+    C = np.asarray(C, dtype=float)
+    n = len(C)
+    if n < 2 or window < 2:
+        return C.copy()
+    k = window // 2
+    span = max(1, min(k, n - 1))
+    head_slope = (C[span] - C[0]) / span
+    tail_slope = (C[-1] - C[-1 - span]) / span
+    pad = np.concatenate([C[0] + np.arange(-k, 0) * head_slope,
+                          C,
+                          C[-1] + np.arange(1, k + 1) * tail_slope])
+    return np.array([pad[i:i + window].mean() for i in range(n)])
+
+
 def plan(work, window=73, report_only=False):
     st = json.load(open(f"{work}/state.json"))
     census = json.load(open(f"{work}/census.json"))
@@ -94,9 +128,7 @@ def plan(work, window=73, report_only=False):
             j += 1
         Corig[i] = Cs[j]
 
-    k = window // 2
-    pad = np.pad(Corig, k, mode="edge")
-    D = np.array([pad[i:i + window].mean() for i in range(n_out)])
+    D = smooth_cumulative(Corig, window)
     D = np.maximum.accumulate(D)
     D = (D - D[0]) / (D[-1] - D[0]) * Cs[-1]                   # keep both ends pinned
 

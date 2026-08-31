@@ -107,6 +107,12 @@ macOS, so it alerted on every check; replaced with memory pressure, and
 fixed `_alert_key` keeping the varying reading in the cooldown key
 (`core/health.py`). (PR #149)
 
+[2026-08-31] mac: postproduction + colorgrade instrument audit — the frame
+seek proved against the picture instead of derived, a mux length gate, a
+clipping meter, the RIFE timestep inversion, and the `-vsync` removal in
+ffmpeg 9 (`skills/postproduction/scripts/`, `skills/colorgrade/scripts/`).
+(PR #150)
+
 (Entries removed above: #145, #144, #147 and #146 merged 2026-08-23.
 #143, #142, #141 and #140 merged 2026-08-22.
 #139 and #138 merged 2026-08-18.

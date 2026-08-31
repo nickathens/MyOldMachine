@@ -110,6 +110,45 @@ def main():
         sys.exit("could not decode the test clip")
     a, b = frames[2], frames[3]
 
+    # ---- the timestep the network actually delivers ----------------------
+    # Needs no media and no torch: it is arithmetic on the curve measured off a
+    # real shot. TWO assertions, and the second matters as much as the first. A
+    # test that only shows the corrected path is right is not evidence the fix
+    # was needed, so this also requires the RAW path to be measurably wrong on
+    # the same curve. If anyone ever simplifies solve_timestep away, the second
+    # check is what fails.
+    import cgrife
+    _c = cgrife.TIMESTEP_CURVE
+    _asked = np.array([a_ for a_, _ in _c])
+    _got = np.array([g for _, g in _c])
+
+    def delivered(ask):
+        return float(np.interp(ask, _asked, _got))
+
+    wanted = [0.05, 0.1, 0.2, 0.29, 0.3, 0.5, 0.7, 0.8, 0.9, 0.93, 0.95]
+    worst_fixed = max(abs(delivered(cgrife.solve_timestep(w)) - w) for w in wanted)
+    worst_raw = max(abs(delivered(w) - w) for w in (0.29, 0.5, 0.93))
+    check("asking for the corrected timestep delivers the phase wanted",
+          worst_fixed < 0.002, f"worst {worst_fixed:.5f} of a gap over {len(wanted)} phases")
+    check("and the raw timestep does not, so the correction is load bearing",
+          worst_raw > 0.02, f"worst {worst_raw:.5f} of a gap at t=0.29, 0.50, 0.93")
+    check("the exact endpoints are pinned and pass through untouched",
+          cgrife.solve_timestep(0.0) == 0.0 and cgrife.solve_timestep(1.0) == 1.0,
+          "a slot landing on a source frame is conditioned like a source frame, "
+          "which was measured worth 0.0070 against 0.0172 code levels")
+    check("and just inside them the flat part of the curve is clamped",
+          cgrife.solve_timestep(1e-6) >= 0.099
+          and cgrife.solve_timestep(1 - 1e-6) <= 0.9 + 1e-9,
+          f"phase 0.999999 asks for {cgrife.solve_timestep(1 - 1e-6):.3f}, "
+          "past which nothing moves")
+    check("pinning the ends costs nothing in delivered phase",
+          abs(delivered(0.0) - delivered(0.1)) < 1e-9
+          and abs(delivered(0.9) - delivered(1.0)) < 1e-9,
+          "the curve is flat there, so both requests deliver the same movement")
+    check("t=0.5 was always nearly right, which is why this hid for months",
+          abs(delivered(0.5) - 0.5) < 0.03,
+          f"a plain 2x rebuild asks 0.5 and gets {delivered(0.5):.3f}")
+
     # ---- plane handling -------------------------------------------------
     y, u, v = Y.planes(a, spec)
     check("the three planes are the right shape and size",
