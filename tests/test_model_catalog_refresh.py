@@ -60,6 +60,13 @@ class CurrentFlagshipsPresentTests(unittest.TestCase):
         for provider in ("claude", "claude-api"):
             self.assertEqual(wizard.DEFAULT_MODELS[provider], "claude-sonnet-5")
 
+    def test_fable_5_1_present(self):
+        # Fable 5.1 (claude-fable-5-1) succeeds Fable 5 in the same tier at the
+        # same $10/$50 per MTok. Offered, never recommended — see
+        # test_opus_5_does_not_hijack_default for why the default stays Sonnet.
+        self.assertIn("claude-fable-5-1", _ids("claude"))
+        self.assertIn("claude-fable-5-1", _ids("claude-api"))
+
     def test_sonnet_5_present(self):
         # Sonnet 5 (claude-sonnet-5) GA June 30, 2026 — current Sonnet flagship.
         self.assertIn("claude-sonnet-5", _ids("claude"))
@@ -103,6 +110,15 @@ class RetiredModelsAbsentTests(unittest.TestCase):
             self.assertNotIn("claude-opus-4-6", ids)
         self.assertNotIn("claude-sonnet-4-5-20250929", _ids("claude-api"))
 
+    def test_superseded_fable_removed(self):
+        # Fable 5 is superseded by Fable 5.1 at identical pricing, the same way
+        # each Opus retires its predecessor. 5.1 is not a drop-in: forced
+        # tool_choice ("any"/"tool") now 400s and thinking blocks are bound to
+        # the model that produced them, so leaving both on offer would let a
+        # picked model silently change request semantics.
+        for provider in ("claude", "claude-api"):
+            self.assertNotIn("claude-fable-5", _ids(provider), msg=provider)
+
     def test_superseded_sonnet_removed(self):
         # Sonnet 4.6 is superseded by Sonnet 5 at identical standard pricing.
         for provider in ("claude", "claude-api"):
@@ -143,7 +159,7 @@ class ClaudeSamplingGateTests(unittest.TestCase):
         # Opus 5 has no entry in _CLAUDE_SAMPLING_OK and must not gain one:
         # omitting temperature is accepted by every model, sending it 400s on
         # everything from Opus 4.7 forward.
-        for model in ("claude-sonnet-5", "claude-fable-5", "claude-opus-5",
+        for model in ("claude-sonnet-5", "claude-fable-5-1", "claude-opus-5",
                       "claude-opus-4-8", "claude-opus-4-7"):
             with self.subTest(model=model):
                 self.assertFalse(_claude_accepts_temperature(model))

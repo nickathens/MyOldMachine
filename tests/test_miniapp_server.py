@@ -268,6 +268,21 @@ class TestClaudeModelCatalog(unittest.TestCase):
             ids = {m["id"] for m in srv._available_models(provider)}
             self.assertNotIn("claude-opus-4-8", ids, msg=provider)
 
+    def test_fable_5_1_selectable(self) -> None:
+        # Same inheritance proof as Opus 5 above, for the model that replaced
+        # Fable 5: the picker is data driven, so a wizard catalog edit lands
+        # here with no Mini App change.
+        for provider in ("claude", "claude-api"):
+            ids = {m["id"] for m in srv._available_models(provider)}
+            self.assertIn("claude-fable-5-1", ids, msg=provider)
+
+    def test_retired_fable_not_offered(self) -> None:
+        # Fable 5 was superseded by 5.1 at the same price; the picker must not
+        # keep offering the older one alongside it.
+        for provider in ("claude", "claude-api"):
+            ids = {m["id"] for m in srv._available_models(provider)}
+            self.assertNotIn("claude-fable-5", ids, msg=provider)
+
     def test_default_is_current_sonnet(self) -> None:
         # Opus/Fable entries must not hijack the recommended/default model;
         # the default tracks the current Sonnet (Sonnet 5 since June 30, 2026).
