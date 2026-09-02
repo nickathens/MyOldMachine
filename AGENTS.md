@@ -102,6 +102,14 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-09-02] mac: Claude Fable 5.1 (`claude-fable-5-1`) replaces Fable 5 in
+the two Anthropic rows of `install/wizard.py`, same tier and same $10/$50 per
+MTok, the way each Opus retires its predecessor. Catalog only: 5.1 400s on
+forced `tool_choice`, on `budget_tokens` and on a non-default temperature, and
+`ClaudeAPIProvider` sends none of the three, so `core/llm.py` is untouched.
+Four tests added, all proved failing first, two of them in
+`tests/test_miniapp_server.py` to hold the picker data driven. (PR #153)
+
 (Entries removed above: #150 and #151 merged 2026-08-31.
 #149 merged 2026-08-24, its line cleared inside #151.
 #148 merged 2026-08-23 and was itself the docs PR that cleared #145.

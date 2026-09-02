@@ -388,7 +388,15 @@ DEFAULT_MODELS = {
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
-# Last updated: July 24, 2026 (Anthropic rows) — verified live against the
+# Last updated: September 2, 2026 (Fable row) — Claude Fable 5.1
+# (claude-fable-5-1) replaces Fable 5 in the same tier at the same $10/$50 per
+# MTok, the way each Opus retires its predecessor. It is not a drop-in: forced
+# tool_choice ("any"/"tool") returns 400, thinking blocks are bound to the
+# model that produced them, and it needs 30-day retention (no ZDR). Nothing in
+# core/llm.py sends any of those — the Claude API body is model/max_tokens/
+# system/messages, and _claude_accepts_temperature already omits temperature
+# for it — so the swap is a catalog edit only. Sonnet 5 stays the default.
+# Last updated: July 24, 2026 (other Anthropic rows) — verified live against the
 # platform.claude.com models overview: Claude Opus 5 (claude-opus-5) is the
 # current Opus at Opus 4.8's price ($5/$25 per MTok, 1M ctx), and Opus 4.8 has
 # moved to the docs' Legacy models table, so it retires here exactly the way
@@ -400,7 +408,7 @@ DEFAULT_MODELS = {
 PROVIDER_MODELS = {
     "claude": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, near-Opus performance, 1M ctx (recommended)"),
-        ("claude-fable-5", "Claude Fable 5 — next-gen flagship, hardest coding + agentic work, uses plan quota fast"),
+        ("claude-fable-5-1", "Claude Fable 5.1 — next-gen flagship, hardest coding + agentic work, uses plan quota fast"),
         ("claude-opus-5", "Claude Opus 5 — complex agentic coding and enterprise work, 1M ctx"),
     ],
     "codex": [
@@ -412,7 +420,7 @@ PROVIDER_MODELS = {
     ],
     "claude-api": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, 1M ctx, $3/$15 per MTok, intro $2/$10 through Aug 31 (recommended)"),
-        ("claude-fable-5", "Claude Fable 5 — next-gen flagship, hardest coding + agentic work, $10/$50 per MTok"),
+        ("claude-fable-5-1", "Claude Fable 5.1 — next-gen flagship, hardest coding + agentic work, $10/$50 per MTok"),
         ("claude-opus-5", "Claude Opus 5 — complex agentic coding and enterprise work, 1M ctx, $5/$25 per MTok"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, 200K ctx, $1/$5 per MTok"),
     ],
