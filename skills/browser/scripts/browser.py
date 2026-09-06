@@ -193,6 +193,10 @@ def parse_aria_snapshot(snapshot_text: str, interactive_only: bool = False):
             "role": role,
             "name": name,
             "attrs": attrs if attrs else None,
+            # Position among elements with the same role and name, so two
+            # "Open" buttons resolve to two selectors (audit F31, 2026-09-06).
+            "nth": sum(1 for r in refs.values()
+                       if r["role"] == role and r["name"] == name),
         }
 
         # Build display line
@@ -218,10 +222,14 @@ def resolve_ref(ref_or_selector: str, refs: dict) -> str:
             raise ValueError(f"Unknown ref: {ref_or_selector}. Run 'snapshot' first.")
         role = ref_data["role"]
         name = ref_data.get("name", "")
-        if name:
-            return f'role={role}[name="{name}"]'
-        else:
-            return f'role={role}'
+        selector = f'role={role}[name="{name}"]' if name else f'role={role}'
+        # Only ambiguous refs carry an index, so the common case stays exact
+        # (an nth on a unique element would still be correct, but noisier).
+        duplicates = sum(1 for r in refs.values()
+                         if r["role"] == role and r.get("name", "") == name)
+        if duplicates > 1:
+            selector += f" >> nth={ref_data.get('nth', 0)}"
+        return selector
     # Text selector
     if ref_or_selector.startswith("text="):
         return ref_or_selector
@@ -502,7 +510,9 @@ class BrowserDaemon:
         return {"tab": idx, "url": page.url, "open_tabs": open_tabs + 1, "max_tabs": MAX_TABS}
 
     async def cmd_closetab(self, cmd):
-        idx = cmd.get("index", self.active_tab)
+        idx = cmd.get("index")
+        if idx is None:  # the key is sent as null when no index was given
+            idx = self.active_tab
         if idx not in self.pages:
             return {"error": f"Tab {idx} not found"}
         page = self.pages.pop(idx)

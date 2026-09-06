@@ -36,14 +36,13 @@ def generate_ico(input_path, output_path):
     img = Image.open(input_path).convert('RGBA')
 
     sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
-    icons = []
-
-    for size in sizes:
-        resized = img.resize(size, Image.Resampling.LANCZOS)
-        icons.append(resized)
-
-    icons[0].save(output_path, format='ICO', sizes=sizes)
-    print(f"Created: {output_path} (multi-resolution)")
+    # Pillow's ICO writer downsizes from the image it is given and drops any
+    # requested size larger than it, so saving from the 16px copy produced a
+    # 16px-only icon (audit F29, 2026-09-06). Save from the largest.
+    largest = img.resize(sizes[-1], Image.Resampling.LANCZOS)
+    largest.save(output_path, format='ICO', sizes=sizes)
+    embedded = sorted(Image.open(output_path).ico.sizes())
+    print(f"Created: {output_path} (sizes: {', '.join(f'{w}x{h}' for w, h in embedded)})")
 
 
 def generate_ios_icons(input_path, output_dir):

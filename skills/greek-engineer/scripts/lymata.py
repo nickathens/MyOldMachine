@@ -43,6 +43,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import sys
 
@@ -79,6 +80,8 @@ EYRI = {
 def _entos(timi, eyros):
     """Ένδειξη αν μια τιμή πέφτει εντός του τυπικού εύρους (χαμηλό, υψηλό)."""
     lo, hi = eyros
+    if not math.isfinite(timi):
+        return "μη έγκυρη τιμή (NaN ή άπειρο)"
     if timi < lo:
         return "κάτω από το τυπικό εύρος"
     if timi > hi:
@@ -116,8 +119,24 @@ def diastasiologisi(ik=None, fortio=None, paroxi=None, so=None, se=EKROI_BOD5,
         if fortio <= 0 or paroxi <= 0:
             raise ValueError("Φορτίο και παροχή πρέπει να είναι θετικά.")
 
+    for onoma, timi in (("fortio", fortio), ("paroxi", paroxi), ("so", so), ("se", se),
+                        ("srt", srt), ("mlss", mlss), ("vss_ratio", vss_ratio),
+                        ("y", y), ("kd", kd), ("fd", fd), ("tkn", tkn)):
+        if timi is not None and not math.isfinite(timi):
+            raise ValueError(f"Η τιμή {onoma} δεν είναι πεπερασμένος αριθμός.")
     if so is None:
         so = fortio * 1000.0 / paroxi                # mg/L = g/m3
+    else:
+        # Φορτίο, παροχή και συγκέντρωση δεσμεύονται από το fortio = Q*So/1000.
+        # Και τα τρία ρητά και ασύμφωνα δίνουν αποτέλεσμα από το ένα και
+        # έλεγχο από το άλλο (audit F36, 2026-09-06): 60 kg/d με 100 m3/d
+        # και 1200 mg/L σημαίνει 120 kg/d. Ανοχή 2% για στρογγυλοποίηση.
+        synepagomeno = paroxi * so / 1000.0
+        if abs(synepagomeno - fortio) > 0.02 * max(fortio, synepagomeno):
+            raise ValueError(
+                f"Ασύμφωνες είσοδοι: παροχή {paroxi:g} m3/d επί So {so:g} mg/L δίνουν "
+                f"{synepagomeno:.1f} kg BOD5/d, όχι {fortio:g}. Δώσε δύο από τα τρία, "
+                "ή διόρθωσε το τρίτο.")
     if so <= 0 or se < 0 or se >= so:
         raise ValueError("Η εκροή πρέπει να είναι θετική και μικρότερη της εισόδου.")
     if srt <= 0 or mlss <= 0:

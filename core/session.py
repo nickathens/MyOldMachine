@@ -10,6 +10,7 @@ Provides:
 - Session metadata tracking
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -58,6 +59,13 @@ _compaction_scheduled: set[str] = set()
 # asyncio.create_task() returns are eligible for garbage collection and the
 # background coroutine can be cancelled mid-run.
 _compaction_tasks: set = set()
+
+
+def history_digest(messages: list) -> str:
+    """Stable fingerprint of a slice of conversation history."""
+    raw = json.dumps(messages, sort_keys=True, ensure_ascii=False).encode()
+    return hashlib.sha256(raw).hexdigest()
+
 
 # Default configuration
 DEFAULT_CONFIG = {
@@ -123,8 +131,53 @@ class SessionManager:
         save_json(self.session_meta_file, meta)
 
     def load_conversation(self) -> list:
-        """Load conversation history."""
-        return load_json(self.conversation_file, [])
+        """Load conversation history, applying any committed compaction trim."""
+        return self.apply_pending_trim(load_json(self.conversation_file, []))
+
+    def apply_pending_trim(self, history: list) -> list:
+        """Drop the messages a FINISHED compaction covers, if they are still the head.
+
+        Compaction no longer shortens the stored history itself. It writes the
+        summary with a `trim_pending` record naming how many messages it
+        covered and their digest; this applies that trim on the next read, and
+        only when the head of the history is byte-for-byte those messages.
+        Anything else (a /clear, a hand edit, a crash between the two writes)
+        leaves the history whole, so the messages stay in the prompt rather
+        than vanishing with no summary standing in for them.
+
+        Before this, the caller saved the shortened history the moment
+        compaction was SCHEDULED, so a summary that failed, timed out or was
+        never written took ten messages with it (audit F05, 2026-09-06).
+        """
+        if not self.summary_file.exists():
+            return history
+        try:
+            with open(self.summary_file, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return history
+        if not isinstance(data, dict):
+            return history
+        pending = data.get("trim_pending")
+        if not isinstance(pending, dict):
+            return history
+        count = pending.get("count")
+        if not isinstance(count, int) or count <= 0:
+            return history
+
+        if len(history) >= count and history_digest(history[:count]) == pending.get("digest"):
+            history = history[count:]
+            # Write directly: save_conversation() would re-run smart_trim and
+            # refresh session meta, neither of which belongs to a trim.
+            save_json(self.conversation_file, history)
+            logger.info(f"Compaction trim applied: {count} messages dropped, "
+                        f"{len(history)} remaining")
+        else:
+            logger.warning("Compaction trim skipped: the history head no longer "
+                           "matches the summarised messages, keeping them")
+        data.pop("trim_pending", None)
+        save_json(self.summary_file, data)
+        return history
 
     def save_conversation(self, history: list):
         """Save conversation history with smart trimming."""
@@ -430,7 +483,9 @@ class SessionManager:
             except (json.JSONDecodeError, KeyError, OSError):
                 pass
 
-        # Take the oldest batch
+        # Take the oldest batch. The history itself is NOT shortened here:
+        # the trim rides on the summary and is applied by apply_pending_trim
+        # once that summary exists (audit F05, 2026-09-06).
         messages_to_compact = history[:batch_size]
         remaining_history = history[batch_size:]
 
@@ -483,7 +538,8 @@ class SessionManager:
             try:
                 import asyncio
                 loop = asyncio.get_running_loop()
-                task = loop.create_task(self._compaction_runner(prompt, summary_file, batch_size))
+                task = loop.create_task(self._compaction_runner(
+                    prompt, summary_file, batch_size, compacted=messages_to_compact))
                 # Hold a strong ref so the task isn't GC'd before completion
                 _compaction_tasks.add(task)
                 task.add_done_callback(_compaction_tasks.discard)
@@ -492,16 +548,21 @@ class SessionManager:
                             f"({len(remaining_history)} remaining)")
             except RuntimeError:
                 logger.warning("No running event loop, falling back to thread pool compaction")
-                self._run_compaction_thread(prompt, summary_file, batch_size)
+                self._run_compaction_thread(prompt, summary_file, batch_size,
+                                            compacted=messages_to_compact)
         else:
             # Legacy: thread pool compaction (used on capable machines or non-bot usage)
-            self._run_compaction_thread(prompt, summary_file, batch_size)
+            self._run_compaction_thread(prompt, summary_file, batch_size,
+                                        compacted=messages_to_compact)
             logger.info(f"Scheduled background compaction of {batch_size} messages "
                         f"({len(remaining_history)} remaining)")
 
-        return remaining_history, existing_summary
+        # The caller gets the history UNCHANGED. It is still what belongs on
+        # disk until the summary that replaces the head has actually landed.
+        return history, existing_summary
 
-    def _run_compaction_thread(self, prompt: str, summary_file: Path, batch_size: int):
+    def _run_compaction_thread(self, prompt: str, summary_file: Path, batch_size: int,
+                               compacted: list | None = None):
         """Run compaction in a background thread via the thread pool."""
         sf_key = str(summary_file)
 
@@ -519,11 +580,19 @@ class SessionManager:
                 )
                 if result.returncode == 0 and result.stdout.strip():
                     new_summary = result.stdout.strip()
-                    save_json(summary_file, {
+                    record = {
                         "summary": new_summary,
                         "updated": datetime.now().isoformat(),
                         "compacted_messages": batch_size,
-                    })
+                    }
+                    if compacted:
+                        # The history is trimmed by the next read, and only if
+                        # its head is still these messages (apply_pending_trim).
+                        record["trim_pending"] = {
+                            "count": len(compacted),
+                            "digest": history_digest(compacted),
+                        }
+                    save_json(summary_file, record)
                     logger.info(f"Background compaction complete: {batch_size} messages summarized")
                 else:
                     # The CLI writes WHY it failed to stdout and leaves stderr

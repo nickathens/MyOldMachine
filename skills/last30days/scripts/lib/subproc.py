@@ -27,6 +27,41 @@ class SubprocResult:
     stderr: str
 
 
+def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _terminate_group(proc: subprocess.Popen, grace: float = 5.0) -> None:
+    """SIGTERM the child's group, then SIGKILL whatever ignored it.
+
+    The old path sent SIGTERM and then `proc.wait(timeout=5)`, which raised
+    TimeoutExpired straight through the caller when the child ignored the
+    signal, with no SIGKILL ever sent (audit F38, 2026-09-06). Every exit
+    from here is either a reaped child or a SubprocTimeout, never a leak.
+    """
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _signal_group(proc, signal.SIGKILL)
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass  # unreapable (D state); nothing more a signal can do
+
+
 def run_with_timeout(
     cmd: Sequence[str],
     *,
@@ -80,11 +115,7 @@ def run_with_timeout(
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
-        proc.wait(timeout=5)
+        _terminate_group(proc)
         raise SubprocTimeout(f"Command {cmd[0]} timed out after {timeout}s")
 
     return SubprocResult(

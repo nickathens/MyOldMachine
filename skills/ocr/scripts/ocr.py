@@ -38,9 +38,15 @@ def ocr_image_with_data(image_path, lang="eng"):
     for line in lines[1:]:
         parts = line.split('\t')
         if len(parts) >= 12 and parts[11].strip():
+            # tesseract writes conf as a decimal ("96.500000"); -1 marks a
+            # non-word row. isdigit() read every decimal as 0 (audit F26).
+            try:
+                conf = float(parts[10])
+            except ValueError:
+                conf = 0.0
             words.append({
                 "text": parts[11],
-                "confidence": int(parts[10]) if parts[10].isdigit() else 0,
+                "confidence": round(conf, 1) if conf >= 0 else 0.0,
             })
             text_parts.append(parts[11])
 

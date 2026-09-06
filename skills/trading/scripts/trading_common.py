@@ -131,9 +131,13 @@ def ttl_for(interval: str) -> int:
     return 3600 if interval in ("1d", "1wk") else 300
 
 
-def cache_path(kind: str, symbol: str, period: str, interval: str) -> Path:
+def cache_path(kind: str, symbol: str, period: str, interval: str,
+               exchange: str | None = None) -> Path:
     safe = symbol.replace("/", "-")
-    return CACHE_DIR / f"{kind}_{safe}_{period}_{interval}.pkl"
+    # The exchange is part of the identity of crypto candles: binance and
+    # kraken quote different books, and one key served both (audit F32).
+    tag = f"_{exchange}" if exchange else ""
+    return CACHE_DIR / f"{kind}_{safe}{tag}_{period}_{interval}.pkl"
 
 
 def cache_fresh(path: Path, ttl_seconds: int, now: float | None = None) -> bool:
@@ -153,7 +157,8 @@ def fetch_history(symbol: str, period: str = "1y", interval: str = "1d",
         print(clamp_note, file=sys.stderr)  # keep --json stdout parseable
 
     pd = lazy_import("pandas")
-    path = cache_path("hist", symbol, period, interval)
+    path = cache_path("hist", symbol, period, interval,
+                      exchange if is_crypto(symbol) else None)
     if use_cache and cache_fresh(path, ttl_for(interval)):
         try:
             return pd.read_pickle(path)

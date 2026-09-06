@@ -355,7 +355,8 @@ class _TurnGate:
         return False
 
 
-async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size: int):
+async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size: int,
+                                          compacted: list | None = None):
     """Run compaction as an async task that acquires the LLM semaphore.
 
     This prevents the compaction subprocess from running concurrently with
@@ -416,11 +417,21 @@ async def _run_compaction_under_semaphore(prompt: str, summary_file, batch_size:
                     )
                     return
                 from utils.safe_json import save_json as _sj
-                _sj(summary_file, {
+                record = {
                     "summary": stdout.decode(errors="replace").strip(),
                     "updated": datetime.now().isoformat(),
                     "compacted_messages": batch_size,
-                })
+                }
+                if compacted:
+                    # The stored history is shortened by the next read, and
+                    # only if its head is still these messages
+                    # (SessionManager.apply_pending_trim, audit F05).
+                    from core.session import history_digest
+                    record["trim_pending"] = {
+                        "count": len(compacted),
+                        "digest": history_digest(compacted),
+                    }
+                _sj(summary_file, record)
                 logger.info(f"Semaphore-aware compaction complete: {batch_size} messages summarized")
             else:
                 logger.warning(f"Compaction returned no output (exit {proc.returncode})")
@@ -2671,7 +2682,11 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     words = text.split()
     time_part = message_part = None
     for i in range(min(6, len(words)), 0, -1):
-        parsed = parse_natural_time(" ".join(words[:i]))
+        # strict: the candidate prefix must be the WHOLE time expression.
+        # A prefix match made the parser swallow the message, so
+        # "/remind in 30 minutes Check the oven" was rejected for having no
+        # message and a longer line lost its opening words (audit F11).
+        parsed = parse_natural_time(" ".join(words[:i]), strict=True)
         if parsed:
             time_part = parsed
             message_part = " ".join(words[i:])
@@ -5409,6 +5424,78 @@ def _configure_claude_hooks():
         logger.warning(f"Failed to configure Claude Code hooks (non-fatal): {e}")
 
 
+def _configure_codex_hooks():
+    """Write the same skill hooks for Codex, at <BOT_DIR>/.codex/hooks.json.
+
+    A Codex turn used to run every skill with none of the resource checks,
+    usage logging or turn-end cleanup a Claude turn gets, so which engine was
+    selected decided whether the safeguards applied at all (audit F16,
+    2026-09-06). Codex reads project hooks from the working directory it is
+    launched in, which is BOT_DIR, and takes the same event names and payload
+    shape as Claude Code. Proven live on the Linux production bot on
+    2026-09-06: a Codex turn's weather-skill call wrote a usage row under a
+    Codex tool id (`exec-...`, not `toolu_...`).
+
+    The file carries absolute paths, so it is per install and generated
+    rather than committed. `core.llm` passes
+    --dangerously-bypass-hook-trust when this file exists, because Codex will
+    not run an untrusted hook and there is no interactive session to approve
+    one in.
+    """
+    hooks_file = BOT_DIR / ".codex" / "hooks.json"
+    gate_script = str(BOT_DIR / "utils" / "skill_hook_gate.sh")
+    stop_script = f"python3 {shlex.quote(str(BOT_DIR / 'utils' / 'skill_hooks.py'))}"
+
+    bash_hook = [{"matcher": "Bash",
+                  "hooks": [{"type": "command", "command": gate_script, "timeout": 10}]}]
+    needed_hooks = {
+        "PreToolUse": list(bash_hook),
+        "PostToolUse": list(bash_hook),
+        "Stop": [{"matcher": "",
+                  "hooks": [{"type": "command", "command": stop_script, "timeout": 15}]}],
+    }
+
+    try:
+        config = {}
+        if hooks_file.exists():
+            try:
+                config = json.loads(hooks_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                config = {}
+        existing = config.get("hooks", {}) if isinstance(config, dict) else {}
+
+        # Keyed on THIS install's gate path, so a moved or renamed install
+        # rewrites its stale absolute paths instead of leaving dead hooks.
+        already = any(
+            hook.get("command") in (gate_script, stop_script)
+            for event_hooks in existing.values() if isinstance(event_hooks, list)
+            for entry in event_hooks if isinstance(entry, dict)
+            for hook in entry.get("hooks", []) if isinstance(hook, dict)
+        )
+        if already:
+            logger.debug("Codex skill hooks already configured")
+            return
+
+        for event_name, hook_entries in needed_hooks.items():
+            kept = [
+                entry for entry in existing.get(event_name, [])
+                if isinstance(entry, dict) and not any(
+                    "skill_hook_gate.sh" in str(h.get("command", ""))
+                    or "skill_hooks.py" in str(h.get("command", ""))
+                    for h in entry.get("hooks", []) if isinstance(h, dict))
+            ]
+            existing[event_name] = kept + hook_entries
+
+        config["hooks"] = existing
+        hooks_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = hooks_file.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(hooks_file)
+        logger.info(f"Codex skill hooks configured in {hooks_file}")
+    except Exception as e:
+        logger.warning(f"Failed to configure Codex hooks (non-fatal): {e}")
+
+
 async def on_ptb_error(update: object, context: "ContextTypes.DEFAULT_TYPE"):
     """Global PTB error handler.
 
@@ -5461,11 +5548,19 @@ def main():
             f"switch to a working provider before messages can be answered."
         )
 
-    # ~/.claude/settings.json hooks are Claude-CLI-specific. Codex CLI uses
-    # ~/.codex/ and does not honor these hooks. (Progress callbacks for the
-    # CLI providers are wired inside _build_llm_provider.)
+    # Each CLI reads its hooks from its own place: Claude Code from
+    # ~/.claude/settings.json, Codex from <BOT_DIR>/.codex/hooks.json. Both
+    # get the same skill hooks so the resource gate, the usage log and the
+    # turn-end cleanup do not depend on which engine is selected (audit F16,
+    # 2026-09-06). (Progress callbacks for the CLI providers are wired inside
+    # _build_llm_provider.)
     if isinstance(_llm_provider, ClaudeCLIProvider):
         _configure_claude_hooks()
+    elif isinstance(_llm_provider, CodexCLIProvider):
+        _configure_codex_hooks()
+        # The hook-trust capability probe is a subprocess; run it now so the
+        # first turn does not pay for it on the event loop.
+        _llm_provider.warm_hook_trust_probe()
 
     # Queue model:
     #   - Per-user lock (always on): each user can only have one in-flight

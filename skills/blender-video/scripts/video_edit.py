@@ -34,8 +34,8 @@ def clear_sequencer():
     """Clear all strips from sequencer"""
     scene = bpy.context.scene
     if scene.sequence_editor:
-        for strip in scene.sequence_editor.sequences_all:
-            scene.sequence_editor.sequences.remove(strip)
+        for strip in scene.sequence_editor.strips_all:
+            scene.sequence_editor.strips.remove(strip)
 
 
 def get_video_info(filepath):
@@ -45,7 +45,7 @@ def get_video_info(filepath):
         scene.sequence_editor_create()
 
     # Temporarily add strip to get info
-    strip = scene.sequence_editor.sequences.new_movie(
+    strip = scene.sequence_editor.strips.new_movie(
         name="temp",
         filepath=filepath,
         channel=1,
@@ -63,8 +63,22 @@ def get_video_info(filepath):
         info['width'] = strip.elements[0].orig_width
         info['height'] = strip.elements[0].orig_height
 
-    scene.sequence_editor.sequences.remove(strip)
+    scene.sequence_editor.strips.remove(strip)
     return info
+
+
+# Blender 5.x names the sequencer collection `strips` (`sequences` was
+# removed after 4.x, confirmed on 5.2.1, audit F25 2026-09-06). Every call
+# below uses `strips`; on an older Blender, alias it once so the same code
+# runs there too.
+def _ensure_strips_alias():
+    se_type = getattr(bpy.types, "SequenceEditor", None)
+    if se_type is not None and not hasattr(se_type, "strips") and hasattr(se_type, "sequences"):
+        se_type.strips = property(lambda self: self.sequences)
+        se_type.strips_all = property(lambda self: self.sequences_all)
+
+
+_ensure_strips_alias()
 
 
 def add_video(filepath, channel=1, frame_start=1, trim_start=None, trim_end=None):
@@ -72,7 +86,7 @@ def add_video(filepath, channel=1, frame_start=1, trim_start=None, trim_end=None
     scene = bpy.context.scene
     seq = scene.sequence_editor
 
-    strip = seq.sequences.new_movie(
+    strip = seq.strips.new_movie(
         name=os.path.basename(filepath),
         filepath=filepath,
         channel=channel,
@@ -96,7 +110,7 @@ def add_audio(filepath, channel=2, frame_start=1):
     scene = bpy.context.scene
     seq = scene.sequence_editor
 
-    strip = seq.sequences.new_sound(
+    strip = seq.strips.new_sound(
         name=os.path.basename(filepath),
         filepath=filepath,
         channel=channel,
@@ -114,7 +128,7 @@ def add_text(text, channel=3, frame_start=1, frame_end=None,
     if frame_end is None:
         frame_end = scene.frame_end
 
-    strip = seq.sequences.new_effect(
+    strip = seq.strips.new_effect(
         name="Text",
         type='TEXT',
         channel=channel,
@@ -154,7 +168,7 @@ def add_color_strip(color=(0, 0, 0, 1), channel=1, frame_start=1, frame_end=None
     if frame_end is None:
         frame_end = scene.frame_end
 
-    strip = seq.sequences.new_effect(
+    strip = seq.strips.new_effect(
         name="Color",
         type='COLOR',
         channel=channel,
@@ -183,7 +197,7 @@ def add_transition(strip1, strip2, transition_type='CROSS', duration_frames=30):
 
     effect_type = transition_types.get(transition_type.lower(), 'CROSS')
 
-    transition = seq.sequences.new_effect(
+    transition = seq.strips.new_effect(
         name="Transition",
         type=effect_type,
         channel=max(strip1.channel, strip2.channel) + 1,
@@ -225,7 +239,7 @@ def apply_speed(strip, speed_factor):
     scene = bpy.context.scene
     seq = scene.sequence_editor
 
-    speed = seq.sequences.new_effect(
+    speed = seq.strips.new_effect(
         name="Speed",
         type='SPEED',
         channel=strip.channel + 1,
@@ -278,7 +292,7 @@ def apply_effect(strip, effect_type, **kwargs):
         print(f"Unknown effect: {effect_type}")
         return None
 
-    effect = seq.sequences.new_effect(
+    effect = seq.strips.new_effect(
         name=effect_type,
         type=effect_map[effect_type.lower()],
         channel=strip.channel + 1,

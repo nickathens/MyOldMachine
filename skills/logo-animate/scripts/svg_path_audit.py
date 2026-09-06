@@ -11,7 +11,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-COMMAND_RE = re.compile(r"[MmLlHhVvCcQqZz]|[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?")
+# Every command letter SVG defines is a token, so an unsupported one reaches
+# the parser and is refused there. Leaving A/S/T out of the tokeniser made an
+# arc's seven numbers read as further coordinates of the previous command
+# (audit F39, 2026-09-06: H then A became eight straight lines).
+COMMAND_RE = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?")
+UNSUPPORTED_COMMANDS = {"S", "T", "A"}
 PALETTE = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"]
 
 
@@ -54,6 +59,11 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
 
         relative = command.islower()
         op = command.upper()
+        if op in UNSUPPORTED_COMMANDS:
+            raise ValueError(
+                f"SVG path command '{command}' (smooth curve or arc) is not supported by this "
+                "audit. Convert the path to absolute cubics first (Inkscape: Path > Object to "
+                "Path, then Extensions > Modify Path > Flatten or export with cubic curves).")
 
         if op == "M":
             x, index = parse_float(tokens, index)

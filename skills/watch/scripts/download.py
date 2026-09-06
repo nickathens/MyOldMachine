@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,23 @@ def download_url(url: str, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
 
+    # The folder is the caller's and may be reused. A video.* left by an
+    # earlier request was returned as this one's after a failed download
+    # (audit F41, 2026-09-06). A manifest names the URL each file set came
+    # from; anything not from THIS url is cleared before yt-dlp runs.
+    manifest = out_dir / "video.source.json"
+    previous = None
+    if manifest.exists():
+        try:
+            previous = json.loads(manifest.read_text()).get("url")
+        except (OSError, ValueError):
+            previous = None
+    if previous != url:
+        for stale in out_dir.glob("video*"):
+            if stale.is_file():
+                stale.unlink()
+    started = time.time()
+
     cmd = [
         "yt-dlp",
         "-N", "8",
@@ -85,10 +103,11 @@ def download_url(url: str, out_dir: Path) -> dict:
     # the video itself downloaded fine. Treat "video file present" as success.
     result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
-    if video is None:
+    if video is None or (previous != url and video.stat().st_mtime < started - 1):
         raise SystemExit(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
         )
+    manifest.write_text(json.dumps({"url": url, "downloaded_at": started}))
 
     subtitle = _pick_subtitle(out_dir)
     info_path = out_dir / "video.info.json"

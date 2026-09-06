@@ -79,24 +79,33 @@ def cmd_transpose(args):
     print(f"Transposed by {args.semitones:+d} semitones -> {args.output}")
 
 
+DEFAULT_TEMPO = 500000  # microseconds per beat, 120 BPM, the MIDI default when no event is present
+
+
 def cmd_tempo(args):
     """Change tempo of MIDI file."""
     mid = mido.MidiFile(args.input)
+    if not args.bpm and not args.scale:
+        print("Error: give --bpm or --scale", file=sys.stderr)
+        sys.exit(1)
 
+    found = False
     for track in mid.tracks:
         for i, msg in enumerate(track):
             if msg.type == 'set_tempo':
+                found = True
                 if args.bpm:
                     new_tempo = mido.bpm2tempo(args.bpm)
-                elif args.scale:
-                    new_tempo = int(msg.tempo / args.scale)
                 else:
-                    continue
+                    new_tempo = int(msg.tempo / args.scale)
                 track[i] = msg.copy(tempo=new_tempo)
 
-    # If no tempo event found, add one
-    if args.bpm and not any(msg.type == 'set_tempo' for track in mid.tracks for msg in track):
-        mid.tracks[0].insert(0, mido.MetaMessage('set_tempo', tempo=mido.bpm2tempo(args.bpm)))
+    # No tempo event: the file plays at the implicit 120 BPM default, so
+    # scaling means writing that default scaled (audit F21, 2026-09-06: a
+    # --scale on such a file changed nothing).
+    if not found:
+        tempo = mido.bpm2tempo(args.bpm) if args.bpm else int(DEFAULT_TEMPO / args.scale)
+        mid.tracks[0].insert(0, mido.MetaMessage('set_tempo', tempo=tempo, time=0))
 
     mid.save(args.output)
     if args.bpm:
@@ -115,7 +124,14 @@ def cmd_merge(args):
 
     for path in args.files[1:]:
         other = mido.MidiFile(path)
+        # Delta times are in the OTHER file's ticks per beat. Appended as-is
+        # into a file with a different resolution they play at the wrong
+        # speed (audit F21, 2026-09-06: 960 tpb notes landed at double beat
+        # positions in a 480 tpb file). Rescale on absolute ticks so rounding
+        # cannot drift along the track.
         for track in other.tracks:
+            if other.ticks_per_beat != base.ticks_per_beat:
+                track = _rescale_track(track, other.ticks_per_beat, base.ticks_per_beat)
             base.tracks.append(track)
 
     base.save(args.output)
@@ -131,7 +147,15 @@ def cmd_extract(args):
         sys.exit(1)
 
     new_mid = mido.MidiFile(type=0, ticks_per_beat=mid.ticks_per_beat)
-    new_mid.tracks.append(mid.tracks[args.track])
+    track = mid.tracks[args.track]
+    # A type 1 file keeps tempo (and time signature) on the conductor track.
+    # Extracting another track alone dropped them, so the result played at
+    # 120 BPM whatever the piece was (audit F21, 2026-09-06). Carry the
+    # conductor's tempo map over, at its absolute times, unless the track
+    # already has its own.
+    if args.track != 0 and not any(m.type == 'set_tempo' for m in track):
+        track = _merge_conductor(mid.tracks[0], track)
+    new_mid.tracks.append(track)
 
     new_mid.save(args.output)
     print(f"Extracted track {args.track} -> {args.output}")
@@ -173,15 +197,54 @@ def cmd_notes(args):
             print(f"... and {len(notes) - 50} more notes")
 
 
+def _to_absolute(track):
+    """[(abs_tick, msg)] for a track's delta-time messages."""
+    out, t = [], 0
+    for msg in track:
+        t += msg.time
+        out.append((t, msg))
+    return out
+
+
+def _from_absolute(events):
+    """A MidiTrack from [(abs_tick, msg)], sorted by time (stable), end_of_track last."""
+    events = sorted(events, key=lambda e: (e[0], e[1].type == 'end_of_track'))
+    track = mido.MidiTrack()
+    prev = 0
+    for t, msg in events:
+        track.append(msg.copy(time=t - prev))
+        prev = t
+    return track
+
+
+def _rescale_track(track, src_tpb, dst_tpb):
+    return _from_absolute([(round(t * dst_tpb / src_tpb), msg) for t, msg in _to_absolute(track)])
+
+
+def _merge_conductor(conductor, track):
+    meta = [(t, m) for t, m in _to_absolute(conductor)
+            if m.type in ('set_tempo', 'time_signature', 'key_signature')]
+    body = [(t, m) for t, m in _to_absolute(track) if m.type != 'end_of_track']
+    end = [(t, m) for t, m in _to_absolute(track) if m.type == 'end_of_track']
+    return _from_absolute(meta + body + end)
+
+
 def cmd_quantize(args):
     """Quantize note timing to grid."""
     mid = mido.MidiFile(args.input)
-    grid = mid.ticks_per_beat // args.grid
+    # The grid is 1/args.grid of a whole note: --grid 4 is a quarter note
+    # (one beat), --grid 8 an eighth. Quantise ABSOLUTE positions, not the
+    # delta between events: rounding each delta moved a note at tick 230 to
+    # 240 instead of 0 and let the error walk down the track (audit F21).
+    grid = max(1, round(mid.ticks_per_beat * 4 / args.grid))
 
-    for track in mid.tracks:
-        for msg in track:
+    for i, track in enumerate(mid.tracks):
+        events = []
+        for t, msg in _to_absolute(track):
             if msg.type in ('note_on', 'note_off'):
-                msg.time = round(msg.time / grid) * grid
+                t = round(t / grid) * grid
+            events.append((t, msg))
+        mid.tracks[i] = _from_absolute(events)
 
     mid.save(args.output)
     print(f"Quantized to 1/{args.grid} notes -> {args.output}")

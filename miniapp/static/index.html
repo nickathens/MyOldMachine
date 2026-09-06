@@ -2912,6 +2912,7 @@ body{
             return;
         }
         mgAttachState.uploading=true;
+        updateGenerateBtn();
         var status=document.getElementById('mg-attach-status');
         status.textContent='Uploading...';
         var fd=new FormData();
@@ -2930,6 +2931,9 @@ body{
         }).catch(function(err){
             mgAttachState.uploading=false;
             status.textContent='';
+            // Re-enable: the button is held while uploading, so a failed
+            // upload must hand control back (audit F17, 2026-09-06).
+            updateGenerateBtn();
             showError('Upload failed: '+err.message);
             if(tg&&tg.HapticFeedback)tg.HapticFeedback.notificationOccurred('error');
         });
@@ -3049,7 +3053,13 @@ body{
                 renderMgModels();
                 renderMgAspect();
                 renderMgDuration();
+                // Resolution and the reference slot depend on the model too:
+                // without these two, switching away from a 4k-capable model
+                // kept 4k selected and left the previous model's attachment
+                // in place (audit F17, 2026-09-06).
+                renderMgResolution();
                 renderMgOptions();
+                renderMgAttach();
                 if(tg&&tg.HapticFeedback)tg.HapticFeedback.selectionChanged();
             });
             el.appendChild(card);
@@ -3218,7 +3228,9 @@ body{
         var btn=document.getElementById('mg-generate');
         var prompt=document.getElementById('mg-prompt').value.trim();
         var needsAttach=(MODEL_INPUTS[mgState.model]==='required')&&!mgAttachState.path;
-        btn.disabled=!prompt||needsAttach;
+        // A request sent while the reference is still uploading leaves that
+        // reference out of the job (audit F17, 2026-09-06).
+        btn.disabled=!prompt||needsAttach||mgAttachState.uploading;
     }
 
     document.getElementById('mg-back').addEventListener('click',hideMediaGenConfig);
