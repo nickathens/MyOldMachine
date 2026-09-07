@@ -103,10 +103,10 @@ provider.
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
 [2026-09-07] linux: three Codex model ids that Codex rejects, and a Mini App
-that never reported failing to come back (PR #159)
+that never reported failing to come back (PR #161)
 
-(Entries removed above: #158 merged 2026-09-07, its line struck inside #159's
-own edit rather than in a separate docs PR, because #159 appends to the same
+(Entries removed above: #158 merged 2026-09-07, its line struck inside #161's
+own edit rather than in a separate docs PR, because #161 appends to the same
 lines and the two would conflict — the same call as #127. #156 merged
 2026-09-07.
 #153 merged 2026-09-02.
