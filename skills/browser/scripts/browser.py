@@ -193,10 +193,10 @@ def parse_aria_snapshot(snapshot_text: str, interactive_only: bool = False):
             "role": role,
             "name": name,
             "attrs": attrs if attrs else None,
-            # Position among elements with the same role and name, so two
-            # "Open" buttons resolve to two selectors (audit F31, 2026-09-06).
-            "nth": sum(1 for r in refs.values()
-                       if r["role"] == role and r["name"] == name),
+            # Position among the elements the selector built for this ref
+            # will match, so two "Open" buttons resolve to two selectors
+            # (audit F31, 2026-09-06).
+            "nth": sum(1 for r in refs.values() if _selector_matches(r, role, name)),
         }
 
         # Build display line
@@ -214,6 +214,21 @@ def parse_aria_snapshot(snapshot_text: str, interactive_only: bool = False):
     return "\n".join(output_lines), refs
 
 
+def _selector_matches(ref_data: dict, role: str, name: str) -> bool:
+    """Would `role=ROLE[name="NAME"]` match this snapshot element?
+
+    Playwright's role selector takes a name as a case-insensitive SUBSTRING,
+    and no name at all matches every element of the role. The index in
+    `>> nth=N` is counted over that same set, so the peers must be counted
+    the same way: counting only exact-name twins put an unnamed button's
+    index into the set of ALL buttons and clicked the wrong one, reliably
+    (review of #156).
+    """
+    if ref_data.get("role") != role:
+        return False
+    return not name or name.lower() in ref_data.get("name", "").lower()
+
+
 def resolve_ref(ref_or_selector: str, refs: dict) -> str:
     """Convert ref like 'e5' to a Playwright selector, or pass through CSS selectors."""
     if re.match(r'^e\d+$', ref_or_selector):
@@ -225,8 +240,7 @@ def resolve_ref(ref_or_selector: str, refs: dict) -> str:
         selector = f'role={role}[name="{name}"]' if name else f'role={role}'
         # Only ambiguous refs carry an index, so the common case stays exact
         # (an nth on a unique element would still be correct, but noisier).
-        duplicates = sum(1 for r in refs.values()
-                         if r["role"] == role and r.get("name", "") == name)
+        duplicates = sum(1 for r in refs.values() if _selector_matches(r, role, name))
         if duplicates > 1:
             selector += f" >> nth={ref_data.get('nth', 0)}"
         return selector

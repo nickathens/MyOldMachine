@@ -165,7 +165,7 @@ class SessionManager:
         if not isinstance(count, int) or count <= 0:
             return history
 
-        if len(history) >= count and history_digest(history[:count]) == pending.get("digest"):
+        if len(history) >= count and self.trim_digest(history[:count]) == pending.get("digest"):
             history = history[count:]
             # Write directly: save_conversation() would re-run smart_trim and
             # refresh session meta, neither of which belongs to a trim.
@@ -178,6 +178,20 @@ class SessionManager:
         data.pop("trim_pending", None)
         save_json(self.summary_file, data)
         return history
+
+    def trim_digest(self, messages: list) -> str:
+        """Digest of messages as save_conversation() will leave them.
+
+        The compaction batch is taken from the history in memory, and the
+        summary lands after save_conversation() has run smart trimming over
+        that same head (long user turns cut to 1500 chars, long code blocks
+        and log runs replaced). A digest of the raw batch never matched the
+        tidied head, so the trim was dropped for good and the same messages
+        were summarised again on the next cycle (review of #156). Settling
+        both sides with the same idempotent per-message trim makes the
+        comparison about WHICH messages are there, which is all it means.
+        """
+        return history_digest([self._settle_older_message(m) for m in messages])
 
     def save_conversation(self, history: list):
         """Save conversation history with smart trimming."""
@@ -298,32 +312,30 @@ class SessionManager:
         recent = history[-keep_recent:]
         older = history[:-keep_recent]
 
-        trimmed_older = []
-        for msg in older:
-            content = msg.get("content", "")
-            role = msg.get("role", "")
+        return [self._settle_older_message(msg) for msg in older] + recent
 
-            is_decision = any(
-                kw.lower() in content.lower()
-                for kw in self.config["preserve_decision_keywords"]
-            )
-            if is_decision:
-                trimmed_older.append(msg)
-                continue
+    def _settle_older_message(self, msg: dict) -> dict:
+        """The trim smart_trim_conversation applies to one message outside
+        the recent window. Idempotent: a settled message settles to itself,
+        which trim_digest() relies on."""
+        content = msg.get("content", "")
+        role = msg.get("role", "")
 
-            if role == "assistant":
-                trimmed_content = self._trim_tool_outputs(content)
-                trimmed_older.append({**msg, "content": trimmed_content})
-            else:
-                if len(content) > 2000:
-                    trimmed_older.append({
-                        **msg,
-                        "content": content[:1500] + "\n\n[Message truncated for context management]"
-                    })
-                else:
-                    trimmed_older.append(msg)
+        is_decision = any(
+            kw.lower() in content.lower()
+            for kw in self.config["preserve_decision_keywords"]
+        )
+        if is_decision:
+            return msg
 
-        return trimmed_older + recent
+        if role == "assistant":
+            return {**msg, "content": self._trim_tool_outputs(content)}
+        if len(content) > 2000:
+            return {
+                **msg,
+                "content": content[:1500] + "\n\n[Message truncated for context management]"
+            }
+        return msg
 
     def _trim_tool_outputs(self, content: str) -> str:
         """Remove verbose tool output blocks from content."""
@@ -488,6 +500,9 @@ class SessionManager:
         # once that summary exists (audit F05, 2026-09-06).
         messages_to_compact = history[:batch_size]
         remaining_history = history[batch_size:]
+        # What the runners record for apply_pending_trim: the batch as the
+        # tidy will leave it on disk, so the digest matches (trim_digest).
+        settled_batch = [self._settle_older_message(m) for m in messages_to_compact]
 
         # Build text for compaction
         conv_text = []
@@ -539,7 +554,7 @@ class SessionManager:
                 import asyncio
                 loop = asyncio.get_running_loop()
                 task = loop.create_task(self._compaction_runner(
-                    prompt, summary_file, batch_size, compacted=messages_to_compact))
+                    prompt, summary_file, batch_size, compacted=settled_batch))
                 # Hold a strong ref so the task isn't GC'd before completion
                 _compaction_tasks.add(task)
                 task.add_done_callback(_compaction_tasks.discard)
@@ -549,11 +564,11 @@ class SessionManager:
             except RuntimeError:
                 logger.warning("No running event loop, falling back to thread pool compaction")
                 self._run_compaction_thread(prompt, summary_file, batch_size,
-                                            compacted=messages_to_compact)
+                                            compacted=settled_batch)
         else:
             # Legacy: thread pool compaction (used on capable machines or non-bot usage)
             self._run_compaction_thread(prompt, summary_file, batch_size,
-                                        compacted=messages_to_compact)
+                                        compacted=settled_batch)
             logger.info(f"Scheduled background compaction of {batch_size} messages "
                         f"({len(remaining_history)} remaining)")
 

@@ -503,6 +503,15 @@ class Job:
 # Job execution functions (module-level for APScheduler serialization)
 # ---------------------------------------------------------------------------
 
+class _Undelivered(RuntimeError):
+    """A finished job whose result could not reach the user.
+
+    Distinct from a job that failed so the except path does not chase the
+    result with a failure notice down the same dead line (three more
+    attempts, fifteen more seconds: review of #156).
+    """
+
+
 async def _send_with_retry(scheduler, user_id: int, text: str, max_retries: int = 3) -> bool:
     """Send a message with exponential backoff retry."""
     for attempt in range(max_retries):
@@ -690,7 +699,7 @@ async def _execute_agent(job_id: str):
                 # Work done, result never reached the user: not a success.
                 # The except path below keeps a one-shot job's metadata, so it
                 # is still there to retry (audit F07, 2026-09-06).
-                raise RuntimeError("result could not be delivered to Telegram")
+                raise _Undelivered("result could not be delivered to Telegram")
 
         logger.info(f"Agent job {job_id} completed successfully")
         _log_execution(job_id, meta["user_id"], meta["message"], True)
@@ -699,7 +708,7 @@ async def _execute_agent(job_id: str):
     except Exception as e:
         logger.error(f"Agent job {job_id} failed: {e}")
         _log_execution(job_id, meta["user_id"], meta["message"], False, str(e))
-        if meta.get("notify"):
+        if meta.get("notify") and not isinstance(e, _Undelivered):
             await _send_with_retry(
                 scheduler, meta["user_id"],
                 f"\u26a0\ufe0f Scheduled task failed: {meta['name']}\nError: {str(e)[:200]}"

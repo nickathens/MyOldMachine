@@ -295,6 +295,16 @@ def main():
         top = 65535.0 if src_mode != "F" else max(arr16.max(), 1.0)
         src_img = Image.fromarray((np.clip(arr16 / top, 0, 1) * 255 + 0.5).astype(np.uint8))
     src_u8 = np.asarray(src_img.convert("RGB"))
+    alpha_f = None
+    if alpha is not None:
+        # Enlarge the colour with the transparency already multiplied in,
+        # then divide it back out under the enlarged alpha. Resampling the
+        # straight colour dragged whatever sat behind the cut out (black,
+        # for anything out of background removal) into its edge: a red disc
+        # came back with a rim reading 202 on average and 0 at the worst
+        # pixel (review of #156).
+        alpha_f = np.asarray(alpha, dtype=np.float32)[..., None] / 255.0
+        src_u8 = (src_u8.astype(np.float32) * alpha_f + 0.5).astype(np.uint8)
 
     if a.mode == "lanczos":
         out, lan, mask = lanczos(src_u8, size), None, None
@@ -308,10 +318,16 @@ def main():
         else:
             out, lan, mask = hybrid(src_u8, esr, a.scale)
 
+    alpha_up = alpha.resize(size, Image.LANCZOS) if alpha is not None else None
+    if alpha_up is not None:
+        cover = np.asarray(alpha_up, dtype=np.float32)[..., None] / 255.0
+        # Where nothing is visible the colour is moot; leave it rather than
+        # divide by zero. Everywhere else, unpremultiply.
+        out = np.where(cover > 0, out / np.maximum(cover, 1.0 / 255.0), out)
     arr = (np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8)
     result = Image.fromarray(arr)
-    if alpha is not None:
-        result.putalpha(alpha.resize(size, Image.LANCZOS))
+    if alpha_up is not None:
+        result.putalpha(alpha_up)
     result.save(a.output, format="PNG", compress_level=6)
     print(f"{src_img.size} -> {size[0]}x{size[1]} ({a.mode}"
           f"{', alpha kept' if alpha is not None else ''}) in {time.time()-t0:.1f}s")

@@ -277,6 +277,30 @@ class BrowserRefTests(unittest.TestCase):
         close = [r for r, d in refs.items() if d["name"] == "Close"][0]
         self.assertNotIn(">> nth=", self.browser.resolve_ref(close, refs))
 
+    def test_an_unnamed_control_is_counted_among_everything_its_selector_matches(self):
+        """Review of #156: the position was counted among refs with the
+        same role AND name, then looked up by `role=button >> nth=N`, which
+        Playwright counts across every button. For unnamed controls that is
+        a different, larger set, so nth=0 landed on the first NAMED button:
+        the wrong one, reliably."""
+        snapshot = '- button "Save"\n- button\n- button\n'
+        _, refs = self.browser.parse_aria_snapshot(snapshot)
+        unnamed = [r for r, d in refs.items() if d["name"] == ""]
+        self.assertEqual([self.browser.resolve_ref(r, refs) for r in unnamed],
+                         ["role=button >> nth=1", "role=button >> nth=2"])
+
+    def test_a_label_that_is_a_prefix_of_another_is_still_disambiguated(self):
+        """`[name="Open"]` is a case-insensitive substring match in
+        Playwright, so an "Open" and an "Open file" button both answer to
+        it; the first must carry its index and the second stays plain."""
+        snapshot = '- button "Open"\n- button "Open file"\n'
+        _, refs = self.browser.parse_aria_snapshot(snapshot)
+        by_name = {d["name"]: r for r, d in refs.items()}
+        self.assertEqual(self.browser.resolve_ref(by_name["Open"], refs),
+                         'role=button[name="Open"] >> nth=0')
+        self.assertEqual(self.browser.resolve_ref(by_name["Open file"], refs),
+                         'role=button[name="Open file"]')
+
 
 # --- F32: candles belong to the exchange that quoted them -------------------
 
@@ -581,6 +605,37 @@ class IconAndImageTests(unittest.TestCase):
         self.assertEqual(Image.open(out).convert("RGB").getpixel((0, 0)), (0, 0, 0))
 
 
+@unittest.skipUnless(have("PIL") and have("numpy") and have("torch"),
+                     "needs Pillow, numpy and torch")
+class UpscaleAlphaTests(unittest.TestCase):
+    """Review of #156: the alpha fix enlarged the colour and the
+    transparency separately, so whatever sat behind the cut out (black, for
+    anything out of background removal) was dragged into the edge. A red
+    disc on a transparent ground came back with its edge at 202 on average
+    and a full black rim at the worst pixel."""
+
+    def test_a_cut_out_keeps_its_colour_to_the_edge(self):
+        import numpy as np
+        from PIL import Image
+        upscale = load(SKILLS / "upscale" / "scripts" / "hybrid_upscale.py", "upscale_uc")
+        tmp = Path(tempfile.mkdtemp())
+        yy, xx = np.mgrid[:64, :64]
+        inside = (xx - 31.5) ** 2 + (yy - 31.5) ** 2 <= 20 ** 2
+        rgba = np.zeros((64, 64, 4), np.uint8)
+        rgba[inside] = (255, 0, 0, 255)
+        Image.fromarray(rgba, "RGBA").save(tmp / "disc.png")
+        argv = ["hybrid_upscale.py", str(tmp / "disc.png"), str(tmp / "out.png"),
+                "--mode", "lanczos", "--scale", "2"]
+        with mock.patch.object(sys, "argv", argv):
+            upscale.main()
+        out = np.asarray(Image.open(tmp / "out.png").convert("RGBA"), np.int32)
+        self.assertEqual(out.shape, (128, 128, 4))
+        visible = out[..., 3] >= 32
+        red = out[..., 0][visible]
+        self.assertGreaterEqual(int(red.min()), 250, "no dark rim inside the visible edge")
+        self.assertLessEqual(int(out[..., 1:3][visible].max()), 5, "and no colour cast")
+
+
 @unittest.skipUnless(have("mido"), "mido not installed")
 class MidiTimingTests(unittest.TestCase):
     """F21: quantising moved a note to the wrong grid line, merging two files
@@ -617,6 +672,32 @@ class MidiTimingTests(unittest.TestCase):
         played = mido.MidiFile(out)
         first = next(m for m in played.tracks[0] if m.type == "note_on")
         self.assertEqual(first.time, 0, "tick 230 is nearer 0 than 480 on a quarter grid")
+
+    def test_quantising_keeps_every_note_its_full_length(self):
+        """Review of #156: note_on and note_off were snapped independently,
+        so any note shorter than half a grid step collapsed to zero length,
+        silent. Eight eighth notes on a quarter grid: four of them vanished
+        (lengths 0, 480, 480, 0, 0, 480, 480, 0). A note moves with its
+        onset and keeps its duration."""
+        import mido
+        events = []
+        for i in range(8):
+            events.append(mido.Message("note_on", note=60 + i, velocity=64, time=0))
+            events.append(mido.Message("note_off", note=60 + i, velocity=64, time=240))
+        src = self._file(480, events)
+        out = self.tmp / "q8.mid"
+        self.midi.cmd_quantize(types.SimpleNamespace(input=str(src), output=str(out), grid=4))
+        played = mido.MidiFile(out)
+        t, on, lengths = 0, {}, []
+        for m in played.tracks[0]:
+            t += m.time
+            if m.type == "note_on" and m.velocity > 0:
+                on[m.note] = t
+            elif m.type in ("note_off", "note_on"):
+                lengths.append(t - on.pop(m.note))
+        self.assertEqual(lengths, [240] * 8)
+        starts = sorted(set(v for v in on.values()))
+        self.assertEqual(starts, [])
 
     def test_extracting_a_track_keeps_the_tempo(self):
         import mido

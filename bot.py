@@ -1736,8 +1736,30 @@ def _build_llm_provider(provider_name: str, model: str, api_key: str):
     if isinstance(provider, _CLI_PROVIDERS):
         provider.on_progress_save = save_task_progress
         provider.on_progress_clear = clear_task_progress
+    _configure_provider_hooks(provider)
     _llm_provider_spec = (provider_name, model, api_key)
     return provider
+
+
+def _configure_provider_hooks(provider) -> None:
+    """Write the skill hooks for the CLI behind this provider.
+
+    Each CLI reads its hooks from its own place: Claude Code from
+    ~/.claude/settings.json, Codex from <BOT_DIR>/.codex/hooks.json. Both get
+    the same skill hooks so the resource gate, the usage log and the turn-end
+    cleanup do not depend on which engine is selected (audit F16,
+    2026-09-06). This runs from _build_llm_provider so it covers every path
+    that builds one: boot, /provider, /model, /apikey and the .env hot
+    reload. The first port ran it at boot only, so a switch to Codex on a
+    running bot ran with none of the safeguards (review of #156).
+    """
+    if isinstance(provider, ClaudeCLIProvider):
+        _configure_claude_hooks()
+    elif isinstance(provider, CodexCLIProvider):
+        _configure_codex_hooks()
+        # The hook-trust capability probe is a subprocess; run it now so the
+        # first turn does not pay for it on the event loop.
+        provider.warm_hook_trust_probe()
 
 
 def _refresh_provider_if_env_changed() -> None:
@@ -5548,19 +5570,8 @@ def main():
             f"switch to a working provider before messages can be answered."
         )
 
-    # Each CLI reads its hooks from its own place: Claude Code from
-    # ~/.claude/settings.json, Codex from <BOT_DIR>/.codex/hooks.json. Both
-    # get the same skill hooks so the resource gate, the usage log and the
-    # turn-end cleanup do not depend on which engine is selected (audit F16,
-    # 2026-09-06). (Progress callbacks for the CLI providers are wired inside
-    # _build_llm_provider.)
-    if isinstance(_llm_provider, ClaudeCLIProvider):
-        _configure_claude_hooks()
-    elif isinstance(_llm_provider, CodexCLIProvider):
-        _configure_codex_hooks()
-        # The hook-trust capability probe is a subprocess; run it now so the
-        # first turn does not pay for it on the event loop.
-        _llm_provider.warm_hook_trust_probe()
+    # The CLI's skill hooks (Claude Code or Codex) and the progress callbacks
+    # are wired inside _build_llm_provider, so they follow every rebuild.
 
     # Queue model:
     #   - Per-user lock (always on): each user can only have one in-flight

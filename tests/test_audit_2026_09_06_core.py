@@ -45,7 +45,7 @@ os.environ["MOM_TEST"] = "1"
 
 from core import llm as llm_mod  # noqa: E402
 from core.scheduler import Scheduler, parse_natural_time  # noqa: E402
-from core.session import SessionManager, history_digest  # noqa: E402
+from core.session import DEFAULT_CONFIG, SessionManager, history_digest  # noqa: E402
 
 
 # --- F11: /remind must not eat its own message ------------------------------
@@ -258,6 +258,7 @@ class CompactionTrimTests(unittest.TestCase):
         self.session = SessionManager.__new__(SessionManager)
         self.session.conversation_file = Path(self.tmp) / "conversation.json"
         self.session.summary_file = Path(self.tmp) / "conversation_summary.json"
+        self.session.config = dict(DEFAULT_CONFIG)
         self.history = [{"role": "user", "content": f"m{i}"} for i in range(20)]
         self.session.conversation_file.write_text(json.dumps(self.history))
 
@@ -298,13 +299,41 @@ class CompactionTrimTests(unittest.TestCase):
         self._write_summary(10, self.history[:10])
         self.assertEqual(len(self.session.apply_pending_trim(self.history[:3])), 3)
 
+    def test_the_trim_survives_the_tidy_that_save_conversation_runs(self):
+        """Review of #156: the digest was taken on the batch as it sat in
+        memory, and save_conversation() then rewrote those same messages
+        (long user turns cut to 1500 chars, long code blocks replaced), so
+        the head on disk never matched, the trim was dropped for good, and
+        the same ten messages were summarised again on the next cycle."""
+        session = SessionManager.__new__(SessionManager)
+        session.conversation_file = Path(self.tmp) / "c3.json"
+        session.summary_file = Path(self.tmp) / "s3.json"
+        session.session_meta_file = Path(self.tmp) / "meta3.json"
+        session.config = dict(DEFAULT_CONFIG)
+        session._compaction_runner = None
+        history = [{"role": "user", "content": "x" * 3000 if i % 2 == 0 else f"m{i}"}
+                   for i in range(41)]
+        scheduled = []
+        session._run_compaction_thread = lambda *a, **k: scheduled.append(k.get("compacted"))
+        with mock.patch("core.session.shutil.which", return_value="/usr/bin/claude"):
+            returned, _ = session.compact_conversation(list(history), session.summary_file)
+        # what the runners write once the summary lands
+        session.summary_file.write_text(json.dumps({
+            "summary": "a summary", "compacted_messages": 10,
+            "trim_pending": {"count": len(scheduled[0]),
+                             "digest": history_digest(scheduled[0])},
+        }))
+        session.save_conversation(returned)  # the tidy
+        self.assertEqual(len(session.load_conversation()), 31)
+        self.assertNotIn("trim_pending", json.loads(session.summary_file.read_text()))
+
     def test_compaction_returns_the_history_whole(self):
         """The defect itself: the caller used to receive, and save, a history
         already missing the batch whose summary had not been written yet."""
         session = SessionManager.__new__(SessionManager)
         session.conversation_file = Path(self.tmp) / "c2.json"
         session.summary_file = Path(self.tmp) / "s2.json"
-        session.config = {"compaction_enabled": True, "compaction_batch_size": 10}
+        session.config = {**DEFAULT_CONFIG, "compaction_enabled": True, "compaction_batch_size": 10}
         session._compaction_runner = None
         scheduled = []
         session._run_compaction_thread = lambda *a, **k: scheduled.append(k.get("compacted"))
@@ -330,7 +359,7 @@ class SendExitStatusTests(unittest.TestCase):
         with mock.patch.object(module, "get_token", return_value="t"), \
              mock.patch.object(module, "send_message", return_value=ok), \
              mock.patch.object(sys, "argv", argv), \
-             mock.patch.dict(os.environ, {"TG_USER_ID": ""}, clear=False):
+             mock.patch.dict(os.environ, {"JARVIS_USER_ID": ""}, clear=False):
             try:
                 module.main()
             except SystemExit as exc:
@@ -370,6 +399,28 @@ class ScheduledDeliveryTests(unittest.TestCase):
         self.assertTrue(logged, "the run must be recorded")
         self.assertFalse(logged[0][3], "an undelivered result is not a success")
         self.assertEqual(deleted, [], "a one-shot job stays for retry")
+
+
+    def test_an_undelivered_result_is_not_chased_by_a_failure_notice(self):
+        """Review of #156: raising on the failed delivery sent the job into
+        the except path, which then tried to deliver the failure notice down
+        the same dead line, another three attempts and fifteen seconds."""
+        from core import scheduler as sched_mod
+        fake = types.SimpleNamespace(_call_claude_fn=None)
+
+        async def run_task(user_id, prompt):
+            return "the answer"
+        fake._call_claude_fn = run_task
+
+        meta = {"user_id": 1, "name": "nightly", "message": "do it", "notify": True}
+        send = mock.AsyncMock(return_value=False)
+        with mock.patch.object(sched_mod, "get_scheduler", return_value=fake), \
+             mock.patch.object(sched_mod, "_get_meta", return_value=meta), \
+             mock.patch.object(sched_mod, "_log_execution"), \
+             mock.patch.object(sched_mod, "_delete_meta"), \
+             mock.patch.object(sched_mod, "_send_with_retry", new=send):
+            asyncio.run(sched_mod._execute_agent("job-1"))
+        self.assertEqual(send.await_count, 1, "only the result itself is attempted")
 
 
 # --- F16: both CLIs run the same skill hooks --------------------------------
@@ -426,6 +477,29 @@ class CodexHookParityTests(unittest.TestCase):
             "hooks": [{"type": "command", "command": "/usr/local/bin/somebody-elses-hook"}]}]}}))
         self.bot._configure_codex_hooks()
         self.assertIn("somebody-elses-hook", hooks.read_text())
+
+    def test_hooks_are_configured_wherever_a_provider_is_built(self):
+        """Review of #156: the hooks were written once at boot. /provider,
+        /model, /apikey and the .env hot reload all rebuild the provider
+        through _build_llm_provider and none of them touched the hooks, so a
+        switch to Codex on a running bot ran with none of the safeguards."""
+        codex = llm_mod.CodexCLIProvider.__new__(llm_mod.CodexCLIProvider)
+        codex.warm_hook_trust_probe = mock.Mock(return_value=True)
+        claude = llm_mod.ClaudeCLIProvider.__new__(llm_mod.ClaudeCLIProvider)
+        self.addCleanup(setattr, self.bot, "_llm_provider_spec", self.bot._llm_provider_spec)
+        with mock.patch.object(self.bot, "create_provider", return_value=codex), \
+             mock.patch.object(self.bot, "_configure_codex_hooks") as codex_hooks, \
+             mock.patch.object(self.bot, "_configure_claude_hooks") as claude_hooks:
+            self.bot._build_llm_provider("codex", "gpt-5", "")
+        codex_hooks.assert_called_once()
+        claude_hooks.assert_not_called()
+        codex.warm_hook_trust_probe.assert_called_once()
+        with mock.patch.object(self.bot, "create_provider", return_value=claude), \
+             mock.patch.object(self.bot, "_configure_codex_hooks") as codex_hooks, \
+             mock.patch.object(self.bot, "_configure_claude_hooks") as claude_hooks:
+            self.bot._build_llm_provider("claude", "opus", "")
+        claude_hooks.assert_called_once()
+        codex_hooks.assert_not_called()
 
     def test_the_trust_bypass_is_only_passed_to_a_cli_that_takes_it(self):
         """An unknown flag is a hard abort with no events, so an older codex
@@ -488,6 +562,31 @@ class MediaGenControlTests(unittest.TestCase):
     def test_the_button_is_held_the_moment_the_upload_starts(self):
         upload = self.source.index("mgAttachState.uploading=true;")
         self.assertIn("updateGenerateBtn()", self.source[upload:upload + 120])
+
+    def test_a_model_with_no_resolution_choice_sends_none(self):
+        """Review of #156: renderMgResolution() hid the control for such a
+        model and left the previous model's 4k in mgState, and the request
+        sent it anyway, the exact fault the PR said it closed."""
+        start = self.source.index("function renderMgResolution()")
+        body = self.source[start:self.source.index("function ", start + 10)]
+        hidden = [i for i in range(len(body)) if body.startswith("sec.style.display='none'", i)]
+        self.assertEqual(len(hidden), 2)
+        for i in hidden:
+            with self.subTest(branch=body[i - 40:i]):
+                self.assertIn("mgState.resolution=null", body[i:body.index("return", i)])
+        click = self.source.index("document.getElementById('mg-generate').addEventListener('click'")
+        payload = self.source[click:self.source.index("mgAttachState.path", click)]
+        self.assertNotIn("resolution:mgState.resolution,", payload)
+        self.assertIn("if(mgState.resolution)config.resolution=mgState.resolution;", payload)
+
+    def test_leaving_a_reference_model_releases_generate(self):
+        """Review of #156: switching away from a model that required a
+        reference cleared the reference but never re-evaluated the button,
+        so it stayed greyed out until the prompt was retyped."""
+        start = self.source.index("function renderMgAttach()")
+        body = self.source[start:self.source.index("function ", start + 10)]
+        no_support = body.index("if(!support){")
+        self.assertIn("updateGenerateBtn()", body[no_support:body.index("return;", no_support)])
 
 
 if __name__ == "__main__":

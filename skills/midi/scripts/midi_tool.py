@@ -238,11 +238,26 @@ def cmd_quantize(args):
     # 240 instead of 0 and let the error walk down the track (audit F21).
     grid = max(1, round(mid.ticks_per_beat * 4 / args.grid))
 
+    # Only ONSETS snap. A note's release moves by the same amount as its
+    # onset so it keeps its length: snapping both ends collapsed any note
+    # shorter than half a grid step to zero length, silent (eight eighth
+    # notes on a quarter grid lost four of them: review of #156).
     for i, track in enumerate(mid.tracks):
         events = []
+        open_shift = {}  # (channel, note) -> [shift, ...] for sounding notes
         for t, msg in _to_absolute(track):
-            if msg.type in ('note_on', 'note_off'):
-                t = round(t / grid) * grid
+            is_on = msg.type == 'note_on' and msg.velocity > 0
+            is_off = msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0)
+            if is_on:
+                shift = round(t / grid) * grid - t
+                open_shift.setdefault((msg.channel, msg.note), []).append(shift)
+                t += shift
+            elif is_off:
+                stack = open_shift.get((msg.channel, msg.note))
+                if stack:
+                    t += stack.pop(0)
+                else:  # a release with no onset in this track: snap it alone
+                    t = round(t / grid) * grid
             events.append((t, msg))
         mid.tracks[i] = _from_absolute(events)
 

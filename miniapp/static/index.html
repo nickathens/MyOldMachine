@@ -2864,6 +2864,9 @@ body{
             document.getElementById('mg-attach-preview').innerHTML='';
             document.getElementById('mg-attach-text').innerHTML='Tap to attach an image';
             document.getElementById('mg-attach-status').textContent='';
+            // The reference is gone, so Generate must be re-evaluated or it
+            // stays held from the model that required one (review of #156).
+            updateGenerateBtn();
             return;
         }
         sec.style.display='';
@@ -3143,9 +3146,11 @@ body{
 
     function renderMgResolution(){
         var sec=document.getElementById('mg-res-section');
-        if(mgState.type==='video'){sec.style.display='none';return;}
+        // No choice for this model: clear the value too, or the previous
+        // model's 4k rides along in the request (review of #156).
+        if(mgState.type==='video'){sec.style.display='none';mgState.resolution=null;return;}
         var resolutions=MODEL_RESOLUTIONS[mgState.model];
-        if(!resolutions||!resolutions.length){sec.style.display='none';return;}
+        if(!resolutions||!resolutions.length){sec.style.display='none';mgState.resolution=null;return;}
         sec.style.display='block';
         var el=document.getElementById('mg-res');
         el.innerHTML='';
@@ -3244,9 +3249,9 @@ body{
             type:mgState.type,
             model:mgState.model,
             aspect_ratio:mgState.aspect,
-            resolution:mgState.resolution,
             prompt:prompt
         };
+        if(mgState.resolution)config.resolution=mgState.resolution;
         if(mgState.type==='video'){
             var dur=MODEL_DURATIONS[mgState.model];
             if(dur)config.duration=mgState.duration;
