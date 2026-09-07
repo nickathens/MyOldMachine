@@ -139,15 +139,17 @@ def cmd_adjust(args):
     """Adjust brightness/contrast."""
     img = Image.open(args.input)
 
-    if args.brightness:
+    # `is not None`, not truthiness: brightness 0 is a real request (black)
+    # and was silently ignored (audit F27, 2026-09-06).
+    if args.brightness is not None:
         enhancer = ImageEnhance.Brightness(img)
         img = enhancer.enhance(args.brightness)
 
-    if args.contrast:
+    if args.contrast is not None:
         enhancer = ImageEnhance.Contrast(img)
         img = enhancer.enhance(args.contrast)
 
-    if args.saturation:
+    if args.saturation is not None:
         enhancer = ImageEnhance.Color(img)
         img = enhancer.enhance(args.saturation)
 
@@ -170,9 +172,12 @@ def cmd_composite(args):
 
     position = tuple(args.position) if args.position else (0, 0)
 
-    # Create a copy to paste onto
-    result = base.copy()
-    result.paste(overlay, position, overlay)
+    # Real alpha compositing. paste(overlay, pos, mask) writes the overlay's
+    # own alpha into the result, so a half-transparent overlay on an opaque
+    # base left the output half transparent (audit F27, 2026-09-06).
+    layer = Image.new('RGBA', base.size, (0, 0, 0, 0))
+    layer.paste(overlay, position)
+    result = Image.alpha_composite(base, layer)
 
     result.save(args.output)
     print(f"Composited at {position} -> {args.output}")

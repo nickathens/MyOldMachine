@@ -1934,7 +1934,12 @@ def main():
     print(f"Treatment written to {output_path}")
 
     if args.pdf:
-        export_pdf(str(output_path), args.pdf)
+        ok = export_pdf(str(output_path), args.pdf)
+        if not ok or not Path(args.pdf).is_file() or Path(args.pdf).stat().st_size == 0:
+            # The HTML exists; the PDF the caller asked for does not. Say so
+            # with the exit code (audit F42, 2026-09-06).
+            print(f"Error: PDF export failed, {args.pdf} was not produced", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

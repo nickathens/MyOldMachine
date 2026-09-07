@@ -23,10 +23,18 @@ def load_audio(path: str) -> AudioSegment:
 def save_audio(audio: AudioSegment, path: str, bitrate: str = None):
     """Save audio file, inferring format from extension."""
     suffix = Path(path).suffix.lower().lstrip('.')
+    # Extension to (ffmpeg muxer, codec). "m4a" and "aac" are not muxer names
+    # and failed every export (audit F23, 2026-09-06).
+    export_map = {'m4a': ('ipod', 'aac'), 'aac': ('adts', 'aac'),
+                  'mp4': ('mp4', 'aac'), 'ogg': ('ogg', 'libvorbis'),
+                  'opus': ('opus', 'libopus')}
+    fmt, codec = export_map.get(suffix, (suffix, None))
     params = {}
-    if bitrate and suffix == 'mp3':
+    if codec:
+        params['codec'] = codec
+    if bitrate and suffix in ('mp3', 'm4a', 'aac', 'mp4', 'ogg', 'opus'):
         params['bitrate'] = bitrate
-    audio.export(path, format=suffix, **params)
+    audio.export(path, format=fmt, **params)
     print(f"Saved: {path}")
 
 

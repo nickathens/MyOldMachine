@@ -5,6 +5,7 @@ Video editing operations using moviepy.
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -95,6 +96,28 @@ def cmd_audio(args):
     clip.close()
 
 
+FONT_CANDIDATES = (
+    # Linux (Debian/Ubuntu, Fedora, Arch)
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+    # macOS
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/Library/Fonts/Arial.ttf",
+)
+
+
+def _default_font() -> str | None:
+    """First font file that exists on this machine, or None."""
+    for path in FONT_CANDIDATES:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 def cmd_text(args):
     """Add text overlay."""
     from moviepy import VideoFileClip, TextClip, CompositeVideoClip
@@ -114,11 +137,22 @@ def cmd_text(args):
 
     pos = positions.get(args.position, ('center', 'bottom'))
 
+    # MoviePy 2 wants a font FILE; the ImageMagick-era name 'DejaVu-Sans'
+    # fails to open (audit F24, 2026-09-06). No font ships with the package,
+    # so pick the first one this OS actually has.
+    font = args.font or _default_font()
+    if not font:
+        print("Error: no usable font found. Pass one with --font "
+              "(a .ttf/.otf path).", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.isfile(font):
+        print(f"Error: font file not found: {font}", file=sys.stderr)
+        sys.exit(1)
     txt = TextClip(
         text=args.text,
         font_size=args.fontsize,
         color=args.color,
-        font=args.font or 'DejaVu-Sans',
+        font=font,
     )
     txt = txt.with_position(pos).with_duration(clip.duration)
 
@@ -136,7 +170,7 @@ def cmd_resize(args):
     clip = VideoFileClip(args.input)
 
     if args.width and args.height:
-        resized = clip.resized(newsize=(args.width, args.height))
+        resized = clip.resized(new_size=(args.width, args.height))
     elif args.width:
         resized = clip.resized(width=args.width)
     elif args.height:

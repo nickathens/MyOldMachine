@@ -21,9 +21,11 @@ import logging
 import os
 import shutil
 import signal
+import subprocess
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -482,6 +484,63 @@ def _next_progress_delay(provider, count: int) -> float:
     return provider.PROGRESS_INTERVAL
 
 
+# How long a read loop keeps draining a pipe after the CLI has exited. Long
+# enough for buffered lines (they arrive at once), short enough that a
+# backgrounded tool which inherited stdout and keeps writing cannot hold the
+# turn open to the 24-hour ceiling.
+DRAIN_AFTER_EXIT = 10.0
+
+
+_CODEX_HOOK_TRUST_FLAG = "--dangerously-bypass-hook-trust"
+
+
+@lru_cache(maxsize=8)
+def _codex_accepts_hook_trust_bypass(binary: str) -> bool:
+    """Whether this codex build takes --dangerously-bypass-hook-trust.
+
+    Codex refuses an untrusted hook until it is reviewed interactively, and
+    the bot has no interactive session, so the flag is what makes the repo's
+    own hooks run (audit F16, 2026-09-06). An unknown flag is a hard abort
+    with no events, so older builds must not be handed it: ask --help once
+    and cache the answer.
+    """
+    try:
+        out = subprocess.run([binary, "exec", "--help"], capture_output=True,
+                             text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return _CODEX_HOOK_TRUST_FLAG in (out.stdout or "") + (out.stderr or "")
+
+
+def _kill_turn(process) -> None:
+    """Kill a CLI turn AND everything it spawned.
+
+    Both CLI providers start their child in its own session
+    (start_new_session=True), so the child's pid is the process-group id of
+    every tool command it launched. Killing only the parent left those
+    running and holding the stdout pipe open (audit F02, 2026-09-06: a
+    bounded child wrote its marker after its parent was killed).
+
+    The group kill is attempted only on a real asyncio Process, so a stub in
+    a test carrying an arbitrary integer pid can never reach os.killpg.
+    """
+    if process is None or getattr(process, "returncode", None) is not None:
+        return
+    if isinstance(process, asyncio.subprocess.Process):
+        try:
+            # Only when the child really leads its own group. A spawn that
+            # forgot start_new_session would otherwise hand os.killpg a pid
+            # that is not a group id.
+            if os.getpgid(process.pid) == process.pid:
+                os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        process.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 async def _read_line_with_timeout(stream, timeout: float):
     """Read one line from an asyncio stream, with a per-line timeout.
 
@@ -760,7 +819,7 @@ class ClaudeCLIProvider(LLMProvider):
         self._stop_requested.add(user_id)
         try:
             if proc.returncode is None:
-                proc.kill()
+                _kill_turn(proc)
         except (ProcessLookupError, PermissionError, OSError):
             pass
         return True
@@ -986,8 +1045,12 @@ class ClaudeCLIProvider(LLMProvider):
                 cwd=cwd,
                 env=cli_env,
                 limit=50 * 1024 * 1024,  # 50MB buffer for large JSON lines
+                # Own session, so _kill_turn can take the whole tool tree
+                # down with the CLI rather than orphaning it (audit F02).
+                start_new_session=True,
             )
             self._active_processes.add(process)
+            drain_deadline = None
             if user_id is not None:
                 # Drop any stale stop flag from a previous turn before
                 # registering this process, so the incoming process isn't
@@ -1012,7 +1075,7 @@ class ClaudeCLIProvider(LLMProvider):
                     logger.info(f"Claude stop requested for user {user_id} after {int(elapsed)}s")
                     if process.returncode is None:
                         try:
-                            process.kill()
+                            _kill_turn(process)
                         except (ProcessLookupError, PermissionError, OSError):
                             pass
                     await process.wait()
@@ -1034,7 +1097,7 @@ class ClaudeCLIProvider(LLMProvider):
                                               f"absolute timeout after {int(elapsed)}s", tool_in_progress)
                     if process.returncode is None:
                         try:
-                            process.kill()
+                            _kill_turn(process)
                         except (ProcessLookupError, PermissionError, OSError):
                             pass
                     await process.wait()
@@ -1057,7 +1120,7 @@ class ClaudeCLIProvider(LLMProvider):
                     if self.on_progress_save and user_id:
                         self.on_progress_save(user_id, original_message, partial_text,
                                               f"timeout after {self.IDLE_TIMEOUT}s", tool_in_progress)
-                    process.kill()
+                    _kill_turn(process)
                     await process.wait()
                     if final_result:
                         if self.on_progress_clear and user_id:
@@ -1134,6 +1197,15 @@ class ClaudeCLIProvider(LLMProvider):
                 if chat:
                     read_timeout = min(read_timeout, next_delay - time_since_progress)
                 read_timeout = max(1.0, read_timeout)
+                if process.returncode is not None:
+                    # Exited: whatever is still in the pipe arrives at
+                    # once, so a short wait is a real drain and a long
+                    # one is a grandchild holding the pipe open.
+                    if drain_deadline is None:
+                        drain_deadline = current_time + DRAIN_AFTER_EXIT
+                    if current_time >= drain_deadline:
+                        break
+                    read_timeout = min(read_timeout, 5.0)
                 line = await _read_line_with_timeout(process.stdout, timeout=read_timeout)
 
                 if line:
@@ -1210,9 +1282,13 @@ class ClaudeCLIProvider(LLMProvider):
                         except json.JSONDecodeError:
                             pass
                 elif line == b'':
-                    break  # EOF
+                    break  # EOF: every buffered line has been read
 
-                if process.returncode is not None:
+                # Exit is not EOF. The CLI can exit with lines still buffered
+                # in the pipe (audit F03, 2026-09-06: three lines waiting, one
+                # read, the result among the two lost). Keep reading after
+                # exit and leave only when a read window passes with nothing.
+                if process.returncode is not None and line is None:
                     break
 
             await process.wait()
@@ -1402,7 +1478,7 @@ class ClaudeCLIProvider(LLMProvider):
                 self._active_processes.discard(process)
                 if process.returncode is None:
                     try:
-                        process.kill()
+                        _kill_turn(process)
                     except (ProcessLookupError, PermissionError, OSError):
                         pass
                     await process.wait()
@@ -1452,7 +1528,7 @@ class ClaudeCLIProvider(LLMProvider):
         logger.warning(f"Force-killing {len(remaining)} Claude processes still running after 10s")
         for proc in remaining:
             try:
-                proc.kill()
+                _kill_turn(proc)
             except (ProcessLookupError, PermissionError, OSError) as e:
                 logger.warning(f"Failed to kill Claude process: {e}")
         for proc in remaining:
@@ -1497,6 +1573,15 @@ class CodexCLIProvider(LLMProvider):
         self.on_progress_save = None
         self.on_progress_clear = None
 
+    def warm_hook_trust_probe(self) -> bool:
+        """Run the one-off `codex exec --help` capability probe now.
+
+        Called at startup so the first turn does not pay for it: the probe is
+        a synchronous subprocess and would otherwise block the event loop
+        inside complete().
+        """
+        return _codex_accepts_hook_trust_bypass(self._cli_binary)
+
     def stop_user(self, user_id: int) -> bool:
         proc = self._user_processes.get(user_id)
         if proc is None:
@@ -1504,7 +1589,7 @@ class CodexCLIProvider(LLMProvider):
         self._stop_requested.add(user_id)
         try:
             if proc.returncode is None:
-                proc.kill()
+                _kill_turn(proc)
         except (ProcessLookupError, PermissionError, OSError):
             pass
         return True
@@ -1599,6 +1684,15 @@ class CodexCLIProvider(LLMProvider):
             "-m", self.model,
             "-",  # Read prompt from stdin
         ]
+        # The skill hooks (resource gate, usage log, turn-end cleanup) that a
+        # Claude CLI turn runs live in <bot_dir>/.codex/hooks.json for Codex,
+        # in the same event and payload shape. Codex will not run a hook it
+        # has not been told to trust, and there is no interactive session to
+        # tell it in, so trust is bypassed per invocation. The hook sources
+        # are the install's own files (audit F16, 2026-09-06).
+        if (self._bot_dir / ".codex" / "hooks.json").is_file() and \
+                _codex_accepts_hook_trust_bypass(self._cli_binary):
+            cmd.insert(-1, _CODEX_HOOK_TRUST_FLAG)
 
         typing_task = None
         process = None
@@ -1615,6 +1709,14 @@ class CodexCLIProvider(LLMProvider):
         current_status = "thinking"
         tool_in_progress = None
         turn_failed_message = None
+        drain_deadline = None
+        # Only turn.failed is a verdict. Codex emits `error` EVENTS for
+        # retries ("Reconnecting... 2/5") on a turn that still completes, and
+        # its own source maps those to a running state, so an error event is
+        # evidence and turn.completed is the proof of a finished turn
+        # (audit F04, 2026-09-06).
+        stream_error = None
+        turn_completed = False
 
         try:
             if chat:
@@ -1645,6 +1747,9 @@ class CodexCLIProvider(LLMProvider):
                 cwd=cwd,
                 env=cli_env,
                 limit=50 * 1024 * 1024,
+                # Own session, so _kill_turn can take the whole tool tree
+                # down with the CLI rather than orphaning it (audit F02).
+                start_new_session=True,
             )
             self._active_processes.add(process)
             if user_id is not None:
@@ -1665,7 +1770,7 @@ class CodexCLIProvider(LLMProvider):
                     logger.info(f"Codex stop requested for user {user_id} after {int(elapsed)}s")
                     if process.returncode is None:
                         try:
-                            process.kill()
+                            _kill_turn(process)
                         except (ProcessLookupError, PermissionError, OSError):
                             pass
                     await process.wait()
@@ -1684,7 +1789,7 @@ class CodexCLIProvider(LLMProvider):
                                               f"absolute timeout after {int(elapsed)}s", tool_in_progress)
                     if process.returncode is None:
                         try:
-                            process.kill()
+                            _kill_turn(process)
                         except (ProcessLookupError, PermissionError, OSError):
                             pass
                     await process.wait()
@@ -1706,7 +1811,7 @@ class CodexCLIProvider(LLMProvider):
                     if self.on_progress_save and user_id:
                         self.on_progress_save(user_id, original_message, partial_text,
                                               f"timeout after {self.IDLE_TIMEOUT}s", tool_in_progress)
-                    process.kill()
+                    _kill_turn(process)
                     await process.wait()
                     fallback = "\n\n".join(agent_message_blocks).strip()
                     if fallback:
@@ -1777,6 +1882,15 @@ class CodexCLIProvider(LLMProvider):
                 if chat:
                     read_timeout = min(read_timeout, next_delay - time_since_progress)
                 read_timeout = max(1.0, read_timeout)
+                if process.returncode is not None:
+                    # Exited: whatever is still in the pipe arrives at
+                    # once, so a short wait is a real drain and a long
+                    # one is a grandchild holding the pipe open.
+                    if drain_deadline is None:
+                        drain_deadline = current_time + DRAIN_AFTER_EXIT
+                    if current_time >= drain_deadline:
+                        break
+                    read_timeout = min(read_timeout, 5.0)
                 line = await _read_line_with_timeout(process.stdout, timeout=read_timeout)
 
                 if line:
@@ -1793,6 +1907,7 @@ class CodexCLIProvider(LLMProvider):
                             elif evt_type == "turn.completed":
                                 current_status = "done"
                                 tool_in_progress = None
+                                turn_completed = True
                                 usage = data.get("usage") or {}
                                 total_input += usage.get("input_tokens", 0) or 0
                                 total_output += usage.get("output_tokens", 0) or 0
@@ -1801,8 +1916,8 @@ class CodexCLIProvider(LLMProvider):
                                 turn_failed_message = err.get("message") if isinstance(err, dict) else str(err)
                                 logger.warning(f"Codex turn.failed for user {user_id}: {turn_failed_message}")
                             elif evt_type == "error":
-                                turn_failed_message = data.get("message") or "stream error"
-                                logger.warning(f"Codex stream error for user {user_id}: {turn_failed_message}")
+                                stream_error = data.get("message") or "stream error"
+                                logger.warning(f"Codex stream error for user {user_id}: {stream_error}")
                             elif evt_type in ("item.started", "item.updated", "item.completed"):
                                 item = data.get("item") or {}
                                 item_type = item.get("type")
@@ -1857,9 +1972,10 @@ class CodexCLIProvider(LLMProvider):
                         except json.JSONDecodeError:
                             pass
                 elif line == b'':
-                    break
+                    break  # EOF: every buffered line has been read
 
-                if process.returncode is not None:
+                # Same as the Claude provider: exit is not EOF (audit F03).
+                if process.returncode is not None and line is None:
                     break
 
             await process.wait()
@@ -1922,7 +2038,8 @@ class CodexCLIProvider(LLMProvider):
                         text=oom_msg, model=self.model, provider=self.provider_name,
                         error="OOM killed",
                     )
-                err_detail = turn_failed_message or _error_excerpt(stderr_text, 500) or f"exit {process.returncode}"
+                err_detail = (turn_failed_message or stream_error
+                              or _error_excerpt(stderr_text, 500) or f"exit {process.returncode}")
                 hint = ""
                 if "auth" in err_detail.lower() or "login" in err_detail.lower() or "unauthor" in err_detail.lower():
                     hint = "\n\nRun `codex login` to authenticate with your ChatGPT plan, or set OPENAI_API_KEY."
@@ -1937,6 +2054,11 @@ class CodexCLIProvider(LLMProvider):
 
             final_text = "\n\n".join(agent_message_blocks).strip()
             if final_text:
+                # Text without turn.completed is a cut turn, not an answer:
+                # exit -9 with a message already emitted used to ship the
+                # fragment dressed as finished (audit F04, 2026-09-06).
+                if not turn_completed:
+                    final_text += _interrupted_notice(process.returncode)
                 return LLMResponse(
                     text=final_text, model=self.model,
                     provider=self.provider_name, tool_use=True,
@@ -1952,11 +2074,12 @@ class CodexCLIProvider(LLMProvider):
                     input_tokens=total_input, output_tokens=total_output,
                 )
 
-            if turn_failed_message:
+            failure = turn_failed_message or (None if turn_completed else stream_error)
+            if failure:
                 return LLMResponse(
-                    text=f"Codex failed: {turn_failed_message}",
+                    text=f"Codex failed: {failure}",
                     model=self.model, provider=self.provider_name,
-                    error=_error_excerpt(turn_failed_message, 200),
+                    error=_error_excerpt(failure, 200),
                 )
             elapsed = time.monotonic() - start_time
             logger.warning(
@@ -1996,7 +2119,7 @@ class CodexCLIProvider(LLMProvider):
                 self._active_processes.discard(process)
                 if process.returncode is None:
                     try:
-                        process.kill()
+                        _kill_turn(process)
                     except (ProcessLookupError, PermissionError, OSError):
                         pass
                     await process.wait()
@@ -2024,7 +2147,7 @@ class CodexCLIProvider(LLMProvider):
         logger.warning(f"Force-killing {len(remaining)} Codex processes still running after 10s")
         for proc in remaining:
             try:
-                proc.kill()
+                _kill_turn(proc)
             except (ProcessLookupError, PermissionError, OSError) as e:
                 logger.warning(f"Failed to kill Codex process: {e}")
         for proc in remaining:

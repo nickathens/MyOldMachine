@@ -184,25 +184,41 @@ def sweep(keep_ledger, condemned, restore_map=None, execute=False,
         PROVE.write_ledger(real, ledger_out)
         report["condemned_ledger"] = os.path.abspath(ledger_out)
 
-    # Gate three: a restore path that exists.
+    # Gate three: a restore path that exists, is NOT one of the condemned
+    # files under any name, and holds the same bytes. The old gate asked only
+    # "does it exist", which a condemned file answers about itself (audit F01,
+    # 2026-09-06: restore_from == the file being deleted passed every gate).
     restore_map = restore_map or {}
+    condemned_real = set()
+    for r in real:
+        condemned_real.add(os.path.realpath(r["path"]))
     restore_rows = []
     for r in real:
         route = restore_map.get(r["path"]) or restore_map.get(
             os.path.basename(r["path"]))
-        restore_rows.append({
-            "path": r["path"], "restore_from": route,
-            "exists": bool(route) and os.path.exists(route),
-        })
+        row = {"path": r["path"], "restore_from": route, "exists": False,
+               "distinct": False, "same_bytes": False, "proved": False}
+        if route and os.path.isfile(route):
+            row["exists"] = True
+            route_real = os.path.realpath(route)
+            same_file = route_real in condemned_real or any(
+                os.path.samefile(route_real, c) for c in condemned_real
+                if os.path.exists(c))
+            row["distinct"] = not same_file
+            if row["distinct"]:
+                row["same_bytes"] = C.sha256_file(route) == r["sha256"]
+            row["proved"] = row["distinct"] and row["same_bytes"]
+        restore_rows.append(row)
     report["restore"] = restore_rows
-    missing_route = [r for r in restore_rows if not r["exists"]]
+    missing_route = [r for r in restore_rows if not r["proved"]]
     report["gates"].append({
         "gate": "restore path proved", "pass": not missing_route,
-        "detail": ("every condemned file has a restore path that exists"
+        "detail": ("every condemned file has a distinct restore copy with the same bytes"
                    if not missing_route else
-                   f"{len(missing_route)} file(s) have no proved restore path. "
-                   "Give one with --restore-from, or accept in writing that "
-                   "these are gone for good.")})
+                   f"{len(missing_route)} file(s) have no proved restore path "
+                   "(missing, the condemned file itself under another name, or "
+                   "different bytes). Give one with --restore-from, or accept in "
+                   "writing that these are gone for good.")})
 
     # The trap: a file referenced by somebody else's dependency record.
     referenced = _referenced_elsewhere([r["path"] for r in real])

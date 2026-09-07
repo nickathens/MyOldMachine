@@ -57,15 +57,21 @@ def get_scale_notes(root, scale_type, octave=4):
     return [root_midi + interval for interval in pattern]
 
 def generate_melody(root='C', scale_type='major', bars=8, octave=4,
-                   note_density=0.7, step_probability=0.7):
-    """Generate a melody using the given scale"""
+                   note_density=0.7, step_probability=0.7, tempo=120):
+    """Generate a melody using the given scale.
+
+    All durations are in BEATS and converted to seconds with the one tempo
+    given (audit F22, 2026-09-06: chords and melody each assumed their own
+    clock, and four bars of chords ran to 15.6 s instead of 8).
+    """
     scale_notes = get_scale_notes(root, scale_type, octave)
     extended_scale = scale_notes + [n + 12 for n in scale_notes[:4]]  # Extend up
 
-    midi = pretty_midi.PrettyMIDI(initial_tempo=120)
+    midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
     instrument = pretty_midi.Instrument(program=0)  # Piano
+    spb = 60.0 / tempo  # seconds per beat
 
-    current_time = 0
+    current_beat = 0.0
     beats_per_bar = 4
     total_beats = bars * beats_per_bar
     current_note_idx = len(scale_notes) // 2  # Start in middle
@@ -88,22 +94,23 @@ def generate_melody(root='C', scale_type='major', bars=8, octave=4,
             note = pretty_midi.Note(
                 velocity=velocity,
                 pitch=pitch,
-                start=current_time,
-                end=current_time + duration * 0.9
+                start=current_beat * spb,
+                end=(current_beat + duration * 0.9) * spb
             )
             instrument.notes.append(note)
 
-        current_time += 0.5  # 8th note grid
+        current_beat += 1.0  # one step per beat
 
     midi.instruments.append(instrument)
     return midi
 
-def generate_chord_progression(root='C', prog_type='pop', bars=4, octave=3):
+def generate_chord_progression(root='C', prog_type='pop', bars=4, octave=3, tempo=120):
     """Generate a chord progression"""
     progression = PROGRESSIONS.get(prog_type, PROGRESSIONS['pop'])
 
-    midi = pretty_midi.PrettyMIDI(initial_tempo=120)
+    midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
     instrument = pretty_midi.Instrument(program=0)  # Piano
+    spb = 60.0 / tempo
 
     root_midi = note_to_midi_number(root, octave)
     major_scale = [0, 2, 4, 5, 7, 9, 11]
@@ -114,7 +121,7 @@ def generate_chord_progression(root='C', prog_type='pop', bars=4, octave=3):
         'i': 0, 'ii': 1, 'iii': 2, 'iv': 3, 'v': 4, 'vi': 5, 'vii': 6
     }
 
-    current_time = 0
+    current_beat = 0.0
     beats_per_chord = (bars * 4) / len(progression)
 
     for numeral in progression:
@@ -137,12 +144,12 @@ def generate_chord_progression(root='C', prog_type='pop', bars=4, octave=3):
             note = pretty_midi.Note(
                 velocity=80,
                 pitch=pitch,
-                start=current_time,
-                end=current_time + beats_per_chord * 0.9
+                start=current_beat * spb,
+                end=(current_beat + beats_per_chord * 0.9) * spb
             )
             instrument.notes.append(note)
 
-        current_time += beats_per_chord
+        current_beat += beats_per_chord
 
     midi.instruments.append(instrument)
     return midi
@@ -254,9 +261,9 @@ def generate_drums(bars=4, style='basic', tempo=120):
     midi.instruments.append(drums)
     return midi
 
-def combine_midi(midis, output_path):
+def combine_midi(midis, output_path, tempo=120):
     """Combine multiple MIDI objects into one file"""
-    combined = pretty_midi.PrettyMIDI(initial_tempo=120)
+    combined = pretty_midi.PrettyMIDI(initial_tempo=tempo)
 
     for i, m in enumerate(midis):
         for inst in m.instruments:
@@ -288,11 +295,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.action == 'melody':
-        midi = generate_melody(args.root, args.scale, args.bars)
+        midi = generate_melody(args.root, args.scale, args.bars, tempo=args.tempo)
         midi.write(args.output)
 
     elif args.action == 'chords':
-        midi = generate_chord_progression(args.root, args.progression, args.bars)
+        midi = generate_chord_progression(args.root, args.progression, args.bars, tempo=args.tempo)
         midi.write(args.output)
 
     elif args.action == 'arpeggio':
@@ -305,9 +312,9 @@ if __name__ == '__main__':
 
     elif args.action == 'full':
         # Generate a full arrangement
-        chord_midi = generate_chord_progression(args.root, args.progression, args.bars)
-        melody = generate_melody(args.root, args.scale, args.bars, octave=5)
+        chord_midi = generate_chord_progression(args.root, args.progression, args.bars, tempo=args.tempo)
+        melody = generate_melody(args.root, args.scale, args.bars, octave=5, tempo=args.tempo)
         drums = generate_drums(args.bars, 'basic', args.tempo)
-        combine_midi([chord_midi, melody, drums], args.output)
+        combine_midi([chord_midi, melody, drums], args.output, tempo=args.tempo)
 
     print(f"Generated: {args.output}")

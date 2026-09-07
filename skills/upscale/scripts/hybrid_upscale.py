@@ -261,13 +261,51 @@ def main():
     ap.add_argument("--mode", default="hybrid", choices=("hybrid", "plain", "lanczos"))
     ap.add_argument("--tile", type=int, default=512)
     ap.add_argument("--metrics", action="store_true")
+    ap.add_argument("--force-8bit", action="store_true",
+                    help="Run the neural path on a 16-bit input by flattening it to 8-bit first "
+                         "(otherwise a 16-bit input is refused for hybrid/plain).")
     a = ap.parse_args()
 
     src_img = Image.open(a.input)
-    src_u8 = np.asarray(src_img.convert("RGB"))
-    size = (src_u8.shape[1] * a.scale, src_u8.shape[0] * a.scale)
+    if src_img.mode == "P":
+        src_img = src_img.convert("RGBA" if "transparency" in src_img.info else "RGB")
+    src_mode = src_img.mode
+    # Audit F28 (2026-09-06): RGBA lost its alpha and 16-bit became 8-bit RGB
+    # with no warning. Alpha is carried through every mode (upscaled with
+    # Lanczos and reattached); a 16-bit or float image keeps its depth on
+    # the lanczos route and is refused on the neural one unless --force-8bit.
+    deep = src_mode in ("I", "I;16", "I;16B", "I;16L", "F") or src_mode.startswith("I;16")
+    alpha = src_img.getchannel("A") if "A" in src_img.getbands() else None
+    size = (src_img.width * a.scale, src_img.height * a.scale)
 
     t0 = time.time()
+    if a.mode == "lanczos" and (deep or src_mode in ("L", "LA", "1")):
+        # Same-mode resize keeps the depth and the channel layout exact.
+        resized = src_img.resize(size, Image.LANCZOS)
+        resized.save(a.output, format="PNG", compress_level=6)
+        print(f"{src_img.size} -> {size[0]}x{size[1]} (lanczos, mode {resized.mode} kept) "
+              f"in {time.time()-t0:.1f}s")
+        return
+    if deep and not a.force_8bit:
+        raise SystemExit(f"Refusing: {a.input} is {src_mode} (more than 8 bits per channel) and the "
+                         f"{a.mode} path is 8-bit. Use --mode lanczos to keep the depth, or "
+                         f"--force-8bit to accept the loss.")
+    if deep:
+        arr16 = np.asarray(src_img, dtype=np.float32)
+        top = 65535.0 if src_mode != "F" else max(arr16.max(), 1.0)
+        src_img = Image.fromarray((np.clip(arr16 / top, 0, 1) * 255 + 0.5).astype(np.uint8))
+    src_u8 = np.asarray(src_img.convert("RGB"))
+    alpha_f = None
+    if alpha is not None:
+        # Enlarge the colour with the transparency already multiplied in,
+        # then divide it back out under the enlarged alpha. Resampling the
+        # straight colour dragged whatever sat behind the cut out (black,
+        # for anything out of background removal) into its edge: a red disc
+        # came back with a rim reading 202 on average and 0 at the worst
+        # pixel (review of #156).
+        alpha_f = np.asarray(alpha, dtype=np.float32)[..., None] / 255.0
+        src_u8 = (src_u8.astype(np.float32) * alpha_f + 0.5).astype(np.uint8)
+
     if a.mode == "lanczos":
         out, lan, mask = lanczos(src_u8, size), None, None
     else:
@@ -280,9 +318,19 @@ def main():
         else:
             out, lan, mask = hybrid(src_u8, esr, a.scale)
 
+    alpha_up = alpha.resize(size, Image.LANCZOS) if alpha is not None else None
+    if alpha_up is not None:
+        cover = np.asarray(alpha_up, dtype=np.float32)[..., None] / 255.0
+        # Where nothing is visible the colour is moot; leave it rather than
+        # divide by zero. Everywhere else, unpremultiply.
+        out = np.where(cover > 0, out / np.maximum(cover, 1.0 / 255.0), out)
     arr = (np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8)
-    Image.fromarray(arr).save(a.output, format="PNG", compress_level=6)
-    print(f"{src_img.size} -> {size[0]}x{size[1]} ({a.mode}) in {time.time()-t0:.1f}s")
+    result = Image.fromarray(arr)
+    if alpha_up is not None:
+        result.putalpha(alpha_up)
+    result.save(a.output, format="PNG", compress_level=6)
+    print(f"{src_img.size} -> {size[0]}x{size[1]} ({a.mode}"
+          f"{', alpha kept' if alpha is not None else ''}) in {time.time()-t0:.1f}s")
     if a.metrics and mask is not None:
         metrics(src_u8, out, lan, mask, a.scale)
 

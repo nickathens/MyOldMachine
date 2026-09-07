@@ -77,7 +77,7 @@ def _connect_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def parse_natural_time(text: str) -> Optional[datetime]:
+def parse_natural_time(text: str, strict: bool = False) -> Optional[datetime]:
     """
     Parse natural language time expressions.
 
@@ -87,10 +87,17 @@ def parse_natural_time(text: str) -> Optional[datetime]:
     - "at 3pm", "at 15:30"
     - "next monday at 10am"
     - ISO format: "2026-02-01T15:00:00"
+
+    `strict=True` accepts the text only when ALL of it is the time expression.
+    The default is a prefix match ("in 30 minutes check the oven" parses),
+    which is what /remind's longest-prefix-first search must NOT get: it hands
+    the whole line to the parser, the prefix matches, and the reminder is left
+    with no message (audit F11, 2026-09-06).
     """
     original_text = text.strip()
     text = text.lower().strip()
     now = datetime.now()
+    tail = r'\s*$' if strict else ''
 
     # Try ISO format first
     try:
@@ -99,7 +106,7 @@ def parse_natural_time(text: str) -> Optional[datetime]:
         pass
 
     # "in X minutes/hours/days"
-    in_pattern = re.match(r'in\s+(\d+)\s*(min(?:ute)?s?|hours?|days?|weeks?)', text)
+    in_pattern = re.match(r'in\s+(\d+)\s*(min(?:ute)?s?|hours?|days?|weeks?)' + tail, text)
     if in_pattern:
         amount = int(in_pattern.group(1))
         unit = in_pattern.group(2)
@@ -126,7 +133,7 @@ def parse_natural_time(text: str) -> Optional[datetime]:
         return hour, minute
 
     # "tomorrow at HH:MM" or "tomorrow at Ham/pm"
-    tomorrow_pattern = re.match(r'tomorrow\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
+    tomorrow_pattern = re.match(r'tomorrow\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?' + tail, text)
     if tomorrow_pattern:
         hm = _parse_hm(tomorrow_pattern)
         if hm:
@@ -141,11 +148,11 @@ def parse_natural_time(text: str) -> Optional[datetime]:
     weekday_in_text = any(day in text for day in weekdays)
 
     # "at HH:MM" or "at Ham/pm" — requires "at" keyword, HH:MM format, or am/pm suffix
-    at_pattern = re.match(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
+    at_pattern = re.match(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?' + tail, text)
     if not at_pattern:
         at_pattern = re.match(r'(\d{1,2}):(\d{2})\s*(am|pm)?$', text)
     if not at_pattern:
-        at_pattern = re.match(r'(\d{1,2})()\s*(am|pm)', text)
+        at_pattern = re.match(r'(\d{1,2})()\s*(am|pm)' + tail, text)
     if at_pattern and not weekday_in_text:
         hm = _parse_hm(at_pattern)
         if hm:
@@ -158,6 +165,14 @@ def parse_natural_time(text: str) -> Optional[datetime]:
     # Weekday names
     for i, day in enumerate(weekdays):
         if day in text:
+            if strict:
+                # Everything besides the weekday, its connectives and one time
+                # expression must be absent, else the text carries a message.
+                leftover = re.sub(
+                    r'\b(next|this|on|at|' + day + r')\b|'
+                    r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b', ' ', text)
+                if leftover.split():
+                    return None
             # Same three time shapes as the branch above, searched anywhere in
             # the string so "5pm on monday" keeps its time, not the 9:00 default.
             time_match = re.search(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', text)
@@ -488,6 +503,15 @@ class Job:
 # Job execution functions (module-level for APScheduler serialization)
 # ---------------------------------------------------------------------------
 
+class _Undelivered(RuntimeError):
+    """A finished job whose result could not reach the user.
+
+    Distinct from a job that failed so the except path does not chase the
+    result with a failure notice down the same dead line (three more
+    attempts, fifteen more seconds: review of #156).
+    """
+
+
 async def _send_with_retry(scheduler, user_id: int, text: str, max_retries: int = 3) -> bool:
     """Send a message with exponential backoff retry."""
     for attempt in range(max_retries):
@@ -671,7 +695,11 @@ async def _execute_agent(job_id: str):
             result_msg = f"\u23f0 Scheduled task complete: {meta['name']}\n\n{response}"
             if len(result_msg) > 4000:
                 result_msg = result_msg[:3900] + "\n\n... (truncated)"
-            await _send_with_retry(scheduler, meta["user_id"], result_msg)
+            if not await _send_with_retry(scheduler, meta["user_id"], result_msg):
+                # Work done, result never reached the user: not a success.
+                # The except path below keeps a one-shot job's metadata, so it
+                # is still there to retry (audit F07, 2026-09-06).
+                raise _Undelivered("result could not be delivered to Telegram")
 
         logger.info(f"Agent job {job_id} completed successfully")
         _log_execution(job_id, meta["user_id"], meta["message"], True)
@@ -680,7 +708,7 @@ async def _execute_agent(job_id: str):
     except Exception as e:
         logger.error(f"Agent job {job_id} failed: {e}")
         _log_execution(job_id, meta["user_id"], meta["message"], False, str(e))
-        if meta.get("notify"):
+        if meta.get("notify") and not isinstance(e, _Undelivered):
             await _send_with_retry(
                 scheduler, meta["user_id"],
                 f"\u26a0\ufe0f Scheduled task failed: {meta['name']}\nError: {str(e)[:200]}"
@@ -779,17 +807,18 @@ class Scheduler:
                 days = ','.join(day_map[d] for d in weekdays)
                 return CronTrigger(
                     day_of_week=days, hour=run_at.hour,
-                    minute=run_at.minute, second=0, end_date=end_date,
+                    minute=run_at.minute, second=0,
+                    start_date=run_at, end_date=end_date,
                 )
             return CronTrigger(
                 hour=run_at.hour, minute=run_at.minute, second=0,
-                end_date=end_date,
+                start_date=run_at, end_date=end_date,
             )
         elif repeat == "weekly":
             return CronTrigger(
                 day_of_week=day_map[run_at.weekday()],
                 hour=run_at.hour, minute=run_at.minute, second=0,
-                end_date=end_date,
+                start_date=run_at, end_date=end_date,
             )
         elif repeat == "biweekly":
             return IntervalTrigger(
@@ -798,7 +827,8 @@ class Scheduler:
         elif repeat == "monthly":
             return CronTrigger(
                 day=run_at.day, hour=run_at.hour,
-                minute=run_at.minute, second=0, end_date=end_date,
+                minute=run_at.minute, second=0,
+                start_date=run_at, end_date=end_date,
             )
 
         return DateTrigger(run_date=run_at)

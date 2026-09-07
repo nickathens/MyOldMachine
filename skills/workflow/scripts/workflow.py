@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -154,41 +155,90 @@ class WorkflowRun:
 
         return run
 
-    def resolve_variables(self, text: str) -> str:
-        """Replace {{var}} placeholders with values from variables and step results."""
+    @staticmethod
+    def _shell_context(template: str, pos: int) -> str:
+        """Which quoting state a shell is in at `pos` of the template:
+        'double', 'single' or 'bare'. Backslash escapes are honoured outside
+        single quotes."""
+        state = "bare"
+        i = 0
+        while i < pos:
+            ch = template[i]
+            if state == "single":
+                if ch == "'":
+                    state = "bare"
+            elif ch == "\\" and state != "single":
+                i += 1  # the next character is literal
+            elif ch == '"':
+                state = "bare" if state == "double" else "double"
+            elif ch == "'" and state == "bare":
+                state = "single"
+            i += 1
+        return state
+
+    @staticmethod
+    def _shell_safe(value: str, context: str) -> str:
+        """Render `value` so the shell reads it as data in the given context."""
+        if context == "double":
+            return re.sub(r'([\\"$`])', r'\\\1', value)
+        if context == "single":
+            return value.replace("'", "'\\''")
+        return shlex.quote(value) if value else "''"
+
+    def resolve_variables(self, text: str, shell: bool = False) -> str:
+        """Replace {{var}} placeholders with values from variables and step results.
+
+        With shell=True (the command line of a step) every substituted value
+        is rendered as DATA for the shell, aware of whether the placeholder
+        sits bare, inside double quotes or inside single quotes. A variable
+        holding $(...) used to execute (audit F30, 2026-09-06). A deliberate
+        shell fragment is written {{raw:expr}} and passes through untouched.
+        """
         if not text:
             return text
 
         def replacer(match):
             expr = match.group(1).strip()
-
-            # Check step references: step_id.stdout, step_id.stderr, step_id.exit_code
-            if "." in expr:
-                parts = expr.split(".", 1)
-                step_id, attr = parts[0], parts[1]
-                if step_id in self.results:
-                    result = self.results[step_id]
-                    if attr == "stdout":
-                        return result.stdout.strip()
-                    elif attr == "stderr":
-                        return result.stderr.strip()
-                    elif attr == "exit_code":
-                        return str(result.exit_code if result.exit_code is not None else "")
-                    elif attr == "status":
-                        return result.status
-
-            # Check variables
-            if expr in self.variables:
-                return str(self.variables[expr])
-
-            # Environment variables
-            env_val = os.environ.get(expr)
-            if env_val is not None:
-                return env_val
-
-            return match.group(0)  # Leave unresolved
+            raw = expr.startswith("raw:")
+            if raw:
+                expr = expr[4:].strip()
+            value = self._lookup(expr)
+            if value is None:
+                return match.group(0)  # Leave unresolved
+            if shell and not raw:
+                return self._shell_safe(value, self._shell_context(text, match.start()))
+            return value
 
         return re.sub(r"\{\{(.+?)\}\}", replacer, text)
+
+    def _lookup(self, expr: str):
+        """The string value of a placeholder expression, or None if unknown."""
+
+        # Check step references: step_id.stdout, step_id.stderr, step_id.exit_code
+        if "." in expr:
+            parts = expr.split(".", 1)
+            step_id, attr = parts[0], parts[1]
+            if step_id in self.results:
+                result = self.results[step_id]
+                if attr == "stdout":
+                    return result.stdout.strip()
+                elif attr == "stderr":
+                    return result.stderr.strip()
+                elif attr == "exit_code":
+                    return str(result.exit_code if result.exit_code is not None else "")
+                elif attr == "status":
+                    return result.status
+
+        # Check variables
+        if expr in self.variables:
+            return str(self.variables[expr])
+
+        # Environment variables
+        env_val = os.environ.get(expr)
+        if env_val is not None:
+            return env_val
+
+        return None
 
     def evaluate_condition(self, condition: str) -> bool:
         """Evaluate a simple condition string. Returns True if condition passes."""
@@ -328,7 +378,7 @@ class WorkflowEngine:
                 continue
 
             # Resolve command
-            command = run.resolve_variables(step["command"])
+            command = run.resolve_variables(step["command"], shell=True)
 
             # Handle stdin piping from previous step
             stdin_data = None

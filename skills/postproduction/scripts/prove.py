@@ -89,6 +89,12 @@ def verify_ledger(path):
         rows.append(dict(e, state="ok" if now == e["sha256"] else "CHANGED",
                          now=now))
     bad = [r for r in rows if r["state"] != "ok"]
+    if not rows:
+        # An empty ledger verifies nothing. Reporting zero failures on it let
+        # a sweep pass its survivors gate with no survivors (audit F01).
+        return {"ledger": os.path.abspath(path), "entries": [],
+                "failures": 1,
+                "verdict": "the ledger names no files, so nothing is verified. Stop."}
     return {"ledger": os.path.abspath(path), "entries": rows,
             "failures": len(bad),
             "verdict": "every file matches its record" if not bad

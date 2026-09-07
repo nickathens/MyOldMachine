@@ -783,8 +783,13 @@ def generate_pollinations(
     seed: int | None = None,
     enhance: bool = False,
 ) -> dict:
-    width = min(width, 768)
-    height = min(height, 768)
+    # Enforce the 768 ceiling proportionally: clamping each side alone turned
+    # a 1280x720 request into 768x720 (audit F33, 2026-09-06).
+    longest = max(width, height)
+    if longest > 768:
+        factor = 768 / longest
+        width = max(1, round(width * factor))
+        height = max(1, round(height * factor))
 
     encoded_prompt = urllib.parse.quote(prompt)
     params = {"width": width, "height": height, "nologo": "true"}
@@ -802,12 +807,28 @@ def generate_pollinations(
                 resp = client.get(url)
 
             if resp.status_code == 200:
-                content_type = resp.headers.get("content-type", "")
-                if "image" in content_type or len(resp.content) > 1000:
+                # Decode before believing: a 200 with an HTML error page was
+                # saved as the picture (audit F33, 2026-09-06).
+                try:
+                    from io import BytesIO
+
+                    from PIL import Image as _PILImage
+                    with _PILImage.open(BytesIO(resp.content)) as probe:
+                        probe.verify()
+                    decodable = True
+                except Exception:
+                    decodable = False
+                if decodable:
                     out = Path(output_path)
                     out.parent.mkdir(parents=True, exist_ok=True)
                     out.write_bytes(resp.content)
                     return {"success": True, "path": str(output_path), "model": "sana (Pollinations)", "error": ""}
+                if attempt < 2:
+                    time.sleep(3)
+                    continue
+                return {"success": False, "path": "",
+                        "error": f"Pollinations returned a non-image body "
+                                 f"({resp.headers.get('content-type', '?')}, {len(resp.content)} bytes)"}
 
             if resp.status_code == 429 and attempt < 2:
                 print(f"Rate limited. Waiting 16s... (attempt {attempt + 1}/3)", file=sys.stderr)

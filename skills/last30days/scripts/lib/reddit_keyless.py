@@ -140,7 +140,12 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
 
     result_map: Dict[int, Dict[str, Any]] = {}
     try:
-        with ThreadPoolExecutor(max_workers=min(limit, MAX_ENRICH_WORKERS)) as executor:
+        # Not a `with` block: the context manager's __exit__ waits for every
+        # running worker, so a fetch that ignores the budget kept the whole
+        # call past it (audit F38, 2026-09-06). Shut down without waiting;
+        # a straggler finishes on its own thread and its result is dropped.
+        executor = ThreadPoolExecutor(max_workers=min(limit, MAX_ENRICH_WORKERS))
+        try:
             futures = {
                 executor.submit(_enrich_one, post): i
                 for i, post in enumerate(to_enrich)
@@ -156,6 +161,8 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
                 idx = futures[future]
                 result_map[idx] = to_enrich[idx]
                 future.cancel()
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         enriched = [result_map[i] for i in range(len(to_enrich))]
     except Exception:
         enriched = to_enrich

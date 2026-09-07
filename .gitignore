@@ -52,3 +52,6 @@ mcp_servers.json
 node_modules/
 .remotion/
 skills/remotion/render-engine/out/
+
+# Codex hooks: generated per install with absolute paths (see _configure_codex_hooks)
+.codex/

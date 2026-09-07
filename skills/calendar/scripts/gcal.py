@@ -189,10 +189,14 @@ def add_event(summary, start_time, end_time=None, description=None, location=Non
     # Parse start time
     try:
         if len(start_time) == 10:  # Date only: YYYY-MM-DD
+            # Google's end.date is EXCLUSIVE: a one-day event ends the next
+            # day, and start == end is an empty range (audit F34, 2026-09-06).
+            # An explicit end date is taken as the last day, inclusive.
+            last_day = datetime.fromisoformat(end_time or start_time).date()
             event = {
                 "summary": summary,
                 "start": {"date": start_time},
-                "end": {"date": end_time or start_time},
+                "end": {"date": (last_day + timedelta(days=1)).isoformat()},
             }
         else:
             # Full datetime

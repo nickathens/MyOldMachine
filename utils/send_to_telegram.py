@@ -78,20 +78,33 @@ def main():
 
     token = get_token()
 
-    if args.message:
-        print(f"Message sent: {send_message(token, args.user, args.message)}")
-    if args.photo:
-        print(f"Photo sent: {send_file(token, args.user, 'sendPhoto', 'photo', args.photo, args.caption)}")
-    if args.video:
-        print(f"Video sent: {send_file(token, args.user, 'sendVideo', 'video', args.video, args.caption)}")
-    if args.document:
-        print(f"Document sent: {send_file(token, args.user, 'sendDocument', 'document', args.document, args.caption)}")
-    if args.voice:
-        print(f"Voice sent: {send_file(token, args.user, 'sendVoice', 'voice', args.voice, args.caption)}")
-
     if not any([args.message, args.photo, args.video, args.document, args.voice]):
         print("Error: No content specified. Use --message, --photo, --video, --document, or --voice")
         sys.exit(1)
+
+    all_ok = True
+    if args.message:
+        ok = send_message(token, args.user, args.message)
+        all_ok &= bool(ok)
+        print(f"Message sent: {ok}")
+    for flag, method, field, label in (
+        (args.photo, "sendPhoto", "photo", "Photo"),
+        (args.video, "sendVideo", "video", "Video"),
+        (args.document, "sendDocument", "document", "Document"),
+        (args.voice, "sendVoice", "voice", "Voice"),
+    ):
+        if not flag:
+            continue
+        ok = send_file(token, args.user, method, field, flag, args.caption)
+        all_ok &= bool(ok)
+        print(f"{label} sent: {ok}")
+
+    # Exit status carries the verdict. Callers that gate on the return code
+    # (alert sweeps, scheduled deliverers, shell pipelines) used to read
+    # "Document sent: False" with exit 0 as delivered (audit F06, 2026-09-06).
+    if not all_ok:
+        print("Error: Telegram did not accept every send", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

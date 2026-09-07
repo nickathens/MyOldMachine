@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -122,6 +123,18 @@ def gate(
     samples = [vlm_sampler(i) for i in range(max(1, n_samples))]
     agg = aggregate_samples(samples)
     calibrated = {c: calibrate(agg["criteria"].get(c, 0.0), calibration) for c in CRITERIA}
+
+    # RULE 0: a score must be a finite number in [0, 1] before it can pass
+    # anything. NaN compares False against every threshold, so four NaN
+    # criteria used to read as "all >= min" and PASS (audit F37, 2026-09-06).
+    invalid = {c: v for c, v in calibrated.items()
+               if not isinstance(v, (int, float)) or not math.isfinite(v) or not 0.0 <= v <= 1.0}
+    if invalid:
+        return {
+            "verdict": "uncertain", "action": "probe", "ranVlm": True,
+            "criteria": calibrated, "invalid": {c: repr(v) for c, v in invalid.items()},
+            "reason": f"VLM returned non-finite or out-of-range scores for {sorted(invalid)}; not evidence",
+        }
 
     # RULE 2: high spread across samples ⇒ uncertain → probe.
     if agg["maxSpread"] > VARIANCE_SPREAD_MAX:

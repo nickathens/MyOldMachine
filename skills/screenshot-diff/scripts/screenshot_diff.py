@@ -11,12 +11,26 @@ def compare_images(image1_path, image2_path, output_path=None, threshold=0.1):
     # Use ImageMagick compare
     diff_path = output_path or f'/tmp/diff_{uuid.uuid4().hex[:8]}.png'
 
-    # Get difference metric
+    # Both inputs must be readable images. Two missing files used to compare
+    # as a match, because the parse failure became -1 and -1 is under any
+    # threshold (audit F20, 2026-09-06).
+    for path in (image1_path, image2_path):
+        try:
+            with Image.open(path) as probe:
+                probe.verify()
+        except (OSError, ValueError) as e:
+            raise SystemExit(f"Error: cannot read image {path}: {e}")
+
+    # Get difference metric. compare exits 0 for identical, 1 for different,
+    # 2 for a tool error: only 2 is an error.
     result = subprocess.run(
         ['compare', '-metric', 'RMSE', image1_path, image2_path, 'null:'],
         capture_output=True,
         text=True
     )
+    if result.returncode not in (0, 1):
+        raise SystemExit(f"Error: compare failed (exit {result.returncode}): "
+                         f"{result.stderr.strip()[:300]}")
 
     # Parse result (format: "12345 (0.123)")
     error_output = result.stderr.strip()
@@ -27,17 +41,20 @@ def compare_images(image1_path, image2_path, output_path=None, threshold=0.1):
         else:
             diff_value = float(error_output.split()[0])
     except (ValueError, IndexError):
-        diff_value = -1
+        raise SystemExit(f"Error: could not parse compare output: {error_output[:300]}")
 
     # Generate visual diff if images differ
     if diff_value > threshold:
-        subprocess.run([
+        viz = subprocess.run([
             'compare',
             image1_path, image2_path,
             '-compose', 'src',
             '-highlight-color', 'red',
             diff_path
-        ], check=True)
+        ], capture_output=True, text=True)
+        if viz.returncode not in (0, 1):
+            raise SystemExit(f"Error: diff image failed (exit {viz.returncode}): "
+                             f"{viz.stderr.strip()[:300]}")
         print(f"Difference: {diff_value:.4f} ({diff_value*100:.2f}%)")
         print(f"Diff image saved: {diff_path}")
         return False
@@ -76,6 +93,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.command == 'compare':
-        compare_images(args.image1, args.image2, args.output, args.threshold)
+        # Exit 1 on a difference so a pipeline can gate on it.
+        if not compare_images(args.image1, args.image2, args.output, args.threshold):
+            raise SystemExit(1)
     elif args.command == 'composite':
         composite_diff(args.image1, args.image2, args.output or f'/tmp/composite_{uuid.uuid4().hex[:8]}.png')

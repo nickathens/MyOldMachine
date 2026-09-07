@@ -193,6 +193,10 @@ def parse_aria_snapshot(snapshot_text: str, interactive_only: bool = False):
             "role": role,
             "name": name,
             "attrs": attrs if attrs else None,
+            # Position among the elements the selector built for this ref
+            # will match, so two "Open" buttons resolve to two selectors
+            # (audit F31, 2026-09-06).
+            "nth": sum(1 for r in refs.values() if _selector_matches(r, role, name)),
         }
 
         # Build display line
@@ -210,6 +214,27 @@ def parse_aria_snapshot(snapshot_text: str, interactive_only: bool = False):
     return "\n".join(output_lines), refs
 
 
+def _selector_matches(ref_data: dict, role: str, name: str) -> bool:
+    """Would `role=ROLE[name="NAME"]` match this snapshot element?
+
+    Measured against chromium on Playwright 1.57.0 rather than assumed: in a
+    selector STRING the name is matched whole and case-sensitively, so
+    `[name="Open"]` passes over both "Open file" and "OPEN" (`[name="Open"i]`
+    is the case-insensitive form, and `getByRole`'s substring behaviour is a
+    different API). A ref with no name becomes a bare `role=ROLE`, which
+    matches every element of the role.
+
+    `>> nth=N` counts over exactly what the selector matches, so peers are
+    counted the same way. Counting exact-name twins for an unnamed ref put
+    its index into the set of ALL buttons and clicked the wrong one; counting
+    a substring for a named ref overshoots the match set and resolves to
+    nothing (review of #156).
+    """
+    if ref_data.get("role") != role:
+        return False
+    return not name or ref_data.get("name", "") == name
+
+
 def resolve_ref(ref_or_selector: str, refs: dict) -> str:
     """Convert ref like 'e5' to a Playwright selector, or pass through CSS selectors."""
     if re.match(r'^e\d+$', ref_or_selector):
@@ -218,10 +243,13 @@ def resolve_ref(ref_or_selector: str, refs: dict) -> str:
             raise ValueError(f"Unknown ref: {ref_or_selector}. Run 'snapshot' first.")
         role = ref_data["role"]
         name = ref_data.get("name", "")
-        if name:
-            return f'role={role}[name="{name}"]'
-        else:
-            return f'role={role}'
+        selector = f'role={role}[name="{name}"]' if name else f'role={role}'
+        # Only ambiguous refs carry an index, so the common case stays exact
+        # (an nth on a unique element would still be correct, but noisier).
+        duplicates = sum(1 for r in refs.values() if _selector_matches(r, role, name))
+        if duplicates > 1:
+            selector += f" >> nth={ref_data.get('nth', 0)}"
+        return selector
     # Text selector
     if ref_or_selector.startswith("text="):
         return ref_or_selector
@@ -502,7 +530,9 @@ class BrowserDaemon:
         return {"tab": idx, "url": page.url, "open_tabs": open_tabs + 1, "max_tabs": MAX_TABS}
 
     async def cmd_closetab(self, cmd):
-        idx = cmd.get("index", self.active_tab)
+        idx = cmd.get("index")
+        if idx is None:  # the key is sent as null when no index was given
+            idx = self.active_tab
         if idx not in self.pages:
             return {"error": f"Tab {idx} not found"}
         page = self.pages.pop(idx)

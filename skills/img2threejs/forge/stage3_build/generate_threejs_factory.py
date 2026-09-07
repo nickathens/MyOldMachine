@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import orchestrate_passes as _orchestrate
 from orchestrate_passes import pass_specific_gaps
 
 
@@ -72,12 +73,12 @@ def review_visual_evidence(entry: dict[str, Any]) -> dict[str, Any]:
     return visual if isinstance(visual, dict) else {}
 
 
-def review_completes_pass(entry: dict[str, Any], pass_id: str) -> bool:
-    if entry.get("passId") != pass_id or entry.get("action") != "continue":
-        return False
-    if pass_id in VISUAL_PASS_IDS and not review_visual_evidence(entry).get("renderScreenshot"):
-        return False
-    return True
+def review_completes_pass(entry: dict[str, Any], pass_id: str,
+                          spec: dict[str, Any] | None = None) -> bool:
+    """One acceptance rule, the orchestrator's. The generator kept a looser
+    copy (screenshot present, no score check) and unlocked the next pass on
+    a record the orchestrator rejected (audit F37, 2026-09-06)."""
+    return _orchestrate.review_completes_pass(spec or {}, entry, pass_id)
 
 
 def completed_passes(spec: dict[str, Any], ids: list[str]) -> list[str]:
@@ -86,7 +87,7 @@ def completed_passes(spec: dict[str, Any], ids: list[str]) -> list[str]:
         return []
     completed: list[str] = []
     for pass_id in ids:
-        if any(isinstance(entry, dict) and review_completes_pass(entry, pass_id) for entry in history):
+        if any(isinstance(entry, dict) and review_completes_pass(entry, pass_id, spec) for entry in history):
             completed.append(pass_id)
         else:
             break

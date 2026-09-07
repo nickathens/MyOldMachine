@@ -194,6 +194,23 @@ def add_text(text="Text", location=(0, 0, 0), size=1, extrude=0.1, material=None
     return obj
 
 
+def _action_fcurves(action):
+    """Every F-curve of an action, on the installed API.
+
+    Blender 4.4 moved F-curves under layers > strips > channelbags (slotted
+    actions) and 5.x removed the old action.fcurves entirely (audit F25,
+    2026-09-06, confirmed on 5.2.1). Both shapes are handled.
+    """
+    if hasattr(action, "fcurves"):
+        return list(action.fcurves)
+    curves = []
+    for layer in action.layers:
+        for strip in layer.strips:
+            for bag in strip.channelbags:
+                curves.extend(bag.fcurves)
+    return curves
+
+
 def animate_rotation(obj, frames=120, axis='Z'):
     """Add rotation animation to object"""
     scene = bpy.context.scene
@@ -209,7 +226,7 @@ def animate_rotation(obj, frames=120, axis='Z'):
     obj.keyframe_insert(data_path='rotation_euler', frame=frames)
 
     # Make linear interpolation
-    for fcurve in obj.animation_data.action.fcurves:
+    for fcurve in _action_fcurves(obj.animation_data.action):
         for kf in fcurve.keyframe_points:
             kf.interpolation = 'LINEAR'
 
