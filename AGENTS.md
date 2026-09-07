@@ -109,7 +109,9 @@ and 27 skill scripts. Every finding was re-reproduced against MOM's own code
 before anything changed; the ones MOM does not have, or already solves
 better, are listed in the PR rather than ported. Review round of 2026-09-07
 on the Mac fixed eight faults the port itself carried (see the PR comment),
-each with a test that failed first. (PR #156)
+each with a test that failed first. One of those eight, the browser ref
+selector, was corrected again on the Linux side after measuring Playwright's
+role selector against chromium instead of a snapshot fixture. (PR #156)
 
 (Entries removed above: #153 merged 2026-09-02.
 #150 and #151 merged 2026-08-31.

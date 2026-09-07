@@ -55,6 +55,22 @@ def have(mod: str) -> bool:
     return importlib.util.find_spec(mod) is not None
 
 
+def _chromium_available() -> bool:
+    """Playwright installed AND a browser actually on disk. Importing the
+    package proves nothing about whether chromium was ever downloaded, and a
+    bare CI runner has the one without the other."""
+    if not have("playwright"):
+        return False
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            path = pw.chromium.executable_path
+        return bool(path) and os.path.exists(path)
+    except Exception:
+        return False
+
+
 # --- F01: a file cannot be its own recovery copy ----------------------------
 
 class ArchiveRestoreGateTests(unittest.TestCase):
@@ -289,17 +305,62 @@ class BrowserRefTests(unittest.TestCase):
         self.assertEqual([self.browser.resolve_ref(r, refs) for r in unnamed],
                          ["role=button >> nth=1", "role=button >> nth=2"])
 
-    def test_a_label_that_is_a_prefix_of_another_is_still_disambiguated(self):
-        """`[name="Open"]` is a case-insensitive substring match in
-        Playwright, so an "Open" and an "Open file" button both answer to
-        it; the first must carry its index and the second stays plain."""
-        snapshot = '- button "Open"\n- button "Open file"\n'
+    def test_a_named_ref_counts_only_the_labels_that_match_it_exactly(self):
+        """A selector string matches its name whole, so "Open file" is not
+        one of `[name="Open"]`'s peers. Counting it as one (the substring
+        reading of the API, measured false on chromium) gave the second
+        "Open" an nth of 2 against a match set of 2, so the selector
+        resolved to nothing at all."""
+        snapshot = '- button "Open"\n- button "Open file"\n- button "Open"\n'
         _, refs = self.browser.parse_aria_snapshot(snapshot)
+        order = [r for r, d in refs.items() if d["name"] == "Open"]
+        self.assertEqual([self.browser.resolve_ref(r, refs) for r in order],
+                         ['role=button[name="Open"] >> nth=0',
+                          'role=button[name="Open"] >> nth=1'])
         by_name = {d["name"]: r for r, d in refs.items()}
-        self.assertEqual(self.browser.resolve_ref(by_name["Open"], refs),
-                         'role=button[name="Open"] >> nth=0')
         self.assertEqual(self.browser.resolve_ref(by_name["Open file"], refs),
                          'role=button[name="Open file"]')
+
+    @unittest.skipUnless(_chromium_available(), "playwright chromium not installed")
+    def test_every_ref_on_a_real_page_resolves_to_its_own_element(self):
+        """The subject of this fix is an external engine's matching rule, so
+        it is graded by driving that engine: a real page, its own aria
+        snapshot, and every ref's selector asked which element it lands on.
+        Both earlier readings passed a hand-written snapshot fixture and
+        failed here, which is how the fixture encodes its author's belief."""
+        from playwright.sync_api import sync_playwright
+
+        html = (
+            "<!doctype html><html><body>"
+            '<button data-probe="p0">Open</button>'
+            '<button data-probe="p1">Open file</button>'
+            '<button data-probe="p2">Open</button>'
+            '<button data-probe="p3" aria-label="Toggle"><svg width="8" height="8">'
+            "</svg></button>"
+            '<button data-probe="p4">Save</button>'
+            '<button data-probe="p5"></button>'
+            '<button data-probe="p6"></button>'
+            "</body></html>"
+        )
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                raw = page.locator(":root").aria_snapshot()
+                _, refs = self.browser.parse_aria_snapshot(raw, interactive_only=True)
+                self.assertEqual(len(refs), 7, raw)
+                for i, ref in enumerate(refs):
+                    selector = self.browser.resolve_ref(ref, refs)
+                    found = page.locator(selector)
+                    self.assertEqual(
+                        found.count(), 1,
+                        f"{ref} -> {selector} matched {found.count()} elements")
+                    self.assertEqual(
+                        found.get_attribute("data-probe"), f"p{i}",
+                        f"{ref} -> {selector} landed on the wrong control")
+            finally:
+                browser.close()
 
 
 # --- F32: candles belong to the exchange that quoted them -------------------

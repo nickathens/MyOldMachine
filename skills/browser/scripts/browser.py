@@ -217,16 +217,22 @@ def parse_aria_snapshot(snapshot_text: str, interactive_only: bool = False):
 def _selector_matches(ref_data: dict, role: str, name: str) -> bool:
     """Would `role=ROLE[name="NAME"]` match this snapshot element?
 
-    Playwright's role selector takes a name as a case-insensitive SUBSTRING,
-    and no name at all matches every element of the role. The index in
-    `>> nth=N` is counted over that same set, so the peers must be counted
-    the same way: counting only exact-name twins put an unnamed button's
-    index into the set of ALL buttons and clicked the wrong one, reliably
-    (review of #156).
+    Measured against chromium on Playwright 1.57.0 rather than assumed: in a
+    selector STRING the name is matched whole and case-sensitively, so
+    `[name="Open"]` passes over both "Open file" and "OPEN" (`[name="Open"i]`
+    is the case-insensitive form, and `getByRole`'s substring behaviour is a
+    different API). A ref with no name becomes a bare `role=ROLE`, which
+    matches every element of the role.
+
+    `>> nth=N` counts over exactly what the selector matches, so peers are
+    counted the same way. Counting exact-name twins for an unnamed ref put
+    its index into the set of ALL buttons and clicked the wrong one; counting
+    a substring for a named ref overshoots the match set and resolves to
+    nothing (review of #156).
     """
     if ref_data.get("role") != role:
         return False
-    return not name or name.lower() in ref_data.get("name", "").lower()
+    return not name or ref_data.get("name", "") == name
 
 
 def resolve_ref(ref_or_selector: str, refs: dict) -> str:
