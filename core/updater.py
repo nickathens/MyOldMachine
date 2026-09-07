@@ -139,6 +139,136 @@ def pull_updates(bot_dir: Path) -> tuple[bool, str]:
     return True, f"Updated: {current} → {new}"
 
 
+# ─── Is the Mini App actually back? ──────────────────────────────────
+#
+# restart_service() returns True the moment it has SPAWNED the detached
+# restart script. That is the honest answer to "was the restart scheduled",
+# and it is all the caller could ever learn about its own service, since the
+# bot is about to be killed by the very restart it asked for. It is not an
+# answer to "did the service come back", and /restart presented it as one:
+# the `if not mini_ok` branch was unreachable on Linux and on macOS, so a
+# Mini App that failed to start after an update told the user nothing.
+#
+# The Mini App is the one target the bot CAN verify, because it outlives it
+# by a few seconds. It is an HTTP server, so its own socket answers the
+# question on both platforms without asking systemd or launchd anything.
+#
+# Three states, never two. "Cannot tell" is not "down": a probe that fails
+# for its own reasons (no port configured, the bot's own event loop wedged)
+# must not put a red line on screen about a service that is running fine.
+
+MINIAPP_HEALTH_UP = "up"
+MINIAPP_HEALTH_DOWN = "down"
+MINIAPP_HEALTH_UNKNOWN = "unknown"
+
+
+def miniapp_health(timeout: float = 2.0) -> tuple[str, object]:
+    """(state, detail) for the locally bound Mini App.
+
+    state is "up" (it answered /health), "down" (the port refused the
+    connection or the answer was not the Mini App's), or "unknown" (the
+    probe could not be made at all).
+
+    detail is the answering process's opaque instance id when it is known,
+    so a caller can tell a restarted Mini App from the one that never went
+    away. An older build whose /health predates that field answers None,
+    which is a "cannot prove it bounced", not a failure.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    try:
+        from install.miniapp_setup import miniapp_port
+        port = miniapp_port()
+    except Exception as exc:
+        return MINIAPP_HEALTH_UNKNOWN, f"cannot resolve the port: {exc}"
+
+    url = f"http://127.0.0.1:{port}/health"
+    # Never through a proxy. urllib reads http_proxy from the environment,
+    # and a machine with one set would send a loopback probe out to it and
+    # get a connection error back — a red line about a Mini App that is
+    # running perfectly well.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=timeout) as resp:
+            body = resp.read(4096)
+    except urllib.error.HTTPError as exc:
+        # It answered, just not with 200. Something is listening and it is
+        # not serving /health, which is a real problem, but a reachable one.
+        return MINIAPP_HEALTH_DOWN, f"HTTP {exc.code} from {url}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        reason = getattr(exc, "reason", exc)
+        return MINIAPP_HEALTH_DOWN, f"{url} did not answer: {reason}"
+
+    try:
+        payload = _json.loads(body.decode("utf-8", "replace"))
+    except (ValueError, UnicodeDecodeError):
+        return MINIAPP_HEALTH_DOWN, f"{url} answered, but not with JSON"
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return MINIAPP_HEALTH_DOWN, f"{url} answered {payload!r}"
+    instance = payload.get("instance")
+    return MINIAPP_HEALTH_UP, instance if isinstance(instance, str) else None
+
+
+def wait_for_miniapp(before_instance: object = None, timeout: float = 25.0,
+                     interval: float = 0.5,
+                     _sleep=None, _now=None) -> tuple[str, str]:
+    """Wait out a scheduled Mini App restart and report what happened.
+
+    Returns (verdict, detail) where verdict is one of:
+
+      "restarted"  it is answering again and demonstrably a new process
+      "up"         it is answering, but nothing proved it ever went away
+      "down"       the deadline passed with the port not answering
+      "unknown"    the probe itself could not run
+
+    The trap this exists to avoid: the restart script sleeps a few seconds
+    before it touches the unit, so the OLD Mini App is still answering when
+    the wait begins. A naive "is it healthy" poll therefore passes
+    immediately, for the wrong process. Proof of a bounce is either a pid
+    that changed or a probe that failed and then recovered; short of one of
+    those this says "up", not "restarted", and the caller stays quiet
+    rather than claiming something it did not see.
+
+    `before_instance` is whatever `miniapp_health` returned before the
+    restart was asked for. None means there was nothing to compare against,
+    which is the case on an install whose Mini App predates the id field.
+    """
+    import time as _time
+
+    # _sleep and _now are injection points for the tests: the deadline is
+    # the whole subject here, and a test that had to spend real seconds
+    # proving it would be one more slow test nobody runs.
+    sleep = _sleep or _time.sleep
+    now = _now or _time.monotonic
+    deadline = now() + timeout
+    saw_down = False
+    last_detail = ""
+    while True:
+        state, detail = miniapp_health(timeout=min(2.0, max(0.5, interval * 2)))
+        if state == MINIAPP_HEALTH_UNKNOWN:
+            return MINIAPP_HEALTH_UNKNOWN, str(detail)
+        if state == MINIAPP_HEALTH_DOWN:
+            saw_down = True
+            last_detail = str(detail)
+        elif saw_down:
+            return "restarted", "it went away and came back"
+        elif (isinstance(detail, str) and isinstance(before_instance, str)
+                and detail != before_instance):
+            return "restarted", "a different process is answering now"
+        # Anything else is "still up, and nothing has proved it bounced":
+        # either there is no id to compare on one side, or the same process
+        # is still answering. Keep polling for the down edge. If the
+        # deadline arrives with it still up, that is "up", not a restart
+        # we witnessed and not a failure to report.
+        if now() >= deadline:
+            if saw_down:
+                return MINIAPP_HEALTH_DOWN, last_detail
+            return MINIAPP_HEALTH_UP, "still answering; no restart observed"
+        sleep(interval)
+
+
 _SERVICE_TARGETS = {
     "bot": {
         "linux_service": "myoldmachine",

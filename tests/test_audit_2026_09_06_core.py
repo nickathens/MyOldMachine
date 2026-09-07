@@ -504,22 +504,22 @@ class CodexHookParityTests(unittest.TestCase):
     def test_the_trust_bypass_is_only_passed_to_a_cli_that_takes_it(self):
         """An unknown flag is a hard abort with no events, so an older codex
         must never be handed it."""
-        llm_mod._codex_accepts_hook_trust_bypass.cache_clear()
+        llm_mod._codex_probe_cache_clear()
         with mock.patch.object(llm_mod.subprocess, "run",
                                return_value=types.SimpleNamespace(stdout="", stderr="")):
             self.assertFalse(llm_mod._codex_accepts_hook_trust_bypass("codex-old"))
-        llm_mod._codex_accepts_hook_trust_bypass.cache_clear()
+        llm_mod._codex_probe_cache_clear()
         with mock.patch.object(llm_mod.subprocess, "run",
                                return_value=types.SimpleNamespace(
                                    stdout="  --dangerously-bypass-hook-trust\n", stderr="")):
             self.assertTrue(llm_mod._codex_accepts_hook_trust_bypass("codex-new"))
-        llm_mod._codex_accepts_hook_trust_bypass.cache_clear()
+        llm_mod._codex_probe_cache_clear()
 
     def test_a_missing_binary_is_not_treated_as_support(self):
-        llm_mod._codex_accepts_hook_trust_bypass.cache_clear()
+        llm_mod._codex_probe_cache_clear()
         with mock.patch.object(llm_mod.subprocess, "run", side_effect=OSError):
             self.assertFalse(llm_mod._codex_accepts_hook_trust_bypass("nope"))
-        llm_mod._codex_accepts_hook_trust_bypass.cache_clear()
+        llm_mod._codex_probe_cache_clear()
 
 
 # --- F17: the Mini App submits what the user chose --------------------------

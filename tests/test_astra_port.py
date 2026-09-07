@@ -525,8 +525,8 @@ class FeatureProbeTests(unittest.TestCase):
     def setUp(self):
         from core import llm
         self.llm = llm
-        llm._codex_feature_names.cache_clear()
-        self.addCleanup(llm._codex_feature_names.cache_clear)
+        llm._codex_probe_cache_clear()
+        self.addCleanup(llm._codex_probe_cache_clear)
 
     def _run(self, stdout="", returncode=0, raises=None):
         import subprocess as sp
@@ -672,14 +672,18 @@ class CatalogTests(unittest.TestCase):
         entry = dict(wizard.PROVIDER_MODELS["codex"])[ASTRA]
         self.assertIn("0.153.1", entry)
 
-    def test_every_offered_codex_model_either_has_levels_or_none(self):
-        # Not an assertion that all are known — an unknown one is handled by
-        # sending no override. This locks that the two states are the only
-        # two, so a typo in the table cannot produce a partial set.
+    def test_every_offered_codex_model_has_a_known_effort_set(self):
+        # This used to accept the empty set as a legitimate answer, on the
+        # reasoning that an unknown model is handled by sending no override.
+        # True of the mechanism, and it made the guard blind: `gpt-5.6`,
+        # `gpt-5.4` and `gpt-5.3-codex` sat in the picker for a day with no
+        # effort row, and they were not merely unknown, they were not Codex
+        # models at all. Offering a model is a claim to have read its row.
         for mid, _ in wizard.PROVIDER_MODELS["codex"]:
             levels = me.efforts_for("codex", mid)
             with self.subTest(model=mid):
-                self.assertTrue(levels == () or set(levels) <= set(me.EFFORT_ORDER))
+                self.assertTrue(levels, f"{mid} is offered with no effort row")
+                self.assertLessEqual(set(levels), set(me.EFFORT_ORDER))
 
     def test_the_default_codex_model_never_gets_an_unsupported_effort(self):
         # The regression that wiring effort in could have introduced: this
@@ -827,7 +831,17 @@ class MiniAppEffortTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_switching_to_a_model_with_no_levels_keeps_the_preference(self):
         # Wiping it would cost the user their setting for the round trip.
-        await self.srv.set_model(_Body({"model": "gpt-5.4"}), user=ADMIN)
+        #
+        # This used to drive the branch through `gpt-5.4`, which had no
+        # effort row because it is not a Codex model at all and was removed
+        # from the picker. The branch itself is still live — it is what any
+        # model added ahead of its catalog row will hit — so it is driven
+        # here through a model that exists only for the length of the test.
+        unknown = "gpt-not-in-the-effort-table"
+        with patch.object(self.srv, "_available_models",
+                          return_value=[{"id": unknown, "label": "x"}]):
+            await self.srv.set_model(_Body({"model": unknown}), user=ADMIN)
+        self.assertEqual(me.efforts_for("codex", unknown), ())
         self.assertEqual(self._stored("LLM_EFFORT"), "ultra")
 
     async def test_a_non_admin_cannot_set_effort(self):

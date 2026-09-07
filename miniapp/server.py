@@ -1301,9 +1301,24 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
 # ─── Static + health ─────────────────────────────────────────────────
 
 
+# One opaque id per process, minted at import. `core.updater.wait_for_miniapp`
+# polls /health after /restart bounces the Mini App, and needs to tell a new
+# process from the one it was replacing — the restart is detached and sleeps
+# first, so the OLD process answers for the first few seconds and a poll with
+# nothing to compare would report success against it.
+#
+# Deliberately NOT the pid and not a start time. /health takes no auth, and
+# although the service binds to 127.0.0.1, this project's own installer
+# offers to put a tunnel in front of it (Tailscale Funnel, Cloudflare
+# Tunnel), so anything here can end up answering the internet. "Is this the
+# same process" is all the caller asks; a random id answers exactly that and
+# discloses no pid and no uptime.
+_INSTANCE_ID = uuid.uuid4().hex
+
+
 @app.get("/health")
 async def health():
-    return {"ok": True, "service": BOT_SERVICE}
+    return {"ok": True, "service": BOT_SERVICE, "instance": _INSTANCE_ID}
 
 
 @app.api_route("/", methods=["GET", "HEAD"])

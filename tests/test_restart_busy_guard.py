@@ -121,6 +121,8 @@ class _RestartStateMixin:
             "scheduler": botmod.get_scheduler,
             "registry": botmod.get_process_registry,
             "restart_service": updater_mod.restart_service,
+            "miniapp_health": updater_mod.miniapp_health,
+            "wait_for_miniapp": updater_mod.wait_for_miniapp,
             "refresh": botmod._refresh_provider_if_env_changed,
             "sys_prompt": botmod.build_system_prompt,
             "messages": botmod.build_messages,
@@ -155,6 +157,24 @@ class _RestartStateMixin:
 
         updater_mod.restart_service = _record_restart
 
+        # /restart verifies the Mini App came back, which means an HTTP
+        # probe on 127.0.0.1:MINIAPP_PORT. Left real, these tests reach
+        # whatever else is bound to that port on the machine running them
+        # (on this developer's box, a different project's Mini App answered
+        # and every restart test paid the full 25-second poll for it).
+        self.probes: list[str] = []
+
+        def _fake_health(timeout: float = 2.0):
+            self.probes.append("health")
+            return updater_mod.MINIAPP_HEALTH_UP, 1234
+
+        def _fake_wait(before_pid=None, timeout=25.0, **kw):
+            self.probes.append("wait")
+            return "restarted", "new process (pid 1234 → 5678)"
+
+        updater_mod.miniapp_health = _fake_health
+        updater_mod.wait_for_miniapp = _fake_wait
+
         self._compactions = set(session_mod._compaction_scheduled)
         session_mod._compaction_scheduled.clear()
 
@@ -173,6 +193,8 @@ class _RestartStateMixin:
         botmod.get_scheduler = self._saved["scheduler"]
         botmod.get_process_registry = self._saved["registry"]
         updater_mod.restart_service = self._saved["restart_service"]
+        updater_mod.miniapp_health = self._saved["miniapp_health"]
+        updater_mod.wait_for_miniapp = self._saved["wait_for_miniapp"]
         botmod._refresh_provider_if_env_changed = self._saved["refresh"]
         botmod.build_system_prompt = self._saved["sys_prompt"]
         botmod.build_messages = self._saved["messages"]

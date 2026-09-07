@@ -3222,7 +3222,7 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    from core.updater import restart_service
+    from core.updater import miniapp_health, restart_service, wait_for_miniapp
     await update.message.reply_text("Shutting down gracefully, then restarting...")
     # Graceful shutdown: stop scheduler and kill background processes before restart
     scheduler = get_scheduler()
@@ -3238,12 +3238,39 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not _llm_provider.has_active_processes:
                 break
             await asyncio.sleep(1)
+    # Ask who is answering BEFORE the bounce, for two reasons. The restart is
+    # detached and sleeps first, so the old process answers the first few
+    # polls and there has to be something to tell it from its replacement.
+    # And a Mini App that was not running to begin with — this bot restarts
+    # the unit whether or not the Mini App was ever installed — must not
+    # produce a report about failing to come back.
+    mini_state_before, mini_id_before = await asyncio.to_thread(
+        miniapp_health, 2.0)
     # The Mini App imports the model catalog at process start, so bounce it
     # too — otherwise a bot-only restart leaves the dashboard picker serving
     # the pre-update model list.
     mini_ok, mini_msg = restart_service("miniapp")
     if not mini_ok:
         await update.message.reply_text(f"Note: Mini App restart failed: {mini_msg}")
+    elif mini_state_before != "up":
+        logger.info(
+            f"Mini App not verified after restart: it was {mini_state_before} "
+            f"before it ({mini_id_before})")
+    else:
+        # The bot is the only thing that can check this: it outlives the Mini
+        # App's restart by a few seconds, and after its own restart below it
+        # has no memory that it asked. Only a definite "down" is reported —
+        # "could not tell" is not a failure to put on the user's screen.
+        verdict, detail = await asyncio.to_thread(
+            wait_for_miniapp, mini_id_before, 25.0)
+        if verdict == "down":
+            await update.message.reply_text(
+                "Note: the Mini App did not come back after its restart "
+                f"({detail}). The bot is still restarting. Check its service "
+                "log once I am back up."
+            )
+        else:
+            logger.info(f"Mini App after restart: {verdict} ({detail})")
     await asyncio.sleep(1)
     success, msg = restart_service()
     if not success:
