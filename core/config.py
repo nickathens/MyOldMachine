@@ -220,16 +220,34 @@ def get_llm_api_key() -> str:
     return _env("LLM_API_KEY", "")
 
 
-_VALID_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+def get_llm_effort(provider: str | None = None, model: str | None = None) -> str:
+    """Reasoning effort for one turn, validated against what the model takes.
 
+    The accepted set is not one list any more: `claude --effort` documents
+    (low, medium, high, xhigh, max) and gpt-6-astra carries a sixth, "ultra".
+    core.model_efforts owns that table and the clamp; this function only
+    resolves which pair is in play.
 
-def get_llm_effort() -> str:
-    """Effort level passed to `claude --effort`. Validates against the CLI's
-    accepted set; falls back to "max" if the env var is unset or unrecognized."""
-    value = _env("LLM_EFFORT", "max").strip().lower()
-    if value in _VALID_EFFORT_LEVELS:
-        return value
-    return "max"
+    `provider` and `model` default to the configured ones, so the existing
+    no-argument callers keep working. A provider passes its OWN pair when it
+    was constructed with an override, because .env may have moved on since.
+
+    A stored level the model does not accept is stepped DOWN rather than
+    rejected: an "ultra" left behind by an Astra session becomes "max" on a
+    Claude turn instead of silently being ignored by the CLI with only a
+    stderr warning nobody reads.
+
+    Returns "" for a Codex model whose levels this repo has not read, and the
+    caller then sends no override at all. A Claude-family provider never gets
+    "", so `--effort` is never handed an empty argument.
+    """
+    from core.model_efforts import clamp_effort
+    if provider is None:
+        provider = get_llm_provider()
+    if model is None:
+        model = get_llm_model()
+    value = _env("LLM_EFFORT", "").strip().lower()
+    return clamp_effort(provider, model, value or None)
 
 
 DEFAULT_BACKGROUND_MODEL = "claude-haiku-4-5-20251001"

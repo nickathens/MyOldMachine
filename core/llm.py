@@ -39,6 +39,9 @@ from core.tools import (
     execute_tool,
     extract_tool_calls_from_text,
 )
+from core.model_efforts import (
+    model_needs_newer_cli as _codex_model_needs_newer_cli,
+)
 from core.conversation_format import wrap_turn
 from core.prompt_security import wrap_tool_result
 # The subscription token reader lives in core.credentials, next to the other
@@ -510,6 +513,62 @@ def _codex_accepts_hook_trust_bypass(binary: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return _CODEX_HOOK_TRUST_FLAG in (out.stdout or "") + (out.stderr or "")
+
+
+# Sub-agent delegation off by default. `--disable <name>` is documented as
+# equivalent to `-c features.<name>=false` (codex exec --help, 0.153.4).
+#
+# Honesty about what this buys: it was NOT proven to fence anything. Measured
+# 2026-09-06 with `codex debug prompt-input`, which renders the model-visible
+# prompt with no API call, the fenced and unfenced prompts are byte identical
+# after stripping ids and timestamps, and the spawn_agent / followup_task /
+# wait_agent block is described in both. What visibly decides delegation is
+# the effort level. The flags are kept because they are free and are the
+# documented lever, and because what prompt-input cannot show is the API tool
+# schema list, so whether they withhold the collaboration tools themselves is
+# still unmeasured from here.
+#
+# Consequence worth knowing: at effort "ultra" the model-visible prompt flips
+# to "Proactive multi-agent delegation is active", so ultra and these flags
+# pull in opposite directions. Ultra is offered but is never a default.
+_CODEX_DISABLED_FEATURES = ("multi_agent", "multi_agent_v2")
+
+
+# The per-model CLI floor and its version parser live in
+# core.model_efforts, beside the effort table, because install/wizard.py
+# needs the same answer before this module's third-party imports exist.
+
+
+@lru_cache(maxsize=8)
+def _codex_feature_names(binary: str) -> frozenset:
+    """Every feature-flag name this codex build knows.
+
+    This probe exists because an unknown name is a HARD ABORT: "Error:
+    Unknown feature flag: <name>", no events, no turn, on every request. A
+    build that renames or drops `multi_agent` would otherwise take the whole
+    provider down. A name in ANY state the build lists parses fine, including
+    "removed" (verified on 0.153.4: `codex debug --disable multi_agent_mode
+    prompt-input` rendered normally although that flag is listed as removed),
+    so "does this build list the name" is the right discriminator and
+    `codex features list` is what answers it.
+
+    Asked once per binary and cached. An unreadable answer returns an empty
+    set, which disables nothing rather than aborting every turn — an older
+    build without the `features` subcommand lands here.
+    """
+    try:
+        out = subprocess.run([binary, "features", "list"], capture_output=True,
+                             text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    if out.returncode != 0:
+        return frozenset()
+    names = set()
+    for line in (out.stdout or "").splitlines():
+        parts = line.split()
+        if parts:
+            names.add(parts[0])
+    return frozenset(names)
 
 
 def _kill_turn(process) -> None:
@@ -1001,7 +1060,11 @@ class ClaudeCLIProvider(LLMProvider):
             self._cli_binary,
             "-p",
             "--model", self.model,
-            "--effort", get_llm_effort(),
+            # This provider's OWN pair, not whatever .env says right now: an
+            # instance may have been constructed with a model override, and
+            # the effort has to be validated against the model that is
+            # actually going to run.
+            "--effort", get_llm_effort(self.provider_name, self.model),
             "--dangerously-skip-permissions",
             # One comma-joined argument, never one argv entry per tool: the
             # flag is variadic (<tools...>), so loose names would run on and
@@ -1574,12 +1637,15 @@ class CodexCLIProvider(LLMProvider):
         self.on_progress_clear = None
 
     def warm_hook_trust_probe(self) -> bool:
-        """Run the one-off `codex exec --help` capability probe now.
+        """Run the one-off capability probes now.
 
-        Called at startup so the first turn does not pay for it: the probe is
-        a synchronous subprocess and would otherwise block the event loop
-        inside complete().
+        Called at startup so the first turn does not pay for them: both are
+        synchronous subprocesses and would otherwise block the event loop
+        inside complete(). Two are warmed here — `codex exec --help` for the
+        hook-trust flag, and `codex features list` for the feature names
+        `--disable` may safely be handed.
         """
+        _codex_feature_names(self._cli_binary)
         return _codex_accepts_hook_trust_bypass(self._cli_binary)
 
     def stop_user(self, user_id: int) -> bool:
@@ -1653,6 +1719,9 @@ class CodexCLIProvider(LLMProvider):
         text = ((stdout or b"") + (stderr or b"")).decode("utf-8", errors="replace").strip()
         if proc.returncode == 0:
             first_line = text.splitlines()[0] if text else "ok"
+            too_old = _codex_model_needs_newer_cli(self.model, first_line)
+            if too_old:
+                return False, too_old
             return True, first_line
         if _looks_like_binary_load_failure(text):
             return False, (
@@ -1693,6 +1762,32 @@ class CodexCLIProvider(LLMProvider):
         if (self._bot_dir / ".codex" / "hooks.json").is_file() and \
                 _codex_accepts_hook_trust_bypass(self._cli_binary):
             cmd.insert(-1, _CODEX_HOOK_TRUST_FLAG)
+
+        # Reasoning effort rides on a config override because `codex exec` has
+        # no --effort flag. model_reasoning_effort is the real key, confirmed
+        # by `--strict-config`, which rejects model_reasoning_level by name
+        # and accepts this one, and proven to reach the model: at low the
+        # rendered prompt says "Do not spawn sub-agents...", at ultra it says
+        # "Proactive multi-agent delegation is active" (codex debug
+        # prompt-input, 0.153.4, 2026-09-06).
+        #
+        # The value is NOT validated at config load — a bogus level parses
+        # fine and the turn runs at the model's default with nothing on
+        # screen — so it is clamped here rather than trusted.
+        #
+        # Empty means this repo has not read that model's levels, and then no
+        # override is sent at all: the CLI applies the model's own default.
+        # Inventing a level is how "max" reaches gpt-5.5, which has no max.
+        from core.config import get_llm_effort
+        effort = get_llm_effort(self.provider_name, self.model)
+        if effort:
+            cmd.insert(-1, "-c")
+            cmd.insert(-1, f'model_reasoning_effort="{effort}"')
+
+        for feature in _CODEX_DISABLED_FEATURES:
+            if feature in _codex_feature_names(self._cli_binary):
+                cmd.insert(-1, "--disable")
+                cmd.insert(-1, feature)
 
         typing_task = None
         process = None
@@ -1737,6 +1832,24 @@ class CodexCLIProvider(LLMProvider):
                 }),
                 extra=extra or None,
             )
+            # Anthropic variables are STRIPPED, not merely not added.
+            # build_cli_env's filter is a DENY list, not an allow list
+            # (core.tools._is_env_var_safe returns True for anything that
+            # matches no blocked pattern), so only the ones shaped like a
+            # secret are removed: CLAUDE_CODE_OAUTH_TOKEN matches `.*_TOKEN$`
+            # and goes, while CLAUDE_CONFIG_DIR, CLAUDECODE,
+            # CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_MESSAGING_SOCKET and
+            # ANTHROPIC_BASE_URL all pass straight through. Verified by
+            # calling build_cli_env from inside a Claude Code session on
+            # 2026-09-07: eight CLAUDE* keys reached the child.
+            #
+            # Under a service manager the bot's ambient environment carries
+            # none of them, but "today's launcher happens to be clean" is not
+            # the same as not handing a second vendor's CLI the messaging
+            # socket of a live Claude Code session.
+            for key in [k for k in cli_env
+                        if k.startswith(("CLAUDE", "ANTHROPIC"))]:
+                del cli_env[key]
 
             cwd = str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
@@ -1926,6 +2039,18 @@ class CodexCLIProvider(LLMProvider):
                                         text = item.get("text") or ""
                                         if text:
                                             agent_message_blocks.append(text)
+                                            # Same 100KB cap the Claude branch
+                                            # puts on all_text_blocks, oldest
+                                            # dropped first. This accumulator
+                                            # was the one text buffer in either
+                                            # provider with no ceiling, and a
+                                            # turn here can run for hours on a
+                                            # machine with 4GB.
+                                            while (
+                                                sum(len(b) for b in agent_message_blocks) > 102400
+                                                and len(agent_message_blocks) > 1
+                                            ):
+                                                agent_message_blocks.pop(0)
                                             partial_text += text + "\n"
                                             if len(partial_text) > 102400:
                                                 partial_text = partial_text[-102400:]

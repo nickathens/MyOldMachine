@@ -405,6 +405,37 @@ DEFAULT_MODELS = {
 # July 18, 2026 for every other provider: Gemini + OpenRouter queried live
 # against their /models endpoints; OpenAI, xAI, DeepSeek, Kimi, MiniMax, Z.ai
 # and Ollama Cloud verified against current docs.
+def _codex_build_too_old_for(model: str):
+    """Refusal text when the installed codex cannot run `model`.
+
+    The install step treats a codex already on PATH as done and never
+    upgrades it, so a machine provisioned months ago keeps whatever build
+    it has. That is fine until the model picked in setup is newer than the
+    binary, and then EVERY turn dies with "not supported when using Codex
+    with a ChatGPT account", which reads like a plan problem rather than
+    an out-of-date CLI.
+
+    core.model_efforts is stdlib-only on purpose: core.llm would drag
+    httpx in, and this runs before dependencies are guaranteed.
+    """
+    try:
+        from core.model_efforts import model_needs_newer_cli
+    except Exception:
+        return None
+    try:
+        probe = subprocess.run(
+            ["codex", "--version"], capture_output=True, text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    text = ((probe.stdout or "") + (probe.stderr or "")).strip()
+    first = text.splitlines()[0] if text else ""
+    return model_needs_newer_cli(model, first)
+
+
 PROVIDER_MODELS = {
     "claude": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, near-Opus performance, 1M ctx (recommended)"),
@@ -413,6 +444,7 @@ PROVIDER_MODELS = {
     ],
     "codex": [
         ("gpt-5.5", "GPT-5.5 — Codex CLI default, vision + tools, 1M ctx (recommended)"),
+        ("gpt-6-astra", "GPT-6 Astra — most capable, six effort levels incl. ultra, 272K ctx; needs Codex CLI 0.153.1+ and a ChatGPT plan with Astra access"),
         ("gpt-5.6", "GPT-5.6 — newest frontier, three tiers via aliases (Sol/Terra/Luna), vision + tools"),
         ("gpt-5.4", "GPT-5.4 — flagship for Codex, native computer use, vision + tools, 1.1M ctx"),
         ("gpt-5.4-mini", "GPT-5.4 Mini — fast, lower-cost, good for lighter tasks and subagents"),
@@ -1974,6 +2006,30 @@ def main():
             _switch_codex_fallback()
         elif _shutil.which("codex"):
             ok("OpenAI Codex CLI already installed")
+            _stale = _codex_build_too_old_for(config.get("llm_model", ""))
+            if _stale:
+                warn(_stale)
+                npm_path = _find_npm_codex()
+                if npm_path:
+                    info("Updating the Codex CLI for the model you picked...")
+                    try:
+                        upgraded = subprocess.run(
+                            [npm_path, "install", "-g", "@openai/codex"],
+                            timeout=180,
+                        )
+                    except subprocess.TimeoutExpired:
+                        upgraded = None
+                    if upgraded and upgraded.returncode == 0 and \
+                            not _codex_build_too_old_for(config["llm_model"]):
+                        ok("OpenAI Codex CLI updated")
+                    else:
+                        warn("Could not update the Codex CLI. Run "
+                             "`npm i -g @openai/codex` yourself, or pick "
+                             "another model with /model.")
+                else:
+                    warn("npm not found, so the Codex CLI cannot be updated "
+                         "here. Update it yourself, or pick another model "
+                         "with /model.")
             checkpoint_set("codex_cli")
         else:
             npm_path = _find_npm_codex()
