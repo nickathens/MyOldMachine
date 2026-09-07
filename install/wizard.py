@@ -442,13 +442,26 @@ PROVIDER_MODELS = {
         ("claude-fable-5-1", "Claude Fable 5.1 — next-gen flagship, hardest coding + agentic work, uses plan quota fast"),
         ("claude-opus-5", "Claude Opus 5 — complex agentic coding and enterprise work, 1M ctx"),
     ],
+    # Codex ids are NOT the API's ids, and the difference is not cosmetic:
+    # `gpt-5.6`, `gpt-5.4` and `gpt-5.3-codex` are valid on the OpenAI API
+    # (the bare 5.6 alias routes to Sol there) and are rejected outright by
+    # Codex on a ChatGPT account. Measured 2026-09-07 on CLI 0.153.4, each
+    # one HTTP 400 / turn.failed / exit 1 on the first request:
+    #     The 'gpt-5.6' model is not supported when using Codex with a
+    #     ChatGPT account.
+    # Every id below is present in the catalog Codex itself fetches from
+    # OpenAI (~/.codex/models_cache.json), and all seven were additionally
+    # run end to end on the same day: seven turns, seven turn.completed.
+    # Adding one from the `openai` list further down this file without a
+    # live turn is exactly how the three above got here.
     "codex": [
         ("gpt-5.5", "GPT-5.5 — Codex CLI default, vision + tools, 1M ctx (recommended)"),
         ("gpt-6-astra", "GPT-6 Astra — most capable, six effort levels incl. ultra, 272K ctx; needs Codex CLI 0.153.1+ and a ChatGPT plan with Astra access"),
-        ("gpt-5.6", "GPT-5.6 — newest frontier, three tiers via aliases (Sol/Terra/Luna), vision + tools"),
-        ("gpt-5.4", "GPT-5.4 — flagship for Codex, native computer use, vision + tools, 1.1M ctx"),
+        ("gpt-5.6-sol", "GPT-5.6 Sol — flagship 5.6 tier, best at long-horizon coding, six effort levels incl. ultra"),
+        ("gpt-5.6-terra", "GPT-5.6 Terra — mid 5.6 tier, cheaper path for scoped work, six effort levels incl. ultra"),
+        ("gpt-5.6-luna", "GPT-5.6 Luna — fastest, cheapest 5.6 tier, for high-volume routine work"),
         ("gpt-5.4-mini", "GPT-5.4 Mini — fast, lower-cost, good for lighter tasks and subagents"),
-        ("gpt-5.3-codex", "GPT-5.3 Codex — specialist coding model, maximum coding depth"),
+        ("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark — specialist coding model, maximum coding depth"),
     ],
     "claude-api": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, 1M ctx, $3/$15 per MTok, intro $2/$10 through Aug 31 (recommended)"),

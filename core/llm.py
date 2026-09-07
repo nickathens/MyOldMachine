@@ -25,7 +25,6 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -497,7 +496,56 @@ DRAIN_AFTER_EXIT = 10.0
 _CODEX_HOOK_TRUST_FLAG = "--dangerously-bypass-hook-trust"
 
 
-@lru_cache(maxsize=8)
+# Both codex capability probes below are asked once per binary and the answer
+# reused. lru_cache did that, and also cached the FAILURES: one OSError or one
+# 15-second timeout under boot load, and the empty answer stood for the life
+# of the process. That is not a stale value, it is a feature switching itself
+# off — the hook-trust probe failing means the repo's own hooks (resource
+# gate, usage log, orphan cleanup) never run again on any Codex turn until
+# somebody restarts the bot, with nothing on screen.
+#
+# So: a probe that RAN is cached for good, a probe that could not run is
+# retried, but no more often than this, because a missing binary must not put
+# a subprocess spawn on the front of every turn.
+_CODEX_PROBE_RETRY_AFTER = 300.0
+
+# key -> (expires_at, value). expires_at is _FOREVER for a real answer.
+_FOREVER = float("inf")
+_codex_probe_cache: dict = {}
+
+
+def _codex_cached_probe(key, probe):
+    """Memoise `probe()`, keeping real answers and retrying failed asks.
+
+    `probe` returns (ran, value): `ran` False means the question could not
+    be put to the binary at all, and `value` is then the safe fallback to
+    use in the meantime.
+    """
+    hit = _codex_probe_cache.get(key)
+    if hit is not None and time.monotonic() < hit[0]:
+        return hit[1]
+    ran, value = probe()
+    expires = (_FOREVER if ran
+               else time.monotonic() + _CODEX_PROBE_RETRY_AFTER)
+    _codex_probe_cache[key] = (expires, value)
+    return value
+
+
+def _codex_probe_cache_clear() -> None:
+    """Forget every cached probe. Tests, and any deliberate re-ask."""
+    _codex_probe_cache.clear()
+
+
+def _codex_probe_cache_expire_now() -> None:
+    """Bring every retryable entry due, leaving real answers cached.
+
+    Lets a test prove the retry without sleeping out the real window.
+    """
+    for key, (expires, value) in list(_codex_probe_cache.items()):
+        if expires != _FOREVER:
+            _codex_probe_cache[key] = (0.0, value)
+
+
 def _codex_accepts_hook_trust_bypass(binary: str) -> bool:
     """Whether this codex build takes --dangerously-bypass-hook-trust.
 
@@ -506,13 +554,21 @@ def _codex_accepts_hook_trust_bypass(binary: str) -> bool:
     own hooks run (audit F16, 2026-09-06). An unknown flag is a hard abort
     with no events, so older builds must not be handed it: ask --help once
     and cache the answer.
+
+    A build that answers and does not list the flag is a real False and is
+    kept. A --help that could not be run at all is not an answer, so it
+    falls back to False for now and is asked again later.
     """
-    try:
-        out = subprocess.run([binary, "exec", "--help"], capture_output=True,
-                             text=True, timeout=15)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return _CODEX_HOOK_TRUST_FLAG in (out.stdout or "") + (out.stderr or "")
+    def probe():
+        try:
+            out = subprocess.run([binary, "exec", "--help"],
+                                 capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return False, False
+        text = (out.stdout or "") + (out.stderr or "")
+        return True, _CODEX_HOOK_TRUST_FLAG in text
+
+    return _codex_cached_probe(("hook-trust", binary), probe)
 
 
 # Sub-agent delegation off by default. `--disable <name>` is documented as
@@ -539,7 +595,6 @@ _CODEX_DISABLED_FEATURES = ("multi_agent", "multi_agent_v2")
 # needs the same answer before this module's third-party imports exist.
 
 
-@lru_cache(maxsize=8)
 def _codex_feature_names(binary: str) -> frozenset:
     """Every feature-flag name this codex build knows.
 
@@ -554,21 +609,26 @@ def _codex_feature_names(binary: str) -> frozenset:
 
     Asked once per binary and cached. An unreadable answer returns an empty
     set, which disables nothing rather than aborting every turn — an older
-    build without the `features` subcommand lands here.
+    build without the `features` subcommand lands here, and so does a probe
+    that could not run, which is why the empty set from a FAILED ask is
+    retried rather than kept (see _codex_cached_probe).
     """
-    try:
-        out = subprocess.run([binary, "features", "list"], capture_output=True,
-                             text=True, timeout=15)
-    except (OSError, subprocess.SubprocessError):
-        return frozenset()
-    if out.returncode != 0:
-        return frozenset()
-    names = set()
-    for line in (out.stdout or "").splitlines():
-        parts = line.split()
-        if parts:
-            names.add(parts[0])
-    return frozenset(names)
+    def probe():
+        try:
+            out = subprocess.run([binary, "features", "list"],
+                                 capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return False, frozenset()
+        if out.returncode != 0:
+            return False, frozenset()
+        names = set()
+        for line in (out.stdout or "").splitlines():
+            parts = line.split()
+            if parts:
+                names.add(parts[0])
+        return True, frozenset(names)
+
+    return _codex_cached_probe(("features", binary), probe)
 
 
 def _kill_turn(process) -> None:

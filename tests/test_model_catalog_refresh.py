@@ -73,8 +73,12 @@ class CurrentFlagshipsPresentTests(unittest.TestCase):
         self.assertIn("claude-sonnet-5", _ids("claude-api"))
 
     def test_gpt_5_6_present(self):
+        # On the API the bare alias is real and routes to Sol. Codex is a
+        # different catalog and rejects it, so the codex list carries the
+        # three tier ids instead. See test_codex_ids_are_codex_ids below.
         self.assertIn("gpt-5.6", _ids("openai"))
-        self.assertIn("gpt-5.6", _ids("codex"))
+        for tier in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+            self.assertIn(tier, _ids("codex"))
 
     def test_grok_4_5_present(self):
         self.assertIn("grok-4.5", _ids("grok"))
@@ -140,10 +144,19 @@ class RetiredModelsAbsentTests(unittest.TestCase):
         ):
             self.assertNotIn(dead, or_ids)
 
-    def test_codex_spark_id_corrected(self):
+    def test_codex_ids_are_codex_ids_not_api_ids(self):
+        # This assertion used to run the other way: the July 2026 catalog
+        # refresh "corrected" gpt-5.3-codex-spark to gpt-5.3-codex, and added
+        # gpt-5.6 and gpt-5.4 to the codex list, all verified "against current
+        # provider docs" — the OpenAI API's docs. Codex on a ChatGPT account
+        # has its own, smaller catalog, and answers HTTP 400 for anything
+        # outside it. Measured 2026-09-07 on codex-cli 0.153.4, one live
+        # `codex exec` per id: the three below failed, and all seven ids the
+        # picker now offers completed.
         ids = _ids("codex")
-        self.assertNotIn("gpt-5.3-codex-spark", ids)
-        self.assertIn("gpt-5.3-codex", ids)
+        for api_only in ("gpt-5.6", "gpt-5.4", "gpt-5.3-codex"):
+            self.assertNotIn(api_only, ids)
+        self.assertIn("gpt-5.3-codex-spark", ids)
 
 
 class GrokVisionGateTests(unittest.TestCase):

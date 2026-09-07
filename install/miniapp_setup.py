@@ -71,8 +71,14 @@ def is_miniapp_configured(repo_dir: Path = REPO_DIR) -> bool:
     return False
 
 
-def _miniapp_port() -> int:
-    """Port the Mini App listens on. Override with MINIAPP_PORT in .env."""
+def miniapp_port() -> int:
+    """Port the Mini App listens on. Override with MINIAPP_PORT in .env.
+
+    Public because `core.updater` probes the running Mini App on it after a
+    restart, and a second copy of the default would be a second answer to
+    the same question the day someone changes it. This module is stdlib-only
+    on purpose, so importing it from `core` costs nothing.
+    """
     raw = os.environ.get("MINIAPP_PORT", "").strip()
     if raw.isdigit():
         port = int(raw)
@@ -515,7 +521,7 @@ def run_miniapp_setup_step(config: dict, ask=None) -> None:
         warn("Could not install fastapi/uvicorn. Aborting Mini App install.")
         return
 
-    port = _miniapp_port()
+    port = miniapp_port()
     if system == "Linux":
         # Sudo password is cached by install.sudo; this re-uses it.
         from install.service import get_sudo_password
