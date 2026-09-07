@@ -607,8 +607,24 @@ class VersionGateTests(unittest.TestCase):
 
 
 class HealthCheckTests(unittest.IsolatedAsyncioTestCase):
-    async def test_an_old_build_fails_the_health_check_for_astra(self):
+    """The version gate, with the binary-presence check satisfied by a real
+    executable rather than by whatever the host happens to have installed.
+
+    health_check() returns "Codex CLI binary not found" BEFORE it ever spawns
+    anything, so patching create_subprocess_exec alone leaves these two tests
+    passing on a machine with codex on PATH and failing everywhere else. It
+    did exactly that: green here, red on CI. sys.executable is a path that
+    exists on every runner.
+    """
+
+    @staticmethod
+    def _provider():
         provider = CodexCLIProvider(ASTRA)
+        provider._cli_binary = sys.executable
+        return provider
+
+    async def test_an_old_build_fails_the_health_check_for_astra(self):
+        provider = self._provider()
 
         class _Proc:
             returncode = 0
@@ -625,7 +641,7 @@ class HealthCheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("0.153.1", reason)
 
     async def test_a_current_build_passes(self):
-        provider = CodexCLIProvider(ASTRA)
+        provider = self._provider()
 
         class _Proc:
             returncode = 0
