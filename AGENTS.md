@@ -102,6 +102,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-09-07] linux: GPT-6 Astra on the Codex provider, plus per-model reasoning effort (PR #158)
+
 (Entries removed above: #156 merged 2026-09-07.
 #153 merged 2026-09-02.
 #150 and #151 merged 2026-08-31.
