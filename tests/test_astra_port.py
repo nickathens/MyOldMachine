@@ -792,16 +792,37 @@ class MiniAppEffortTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException):
             await self.srv.set_effort(_Body({"effort": "max"}), user=ADMIN)
 
-    async def test_switching_model_clamps_the_stored_effort(self):
+    async def test_switching_model_reports_the_clamped_effort(self):
         # Astra at ultra, then down to gpt-5.5, which has neither ultra nor max.
+        # The reply is what will run; the stored preference is NOT rewritten,
+        # so coming back up to Astra finds ultra where the user left it.
         result = await self.srv.set_model(_Body({"model": "gpt-5.5"}), user=ADMIN)
         self.assertEqual(result["effort"], "xhigh")
-        self.assertEqual(self._stored("LLM_EFFORT"), "xhigh")
+        self.assertEqual(self._stored("LLM_EFFORT"), "ultra")
+        data = await self.srv.get_status(user=ADMIN)
+        self.assertEqual(data["effort"], "xhigh")
 
-    async def test_switching_provider_clamps_the_stored_effort(self):
+    async def test_switching_provider_reports_the_clamped_effort(self):
         result = await self.srv.set_provider(_Body({"provider": "claude"}),
                                              user=ADMIN)
         self.assertEqual(result["effort"], "max")
+        self.assertEqual(self._stored("LLM_EFFORT"), "ultra")
+
+    async def test_a_round_trip_through_a_lower_model_keeps_the_setting(self):
+        # Claude at max, a look at gpt-5.5 (which has no max), and back. If
+        # the switch had rewritten .env, every later Claude turn would run at
+        # xhigh with nothing on screen but a different button lit: the same
+        # silent downgrade the clamp exists to prevent, in the other direction.
+        self.env.write_text(
+            "LLM_PROVIDER=claude\nLLM_MODEL=claude-sonnet-5\nLLM_EFFORT=max\n",
+            encoding="utf-8")
+        await self.srv.set_provider(_Body({"provider": "codex"}), user=ADMIN)
+        data = await self.srv.get_status(user=ADMIN)
+        self.assertEqual(data["model"], "gpt-5.5")
+        self.assertEqual(data["effort"], "xhigh")
+        await self.srv.set_provider(_Body({"provider": "claude"}), user=ADMIN)
+        data = await self.srv.get_status(user=ADMIN)
+        self.assertEqual(data["effort"], "max")
         self.assertEqual(self._stored("LLM_EFFORT"), "max")
 
     async def test_switching_to_a_model_with_no_levels_keeps_the_preference(self):

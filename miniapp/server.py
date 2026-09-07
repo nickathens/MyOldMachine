@@ -296,23 +296,24 @@ def _current_pair() -> tuple[str, str]:
     return provider, model
 
 
-def _store_clamped_effort(provider: str, model: str) -> str:
-    """Bring the stored effort inside what `model` accepts, and return it.
+def _effort_after_switch(provider: str, model: str) -> str:
+    """The effort that will actually run for `model`, for the switch reply.
 
-    Called on every provider and model switch. Astra's "ultra" is the case
-    that matters: left in .env it would reach `claude --effort`, which does
-    not error on it — it warns on stderr and runs the turn at the CLI's
-    default instead, so every later Claude turn would quietly downgrade.
+    Nothing is written. The stored value is the user's PREFERENCE, and every
+    reader clamps it against the model that is about to run: get_status
+    here, and get_llm_effort in both CLI providers' argv. A stale "ultra"
+    from an Astra session therefore already becomes "max" on a Claude turn
+    without .env being touched.
+
+    Rewriting it on a switch would make the clamp permanent. Claude at max,
+    a look at gpt-5.5 (which has no max), and back, would leave every later
+    Claude turn at xhigh with nothing on screen but a different button lit:
+    the same silent downgrade the clamp exists to prevent, in the other
+    direction. The unknown-levels case already kept the preference for that
+    reason; now every case does. Only /api/effort, an explicit pick, writes.
     """
     current = _read_env_var("LLM_EFFORT", "")
-    clamped = _clamp_effort(provider, model, current or None)
-    # An empty clamp means the new model has no known levels. The stored
-    # preference is left alone rather than wiped, so moving through such a
-    # model and back does not cost the user their setting; every reader
-    # clamps again anyway.
-    if clamped and clamped != current:
-        _write_env_var("LLM_EFFORT", clamped)
-    return clamped
+    return _clamp_effort(provider, model, current or None)
 
 
 def _unsupported_bot_status(service: str) -> dict:
@@ -580,7 +581,7 @@ async def set_provider(request: Request, user: dict = Depends(_get_user)):
         # tag they have pulled locally). Clear LLM_MODEL so the bot can't try
         # to use the previous provider's model string as an ollama tag.
         _write_env_var("LLM_MODEL", "")
-    effort = _store_clamped_effort(provider_id, default_model)
+    effort = _effort_after_switch(provider_id, default_model)
     return {"provider": provider_id, "model": default_model, "effort": effort}
 
 
@@ -597,7 +598,7 @@ async def set_model(request: Request, user: dict = Depends(_get_user)):
     if provider != "ollama" and valid_models and model_id not in valid_models:
         raise HTTPException(status_code=400, detail="Model not valid for this provider")
     _write_env_var("LLM_MODEL", model_id)
-    effort = _store_clamped_effort(provider, model_id)
+    effort = _effort_after_switch(provider, model_id)
     return {"model": model_id, "effort": effort}
 
 
