@@ -90,17 +90,16 @@ TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org").r
 # read-only — .env contains secrets we never want to expose to a webapp.
 WRITABLE_ENV_KEYS = {"LLM_PROVIDER", "LLM_MODEL", "LLM_EFFORT"}
 
-VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-EFFORT_LABELS = {
-    "low": "Low",
-    "medium": "Medium",
-    "high": "High",
-    "xhigh": "X-High",
-    "max": "Max",
-}
-
-# Subset of providers that accept --effort. Mirrors core/llm.py behavior.
-EFFORT_PROVIDERS = {"claude", "fcc"}
+# The effort table lives in core.model_efforts, imported by core.config and
+# both CLI providers too. It used to be duplicated here, and the copies could
+# not survive a second CLI: gpt-6-astra takes a sixth level, "ultra", that the
+# claude binary silently ignores with only a stderr warning.
+from core.model_efforts import (  # noqa: E402
+    clamp_effort as _clamp_effort,
+    effort_options as _effort_options,
+    provider_supports_effort as _provider_has_effort,
+    supports_effort as _pair_has_effort,
+)
 
 # ─── App setup ───────────────────────────────────────────────────────
 
@@ -282,7 +281,38 @@ def _available_models(provider: str) -> list[dict]:
 
 
 def _provider_supports_effort(provider: str) -> bool:
-    return provider in EFFORT_PROVIDERS
+    return _provider_has_effort(provider)
+
+
+def _current_pair() -> tuple[str, str]:
+    """(provider, model) as .env has them right now.
+
+    Read together and from one place: the effort row, its validation and the
+    clamp on a switch all have to be about the SAME pair, and .env is a file
+    another process rewrites.
+    """
+    provider = _read_env_var("LLM_PROVIDER", "claude")
+    model = _read_env_var("LLM_MODEL", _WIZARD_DEFAULT_MODELS.get(provider, ""))
+    return provider, model
+
+
+def _store_clamped_effort(provider: str, model: str) -> str:
+    """Bring the stored effort inside what `model` accepts, and return it.
+
+    Called on every provider and model switch. Astra's "ultra" is the case
+    that matters: left in .env it would reach `claude --effort`, which does
+    not error on it — it warns on stderr and runs the turn at the CLI's
+    default instead, so every later Claude turn would quietly downgrade.
+    """
+    current = _read_env_var("LLM_EFFORT", "")
+    clamped = _clamp_effort(provider, model, current or None)
+    # An empty clamp means the new model has no known levels. The stored
+    # preference is left alone rather than wiped, so moving through such a
+    # model and back does not cost the user their setting; every reader
+    # clamps again anyway.
+    if clamped and clamped != current:
+        _write_env_var("LLM_EFFORT", clamped)
+    return clamped
 
 
 def _unsupported_bot_status(service: str) -> dict:
@@ -500,18 +530,22 @@ def _bot_status() -> dict:
 
 @app.get("/api/status")
 async def get_status(user: dict = Depends(_get_user)):
-    provider = _read_env_var("LLM_PROVIDER", "claude")
-    model = _read_env_var("LLM_MODEL", _WIZARD_DEFAULT_MODELS.get(provider, ""))
-    effort = _read_env_var("LLM_EFFORT", "max")
+    provider, model = _current_pair()
+    # Both the row and the selection are per MODEL, not one global list: the
+    # front end re-reads this endpoint after every provider/model switch, so
+    # answering with the new model's own levels is all the re-render needs.
+    effort = _clamp_effort(provider, model, _read_env_var("LLM_EFFORT", "") or None)
     return {
         "bot": _bot_status(),
         "provider": provider,
         "available_providers": _available_providers(),
         "model": model,
         "available_models": _available_models(provider),
-        "effort": effort if effort in VALID_EFFORTS else "max",
-        "available_efforts": [{"id": k, "label": EFFORT_LABELS[k]} for k in VALID_EFFORTS],
-        "provider_supports_effort": _provider_supports_effort(provider),
+        "effort": effort,
+        "available_efforts": _effort_options(provider, model),
+        # Per PAIR, not per provider: a Codex model whose levels are unknown
+        # gets no row rather than a row of guesses.
+        "provider_supports_effort": _pair_has_effort(provider, model),
         "user": {
             "name": user["_profile"].get("display_name", user["_profile"].get("name", "User")),
             "role": user["_profile"].get("role", "user"),
@@ -546,7 +580,8 @@ async def set_provider(request: Request, user: dict = Depends(_get_user)):
         # tag they have pulled locally). Clear LLM_MODEL so the bot can't try
         # to use the previous provider's model string as an ollama tag.
         _write_env_var("LLM_MODEL", "")
-    return {"provider": provider_id, "model": default_model}
+    effort = _store_clamped_effort(provider_id, default_model)
+    return {"provider": provider_id, "model": default_model, "effort": effort}
 
 
 @app.post("/api/model")
@@ -562,7 +597,8 @@ async def set_model(request: Request, user: dict = Depends(_get_user)):
     if provider != "ollama" and valid_models and model_id not in valid_models:
         raise HTTPException(status_code=400, detail="Model not valid for this provider")
     _write_env_var("LLM_MODEL", model_id)
-    return {"model": model_id}
+    effort = _store_clamped_effort(provider, model_id)
+    return {"model": model_id, "effort": effort}
 
 
 @app.post("/api/effort")
@@ -570,8 +606,12 @@ async def set_effort(request: Request, user: dict = Depends(_get_user)):
     _require_admin(user)
     body = await request.json()
     effort_id = body.get("effort", "")
-    if effort_id not in VALID_EFFORTS:
-        raise HTTPException(status_code=400, detail="Invalid effort level")
+    # Validated against the model that is actually selected. A global list
+    # would either refuse "ultra" for Astra or accept it for Sonnet.
+    provider, model = _current_pair()
+    if effort_id not in {opt["id"] for opt in _effort_options(provider, model)}:
+        raise HTTPException(status_code=400,
+                            detail="Invalid effort level for this model")
     _write_env_var("LLM_EFFORT", effort_id)
     return {"effort": effort_id}
 
