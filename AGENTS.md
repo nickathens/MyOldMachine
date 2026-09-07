@@ -102,18 +102,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-09-06] linux: porting the applicable half of the Linux bot's
-2026-09-06 production audit, across `bot.py`, `core/llm.py`, `core/scheduler.py`,
-`core/session.py`, `miniapp/static/index.html`, `utils/send_to_telegram.py`
-and 27 skill scripts. Every finding was re-reproduced against MOM's own code
-before anything changed; the ones MOM does not have, or already solves
-better, are listed in the PR rather than ported. Review round of 2026-09-07
-on the Mac fixed eight faults the port itself carried (see the PR comment),
-each with a test that failed first. One of those eight, the browser ref
-selector, was corrected again on the Linux side after measuring Playwright's
-role selector against chromium instead of a snapshot fixture. (PR #156)
-
-(Entries removed above: #153 merged 2026-09-02.
+(Entries removed above: #156 merged 2026-09-07.
+#153 merged 2026-09-02.
 #150 and #151 merged 2026-08-31.
 #149 merged 2026-08-24, its line cleared inside #151.
 #148 merged 2026-08-23 and was itself the docs PR that cleared #145.
