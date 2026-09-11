@@ -8,6 +8,7 @@ Standard library only. macOS only.
 import argparse
 import json
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,8 @@ from pathlib import Path
 APPS_DIR = Path("/Applications")
 CC_APP = Path("/Applications/Utilities/Adobe Creative Cloud/ACC/Creative Cloud.app")
 OOBE = Path.home() / "Library/Application Support/Adobe/OOBE"
+# Adobe suffixes per-account files with the account id, a long hex string.
+ACCOUNT_ID = re.compile(r"\.[0-9A-F]{16,32}\.prefs$")
 
 # Background services the desktop app starts at login. CCXProcess is the one
 # with a public history of idling hot.
@@ -82,24 +85,70 @@ def find_mocha() -> str | None:
     return str(hits[-1]) if hits else None
 
 
+def _account_markers() -> list[str]:
+    """Artifacts Adobe writes only once a specific Adobe ID has signed in.
+
+    Both are keyed by the account id, which is what makes them a state test
+    rather than a presence test: the installer's own scratch files carry the
+    literal suffix ``default`` and no account directory exists until a real
+    sign-in has happened.
+    """
+    hits: list[str] = []
+    products = OOBE / "com.adobe.accc.apps/products"
+    if products.is_dir():
+        hits += [
+            f"entitlement cache for {d.name}"
+            for d in sorted(products.iterdir())
+            if d.name.endswith("@AdobeID")
+        ]
+    if OOBE.is_dir():
+        hits += [
+            f"account-scoped prefs {p.name}"
+            for p in sorted(OOBE.glob("com.adobe.acc*.prefs"))
+            if ACCOUNT_ID.search(p.name)
+        ]
+    return hits
+
+
+def _keychain_user_info() -> bool:
+    """Second, independent instrument: the keychain item written at sign-in.
+
+    Reads attributes only, never the secret, so it does not prompt.
+    """
+    try:
+        done = subprocess.run(
+            ["security", "find-generic-password", "-s", "Adobe User Info"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return done.returncode == 0
+
+
 def signed_in() -> bool | None:
     """Whether an Adobe ID is signed in on this machine.
 
-    Read the markers Adobe actually writes, in priority order, and return None
-    when neither is present. Do NOT infer 'signed in' from the OOBE directory
-    merely being non-empty: the installer drops scratch files there before
-    anyone has typed a password, so that test reads yes on a machine where
-    nothing can be installed, which is the most expensive wrong answer here.
+    Two traps sit on either side of this question, and this machine walked
+    into both on 11 Sep 2026.
+
+    Do NOT infer 'signed in' from the OOBE directory being non-empty: the
+    installer drops scratch files there before anyone has typed a password,
+    so that test reads yes on a machine where nothing can be installed.
+
+    Do NOT treat ``logged_out_guid`` as authoritative either. Adobe writes it
+    before the first sign-in and does NOT delete it afterwards, so on this
+    machine it still sat there, timestamped 26 minutes stale, while the user
+    was signed in and the entitlement cache was on disk. It is evidence only
+    when no positive marker is present.
+
+    Return None rather than guessing when nothing is decisive.
     """
     if not OOBE.is_dir():
         return False
-    # Positive markers: the account profile the desktop app writes after a
-    # successful sign-in.
-    for marker in ("opm.db", "User Profile", "AdobeID"):
-        if (OOBE / marker).exists():
-            return True
-    # Negative marker: written on sign-out and present on a never-signed-in
-    # machine. Authoritative when no positive marker is there.
+    if _account_markers() or _keychain_user_info():
+        return True
     if (OOBE / "logged_out_guid").exists():
         return False
     return None

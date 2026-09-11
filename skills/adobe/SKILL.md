@@ -56,18 +56,82 @@ There is no command line for this on an individual or consumer licence. The
 apps are delivered by the Creative Cloud desktop app after an Adobe ID signs
 in, and the sign-in is a GUI window with a password in it.
 
-Do not go looking for the old enterprise `Setup` binary under
-`Adobe Desktop Common/HDBox/`. It is gone in desktop app 6.10 — that directory
-now holds only helper libraries. The enterprise route that replaced it needs
-packages built in the Admin Console, which an individual licence does not have.
+The enterprise `Setup` binary is still there, and it is a dead end. Measured
+11 Sep 2026 on desktop app 6.10.0.253:
 
-So: launch the desktop app, hand the screen to the account holder, and let them
-sign in. After that, installing an app is a click each. It is not worth
-automating a click.
+```
+/Library/Application Support/Adobe/Adobe Desktop Common/HDBox/Setup
+```
+
+It advertises exactly the interface you want. Its own strings say `sapCode`,
+`baseVersion`, `productVersion`, `platform`, `install`, `uninstall`, and
+"Both sapcode and productVersion(or baseVersion) should be specified when
+driverXML is not specified" — i.e. it will name a product directly, no
+Admin Console package required. It refuses anyway:
+
+```
+FATAL: Adobe Setup is not Authorized
+Exit Code: -1
+```
+
+That is not a privilege error. It fails identically under `sudo` with uid 0 in
+the log. The authorization it wants comes from an Admin Console deployment
+package, which an individual or consumer licence cannot produce. Do not try to
+get around that check: it is a licence-enforcement gate, not a bug.
+
+So installing the apps needs the account holder at the screen, twice over: once
+to sign in, once per app to click Install.
+
+**Driving the GUI instead needs two macOS permissions, granted by hand.**
+Worth knowing before planning around it. Synthetic clicks and
+accessibility-tree reads need Privacy & Security > Accessibility; screenshots
+need Screen Recording. Without the first, `System Events` fails with
+"osascript is not allowed assistive access. (-1719)"; without the second,
+`screencapture` fails with "could not create image from display". macOS
+attributes both to the *responsible* process, which for an agent is whatever
+launched it (here the bot's Python), not `osascript`. Granting Accessibility to
+a long-lived agent process gives it control of every app on the machine, so it
+is the account holder's call, not a detail to slip past them.
 
 ```bash
 open -a "/Applications/Utilities/Adobe Creative Cloud/ACC/Creative Cloud.app"
 ```
+
+## Reading the licence without opening a window
+
+Once an Adobe ID has signed in, the desktop app caches the account's entire
+entitled product catalog on disk as XML:
+
+```
+~/Library/Application Support/Adobe/OOBE/com.adobe.accc.apps/products/<accountId>@AdobeID/_data
+```
+
+About 13 MB, 678 product entries on an All Apps licence. Each carries the SAP
+code, the display name, the platform build and both version numbers. That is
+the honest answer to "what does this subscription actually cover" and "what
+version would I get", with no GUI and no guessing. Measured 11 Sep 2026:
+
+| App | SAP code | Version | Base | Platform |
+|---|---|---|---|---|
+| Photoshop | `PHSP` | 27.9.1 | 27.0 | macuniversal |
+| After Effects | `AEFT` | 26.5 | 26.0 | macuniversal |
+| Illustrator | `ILST` | 30.8.1 | 30.0 | macuniversal |
+| Media Encoder | `AME` | 26.5 | — | macarm64 |
+| InDesign | `IDSN` | 21.5.1 | — | macuniversal |
+| Bridge | `KBRG` | 16.0.7 | — | macuniversal |
+
+Knowing the codes does not let you install them (see above), but it does let
+you check a version, confirm an entitlement, or tell an Apple Silicon build
+from a universal one before committing disk.
+
+**Telling signed-in from signed-out.** Read account-keyed markers, never file
+presence. `logged_out_guid` in `OOBE/` is written before the first sign-in and
+is NOT deleted afterwards, so it survives as a stale liar; the installer's
+scratch files (`filesync.db`, `temp_lbs_wid`, `*.default.prefs`) appear before
+anyone types a password. The markers that mean something are keyed by account
+id: the `products/<id>@AdobeID` cache above, prefs files suffixed with that id
+instead of `default`, and the `Adobe User Info` keychain item. `adobe_status.py`
+reads all three and returns None rather than guessing.
 
 ## What is worth installing
 
