@@ -281,6 +281,30 @@ def _miniapp_section() -> list[str]:
         return ["Mini App", f"  Guard failed to run: {e}"]
 
 
+def _permissions_section() -> list[str]:
+    """Only speaks when a screen-control grant that used to work has stopped.
+
+    Silent on every other machine and on every other night. A permission the
+    account holder never granted is not news, and a nightly line about it
+    would teach them to skim the report. The case worth waking them for is the
+    one that happens without anyone touching System Settings: a Homebrew
+    Python upgrade replaces the interpreter the grant was keyed to, the
+    switch in System Settings still looks on, and the bot silently loses the
+    ability to drive anything.
+    """
+    try:
+        from install.macos_permissions import regressions
+    except ImportError:
+        return []
+    try:
+        lost = regressions()
+    except Exception:
+        return []
+    if not lost:
+        return []
+    return ["SCREEN CONTROL", *[f"  {line}" for line in lost]]
+
+
 def build_report() -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     parts = [f"Nightly maintenance report for {today}", ""]
@@ -289,6 +313,9 @@ def build_report() -> str:
     miniapp = _miniapp_section()
     if miniapp:
         parts += miniapp + [""]
+    permissions = _permissions_section()
+    if permissions:
+        parts += permissions + [""]
     parts += _system_section()
     return "\n".join(parts).rstrip() + "\n"
 
