@@ -131,6 +131,11 @@ def probe_screen_recording() -> str:
     into a temp file, and this is a probe, not a screenshot tool. One pixel is
     enough, because the permission is refused before anything is rendered: a
     1x1 rectangle fails exactly the way a whole display does.
+
+    Both flags reach the README's macOS 10.14 floor: `-R <rectangle>` and `-x`
+    are documented in Mojave's own screencapture(1). Below 10.15 there is no
+    Screen Recording service in TCC at all, so capture simply succeeds and
+    this answers granted, which is the truth on that machine.
     """
     with tempfile.TemporaryDirectory() as td:
         shot = Path(td) / "probe.png"
@@ -331,36 +336,70 @@ def record_grants(states: dict[str, str], target: Path | None,
     return state
 
 
-def regressions(path: Path | None = None) -> list[str]:
+def regressions(path: Path | None = None,
+                acknowledge: bool = False) -> list[str]:
     """Permissions observed working once and refused now.
 
     Silent when nothing was ever granted. An installation that never wanted
     screen control must never be nagged about not having it, which is the
     difference between a useful alert and one people learn to ignore.
+
+    It reports each distinct loss once, and `acknowledge=True` is what makes
+    that stick: the caller that actually delivers the line records what it
+    said. Nothing here can tell a permission somebody switched off on purpose
+    from one that broke, so without this the nightly report repeats the same
+    line every night until the permission comes back -- which is the alert
+    people learn to skim, and it contradicts `is_configured`'s own reasoning
+    that a deliberate revoke should not become the same question forever.
+
+    The slate clears itself only when the permission is observed granted
+    again, so a genuine second loss speaks up. It deliberately does not clear
+    on UNKNOWN: a probe that could not tell is not evidence the situation
+    changed, and treating it as such would let a flaky probe resurrect the
+    nag. A replaced interpreter is a new situation under the same key, so the
+    Homebrew-upgrade case reports again on the identity it is now seeing.
     """
     if platform.system() != "Darwin":
         return []
-    granted = load_state(path).get("granted") or {}
+    state = load_state(path)
+    granted = state.get("granted") or {}
     if not granted:
         return []
 
     target = grant_target()
     identity_now = code_identity(target) if target else None
+    seen = identity_now or ""
     live = probe_all()
     out = []
+    changed = False
     for key, record in granted.items():
+        record = dict(record or {})
         if live.get(key) != DENIED:
+            if live.get(key) == GRANTED and "reported" in record:
+                del record["reported"]
+                granted[key] = record
+                changed = True
             continue
         label = next((p["label"] for p in PERMISSIONS if p["key"] == key), key)
-        was = (record or {}).get("identity")
+        was = record.get("identity")
         if was and identity_now and was != identity_now:
-            out.append(
+            line = (
                 f"{label} has stopped applying: the interpreter it was granted "
                 f"to was replaced, most likely by a Homebrew Python upgrade. "
                 f"Re-add {target} in System Settings."
             )
         else:
-            out.append(f"{label} was granted once and is refused now.")
+            line = f"{label} was granted once and is refused now."
+        if record.get("reported") == seen:
+            continue
+        out.append(line)
+        if acknowledge:
+            record["reported"] = seen
+            granted[key] = record
+            changed = True
+    if changed:
+        state["granted"] = granted
+        save_state(state, path)
     return out
 
 

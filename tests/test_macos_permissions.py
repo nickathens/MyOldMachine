@@ -708,5 +708,105 @@ class ModuleShapeTests(unittest.TestCase):
                       "undefined when this file is run as a script")
 
 
+class NagOnceTests(unittest.TestCase):
+    """A loss is news on the night it happens, not every night after.
+
+    `regressions` cannot tell a permission somebody switched off on purpose
+    from one that broke, so repeating the line forever is the alert people
+    learn to skim -- and `is_configured` already reasons, in its own
+    docstring, that a deliberate revoke must not become the same question
+    every time. These fix the half of that reasoning the nightly report was
+    not honouring.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.state = Path(self._td.name) / "macos_permissions.json"
+        self.addCleanup(self._td.cleanup)
+        # Record with a real identity, the way a live grant does. Without it
+        # the replaced-interpreter branch can never fire and this class would
+        # only ever exercise half of what it claims to.
+        with mock.patch.object(perms, "code_identity", return_value="Python-AAA"):
+            perms.record_grants({"accessibility": perms.GRANTED},
+                                Path("/tmp/Python.app"), path=self.state)
+
+    def _regressions(self, live, identity="Python-AAA",
+                     target="/tmp/Python.app", **kw):
+        with mock.patch.object(perms, "probe_all",
+                               return_value={"accessibility": live}), \
+             mock.patch.object(perms, "grant_target",
+                               return_value=Path(target)), \
+             mock.patch.object(perms, "code_identity", return_value=identity), \
+             mock.patch.object(perms.platform, "system", return_value="Darwin"):
+            return perms.regressions(path=self.state, **kw)
+
+    def test_an_acknowledged_loss_is_not_repeated(self):
+        first = self._regressions(perms.DENIED, acknowledge=True)
+        second = self._regressions(perms.DENIED, acknowledge=True)
+        third = self._regressions(perms.DENIED, acknowledge=True)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        self.assertEqual(third, [])
+
+    def test_looking_without_acknowledging_changes_nothing(self):
+        # The default stays a pure query: a caller that only wants to know
+        # must not silence the caller that actually delivers the line.
+        self.assertEqual(len(self._regressions(perms.DENIED)), 1)
+        self.assertEqual(len(self._regressions(perms.DENIED)), 1)
+        self.assertEqual(len(self._regressions(perms.DENIED, acknowledge=True)), 1)
+
+    def test_a_replaced_interpreter_is_a_new_situation(self):
+        # Trap 6 arriving after a revoke was already reported. Same key, and
+        # a completely different instruction, so it has to speak again.
+        self._regressions(perms.DENIED, acknowledge=True)
+        self.assertEqual(self._regressions(perms.DENIED, acknowledge=True), [])
+        lines = self._regressions(perms.DENIED, identity="Python-BBB",
+                                  target="/tmp/New.app", acknowledge=True)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("replaced", lines[0])
+        self.assertEqual(self._regressions(perms.DENIED, identity="Python-BBB",
+                                           target="/tmp/New.app",
+                                           acknowledge=True), [])
+
+    def test_the_permission_coming_back_clears_the_slate(self):
+        self._regressions(perms.DENIED, acknowledge=True)
+        self.assertEqual(self._regressions(perms.DENIED, acknowledge=True), [])
+        self.assertEqual(self._regressions(perms.GRANTED, acknowledge=True), [])
+        lines = self._regressions(perms.DENIED, acknowledge=True)
+        self.assertEqual(len(lines), 1, "a second genuine loss must speak")
+
+    def test_an_unreadable_probe_does_not_resurrect_the_nag(self):
+        # UNKNOWN is "could not tell", not evidence the situation changed. If
+        # it cleared the record, a probe that flakes one night would put the
+        # line back every other night and undo the whole point.
+        self._regressions(perms.DENIED, acknowledge=True)
+        self.assertEqual(self._regressions(perms.UNKNOWN, acknowledge=True), [])
+        self.assertEqual(self._regressions(perms.DENIED, acknowledge=True), [])
+
+    def test_an_acknowledged_loss_is_still_configured(self):
+        # The installer must not start asking again just because the nightly
+        # report went quiet about it.
+        self._regressions(perms.DENIED, acknowledge=True)
+        self.assertTrue(perms.is_configured(path=self.state))
+
+    def test_the_nightly_report_acknowledges_what_it_prints(self):
+        # A spy on the real attribute, not on the source text: the section
+        # has to pass the flag, or every test above is decoration.
+        import importlib
+        report = importlib.import_module("utils.nightly_report")
+        seen = {}
+
+        def spy(*a, **kw):
+            seen.update(kw)
+            return ["Accessibility was granted once and is refused now."]
+
+        with mock.patch("install.macos_permissions.regressions", spy):
+            lines = report._permissions_section()
+        self.assertEqual(lines[0], "SCREEN CONTROL")
+        self.assertTrue(seen.get("acknowledge"),
+                        "the nightly section read the loss without recording "
+                        "that it said it, so it will say it again tomorrow")
+
+
 if __name__ == "__main__":
     unittest.main()

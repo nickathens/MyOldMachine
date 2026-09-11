@@ -291,13 +291,17 @@ def _permissions_section() -> list[str]:
     Python upgrade replaces the interpreter the grant was keyed to, the
     switch in System Settings still looks on, and the bot silently loses the
     ability to drive anything.
+
+    It acknowledges what it reports, so each loss is said on the night it
+    happens and not every night after. `build_report` runs once per nightly
+    send, which is what makes that safe to do here.
     """
     try:
         from install.macos_permissions import regressions
     except ImportError:
         return []
     try:
-        lost = regressions()
+        lost = regressions(acknowledge=True)
     except Exception:
         return []
     if not lost:
