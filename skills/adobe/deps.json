@@ -1,0 +1,10 @@
+{
+  "check": {
+    "creative-cloud": "test -d '/Applications/Utilities/Adobe Creative Cloud/ACC/Creative Cloud.app'"
+  },
+  "brew_cask": ["adobe-creative-cloud"],
+  "weight": "heavy",
+  "min_ram_gb": 8,
+  "min_disk_gb": 25,
+  "install_note": "macOS only; Creative Cloud does not run on Linux. The desktop app installs headlessly (brew install --cask adobe-creative-cloud, ~300 MB, needs sudo), but the APPLICATIONS do not: on an individual or consumer licence there is no command line to install Photoshop, After Effects or Illustrator. An Adobe ID must sign in at the desktop app's GUI once, after which each app is a click. The old enterprise Setup binary under Adobe Desktop Common/HDBox is gone as of desktop app 6.10. Scripts here are stdlib-only Python 3.10+. Budget 4-8 GB per application. Note the automation ceiling before planning work around these apps: aerender renders an existing project headlessly, but nothing in the suite can author or edit a document without a live GUI session."
+}
