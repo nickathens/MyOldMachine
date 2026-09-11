@@ -110,6 +110,19 @@ SCREEN CONTROL
 
 A machine that never granted anything never sees that section.
 
+It says each loss **once**, on the night it happens. Nothing here can tell a
+permission you switched off on purpose from one that broke, so a line that
+repeated until the permission came back would be a line you learn to skim. The
+slate clears itself when the permission is seen working again, so a genuine
+second loss still speaks up, and a replaced interpreter reports again on its
+own because it is a different situation with a different instruction. A probe
+that could not tell either way does not clear anything -- one flaky night must
+not put the nag back.
+
+If you revoked it deliberately and want the step to stop offering itself at
+install time as well, that is already how it behaves: the record of the grant
+stays, so the installer does not ask again.
+
 ## For agents working on this
 
 `install/macos_permissions.py` is the only place that should answer "can I
