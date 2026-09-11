@@ -265,13 +265,16 @@ class PlatformGateTests(TempDirCase):
 
 
 class ServiceDetectionTests(unittest.TestCase):
-    """`ps -c` prints the accounting name, capped at 16 bytes on macOS and 15
-    on Linux. "Adobe Desktop Service" is 21 characters, so an exact comparison
-    never matched it and the report claimed no Adobe services were running
-    while the desktop backend was running.
+    """`ps -c` prints the accounting name. Linux caps it at 15 bytes, so "Adobe
+    Desktop Service", 21 characters, came back as "Adobe Desktop S" and an
+    exact comparison never matched it: the report claimed no Adobe services
+    were running while the desktop backend was running.
 
-    Reproduced with a real process named "Adobe Desktop Service" on Linux:
-    `ps axco command` returned "Adobe Desktop S", 15 characters.
+    Reproduced with a real process of that name on Linux: `ps axco command`
+    returned "Adobe Desktop S", 15 characters. Not reproducible on macOS, which
+    declares MAXCOMLEN 16 but whose `ps` prints the name whole (measured on
+    26.6.2: a 56-character line, and every service matched exactly). These are
+    matcher tests, so they feed both cut lengths regardless of the host.
     """
 
     def test_linux_truncation_is_detected(self):
@@ -279,7 +282,7 @@ class ServiceDetectionTests(unittest.TestCase):
             status.service_running("Adobe Desktop Service", {"Adobe Desktop S"})
         )
 
-    def test_macos_truncation_is_detected(self):
+    def test_sixteen_byte_truncation_is_detected(self):
         self.assertTrue(
             status.service_running("Adobe Desktop Service", {"Adobe Desktop Se"})
         )
@@ -302,7 +305,7 @@ class ServiceDetectionTests(unittest.TestCase):
             self.assertFalse(status.service_running(name, {"bash", "python3"}))
 
     def test_every_service_name_survives_its_own_truncation(self):
-        # Whatever names the list grows, each must be findable after the
+        # Whatever names the list grows, each must be findable after a
         # kernel has cut it to 15 or 16 bytes.
         for name, _ in status.SERVICES:
             for cap in (15, 16):
@@ -504,10 +507,13 @@ class SkillDocTests(unittest.TestCase):
     def test_the_doc_says_plainly_that_mp_is_not_the_flag(self):
         self.assertRegex(self.doc, r"not `-mp`")
 
-    def test_the_doc_admits_the_syntax_is_unverified_here(self):
-        # The PR already discloses that the render itself is untested. The
-        # flag came from Adobe's help text, not from a run, and must say so.
-        self.assertRegex(self.doc, r"has not been run\s+against a real aerender")
+    def test_the_doc_separates_what_was_measured_from_what_was_not(self):
+        # The flag syntax started as a reading of Adobe's help text and was
+        # then checked against a real aerender here, so the doc must name the
+        # version it was checked against AND still admit that a completed
+        # render is unproven. Either half alone is a misleading claim.
+        self.assertRegex(self.doc, r"aerender\s+version 26\.5x89")
+        self.assertRegex(self.doc, r"completed render is still unproven")
 
     def test_the_doc_does_not_advertise_a_threads_flag(self):
         self.assertNotIn("--threads", self.doc)

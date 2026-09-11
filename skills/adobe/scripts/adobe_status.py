@@ -154,12 +154,20 @@ def signed_in() -> bool | None:
     return None
 
 
-# `ps -c` prints the kernel's accounting name, not the full command. That name
-# is capped at MAXCOMLEN bytes: 16 on macOS, 15 on Linux. "Adobe Desktop
-# Service" is 21 characters, so it comes back as "Adobe Desktop Se" and an
-# exact comparison never matches it. The report then says no Adobe services are
-# running while the desktop backend is running, which is the one answer this
-# section exists to get right.
+# `ps -c` prints the accounting name, not the full command. On Linux the kernel
+# caps that at 15 bytes (/proc/<pid>/comm), so "Adobe Desktop Service", 21
+# characters, comes back as "Adobe Desktop S" and an exact comparison never
+# matches it: the report then says no Adobe services are running while the
+# desktop backend is running, which is the one answer this section exists to
+# get right.
+#
+# macOS declares MAXCOMLEN 16 in sys/param.h but its `ps` does not cut to it.
+# Measured on macOS 26.6.2 with the desktop app installed: `ps axco command`
+# printed a 56-character name, "Adobe Desktop Service" came back whole, and all
+# five SERVICES read the same under the exact comparison and under this one. So
+# the truncation is a Linux fault on the one platform Adobe does not ship for.
+# The allowance stays anyway, because it costs nothing and the alternative is a
+# silent False.
 _COMM_MAX = 15
 
 

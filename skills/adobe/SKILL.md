@@ -85,11 +85,16 @@ to sign in, once per app to click Install.
 **Driving the GUI instead needs two macOS permissions, granted by hand.**
 Worth knowing before planning around it. Synthetic clicks and
 accessibility-tree reads need Privacy & Security > Accessibility; screenshots
-need Screen Recording. Without the first, `System Events` fails with
-"osascript is not allowed assistive access. (-1719)"; without the second,
-`screencapture` fails with "could not create image from display". macOS
-attributes both to the *responsible* process, which for an agent is whatever
-launched it (here the bot's Python), not `osascript`. Granting Accessibility to
+need Screen Recording. Measured on this machine 11 Sep 2026: without the first,
+`System Events` fails with "osascript is not allowed assistive access.
+(-25211)" and `System Events to return UI elements enabled` answers `false`,
+which is the cleaner probe because it is a boolean rather than an error; without
+the second, `screencapture` fails with "could not create image from display".
+Sending an Apple event to System Events at all is a *separate* permission and
+can be allowed while Accessibility is refused, so a script that merely lists
+processes is not evidence that clicking will work. macOS attributes the grant to
+the *responsible* process, which for an agent is whatever launched it (here the
+bot's Python), not `osascript`. Granting Accessibility to
 a long-lived agent process gives it control of every app on the machine, so it
 is the account holder's call, not a detail to slip past them.
 
@@ -229,7 +234,10 @@ If an install goes wrong, Adobe's own cleaner is the next step:
 ## Rendering an After Effects project headlessly
 
 Once After Effects is installed, this is the one thing that runs with nobody at
-the screen:
+the screen, and it is not a claim from a manual: on 11 Sep 2026 `aerender`
+launched After Effects from a LaunchAgent-run background process with no GUI
+session, no Terminal and no window server login, and reported its error to
+stdout like any other command.
 
 ```bash
 # render one comp
@@ -252,8 +260,14 @@ aerender ignores when the flag is `OFF`. `-mp` is the older "Render Multiple
 Frames Simultaneously" multiprocessing switch from before Multi-Frame Rendering
 existed in After Effects 2022, and passing it does not turn MFR on. `--mfr` is
 off by default here, which leaves aerender on whatever the install itself
-prefers. The flag syntax comes from Adobe's own help text and has not been run
-against a real aerender from this repo.
+prefers.
+
+Measured against a real aerender on 11 Sep 2026, After Effects 2026, `aerender
+version 26.5x89`: `-mfr mfr_flag max_cpu_percent` is in aerender's own help text
+word for word, `-mp` does not appear in that help at all, and
+`aerender -project ... -mfr ON 100` is accepted, failing only on the project
+path. A completed render is still unproven, because no `.aep` has been rendered
+from this repo yet.
 
 It finds `aerender` itself across After Effects versions, refuses early with a
 readable reason rather than failing deep in a render, and streams progress so a
