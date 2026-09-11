@@ -94,7 +94,12 @@ Sending an Apple event to System Events at all is a *separate* permission and
 can be allowed while Accessibility is refused, so a script that merely lists
 processes is not evidence that clicking will work. macOS attributes the grant to
 the *responsible* process, which for an agent is whatever launched it (here the
-bot's Python), not `osascript`. Granting Accessibility to
+bot's Python), not `osascript`.
+
+Do not hand-resolve any of that. `python install/macos_permissions.py --check`
+reports the three services separately and names the exact entry System Settings
+wants, and `--grant` walks through adding it. See
+[docs/macos-permissions.md](../../docs/macos-permissions.md). Granting Accessibility to
 a long-lived agent process gives it control of every app on the machine, so it
 is the account holder's call, not a detail to slip past them.
 

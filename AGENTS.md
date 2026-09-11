@@ -102,10 +102,13 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-09-11] mac: Adobe Creative Cloud skill - the install route, the
-automation ceiling, and the stripped Mocha AE trap (PR #165)
+(none open)
 
-(Entries removed above: #161, #158 and #156 merged 2026-09-07.
+(Entries removed above: #166 merged 2026-09-11, its own line cleared in the
+PR rather than in a follow-up, since the same edit already had the file open.
+#165 merged 2026-09-11, its line cleared inside #166's
+own edit because the two share lines - the same call as #127 and #161.
+#161, #158 and #156 merged 2026-09-07.
 #153 merged 2026-09-02.
 #150 and #151 merged 2026-08-31.
 #149 merged 2026-08-24, its line cleared inside #151.

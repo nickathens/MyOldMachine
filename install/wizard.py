@@ -1071,6 +1071,32 @@ def _run_heartbeat_setup_step(config: dict):
     run_heartbeat_setup_step(config, ask=ask)
 
 
+def _is_macos_permissions_configured() -> bool:
+    from install.macos_permissions import is_configured
+    return is_configured()
+
+
+def _ask_verbatim(prompt: str) -> str:
+    """Print a prompt exactly as written, and let a bare Return be an answer.
+
+    `ask` decorates the prompt with its own indent and colon and refuses an
+    empty reply. The screen-control step formats its own prompts and asks the
+    account holder to press Return once they have finished in System Settings,
+    so handing it `ask` answers every Return with "This field is required" and
+    then exits the whole wizard when stdin runs out.
+    """
+    try:
+        return input(prompt)
+    except EOFError:
+        error("Input stream closed. Can't read user input.")
+        raise
+
+
+def _run_macos_permissions_step(config: dict):
+    from install.macos_permissions import run_macos_permissions_step
+    run_macos_permissions_step(config, ask=_ask_verbatim)
+
+
 def _run_backup_setup_step(config: dict):
     """Set up nightly backup destination in maintenance.json.
 
@@ -1669,6 +1695,23 @@ OPTIONAL_FEATURES = [
         "applies_to": lambda: platform.system() == "Darwin",
         "is_configured": lambda c: _is_macos_updates_configured(),
         "configure": lambda c: _run_macos_updates_step(c),
+    },
+    {
+        "key": "macos_screen_control",
+        "label": "Screen control (Accessibility, Screen Recording)",
+        "summary": (
+            "Lets the assistant click, type and read other apps' windows, and "
+            "see the screen to check its own work. Needed for anything with no "
+            "command line: clicking Install in an app store window, or driving "
+            "Photoshop and After Effects. macOS will not let a program grant "
+            "these to itself, so this names the exact entry to add, opens the "
+            "right pane, and verifies it took. Accessibility is a standing "
+            "grant over every app on the machine, so it is offered, never "
+            "assumed."
+        ),
+        "applies_to": lambda: platform.system() == "Darwin",
+        "is_configured": lambda c: _is_macos_permissions_configured(),
+        "configure": lambda c: _run_macos_permissions_step(c),
     },
     {
         "key": "mcp_servers",
