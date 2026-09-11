@@ -240,7 +240,20 @@ python skills/adobe/scripts/ae_render.py --project job.aep
 
 # see the command without running it
 python skills/adobe/scripts/ae_render.py --project job.aep --comp "Main" --out out.mov --dry-run
+
+# Multi-Frame Rendering on, leaving half the CPU for everything else
+python skills/adobe/scripts/ae_render.py --project job.aep --comp "Main" --out out.mov \
+    --mfr on --max-cpu 50
 ```
+
+**Multi-Frame Rendering is `-mfr`, not `-mp`.** Adobe's syntax is
+`-mfr mfr_flag max_cpu_percent`: `ON` or `OFF`, then a 1-100 CPU ceiling that
+aerender ignores when the flag is `OFF`. `-mp` is the older "Render Multiple
+Frames Simultaneously" multiprocessing switch from before Multi-Frame Rendering
+existed in After Effects 2022, and passing it does not turn MFR on. `--mfr` is
+off by default here, which leaves aerender on whatever the install itself
+prefers. The flag syntax comes from Adobe's own help text and has not been run
+against a real aerender from this repo.
 
 It finds `aerender` itself across After Effects versions, refuses early with a
 readable reason rather than failing deep in a render, and streams progress so a

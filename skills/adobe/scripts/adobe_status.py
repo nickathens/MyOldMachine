@@ -154,6 +154,27 @@ def signed_in() -> bool | None:
     return None
 
 
+# `ps -c` prints the kernel's accounting name, not the full command. That name
+# is capped at MAXCOMLEN bytes: 16 on macOS, 15 on Linux. "Adobe Desktop
+# Service" is 21 characters, so it comes back as "Adobe Desktop Se" and an
+# exact comparison never matches it. The report then says no Adobe services are
+# running while the desktop backend is running, which is the one answer this
+# section exists to get right.
+_COMM_MAX = 15
+
+
+def service_running(name: str, lines: set[str]) -> bool:
+    """True when `name` is in the ps output, allowing for a truncated name.
+
+    The length floor is what keeps this honest: only a line long enough to have
+    been truncated can prefix-match, so a short unrelated process ("Core") can
+    never be read as a service whose name merely starts with it ("Core Sync").
+    """
+    if name in lines:
+        return True
+    return any(len(ln) >= _COMM_MAX and name.startswith(ln) for ln in lines)
+
+
 def running_services() -> list[tuple[str, str, bool]]:
     try:
         ps = subprocess.run(
@@ -162,7 +183,7 @@ def running_services() -> list[tuple[str, str, bool]]:
     except (subprocess.SubprocessError, OSError):
         return [(n, d, False) for n, d in SERVICES]
     lines = {ln.strip() for ln in ps.splitlines()}
-    return [(n, d, n in lines) for n, d in SERVICES]
+    return [(n, d, service_running(n, lines)) for n, d in SERVICES]
 
 
 def machine_ram_gb() -> float | None:

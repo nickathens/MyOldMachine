@@ -2,7 +2,6 @@
   "check": {
     "creative-cloud": "test -d '/Applications/Utilities/Adobe Creative Cloud/ACC/Creative Cloud.app'"
   },
-  "brew_cask": ["adobe-creative-cloud"],
   "weight": "heavy",
   "min_ram_gb": 8,
   "min_disk_gb": 25,
