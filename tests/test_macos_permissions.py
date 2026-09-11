@@ -28,6 +28,7 @@ The traps being locked down, all of them met while building this:
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -491,6 +492,220 @@ class WiringTests(unittest.TestCase):
         with mock.patch("install.macos_permissions.regressions",
                         side_effect=RuntimeError("osascript exploded")):
             self.assertEqual(report._permissions_section(), [])
+
+
+class SpacedPathTests(unittest.TestCase):
+    """A checkout whose path contains a space.
+
+    `/Users/j/My Old Machine` is an ordinary place to put this on a Mac, and
+    everything before the first space of a ps line is then `/Users/j/My`,
+    which names nothing. The whole point of the module is handing System
+    Settings an entry that exists, so naming one that does not is the worst
+    answer available: it is the failure the module was written to prevent,
+    wearing the module's own authority.
+    """
+
+    def _repo_with_a_space(self, td):
+        repo = Path(td) / "My Old Machine"
+        venv_bin = repo / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        real = venv_bin / "python3.12"
+        real.write_text("#!/bin/sh\n")
+        real.chmod(0o755)
+        (venv_bin / "python").symlink_to(real)
+        (repo / "bot.py").write_text("")
+        return repo, real
+
+    def test_a_spaced_executable_is_not_cut_at_the_first_space(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo, real = self._repo_with_a_space(td)
+            args = f"{real} {repo / 'bot.py'}"
+            self.assertEqual(perms._executable_from(args), real)
+
+    def test_the_live_bot_is_found_when_the_repo_path_has_a_space(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo, real = self._repo_with_a_space(td)
+            ps = (
+                f"  501 /bin/bash -c set -a; source {repo / '.env'}; set +a; "
+                f"exec {real} {repo / 'bot.py'}\n"
+                f"  608 {real} {repo / 'bot.py'}\n"
+            )
+            with mock.patch.object(perms, "_run", return_value=(0, ps)):
+                exe = perms._live_bot_executable()
+                target = perms.grant_target(repo_dir=repo)
+            self.assertEqual(exe, real)
+            self.assertNotIn("bash", str(exe))
+            # And the thing the account holder is told to paste has to exist.
+            self.assertTrue(Path(target).exists(), f"{target} does not exist")
+
+    def test_a_relative_command_is_not_offered_as_the_grant(self):
+        # `python bot.py` typed in a terminal. A relative name resolves against
+        # whatever directory this happens to be run from, and "python" is not
+        # something anybody can add in System Settings.
+        with mock.patch.object(perms, "_run",
+                               return_value=(0, "  701 python3 ./repo/bot.py\n")):
+            self.assertIsNone(perms._live_bot_executable())
+
+    def test_an_unspaced_path_is_unchanged_when_nothing_is_on_disk(self):
+        # The hermetic case every other test in this file relies on: no file
+        # matches, so the first token stays the answer.
+        args = "/opt/homebrew/nope/Python.app/Contents/MacOS/Python /repo/bot.py"
+        self.assertEqual(
+            perms._executable_from(args),
+            Path("/opt/homebrew/nope/Python.app/Contents/MacOS/Python"))
+
+
+class InstallerPromptTests(unittest.TestCase):
+    """The step driven by the prompt function the installer really passes.
+
+    Every other interactive test here hands the step a fake `ask` that returns
+    a canned string, so none of them can see what happens when the account
+    holder does the one thing the screen tells them to do and presses Return.
+    This captures the callable `install/wizard.py` hands over and drives the
+    real step with it.
+    """
+
+    def _installer_ask(self):
+        import install.wizard as wizard
+        captured = {}
+
+        def spy(config, ask=None):
+            captured["ask"] = ask
+
+        with mock.patch("install.macos_permissions.run_macos_permissions_step", spy):
+            wizard._run_macos_permissions_step({})
+        self.assertIsNotNone(captured.get("ask"), "the wizard passed no prompt function")
+        return captured["ask"]
+
+    def _drive(self, askfn, typed):
+        """Run the step with `typed` on stdin. Returns (outcome, printed)."""
+        states = {"accessibility": perms.DENIED,
+                  "screen_recording": perms.DENIED,
+                  "automation": perms.GRANTED}
+        buf = io.StringIO()
+        real_stdin, real_stdout = sys.stdin, sys.stdout
+        sys.stdin = io.StringIO(typed)
+        sys.stdout = buf
+        outcome = "completed"
+        try:
+            with mock.patch.object(perms.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(perms, "probe_all", return_value=states), \
+                 mock.patch.object(perms, "grant_target",
+                                   return_value=Path("/tmp/Python.app")), \
+                 mock.patch.object(perms, "copy_to_clipboard", return_value=True), \
+                 mock.patch.object(perms, "open_pane", return_value=True), \
+                 mock.patch.object(perms, "record_grants"):
+                perms.run_macos_permissions_step({}, ask=askfn)
+        # BaseException on purpose: the defect this guards is a SystemExit
+        # raised out of the prompt, which `except Exception` would not see.
+        except BaseException as exc:
+            outcome = f"{type(exc).__name__}: {exc}"
+        finally:
+            sys.stdin, sys.stdout = real_stdin, real_stdout
+        return outcome, buf.getvalue()
+
+    def test_pressing_return_at_each_step_finishes_the_grant(self):
+        # Say yes, then press Return at each "press Return when that is done".
+        outcome, printed = self._drive(self._installer_ask(), "y\n" + "\n" * 6)
+        self.assertEqual(outcome, "completed")
+        self.assertIn("Checked again", printed)
+        self.assertNotIn("This field is required", printed)
+
+    def test_pressing_return_at_the_question_declines_rather_than_looping(self):
+        outcome, printed = self._drive(self._installer_ask(), "\n")
+        self.assertEqual(outcome, "completed")
+        self.assertIn("Skipped", printed)
+        self.assertNotIn("This field is required", printed)
+
+    def test_the_prompt_is_printed_exactly_as_the_step_wrote_it(self):
+        # wizard.ask adds its own indent and a second colon, which is how the
+        # two contracts drifted apart in the first place.
+        askfn = self._installer_ask()
+        buf = io.StringIO()
+        real_stdin, real_stdout = sys.stdin, sys.stdout
+        sys.stdin, sys.stdout = io.StringIO("\n"), buf
+        try:
+            answer = askfn("    Press Return here when that is done: ")
+        finally:
+            sys.stdin, sys.stdout = real_stdin, real_stdout
+        self.assertEqual(answer, "")
+        self.assertEqual(buf.getvalue(), "    Press Return here when that is done: ")
+
+
+class EndToEndCliTests(unittest.TestCase):
+    """`--check` on the macOS path with nothing inside the module mocked.
+
+    Every other CLI test replaces `grant_target` and `regressions` with canned
+    answers, so the chain they stand in front of - `_live_bot_executable`,
+    `_executable_from`, `code_identity`, the identity comparison - is never
+    executed by anything. Only the shell commands are faked here, so a name
+    that does not resolve or a signature that has drifted fails the build on
+    Linux instead of waiting for somebody's Mac.
+    """
+
+    FRAMEWORK = ("/opt/homebrew/Cellar/python@3.12/3.12.14/Frameworks/"
+                 "Python.framework/Versions/3.12/Resources/Python.app"
+                 "/Contents/MacOS/Python")
+
+    def _shell(self, cmd, timeout=25):
+        """The machine measured on 11 Sep 2026: Apple events on, the rest off."""
+        name = Path(cmd[0]).name
+        if name == "osascript":
+            script = cmd[-1]
+            if "name of first process" in script:
+                return 0, AUTOMATION_OK
+            return 1, AX_DENIED
+        if name == "screencapture":
+            return 1, SR_DENIED_RECT
+        if name == "ps":
+            return 0, f"  608 {self.FRAMEWORK} /repo/bot.py\n"
+        if name == "codesign":
+            return 0, "Executable=/x\nIdentifier=org.python.python\nFormat=bundle\n"
+        return 1, ""
+
+    def test_check_runs_the_whole_chain_and_names_the_bundle(self):
+        import contextlib
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td) / "macos_permissions.json"
+            state.write_text(json.dumps({"granted": {"accessibility": {
+                "target": self.FRAMEWORK, "identity": "an-older-build"}}}))
+            buf = io.StringIO()
+            with mock.patch.object(perms.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(perms, "STATE_FILE", state), \
+                 mock.patch.object(perms, "_run", side_effect=self._shell):
+                with contextlib.redirect_stdout(buf):
+                    rc = perms.main(["--check"])
+            printed = buf.getvalue()
+
+        self.assertEqual(rc, 0)
+        # Three states, measured separately, not one answer for all three.
+        self.assertIn("Accessibility", printed)
+        # The bundle, not the binary inside it, and not /bin/bash.
+        self.assertIn("Resources/Python.app", printed)
+        self.assertNotIn("Contents/MacOS", printed)
+        # The identity on record differs from the one codesign reports now, so
+        # this is the replaced-interpreter message, not the revoked one.
+        self.assertIn("was replaced", printed)
+        self.assertNotIn("granted once and is refused now", printed)
+
+
+class ModuleShapeTests(unittest.TestCase):
+    def test_nothing_is_defined_after_the_entrypoint_guard(self):
+        """A definition below `if __name__` imports fine and crashes as a script.
+
+        Every test here imports the module, so the guard is false and the whole
+        file executes; `python install/macos_permissions.py --check` on a Mac
+        would hit a NameError instead. Nothing else in the suite can see that,
+        and on Linux the CLI exits at the platform check before it gets there.
+        """
+        import ast
+        tree = ast.parse((REPO / "install" / "macos_permissions.py").read_text())
+        guards = [n for n in tree.body
+                  if isinstance(n, ast.If) and "__name__" in ast.dump(n.test)]
+        self.assertEqual(len(guards), 1, "expected exactly one __main__ guard")
+        self.assertIs(tree.body[-1], guards[0],
+                      "something is defined after `if __name__`; it will be "
+                      "undefined when this file is run as a script")
 
 
 if __name__ == "__main__":

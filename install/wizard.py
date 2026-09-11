@@ -1076,9 +1076,25 @@ def _is_macos_permissions_configured() -> bool:
     return is_configured()
 
 
+def _ask_verbatim(prompt: str) -> str:
+    """Print a prompt exactly as written, and let a bare Return be an answer.
+
+    `ask` decorates the prompt with its own indent and colon and refuses an
+    empty reply. The screen-control step formats its own prompts and asks the
+    account holder to press Return once they have finished in System Settings,
+    so handing it `ask` answers every Return with "This field is required" and
+    then exits the whole wizard when stdin runs out.
+    """
+    try:
+        return input(prompt)
+    except EOFError:
+        error("Input stream closed. Can't read user input.")
+        raise
+
+
 def _run_macos_permissions_step(config: dict):
     from install.macos_permissions import run_macos_permissions_step
-    run_macos_permissions_step(config, ask=ask)
+    run_macos_permissions_step(config, ask=_ask_verbatim)
 
 
 def _run_backup_setup_step(config: dict):

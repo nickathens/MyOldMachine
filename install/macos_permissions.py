@@ -221,13 +221,31 @@ def _live_bot_executable() -> Path | None:
         if len(parts) != 2:
             continue
         args = parts[1]
-        if "/bot.py" not in args:
+        if "/bot.py" not in args or not args.startswith("/"):
             continue
-        exe = args.split(" ", 1)[0]
-        if not exe.startswith("/") or Path(exe).name.lower() in _NOT_THE_BOT:
+        exe = _executable_from(args)
+        if exe.name.lower() in _NOT_THE_BOT:
             continue
-        return Path(exe)
+        return exe
     return None
+
+
+def _executable_from(args: str) -> Path:
+    """The program a ps line ran, when its path may contain a space.
+
+    Taking everything before the first space is wrong for a checkout at, say,
+    `/Users/j/My Old Machine`: it yields `/Users/j/My`, which names nothing,
+    and `grant_target` would then put that on the clipboard for somebody to
+    paste into System Settings. Widen the first token until it names a real
+    file. Nothing on disk matches under a hermetic test, so the first token
+    stays the answer there.
+    """
+    tokens = args.split(" ")
+    for i in range(1, len(tokens) + 1):
+        candidate = Path(" ".join(tokens[:i]))
+        if candidate.is_file():
+            return candidate
+    return Path(tokens[0])
 
 
 def grant_target(repo_dir: Path | None = None) -> Path | None:
