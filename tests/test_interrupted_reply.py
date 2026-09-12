@@ -29,13 +29,16 @@ import signal
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 # Make the project root importable when tests run from the repo root.
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.llm import _interrupted_notice, _is_oom_exit, _stopped_response  # noqa: E402
+from core.llm import (  # noqa: E402
+    _idle_timeout_message, _interrupted_notice, _is_oom_exit, _stopped_response,
+)
 
 LLM_SOURCE = ROOT / "core" / "llm.py"
 
@@ -140,7 +143,7 @@ class SalvagePathsAreLabelledTests(unittest.TestCase):
     LABEL_MARKERS = ("[Stopped", "[Task incomplete", "[Hit ")
     #: helpers that attach a label themselves; each is pinned by a test below,
     #: so the guard trusts behaviour rather than a reassuring function name
-    LABELLING_CALLS = {"_interrupted_notice", "_stopped_response"}
+    LABELLING_CALLS = {"_interrupted_notice", "_stopped_response", "_idle_timeout_message"}
 
     @classmethod
     def setUpClass(cls):
@@ -184,6 +187,20 @@ class SalvagePathsAreLabelledTests(unittest.TestCase):
         self.assertIn("[Stopped", stopped)
         self.assertIn("half-written notes", stopped)
         self.assertIn("[Unfinished", "x" + _interrupted_notice(143))
+
+    def test_idle_timeout_helper_preserves_and_labels_saved_text(self):
+        for engine in ("Claude", "Codex"):
+            for frozen in ([], ["/mnt/USB"]):
+                with self.subTest(engine=engine, frozen=frozen), \
+                        patch("core.health.frozen_volumes_known", return_value=frozen):
+                    reply = _idle_timeout_message(
+                        engine, 30, "Bash", "", preserved_reply=NARRATION,
+                    )
+                self.assertTrue(reply.startswith(NARRATION + "\n\n[Task incomplete"))
+                self.assertIn(engine + " stopped responding", reply)
+                self.assertNotIn("/recover", reply)
+                if frozen:
+                    self.assertIn("/mnt/USB", reply)
 
     def test_both_providers_were_found(self):
         # Guards the guard: a rename would otherwise make every check below

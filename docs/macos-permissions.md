@@ -138,3 +138,44 @@ drive the screen". Two rules it exists to enforce:
 ```bash
 python install/macos_permissions.py --json      # machine readable
 ```
+
+## An unanswered removable volume permission box can stall drive access
+
+macOS protects access to removable volumes through Files and Folders permissions.
+See [Apple's file access documentation](https://support.apple.com/en-ie/guide/security/secddd1d86a6/web).
+
+In the incident that motivated this check, an application restored documents
+from an external drive after login and raised a permission box. Later drive
+access stalled until that box was cleared. This is one possible explanation
+for a timeout, not a diagnosis of every slow or disconnected drive.
+
+MOM checks external drives about every five minutes. Each directory check runs
+in a separate child with a bounded wait. Linux discovers mounts from
+`/proc/self/mountinfo`, without listing mounted directories; macOS enumerates
+names under `/Volumes` without inspecting the mount points in the parent.
+The probe keeps successful, timed out, skipped and unknown results separate.
+Only a successful listing proves recovery. Removing a drive does not.
+
+When a probe times out, the assistant is told to avoid that drive and the
+idle timeout message names it as a possible cause, including when a partial
+reply has been preserved. Alerts track successful delivery to each admin;
+a failed delivery is retried at the next check.
+
+On a Mac with a visible removable volume permission box:
+
+1. Answer it at the screen, allowing access only if intended.
+2. If that is not possible, `killall UserNotificationCenter` was observed to
+   cancel the pending request in the reported incident. It cancels consent;
+   it does not grant access and may also dismiss other pending prompts.
+3. If the drive still does not answer, stop work using it before reconnecting
+   it or restarting the machine. Check hardware and connection issues too.
+
+The optional dialog reader needs Accessibility access and recognises English
+removable volume text. It is best effort; not finding a dialog does not prove
+there is none. Automatic consent clicks are not part of this feature.
+
+Coverage is limited to `/Volumes` on macOS and `/media`, `/mnt`, and
+`/run/media` mount locations on Linux. Other mount locations are not monitored.
+The probe can lag a new freeze by one check interval. Up to eight volumes are
+checked concurrently. A child blocked inside the operating system may survive
+a kill request; the parent stops waiting rather than hanging with it.

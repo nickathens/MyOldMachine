@@ -12,6 +12,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -310,6 +311,20 @@ def build_health_report(bot_dir: Optional[Path] = None) -> str:
     if disk["free_gb"] < 5:
         lines.append(f"  WARNING: Low disk space ({disk['free_gb']} GB free)")
 
+    # External drives, probed live: this is the one place a human just asked.
+    try:
+        volume_states = probe_volumes()
+    except OSError:
+        volume_states = {}
+        lines.append("External drives: unknown (mount discovery failed)")
+    for path, state in volume_states.items():
+        if state == VOLUME_SKIP:
+            continue
+        label = {VOLUME_FROZEN: "NOT RESPONDING", VOLUME_OK: "responding"}.get(
+            state, "unknown (probe failed)",
+        )
+        lines.append(f"Drive {path}: {label}")
+
     # Bot data directory
     if bot_dir:
         data_dir = bot_dir / "data"
@@ -505,6 +520,12 @@ def check_critical(bot_dir: Optional[Path] = None) -> list[str]:
     elif disk["free_gb"] < 5:
         alerts.append(f"WARNING: Low disk space — {disk['free_gb']} GB free")
 
+    # --- Always live: an external drive that has stopped answering ---
+    # Reads what the last probe found (run_volume_check, every few minutes) and
+    # never probes here: this runs in the event loop's executor and must not
+    # pay a probe's timeout on top of its own work.
+    alerts.extend(volume_alert(path) for path in frozen_volumes_known())
+
     # --- Boot-sensitive: CPU / RAM / memory pressure. Suppress until settled ---
     uptime = get_system_uptime_seconds()
     settled = uptime is None or uptime >= _SETTLING_WINDOW_SECONDS
@@ -626,6 +647,9 @@ def _alert_key(alert_msg: str) -> str:
     CRITICAL about the same subsystem are different alerts and an escalation
     must not be muted by the warning that preceded it.
     """
+    if alert_msg.startswith("CRITICAL: Storage drive not responding: "):
+        # Numbers in a drive name identify the drive, not a fluctuating reading.
+        return alert_msg.rsplit(". A folder listing", 1)[0]
     head = alert_msg.split("—")[0]
     return _ALERT_NUMBER_RE.sub("#", head).strip()
 
@@ -648,6 +672,10 @@ async def run_health_check(send_fn, admin_user_ids: list[int],
     now = time.time()
     new_alerts = []
     for alert in alerts:
+        # The five minute sweep owns drive notifications and their per-admin
+        # delivery receipts. Do not bypass its retry/recovery state here.
+        if alert.startswith("CRITICAL: Storage drive not responding: "):
+            continue
         key = _alert_key(alert)
         last_sent = _alert_cooldowns.get(key, 0)
         if now - last_sent >= _ALERT_COOLDOWN_SECONDS:
@@ -663,6 +691,297 @@ async def run_health_check(send_fn, admin_user_ids: list[int],
             await send_fn(uid, message)
         except Exception as e:
             logger.error(f"Failed to send health alert to {uid}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# External drives that stop answering
+# ---------------------------------------------------------------------------
+# A mounted drive that stops answering is worse than one that is missing: every
+# command that touches it blocks in the kernel and never returns, the
+# assistant's turn produces no output, and the user is told "stopped responding
+# after 30 minutes... the task may have been too complex". Measured 12 Sep 2026
+# on a Mac mini: an unanswered macOS consent box ("Adobe Illustrator would like
+# to access files on a removable volume") sat on the screen from the 5 AM
+# reboot, macOS queued every later open of that volume behind it inside
+# sandboxd (216 requests by the evening, Finder and root included), and four
+# turns died the same way before anyone knew the drive was involved. The disk
+# was fine throughout. See docs/macos-permissions.md.
+#
+# So the probe does the thing the turns do, list the directory, from a child
+# process that can be abandoned, and calls the volume frozen when the listing
+# does not come back in time. Nothing in the bot's own process ever lists,
+# stats or opens a mount point: that is exactly the call that never returns.
+
+VOLUME_OK = "ok"
+VOLUME_FROZEN = "frozen"
+VOLUME_SKIP = "skip"          # not a separate volume
+VOLUME_UNKNOWN = "unknown"    # could not check; never evidence of recovery
+
+_VOLUME_PROBE_TIMEOUT = 5.0   # seconds a listing may take before the drive counts as frozen
+_VOLUME_CACHE_MAX_AGE = 600.0
+
+# What the last probe found. Read by check_critical(), the system prompt and
+# the idle-timeout message, none of which may pay for a probe of their own.
+_volume_probe_cache: dict = {"checked": 0.0, "frozen": [], "states": {}}
+# Drives an alert has gone out for, so a recovery line can follow.
+_frozen_reported: dict[tuple[int, str], float] = {}
+
+# Runs in the child. Exit 3 = not a separate volume (a plain directory, a
+# symlink such as macOS's "Macintosh HD", or the system disk itself); any other
+# failure is an ordinary error; a hang is the thing being measured.
+_PROBE_SNIPPET = (
+    "import os, stat, sys\n"
+    "p = sys.argv[1]\n"
+    "try:\n"
+    "    info = os.lstat(p)\n"
+    "except FileNotFoundError:\n"
+    "    sys.exit(3)\n"
+    "if not stat.S_ISDIR(info.st_mode):\n"
+    "    sys.exit(3)\n"
+    "if info.st_dev == os.stat('/').st_dev:\n"
+    "    sys.exit(3)\n"
+    "os.listdir(p)\n"
+)
+
+
+def external_volume_roots() -> list[str]:
+    """Candidate mount points of drives other than the system disk.
+
+    Linux reads the kernel mount table: even /mnt or /media/USB can itself be
+    a frozen mount. macOS lists only its system directory /Volumes. Neither
+    path stats a mount point; the child decides whether it is a separate disk.
+    """
+    if platform.system() == "Linux":
+        roots = set()
+        with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
+            for line in mounts:
+                fields = line.split()
+                if len(fields) < 6:
+                    continue
+                path = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[4])
+                if any(path == base or path.startswith(base + "/")
+                       for base in ("/media", "/mnt", "/run/media")):
+                    roots.add(path)
+        return sorted(roots)
+    if platform.system() == "Darwin":
+        try:
+            return [os.path.join("/Volumes", n) for n in sorted(os.listdir("/Volumes"))]
+        except FileNotFoundError:
+            return []
+    return []
+
+
+def probe_volume(path: str, timeout: float = _VOLUME_PROBE_TIMEOUT) -> str:
+    """OK, frozen, skipped or unknown for one mount point."""
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _PROBE_SNIPPET, path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return VOLUME_UNKNOWN
+    try:
+        rc = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Abandon it. A child stuck in the kernel may ignore the kill, and the
+        # bot's own process must never wait on it.
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+        return VOLUME_FROZEN
+    if rc == 0:
+        return VOLUME_OK
+    return VOLUME_SKIP if rc == 3 else VOLUME_UNKNOWN
+
+
+def probe_volumes(roots: Optional[list[str]] = None,
+                  timeout: float = _VOLUME_PROBE_TIMEOUT) -> dict[str, str]:
+    """Probe up to eight roots at once, with a bounded wait for each child."""
+    roots = external_volume_roots() if roots is None else list(roots)
+    if not roots:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(roots))) as pool:
+        states = list(pool.map(lambda p: probe_volume(p, timeout), roots))
+    return dict(zip(roots, states))
+
+
+def get_frozen_volumes(timeout: float = _VOLUME_PROBE_TIMEOUT,
+                       roots: Optional[list[str]] = None) -> list[str]:
+    """Probe now; remember the answer for the readers that must not probe."""
+    states = probe_volumes(roots, timeout)
+    previous = set(frozen_volumes_known())
+    frozen = [p for p, s in states.items()
+              if s == VOLUME_FROZEN or (s == VOLUME_UNKNOWN and p in previous)]
+    _volume_probe_cache["checked"] = time.time()
+    _volume_probe_cache["frozen"] = list(frozen)
+    _volume_probe_cache["states"] = states
+    return frozen
+
+
+def frozen_volumes_known() -> list[str]:
+    """What the last probe found, without probing. Empty until something has probed."""
+    return list(_volume_probe_cache["frozen"])
+
+
+def frozen_volumes_cached(max_age: float = _VOLUME_CACHE_MAX_AGE,
+                          timeout: float = _VOLUME_PROBE_TIMEOUT) -> list[str]:
+    """The last answer if it is fresh enough, otherwise a new probe."""
+    checked = _volume_probe_cache["checked"]
+    if checked and time.time() - checked <= max_age:
+        return frozen_volumes_known()
+    return get_frozen_volumes(timeout=timeout)
+
+
+def volume_alert(path: str) -> str:
+    """The alert for one frozen drive.
+
+    _alert_key preserves the full drive name, including its numbers.
+    """
+    return (
+        f"CRITICAL: Storage drive not responding: {path}. A folder listing hung for "
+        f"{int(_VOLUME_PROBE_TIMEOUT)} s. Work that touches it may also stall. "
+        "On macOS, look at the screen for a permission box asking to access files "
+        "on a removable volume, and answer it. Otherwise check the drive connection. "
+        "Before you replug the drive or restart, stop any work using it."
+    )
+
+
+_PROMPT_SCRIPT = '''
+tell application "System Events"
+  set out to ""
+  try
+    repeat with w in windows of process "UserNotificationCenter"
+      set txt to ""
+      repeat with t in static texts of w
+        set txt to txt & (value of t as text) & " "
+      end repeat
+      if txt contains "removable volume" then set out to out & txt & linefeed
+    end repeat
+  end try
+  return out
+end tell
+'''
+
+
+def pending_removable_volume_prompt() -> Optional[str]:
+    """The text of a removable-volume consent box on the screen, if one is up.
+
+    macOS only, best effort: needs the Accessibility grant (see
+    docs/macos-permissions.md) and answers None without it. Never raises,
+    never waits more than a few seconds.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", _PROMPT_SCRIPT],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return None
+    text = " ".join(result.stdout.split())
+    return text or None
+
+
+def paths_leading_to(volume: str, home: Optional[Path] = None) -> list[str]:
+    """Top-level symlinks in the home directory that resolve into the volume.
+
+    Read with readlink only: nothing here follows a link onto the drive.
+    """
+    home = Path(home) if home else Path.home()
+    volume = volume.rstrip("/")
+    prefix = volume + "/"
+    found: list[str] = []
+    try:
+        names = sorted(os.listdir(home))
+    except OSError:
+        return found
+    for name in names:
+        entry = home / name
+        try:
+            if not entry.is_symlink():
+                continue
+            target = os.readlink(entry)
+        except OSError:
+            continue
+        if target == volume or target.startswith(prefix):
+            found.append(f"~/{name}")
+    return found
+
+
+def frozen_volume_notice(frozen: list[str], home: Optional[Path] = None) -> str:
+    """The block the system prompt carries while a drive is frozen."""
+    if not frozen:
+        return ""
+    lines = ["### STORAGE DRIVE NOT RESPONDING:"]
+    for path in frozen:
+        via = paths_leading_to(path, home)
+        lead = f" Paths that lead there: {', '.join(via)}." if via else ""
+        lines.append(
+            f"{path}: a previous check timed out after {int(_VOLUME_PROBE_TIMEOUT)} s "
+            f"and no recovery has been confirmed.{lead} "
+            "Commands and file reads there may stall the whole turn. Do NOT touch it, not even "
+            "to check whether it is back. Explain that the drive has not been confirmed usable. "
+            "On macOS, an unanswered removable volume permission box is one possible cause; "
+            "ask the user to inspect the screen. Continue work on other available storage."
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+async def run_volume_check(send_fn, admin_user_ids: list[int],
+                           timeout: float = _VOLUME_PROBE_TIMEOUT) -> None:
+    """Probe the external drives and tell the admins about one that has stopped.
+
+    Runs every few minutes. Per-admin receipts impose the same four hour
+    cooldown as other health alerts, but failed deliveries retry next pass.
+    Only a successful listing proves recovery; a missing/skipped drive does
+    not, and an unknown result preserves the last warning.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        frozen = set(await loop.run_in_executor(None, get_frozen_volumes, timeout))
+    except OSError as e:
+        logger.warning(f"Could not discover external drives: {e}")
+        return
+    states = dict(_volume_probe_cache["states"])
+    now = time.time()
+    # Forgotten/unmounted drives are not recoveries. Removed admins retain no
+    # receipts. Unknown states deliberately keep their pending recovery.
+    for key in list(_frozen_reported):
+        uid, path = key
+        if uid not in admin_user_ids or path not in states or states[path] == VOLUME_SKIP:
+            del _frozen_reported[key]
+    prompt = None
+    if any((uid, path) not in _frozen_reported
+           or now - _frozen_reported[(uid, path)] >= _ALERT_COOLDOWN_SECONDS
+           for uid in admin_user_ids for path in frozen):
+        prompt = await loop.run_in_executor(None, pending_removable_volume_prompt)
+    for uid in admin_user_ids:
+        alerts = [path for path in sorted(frozen)
+                  if (uid, path) not in _frozen_reported
+                  or now - _frozen_reported[(uid, path)] >= _ALERT_COOLDOWN_SECONDS]
+        recovered = [path for (admin, path) in _frozen_reported
+                     if admin == uid and states.get(path) == VOLUME_OK]
+        messages = [volume_alert(path) for path in alerts]
+        if alerts and prompt:
+            messages.append(f"On the screen right now: {prompt} Answer it at the screen.")
+        messages.extend(f"Storage drive responding again: {path}" for path in recovered)
+        if not messages:
+            continue
+        try:
+            if not await send_fn(uid, "Health Alert\n\n" + "\n\n".join(messages)):
+                continue
+        except Exception as e:
+            logger.error(f"Failed to send drive alert to {uid}: {e}")
+            continue
+        for path in alerts:
+            _frozen_reported[(uid, path)] = now
+        for path in recovered:
+            _frozen_reported.pop((uid, path), None)
 
 
 # ---------------------------------------------------------------------------

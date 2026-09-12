@@ -556,8 +556,9 @@ The bot checks system health every 4 hours and alerts you on Telegram when:
 - Swap usage exceeds 80%
 - CPU load stays above 95%
 - Internet connectivity is lost
+- An external drive stops answering a folder listing. This check runs about every 5 minutes. On macOS, one possible cause is an unanswered permission box; the alert quotes it when accessible. The assistant is told to avoid the affected drive. A successful listing triggers a recovery message; a removed drive or failed probe does not.
 
-Alerts have a 4 hour cooldown, so you will not get spammed. Check manually anytime with `/health`.
+Alerts have a 4 hour cooldown. Drive alerts track delivery per admin and retry failed sends on the next check. Check manually anytime with `/health`, which reports responding, not responding, or an unknown probe result for external drives.
 
 ## Nightly maintenance
 

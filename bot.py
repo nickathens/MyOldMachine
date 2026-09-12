@@ -57,6 +57,7 @@ from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
 from core.health import (
     build_health_report, run_health_check,
     init_polling_monitor, get_polling_monitor, record_polling_update,
+    run_volume_check, frozen_volumes_known, frozen_volume_notice,
 )
 from core.updater import full_update, get_current_version, get_current_branch
 from core.system_probe import probe_system, get_caps_summary, load_caps
@@ -1356,6 +1357,12 @@ def build_system_prompt(user_id: int) -> str:
             parts.append("### Active Projects:")
             parts.extend(project_lines)
             parts.append("")
+
+    # A mounted drive that has stopped answering: said right after the projects
+    # that may live on it, so the model reads the two together. See core.health.
+    notice = frozen_volume_notice(frozen_volumes_known())
+    if notice:
+        parts.append(notice)
 
     # Topic memories listing
     topics_dir = memory_dir / "topics"
@@ -4304,20 +4311,30 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def _health_monitor_loop(scheduler):
-    """Periodically check system health and alert admins if issues found."""
+    """Periodically check system health and alert admins if issues found.
+
+    Two cadences. The external-drive probe runs on every pass, from the first,
+    because a drive that has stopped answering costs a dead turn every time
+    anyone touches it, and the usual cause (an unanswered permission box on
+    macOS) appears seconds after a reboot. The full check waits out the
+    post-boot storm and then runs every _HEALTH_CHECK_INTERVAL (the settling
+    window in check_critical still guards CPU/RAM/pressure independently).
+    """
     global _last_health_check
-    # Wait past the post-boot storm before the first check (the settling window
-    # in check_critical still guards CPU/RAM/pressure independently).
-    await asyncio.sleep(_HEALTH_STARTUP_DELAY)
+    started = asyncio.get_running_loop().time()
     while True:
         try:
+            admin_ids = [
+                uid for uid in get_allowed_users()
+                if is_admin(uid)
+            ]
+            if admin_ids:
+                await run_volume_check(scheduler.send_message, admin_ids)
             now = asyncio.get_running_loop().time()
-            if _last_health_check is None or now - _last_health_check >= _HEALTH_CHECK_INTERVAL:
+            settled = now - started >= _HEALTH_STARTUP_DELAY
+            if settled and (_last_health_check is None
+                            or now - _last_health_check >= _HEALTH_CHECK_INTERVAL):
                 _last_health_check = now
-                admin_ids = [
-                    uid for uid in get_allowed_users()
-                    if is_admin(uid)
-                ]
                 if admin_ids:
                     await run_health_check(
                         scheduler.send_message,
