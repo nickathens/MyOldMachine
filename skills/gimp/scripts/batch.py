@@ -3,13 +3,13 @@
 GIMP batch processing wrapper.
 For simple operations, uses ImageMagick. For complex filters, invokes GIMP.
 
-The GIMP side targets GIMP 3, which is what `gimp_script` was corrected for:
-see SKILL.md. The short version is that `--quit` is mandatory, because a
-failed batch command otherwise leaves GIMP resident and silent forever.
+The GIMP side detects version 2 or 3 before choosing its batch exit flags.
+Scripts still need to use the procedure names of the installed version.
 """
 import subprocess
 import argparse
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -113,22 +113,35 @@ def gimp_binary():
 def gimp_script(script, timeout=300):
     """Run one Script-Fu expression headlessly and return GIMP's output.
 
-    `--quit` is not optional. GIMP 3 stops at the first failing batch command
-    and skips the rest, so the `(gimp-quit 0)` that 2.10 scripts ended with
-    never runs and the process stays in its main loop indefinitely: measured
-    438 seconds at 0% CPU before it was killed. With --quit the same failure
-    exits 70 in about a second.
+    GIMP 3 needs --quit even when a batch command fails. GIMP 2 rejects that
+    flag and instead needs a final (gimp-quit 0). Its batch errors can return
+    exit zero, so check the diagnostic as well. The timeout bounds both paths.
     """
+    binary = gimp_binary()
+    env = {**os.environ, "LC_ALL": "C"}
+    version = subprocess.run(
+        [binary, "--version"], capture_output=True, text=True,
+        timeout=min(timeout, 10), env=env,
+    )
+    reported = (version.stdout or "") + (version.stderr or "")
+    match = re.search(r"\bversion\s+([23])\.", reported)
+    if version.returncode != 0 or not match:
+        raise RuntimeError(f"Cannot determine GIMP 2 or 3 version: {reported.strip()[-2000:]}")
+    major = int(match.group(1))
     cmd = [
-        gimp_binary(), "-i",
+        binary, "-i", "--new-instance",
         "--batch-interpreter=plug-in-script-fu-eval",
-        "--quit", "-b", script,
     ]
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if major == 3:
+        cmd += ["--quit", "-b", script]
+    else:
+        cmd += ["-b", script, "-b", "(gimp-quit 0)"]
+    done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     output = (done.stdout or "") + (done.stderr or "")
-    if done.returncode != 0:
+    batch_error = re.search(r"batch command experienced (?:an execution|a calling) error", output)
+    if done.returncode != 0 or batch_error:
         raise RuntimeError(
-            f"GIMP exited {done.returncode}:\n{output.strip()[-2000:]}"
+            f"GIMP batch failed (exit {done.returncode}):\n{output.strip()[-2000:]}"
         )
     return output
 

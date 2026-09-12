@@ -1,14 +1,21 @@
 # GIMP Skill
 
-Headless image editing through GIMP 3: Script-Fu (Scheme) or Python-Fu, batch
+Headless image editing through GIMP 2.10 or 3: Script-Fu (Scheme) or Python-Fu, batch
 filters, layer work, format export, anything the procedure database exposes.
 
-Everything below was run against **GIMP 3.2.6** (Homebrew cask, macOS) on
+Check the installed version with `gimp-console --version` (or the macOS
+bundle path under "Which binary") before choosing a recipe. GIMP 2.10 is
+still shipped by older Linux distributions and rejects `--quit`. Use the
+GIMP 2.10 compatibility section at the end on those machines. The wrapper
+`scripts/batch.py::gimp_script()` detects version 2 or 3 and selects the exit
+flags, but does not translate the script's procedure names.
+
+The GIMP 3 recipes below were run against **GIMP 3.2.6** (Homebrew cask, macOS) on
 12 Sep 2026 and checked on its output, not assumed. GIMP 3 renamed, moved and
 deleted enough of the 2.10 procedure set that a 2.10 script does not degrade,
 it fails on its first call.
 
-## Always pass `--quit` (read this first)
+## GIMP 3: always pass `--quit`
 
 A failing batch command does not look like a failure. GIMP 3 prints the error,
 skips every remaining `-b`, and then **stays alive in its main loop forever as
@@ -22,10 +29,10 @@ second each and printed the reason.
 
 ```bash
 # Wrong: on any error this process is still running tomorrow.
-gimp-console -i --batch-interpreter=plug-in-script-fu-eval -b '(script)' -b '(gimp-quit 0)'
+gimp-console -i --new-instance --batch-interpreter=plug-in-script-fu-eval -b '(script)' -b '(gimp-quit 0)'
 
 # Right: --quit exits whatever happens.
-gimp-console -i --batch-interpreter=plug-in-script-fu-eval --quit -b '(script)'
+gimp-console -i --new-instance --batch-interpreter=plug-in-script-fu-eval --quit -b '(script)'
 ```
 
 Exit codes, measured:
@@ -54,7 +61,11 @@ so a bare `gimp` works but is the full application running without a window.
 Both accepted `--quit` and ran the same script in the same time here; prefer
 `gimp-console` for unattended work.
 
-Two batch interpreters, both real:
+Always pass `--new-instance` for batch work so it cannot be forwarded to
+someone's open editor. `--quit` is for GIMP 3 only. See the
+[official command reference](https://www.gimp.org/man/gimp.html).
+
+Two GIMP 3 batch interpreters, both real:
 
 ```bash
 --batch-interpreter=plug-in-script-fu-eval   # Scheme (TinyScheme), the default choice
@@ -117,7 +128,7 @@ Each of these was run and its output measured.
 **Fill and export** (produced exactly 255,128,0):
 
 ```bash
-"$GIMP" -i --batch-interpreter=plug-in-script-fu-eval --quit -b '
+"$GIMP" -i --new-instance --batch-interpreter=plug-in-script-fu-eval --quit -b '
 (let* ((img (car (gimp-image-new 64 64 RGB)))
        (layer (car (gimp-layer-new img "bg" 64 64 RGB-IMAGE 100 LAYER-MODE-NORMAL))))
   (gimp-image-insert-layer img layer 0 -1)
@@ -130,7 +141,7 @@ Each of these was run and its output measured.
 **Convert a format** (JPEG in, PNG out):
 
 ```bash
-"$GIMP" -i --batch-interpreter=plug-in-script-fu-eval --quit -b '
+"$GIMP" -i --new-instance --batch-interpreter=plug-in-script-fu-eval --quit -b '
 (let ((img (car (gimp-file-load RUN-NONINTERACTIVE "/tmp/in.jpg"))))
   (file-png-export #:run-mode RUN-NONINTERACTIVE #:image img #:file "/tmp/out.png" #:options -1)
   (gimp-image-delete img))'
@@ -139,7 +150,7 @@ Each of these was run and its output measured.
 **Resize** (400x300 in, 200x150 out):
 
 ```bash
-"$GIMP" -i --batch-interpreter=plug-in-script-fu-eval --quit -b '
+"$GIMP" -i --new-instance --batch-interpreter=plug-in-script-fu-eval --quit -b '
 (let ((img (car (gimp-file-load RUN-NONINTERACTIVE "/tmp/in.jpg"))))
   (gimp-image-scale img 200 150)
   (gimp-image-flatten img)
@@ -150,7 +161,7 @@ Each of these was run and its output measured.
 **Crop** to 300x300 from offset 50,0:
 
 ```bash
-"$GIMP" -i --batch-interpreter=plug-in-script-fu-eval --quit -b '
+"$GIMP" -i --new-instance --batch-interpreter=plug-in-script-fu-eval --quit -b '
 (let ((img (car (gimp-file-load RUN-NONINTERACTIVE "/tmp/in.jpg"))))
   (gimp-image-crop img 300 300 50 0)
   (gimp-image-flatten img)
@@ -162,7 +173,7 @@ Each of these was run and its output measured.
 pixel standard deviation to 4% of the source, so it demonstrably ran:
 
 ```bash
-"$GIMP" -i --batch-interpreter=plug-in-script-fu-eval --quit -b '
+"$GIMP" -i --new-instance --batch-interpreter=plug-in-script-fu-eval --quit -b '
 (let* ((img (car (gimp-file-load RUN-NONINTERACTIVE "/tmp/in.png")))
        (d (vector-ref (car (gimp-image-get-layers img)) 0)))
   (gimp-drawable-merge-new-filter d "gegl:gaussian-blur" 0 LAYER-MODE-REPLACE 1.0
@@ -175,7 +186,7 @@ pixel standard deviation to 4% of the source, so it demonstrably ran:
 softened plate):
 
 ```bash
-"$GIMP" -i --batch-interpreter=plug-in-script-fu-eval --quit -b '
+"$GIMP" -i --new-instance --batch-interpreter=plug-in-script-fu-eval --quit -b '
 (let* ((img (car (gimp-file-load RUN-NONINTERACTIVE "/tmp/soft.png")))
        (d (vector-ref (car (gimp-image-get-layers img)) 0)))
   (gimp-drawable-merge-new-filter d "gegl:unsharp-mask" 0 LAYER-MODE-REPLACE 1.0
@@ -195,7 +206,7 @@ Guessing costs a full run. Three ways to look it up instead, cheapest first.
 **1. Ask the PDB through Python-Fu.** 1024 procedures on this build:
 
 ```bash
-"$GIMP" -i --batch-interpreter=python-fu-eval --quit -b '
+"$GIMP" -i --new-instance --batch-interpreter=python-fu-eval --quit -b '
 import gi
 gi.require_version("Gimp", "3.0")
 from gi.repository import Gimp
@@ -241,7 +252,11 @@ GIMP-only file format.
 
 `scripts/batch.py` follows that rule: the simple operations shell out to
 ImageMagick, and `gimp_script()` is there for the cases that genuinely need
-GIMP. It raises on a non-zero exit instead of returning silently.
+GIMP. It detects the installed major version, raises on a failed exit or a GIMP 2
+batch error diagnostic, and applies a timeout (300 seconds by default).
+The version probe is bounded to ten seconds. It starts its own instance.
+Startup cleanup leaves GIMP jobs alone because it cannot prove who started
+them. The session Stop hook may clean up only its own GIMP descendants.
 
 ```bash
 python skills/gimp/scripts/batch.py resize in.jpg out.jpg --width 1920
@@ -255,3 +270,26 @@ python skills/gimp/scripts/batch.py thumbnail photos/ thumbs/ --size 256
 "Apply blur to this image"
 "Create thumbnail from image"
 "Batch crop images to square"
+
+## GIMP 2.10 compatibility
+
+These commands are for GIMP 2.10 only. Do not pass `--quit`, and do not use
+the GIMP 3 export names or changed argument order. A final `(gimp-quit 0)`
+ends a 2.10 batch. Because a script error may still exit zero, prefer
+`gimp_script()` when running unattended: it checks the error diagnostic too.
+
+This fill and export recipe uses the 2.10 argument order and PNG saver:
+
+```bash
+"$GIMP" -i --new-instance --batch-interpreter=plug-in-script-fu-eval -b '
+(let* ((img (car (gimp-image-new 64 64 RGB)))
+       (layer (car (gimp-layer-new img 64 64 RGB-IMAGE "bg" 100 NORMAL-MODE))))
+  (gimp-image-insert-layer img layer 0 -1)
+  (gimp-context-set-foreground "#ff8000")
+  (gimp-drawable-fill layer FOREGROUND-FILL)
+  (file-png-save RUN-NONINTERACTIVE img layer "/tmp/out.png" "/tmp/out.png" 0 9 0 0 0 0 0)
+  (gimp-image-delete img))' -b '(gimp-quit 0)'
+```
+
+The wrapper's ImageMagick operations (resize, convert, thumbnail, blur,
+sharpen and square crop) work independently of the installed GIMP version.
