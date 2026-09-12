@@ -138,3 +138,44 @@ drive the screen". Two rules it exists to enforce:
 ```bash
 python install/macos_permissions.py --json      # machine readable
 ```
+
+## A drive that stops answering is usually this dialog
+
+There is a fourth service in the same family, **Removable Volumes** (Files and
+Folders in System Settings), and it fails in a way none of the three above do:
+it does not fail, it waits.
+
+Measured 12 Sep 2026 on macOS 26.6.2. The nightly reboot auto-logged in and
+relaunched Illustrator, which had documents open on the external drive.
+Illustrator asked for the drive, macOS put the consent box on the screen, and
+nobody was there. macOS serialises those approvals on one queue inside
+`sandboxd`, so every later open of that volume, from Finder, Spotlight, a root
+shell and this bot alike, blocked in the kernel behind the unanswered box: 216
+requests by the evening. `df`, `mount` and cached `stat` calls kept answering,
+which made it look like a half-dead disk. It was not; the disk was fine.
+
+What it looks like from the bot: a turn that touches the drive produces no
+output until the 30 minute idle timeout, and the user is told the task may have
+been too complex. The health check now probes every mounted external volume
+from a child process with a timeout, alerts within five minutes, names the
+consent box if one is on the screen, and tells the assistant not to touch the
+drive until it answers again.
+
+How to clear it, in order:
+
+1. Answer the box at the screen. Allow, if the app should have the drive.
+2. If nobody can reach the screen: restart the agent that owns the box.
+   `killall UserNotificationCenter` (launchd relaunches it). The request is
+   cancelled, not granted, and the queue drains at once. Quitting the app that
+   asked does **not** clear it; the box belongs to the agent, not the app.
+3. Only then: unplug and replug, or restart the machine.
+
+Two things that do not work: software clicks on a consent box (`System Events`
+click or AXPress report success and change nothing, by design), and waiting.
+
+To see it without guessing: `spindump <pid of a stuck ls> 1 100` shows
+`__WAITING_ON_APPROVAL_FROM_SANDBOXD__`, `screencapture -x` shows the box, and
+`/usr/bin/log show --predicate 'process == "tccd"' | grep AUTHREQ_PROMPTING`
+says who asked. Call `/usr/bin/log` by its full path: in zsh, `log` is a
+builtin that prints "too many arguments" and finds nothing.
+

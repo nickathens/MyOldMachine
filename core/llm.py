@@ -631,6 +631,42 @@ def _codex_feature_names(binary: str) -> frozenset:
     return _codex_cached_probe(("features", binary), probe)
 
 
+def _frozen_volume_cause() -> str:
+    """Why a turn most likely went silent, when the health probe has seen a
+    frozen external drive: a command that touched it never returned. Reads the
+    probe's cache only; probing here would be the same hang."""
+    try:
+        from core import health
+        frozen = health.frozen_volumes_known()
+    except Exception:
+        return ""
+    if not frozen:
+        return ""
+    return (
+        "Likely cause: the storage drive at " + ", ".join(frozen) + " is not responding, "
+        "and anything that touches it freezes. Check the screen for a permission box "
+        "(an app would like to access files on a removable volume) and answer it, or "
+        "unplug and replug the drive, then try again."
+    )
+
+
+def _idle_timeout_message(engine: str, minutes: int, tool_in_progress: Optional[str],
+                          partial_text: str) -> str:
+    """The user-facing line for a turn that went silent. Names the frozen drive
+    when there is one instead of blaming the task; see _frozen_volume_cause."""
+    msg = f"{engine} stopped responding after {minutes} minutes of inactivity."
+    if tool_in_progress:
+        msg += f" Was running: {tool_in_progress}"
+    cause = _frozen_volume_cause()
+    if cause:
+        msg += "\n\n" + cause
+    if partial_text:
+        msg += "\n\nPartial progress was saved. Use /recover to see it."
+    elif not cause:
+        msg += " The task may have been too complex. Try breaking it into smaller steps."
+    return msg
+
+
 def _kill_turn(process) -> None:
     """Kill a CLI turn AND everything it spawned.
 
@@ -1253,13 +1289,8 @@ class ClaudeCLIProvider(LLMProvider):
                             + f"\n\n[Task incomplete - Claude stopped responding after {self.IDLE_TIMEOUT // 60} minutes]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
-                    timeout_msg = f"Claude stopped responding after {self.IDLE_TIMEOUT // 60} minutes of inactivity."
-                    if tool_in_progress:
-                        timeout_msg += f" Was running: {tool_in_progress}"
-                    if partial_text:
-                        timeout_msg += "\n\nPartial progress was saved. Use /recover to see it."
-                    else:
-                        timeout_msg += " The task may have been too complex. Try breaking it into smaller steps."
+                    timeout_msg = _idle_timeout_message("Claude", self.IDLE_TIMEOUT // 60,
+                                                        tool_in_progress, partial_text)
                     return LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name)
 
                 # Deliberately no separate "no text while a tool runs" kill
@@ -1994,13 +2025,8 @@ class CodexCLIProvider(LLMProvider):
                             text=fallback + f"\n\n[Task incomplete - Codex stopped responding after {self.IDLE_TIMEOUT // 60} minutes]",
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
-                    timeout_msg = f"Codex stopped responding after {self.IDLE_TIMEOUT // 60} minutes of inactivity."
-                    if tool_in_progress:
-                        timeout_msg += f" Was running: {tool_in_progress}"
-                    if partial_text:
-                        timeout_msg += "\n\nPartial progress was saved. Use /recover to see it."
-                    else:
-                        timeout_msg += " The task may have been too complex. Try breaking it into smaller steps."
+                    timeout_msg = _idle_timeout_message("Codex", self.IDLE_TIMEOUT // 60,
+                                                        tool_in_progress, partial_text)
                     return LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name)
 
                 # No-text kill removed deliberately (same reasoning as the Claude
