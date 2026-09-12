@@ -164,12 +164,17 @@ class TimeoutStreamTests(unittest.IsolatedAsyncioTestCase):
             return await spawn(sys.executable, "-c", script, **kwargs)
 
         async def short_read(stream, timeout):
-            return await read_line(stream, 0.05)
+            line = await read_line(stream, 0.05)
+            if line:
+                # Arm the timeout only after the fixture's text arrives. Slow
+                # CI process startup must not exercise the empty reply branch.
+                provider.IDLE_TIMEOUT = 0
+            return line
 
         cls = llm.ClaudeCLIProvider if engine == "Claude" else llm.CodexCLIProvider
         provider = cls("test-model")
         provider._cli_binary = sys.executable
-        provider.IDLE_TIMEOUT = 0.2
+        provider.IDLE_TIMEOUT = 30
         with tempfile.TemporaryDirectory() as temp, \
                 patch.object(health, "frozen_volumes_known", return_value=["/mnt/USB"]), \
                 patch.object(llm, "_codex_feature_names", return_value=frozenset()), \
