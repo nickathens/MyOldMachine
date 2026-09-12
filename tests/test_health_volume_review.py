@@ -186,11 +186,13 @@ class TimeoutStreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_codex_partial_reply_still_names_the_frozen_drive(self):
         reply = await self._reply("Codex")
         self.assertIn("Checking files", reply.text)
+        self.assertIn("[Task incomplete", reply.text)
         self.assertIn("/mnt/USB", reply.text)
 
     async def test_claude_result_followed_by_stall_names_the_frozen_drive(self):
         reply = await self._reply("Claude")
         self.assertIn("Checking files", reply.text)
+        self.assertIn("[Task incomplete", reply.text)
         self.assertIn("/mnt/USB", reply.text)
 
 
