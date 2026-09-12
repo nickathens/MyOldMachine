@@ -39,7 +39,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -60,6 +60,7 @@ _DIALOG = "“Adobe Illustrator 2026” would like to access files on a removabl
 def _reset():
     health._volume_probe_cache["checked"] = 0.0
     health._volume_probe_cache["frozen"] = []
+    health._volume_probe_cache["states"] = {}
     health._frozen_reported.clear()
     health._alert_cooldowns.clear()
 
@@ -69,6 +70,7 @@ class ProbeTests(unittest.TestCase):
 
     def setUp(self):
         _reset()
+        self.addCleanup(_reset)
 
     def test_listing_that_hangs_reads_frozen_within_the_timeout(self):
         with patch.object(health, "_PROBE_SNIPPET", _HANG):
@@ -122,31 +124,29 @@ class VolumeRootsTests(unittest.TestCase):
     """The parent process enumerates mount points without ever stat-ing one."""
 
     def test_macos_lists_volumes_without_touching_them(self):
-        listing = {"/Volumes": ["Macintosh HD", "CooCooStorage", "TimeMachine"]}
+        listing = {"/Volumes": ["Macintosh HD", "WorkStorage", "TimeMachine"]}
         with patch.object(health.platform, "system", return_value="Darwin"), \
                 patch.object(health.os, "listdir", side_effect=lambda p: listing[p]), \
                 patch.object(health.os, "stat", side_effect=AssertionError("stat on a mount point")), \
                 patch.object(health.os, "lstat", side_effect=AssertionError("lstat on a mount point")):
             roots = health.external_volume_roots()
         # Sorted, unfiltered: the child decides what is a real volume.
-        self.assertEqual(roots, ["/Volumes/CooCooStorage", "/Volumes/Macintosh HD", "/Volumes/TimeMachine"])
+        self.assertEqual(roots, ["/Volumes/Macintosh HD", "/Volumes/TimeMachine", "/Volumes/WorkStorage"])
 
     def test_linux_lists_media_and_mnt_mounts(self):
-        listing = {"/media": ["nick"], "/media/nick": ["USB2", "USB1"], "/mnt": ["nas"]}
-
-        def listdir(path):
-            if path in listing:
-                return listing[path]
-            raise FileNotFoundError(path)
-
+        mounts = (
+            "2 1 8:2 / /media/alice/USB2 rw - ext4 /dev/sdb1 rw\n"
+            "3 1 8:3 / /media/alice/USB1 rw - ext4 /dev/sdc1 rw\n"
+            "4 1 0:9 / /mnt/nas rw - nfs server:/share rw\n"
+        )
         with patch.object(health.platform, "system", return_value="Linux"), \
-                patch.object(health.os, "listdir", side_effect=listdir):
+                patch("builtins.open", mock_open(read_data=mounts)):
             roots = health.external_volume_roots()
-        self.assertEqual(roots, ["/media/nick/USB1", "/media/nick/USB2", "/mnt/nas"])
+        self.assertEqual(roots, ["/media/alice/USB1", "/media/alice/USB2", "/mnt/nas"])
 
     def test_no_mount_bases_means_no_roots(self):
         with patch.object(health.platform, "system", return_value="Linux"), \
-                patch.object(health.os, "listdir", side_effect=FileNotFoundError):
+                patch("builtins.open", mock_open(read_data="1 0 8:1 / / rw - ext4 /dev/sda1 rw\n")):
             self.assertEqual(health.external_volume_roots(), [])
 
 
@@ -155,6 +155,7 @@ class AlertTests(unittest.TestCase):
 
     def setUp(self):
         _reset()
+        self.addCleanup(_reset)
         health._consecutive_cpu_breaches = 0
         health._consecutive_net_failures = 0
         patchers = [
@@ -208,6 +209,7 @@ class RunVolumeCheckTests(unittest.TestCase):
 
     def setUp(self):
         _reset()
+        self.addCleanup(_reset)
 
     def _run(self, sequence, prompt=None):
         sent = []
@@ -216,8 +218,10 @@ class RunVolumeCheckTests(unittest.TestCase):
             sent.append((uid, text))
             return True
 
-        answers = iter(sequence)
-        with patch.object(health, "get_frozen_volumes", side_effect=lambda *a, **k: next(answers)), \
+        roots = {p for frozen in sequence for p in frozen}
+        answers = [{p: health.VOLUME_FROZEN if p in frozen else health.VOLUME_OK
+                    for p in roots} for frozen in sequence]
+        with patch.object(health, "probe_volumes", side_effect=answers), \
                 patch.object(health, "pending_removable_volume_prompt", return_value=prompt):
             for _ in sequence:
                 asyncio.run(health.run_volume_check(send, [7]))
@@ -251,7 +255,7 @@ class RunVolumeCheckTests(unittest.TestCase):
             sent.append(uid)
             return True
 
-        with patch.object(health, "get_frozen_volumes", return_value=["/Volumes/X"]), \
+        with patch.object(health, "probe_volumes", return_value={"/Volumes/X": health.VOLUME_FROZEN}), \
                 patch.object(health, "pending_removable_volume_prompt", return_value=None):
             asyncio.run(health.run_volume_check(send, [1, 2]))
         self.assertEqual(sent, [1, 2])
@@ -309,6 +313,7 @@ class TimeoutMessageTests(unittest.TestCase):
 
     def setUp(self):
         _reset()
+        self.addCleanup(_reset)
 
     def test_names_the_drive_instead_of_blaming_the_task(self):
         health._volume_probe_cache.update(checked=time.time(), frozen=["/Volumes/X"])

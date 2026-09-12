@@ -644,25 +644,29 @@ def _frozen_volume_cause() -> str:
         return ""
     return (
         "Likely cause: the storage drive at " + ", ".join(frozen) + " is not responding, "
-        "and anything that touches it freezes. Check the screen for a permission box "
-        "(an app would like to access files on a removable volume) and answer it, or "
-        "unplug and replug the drive, then try again."
+        "and work that touches it may stall. On macOS, check the screen for a permission "
+        "box asking to access files on a removable volume. Otherwise check the drive "
+        "connection. Stop work using the drive before reconnecting it."
     )
 
 
 def _idle_timeout_message(engine: str, minutes: int, tool_in_progress: Optional[str],
-                          partial_text: str) -> str:
+                          partial_text: str, preserved_reply: str = "") -> str:
     """The user-facing line for a turn that went silent. Names the frozen drive
     when there is one instead of blaming the task; see _frozen_volume_cause."""
-    msg = f"{engine} stopped responding after {minutes} minutes of inactivity."
+    if preserved_reply:
+        msg = (preserved_reply
+               + f"\n\n[Task incomplete - {engine} stopped responding after {minutes} minutes]")
+    else:
+        msg = f"{engine} stopped responding after {minutes} minutes of inactivity."
     if tool_in_progress:
         msg += f" Was running: {tool_in_progress}"
     cause = _frozen_volume_cause()
     if cause:
         msg += "\n\n" + cause
-    if partial_text:
+    if partial_text and not preserved_reply:
         msg += "\n\nPartial progress was saved. Use /recover to see it."
-    elif not cause:
+    elif not cause and not preserved_reply:
         msg += " The task may have been too complex. Try breaking it into smaller steps."
     return msg
 
@@ -1285,8 +1289,9 @@ class ClaudeCLIProvider(LLMProvider):
                         if self.on_progress_clear and user_id:
                             self.on_progress_clear(user_id)
                         return LLMResponse(
-                            text=_compose_full_reply(final_result, all_text_blocks)
-                            + f"\n\n[Task incomplete - Claude stopped responding after {self.IDLE_TIMEOUT // 60} minutes]",
+                            text=_idle_timeout_message(
+                                "Claude", self.IDLE_TIMEOUT // 60, tool_in_progress, "",
+                                preserved_reply=_compose_full_reply(final_result, all_text_blocks)),
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
                     timeout_msg = _idle_timeout_message("Claude", self.IDLE_TIMEOUT // 60,
@@ -2022,7 +2027,9 @@ class CodexCLIProvider(LLMProvider):
                         if self.on_progress_clear and user_id:
                             self.on_progress_clear(user_id)
                         return LLMResponse(
-                            text=fallback + f"\n\n[Task incomplete - Codex stopped responding after {self.IDLE_TIMEOUT // 60} minutes]",
+                            text=_idle_timeout_message(
+                                "Codex", self.IDLE_TIMEOUT // 60, tool_in_progress, "",
+                                preserved_reply=fallback),
                             model=self.model, provider=self.provider_name, tool_use=True,
                         )
                     timeout_msg = _idle_timeout_message("Codex", self.IDLE_TIMEOUT // 60,

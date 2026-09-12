@@ -139,43 +139,43 @@ drive the screen". Two rules it exists to enforce:
 python install/macos_permissions.py --json      # machine readable
 ```
 
-## A drive that stops answering is usually this dialog
+## An unanswered removable volume permission box can stall drive access
 
-There is a fourth service in the same family, **Removable Volumes** (Files and
-Folders in System Settings), and it fails in a way none of the three above do:
-it does not fail, it waits.
+macOS protects access to removable volumes through Files and Folders permissions.
+See [Apple's file access documentation](https://support.apple.com/en-ie/guide/security/secddd1d86a6/web).
 
-Measured 12 Sep 2026 on macOS 26.6.2. The nightly reboot auto-logged in and
-relaunched Illustrator, which had documents open on the external drive.
-Illustrator asked for the drive, macOS put the consent box on the screen, and
-nobody was there. macOS serialises those approvals on one queue inside
-`sandboxd`, so every later open of that volume, from Finder, Spotlight, a root
-shell and this bot alike, blocked in the kernel behind the unanswered box: 216
-requests by the evening. `df`, `mount` and cached `stat` calls kept answering,
-which made it look like a half-dead disk. It was not; the disk was fine.
+In the incident that motivated this check, an application restored documents
+from an external drive after login and raised a permission box. Later drive
+access stalled until that box was cleared. This is one possible explanation
+for a timeout, not a diagnosis of every slow or disconnected drive.
 
-What it looks like from the bot: a turn that touches the drive produces no
-output until the 30 minute idle timeout, and the user is told the task may have
-been too complex. The health check now probes every mounted external volume
-from a child process with a timeout, alerts within five minutes, names the
-consent box if one is on the screen, and tells the assistant not to touch the
-drive until it answers again.
+MOM checks external drives about every five minutes. Each directory check runs
+in a separate child with a bounded wait. Linux discovers mounts from
+`/proc/self/mountinfo`, without listing mounted directories; macOS enumerates
+names under `/Volumes` without inspecting the mount points in the parent.
+The probe keeps successful, timed out, skipped and unknown results separate.
+Only a successful listing proves recovery. Removing a drive does not.
 
-How to clear it, in order:
+When a probe times out, the assistant is told to avoid that drive and the
+idle timeout message names it as a possible cause, including when a partial
+reply has been preserved. Alerts track successful delivery to each admin;
+a failed delivery is retried at the next check.
 
-1. Answer the box at the screen. Allow, if the app should have the drive.
-2. If nobody can reach the screen: restart the agent that owns the box.
-   `killall UserNotificationCenter` (launchd relaunches it). The request is
-   cancelled, not granted, and the queue drains at once. Quitting the app that
-   asked does **not** clear it; the box belongs to the agent, not the app.
-3. Only then: unplug and replug, or restart the machine.
+On a Mac with a visible removable volume permission box:
 
-Two things that do not work: software clicks on a consent box (`System Events`
-click or AXPress report success and change nothing, by design), and waiting.
+1. Answer it at the screen, allowing access only if intended.
+2. If that is not possible, `killall UserNotificationCenter` was observed to
+   cancel the pending request in the reported incident. It cancels consent;
+   it does not grant access and may also dismiss other pending prompts.
+3. If the drive still does not answer, stop work using it before reconnecting
+   it or restarting the machine. Check hardware and connection issues too.
 
-To see it without guessing: `spindump <pid of a stuck ls> 1 100` shows
-`__WAITING_ON_APPROVAL_FROM_SANDBOXD__`, `screencapture -x` shows the box, and
-`/usr/bin/log show --predicate 'process == "tccd"' | grep AUTHREQ_PROMPTING`
-says who asked. Call `/usr/bin/log` by its full path: in zsh, `log` is a
-builtin that prints "too many arguments" and finds nothing.
+The optional dialog reader needs Accessibility access and recognises English
+removable volume text. It is best effort; not finding a dialog does not prove
+there is none. Automatic consent clicks are not part of this feature.
 
+Coverage is limited to `/Volumes` on macOS and `/media`, `/mnt`, and
+`/run/media` mount locations on Linux. Other mount locations are not monitored.
+The probe can lag a new freeze by one check interval. Up to eight volumes are
+checked concurrently. A child blocked inside the operating system may survive
+a kill request; the parent stops waiting rather than hanging with it.
