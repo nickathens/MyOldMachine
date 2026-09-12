@@ -45,7 +45,10 @@ SKILL_PROCESS_PATTERNS = [
     "blender -b ",
     # stems
     "demucs",
-    # gimp
+    # gimp: gimp-console is the headless binary, and "gimp -i" is not a
+    # substring of "gimp-console -i", so both spellings have to be listed.
+    "gimp-console -i",
+    "gimp-console --no-interface",
     "gimp -i",
     "gimp --no-interface",
     # inkscape

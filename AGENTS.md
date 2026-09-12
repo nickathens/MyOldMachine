@@ -102,7 +102,7 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(none open)
+[2026-09-12] mac: gimp skill rewritten for GIMP 3, cleanup patterns follow it (PR #168)
 
 (Entries removed above: #166 merged 2026-09-11, its own line cleared in the
 PR rather than in a follow-up, since the same edit already had the file open.
