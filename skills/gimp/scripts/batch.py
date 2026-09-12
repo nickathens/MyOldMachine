@@ -2,53 +2,69 @@
 """
 GIMP batch processing wrapper.
 For simple operations, uses ImageMagick. For complex filters, invokes GIMP.
+
+The GIMP side detects version 2 or 3 before choosing its batch exit flags.
+Scripts still need to use the procedure names of the installed version.
 """
 import subprocess
 import argparse
 import os
+import re
+import shutil
 from pathlib import Path
+
+
+def _magick(args):
+    """ImageMagick's command line, under whichever name is installed.
+
+    ImageMagick 7 renamed `convert` to `magick` and only keeps `convert` as a
+    deprecated alias, so resolving it here rather than hard-coding one name.
+    """
+    binary = shutil.which("magick") or shutil.which("convert")
+    if not binary:
+        raise RuntimeError("ImageMagick is not installed (no magick or convert)")
+    return [binary] + args
 
 
 def resize_image(input_path, output_path, width, height=None):
     """Resize image using ImageMagick (faster than GIMP for simple ops)"""
     size = f"{width}x{height}" if height else f"{width}x{width}"
-    cmd = ["convert", input_path, "-resize", size, output_path]
+    cmd = _magick([input_path, "-resize", size, output_path])
     subprocess.run(cmd, check=True)
     print(f"Resized: {output_path}")
 
 
 def convert_format(input_path, output_path, quality=85):
     """Convert image format"""
-    cmd = ["convert", input_path, "-quality", str(quality), output_path]
+    cmd = _magick([input_path, "-quality", str(quality), output_path])
     subprocess.run(cmd, check=True)
     print(f"Converted: {output_path}")
 
 
 def crop_square(input_path, output_path):
     """Crop image to square (center crop)"""
-    cmd = ["convert", input_path, "-gravity", "center",
-           "-extent", "1:1", output_path]
+    cmd = _magick([input_path, "-gravity", "center", "-extent", "1:1", output_path])
     subprocess.run(cmd, check=True)
     print(f"Cropped: {output_path}")
 
 
 def apply_blur(input_path, output_path, radius=5):
     """Apply Gaussian blur"""
-    cmd = ["convert", input_path, "-blur", f"0x{radius}", output_path]
+    cmd = _magick([input_path, "-blur", f"0x{radius}", output_path])
     subprocess.run(cmd, check=True)
     print(f"Blurred: {output_path}")
 
 
 def apply_sharpen(input_path, output_path, amount=1):
     """Apply sharpening"""
-    cmd = ["convert", input_path, "-sharpen", f"0x{amount}", output_path]
+    cmd = _magick([input_path, "-sharpen", f"0x{amount}", output_path])
     subprocess.run(cmd, check=True)
     print(f"Sharpened: {output_path}")
 
 
 def create_thumbnail(input_path, output_path, size=256):
     """Create thumbnail preserving aspect ratio"""
-    cmd = ["convert", input_path, "-thumbnail", f"{size}x{size}", output_path]
+    cmd = _magick([input_path, "-thumbnail", f"{size}x{size}", output_path])
     subprocess.run(cmd, check=True)
     print(f"Thumbnail: {output_path}")
 
@@ -78,13 +94,56 @@ def batch_process(input_dir, output_dir, operation, **kwargs):
                 crop_square(str(img), str(out_file))
 
 
-def gimp_script(input_path, output_path, script):
-    """Run arbitrary GIMP Script-Fu"""
+def gimp_binary():
+    """The headless GIMP on this machine.
+
+    On Linux `gimp-console` is on PATH. On macOS the Homebrew wrapper only
+    exposes the GUI binary, so the console build is reached by its path inside
+    the app bundle.
+    """
+    found = shutil.which("gimp-console")
+    if found:
+        return found
+    bundled = "/Applications/GIMP.app/Contents/MacOS/gimp-console"
+    if os.path.exists(bundled):
+        return bundled
+    return shutil.which("gimp") or "gimp"
+
+
+def gimp_script(script, timeout=300):
+    """Run one Script-Fu expression headlessly and return GIMP's output.
+
+    GIMP 3 needs --quit even when a batch command fails. GIMP 2 rejects that
+    flag and instead needs a final (gimp-quit 0). Its batch errors can return
+    exit zero, so check the diagnostic as well. The timeout bounds both paths.
+    """
+    binary = gimp_binary()
+    env = {**os.environ, "LC_ALL": "C"}
+    version = subprocess.run(
+        [binary, "--version"], capture_output=True, text=True,
+        timeout=min(timeout, 10), env=env,
+    )
+    reported = (version.stdout or "") + (version.stderr or "")
+    match = re.search(r"\bversion\s+([23])\.", reported)
+    if version.returncode != 0 or not match:
+        raise RuntimeError(f"Cannot determine GIMP 2 or 3 version: {reported.strip()[-2000:]}")
+    major = int(match.group(1))
     cmd = [
-        "gimp", "-i", "-b", script, "-b", "(gimp-quit 0)"
+        binary, "-i", "--new-instance",
+        "--batch-interpreter=plug-in-script-fu-eval",
     ]
-    subprocess.run(cmd, check=True)
-    print(f"GIMP script completed: {output_path}")
+    if major == 3:
+        cmd += ["--quit", "-b", script]
+    else:
+        cmd += ["-b", script, "-b", "(gimp-quit 0)"]
+    done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    output = (done.stdout or "") + (done.stderr or "")
+    batch_error = re.search(r"batch command experienced (?:an execution|a calling) error", output)
+    if done.returncode != 0 or batch_error:
+        raise RuntimeError(
+            f"GIMP batch failed (exit {done.returncode}):\n{output.strip()[-2000:]}"
+        )
+    return output
 
 
 if __name__ == '__main__':

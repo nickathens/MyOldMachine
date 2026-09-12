@@ -45,9 +45,8 @@ SKILL_PROCESS_PATTERNS = [
     "blender -b ",
     # stems
     "demucs",
-    # gimp
-    "gimp -i",
-    "gimp --no-interface",
+    # GIMP jobs are not startup targets: a name cannot prove ownership.
+    # Only the session Stop hook may reap its own GIMP descendants.
     # inkscape
     "inkscape --pipe",
     "inkscape --export",

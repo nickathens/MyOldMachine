@@ -1,1 +1,1 @@
-{"stop":{"kill_processes":["gimp -i","gimp --no-interface"]}}
+{"stop":{"kill_processes":["gimp-console -i","gimp-console --no-interface","gimp -i","gimp --no-interface"]}}

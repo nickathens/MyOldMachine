@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff, runtime deps, and pytest
-        run: pip install -q ruff pytest fastapi 'uvicorn[standard]' -r requirements.txt
+        run: pip install -q ruff pytest pillow fastapi 'uvicorn[standard]' -r requirements.txt
       - name: Lint with ruff
         run: ruff check bot.py core/ utils/ install/ miniapp/ tests/
       - name: Check Python syntax (all .py files)
