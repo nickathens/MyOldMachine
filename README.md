@@ -123,6 +123,24 @@ Switch anytime from Telegram:
 /apikey sk-abc123...          set the API key (the message auto deletes)
 ```
 
+Those three are admin only and set the model for the whole machine. On a
+machine several people share, each person can also pick their own engine
+without touching anybody else's:
+
+```
+/engine                      show the options and which one you are on
+/engine astra                your messages only, from the next one
+/engine default              back to the machine's own setting
+/usage                       your turns and tokens, plus what is left
+```
+
+The engine buttons are offered only where the CLI behind them is installed
+and new enough, and each one carries its own reasoning effort. The same two
+buttons, in colour, are in the Mini App's Settings panel along with a usage
+view. Subscription meters come from the CLIs themselves: Claude Code reports
+its five hour and seven day windows during a turn, Codex answers a live usage
+read. A meter that cannot be read says so rather than showing an empty bar.
+
 ## Install modes
 
 The installer offers three shapes.
@@ -182,6 +200,8 @@ Some things are clumsy in a chat box. MyOldMachine ships a Telegram Mini App, a 
 | `/recover` | Show an interrupted task |
 | `/clear_recovery` | Delete recovery data |
 | `/alias` | Manage custom command shortcuts |
+| `/engine` | Pick which AI answers **you** (per person, not per machine) |
+| `/usage` | What you used, and what is left on the subscription |
 | `/provider` | Show or switch AI provider |
 | `/model` | Change the AI model |
 | `/apikey` | Set an API key (the message auto deletes) |

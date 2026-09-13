@@ -234,6 +234,85 @@ body{
     border-color:rgba(255,255,255,0.15);
 }
 
+/* Engine picker: one button per engine, each with its own colour, plus the
+   usage view underneath. Unlike the provider/model/effort rows above, this
+   is per person and every user may use it. */
+.engine-btn{
+    display:block;
+    width:100%;
+    padding:14px 10px;
+    border-radius:10px;
+    border:1px solid rgba(255,255,255,0.05);
+    background:linear-gradient(165deg, rgba(12,30,50,0.45) 0%, rgba(4,18,30,0.3) 100%);
+    color:var(--text-muted);
+    font-family:'Montserrat',sans-serif;
+    cursor:pointer;
+    transition:all 0.25s ease;
+    text-align:center;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.engine-btn:active{transform:scale(0.97)}
+.engine-btn-label{display:block;font-size:13px;font-weight:600;letter-spacing:0.01em}
+.engine-btn-sub{display:block;font-size:10px;font-weight:400;margin-top:3px;opacity:0.7;line-height:1.35}
+
+.engine-btn.selected{
+    background:rgba(255,255,255,0.9);
+    color:#020e18;
+    border-color:rgba(255,255,255,0.3);
+    box-shadow:0 0 20px rgba(255,255,255,0.06);
+}
+
+.engine-btn.accent-astra.selected{
+    background:linear-gradient(165deg, #e8b552 0%, #c8902c 100%);
+    color:#180f02;
+    border-color:rgba(232,181,82,0.4);
+    box-shadow:0 0 20px rgba(232,181,82,0.12);
+}
+
+.engine-btn.unavailable{opacity:0.35;cursor:default}
+.engine-btn.unavailable:active{transform:none}
+
+.engine-note{
+    margin-top:8px;
+    font-size:10px;
+    line-height:1.5;
+    color:var(--text-muted);
+}
+
+.usage-btn{
+    width:100%;
+    margin-top:6px;
+    padding:13px 10px;
+    border-radius:10px;
+    border:1px solid rgba(255,255,255,0.05);
+    background:linear-gradient(165deg, rgba(12,30,50,0.45) 0%, rgba(4,18,30,0.3) 100%);
+    color:var(--text-muted);
+    font-family:'Montserrat',sans-serif;
+    font-size:12px;
+    font-weight:500;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+}
+
+.usage-panel{display:none;margin-top:12px}
+.usage-panel.open{display:block}
+.usage-group{margin-bottom:14px}
+.usage-group-label{
+    font-size:9px;font-weight:600;color:var(--text-dim);
+    text-transform:uppercase;letter-spacing:0.14em;margin-bottom:7px;
+}
+.usage-line{
+    display:flex;justify-content:space-between;gap:10px;
+    font-size:11px;color:var(--text-muted);padding:3px 0;
+}
+.usage-line span:last-child{color:rgba(255,255,255,0.65)}
+.usage-bar{height:3px;border-radius:2px;background:rgba(255,255,255,0.07);margin:3px 0 7px}
+.usage-bar-fill{height:100%;border-radius:2px;background:rgba(255,255,255,0.55)}
+.usage-bar-fill.hot{background:#e8b552}
+.usage-bar-fill.full{background:var(--inactive)}
+.usage-empty{font-size:11px;color:var(--text-muted);line-height:1.5}
+
 .option-input::placeholder{
     color:var(--text-dim);
 }
@@ -1470,6 +1549,14 @@ body{
         <div id="effort-selector" class="option-grid option-grid-4"></div>
     </section>
 
+    <section id="engine-section" class="section" style="display:none">
+        <div class="section-label">Engine</div>
+        <div id="engine-selector" class="option-grid option-grid-2"></div>
+        <div id="engine-note" class="engine-note"></div>
+        <button id="usage-btn" class="usage-btn" type="button">Usage</button>
+        <div id="usage-panel" class="usage-panel"></div>
+    </section>
+
     <section id="restart-section" class="section" style="display:none">
         <div class="section-label">Restart</div>
         <div class="option-grid option-grid-2">
@@ -1742,6 +1829,9 @@ body{
         t.addEventListener('click',function(){switchTab(t.getAttribute('data-view'))});
     });
 
+    var usageBtn=document.getElementById('usage-btn');
+    if(usageBtn)usageBtn.addEventListener('click',toggleUsage);
+
     // ── Settings View ──
 
     function formatUptime(s){
@@ -1784,7 +1874,177 @@ body{
                 document.getElementById('model-section').style.display='none';
                 document.getElementById('effort-section').style.display='none';
             }
+            loadEngine();
         }).catch(function(e){showError(e.message)});
+    }
+
+    // ── Engine (per user) ──
+
+    function loadEngine(){
+        api('/api/engine').then(function(data){renderEngine(data)})
+            .catch(function(e){showError(e.message)});
+    }
+
+    function renderEngine(data){
+        var section=document.getElementById('engine-section');
+        var grid=document.getElementById('engine-selector');
+        var note=document.getElementById('engine-note');
+        var usable=data.engines.filter(function(e){return e.available});
+        // No engine this machine can actually run: no picker. The install's
+        // own provider keeps answering, and a button that cannot work is
+        // worse than no button.
+        if(!usable.length){section.style.display='none';return}
+        section.style.display='block';
+        grid.innerHTML='';
+        data.engines.forEach(function(e){
+            var btn=document.createElement('button');
+            btn.type='button';
+            btn.className='engine-btn accent-'+e.accent
+                +(e.id===data.picked?' selected':'')
+                +(e.available?'':' unavailable');
+            var label=document.createElement('span');
+            label.className='engine-btn-label';
+            label.textContent=e.label;
+            var sub=document.createElement('span');
+            sub.className='engine-btn-sub';
+            sub.textContent=e.available?e.sub:e.reason;
+            btn.appendChild(label);btn.appendChild(sub);
+            if(e.available)btn.onclick=function(){setEngine(e.id===data.picked?'':e.id)};
+            grid.appendChild(btn);
+        });
+        if(data.picked){
+            note.textContent='Your messages run on this. Tap it again to go back to the bot default ('+data.bot_default_model+').';
+        }else{
+            note.textContent='You are on the bot default ('+data.bot_default_model+'). Pick one to change only your own messages.';
+        }
+    }
+
+    function setEngine(id){
+        api('/api/engine',{method:'POST',body:JSON.stringify({engine:id})})
+            .then(function(data){
+                renderEngine(data);
+                showRestartHint();
+                if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');
+            })
+            .catch(function(e){showError(e.message)});
+    }
+
+    // ── Usage ──
+
+    function formatTokens(n){
+        if(!n)return'0';
+        if(n<1000)return String(n);
+        if(n<1000000)return (n/1000).toFixed(n<10000?1:0)+'K';
+        return (n/1000000).toFixed(1)+'M';
+    }
+
+    function usageLine(left,right){
+        var row=document.createElement('div');
+        row.className='usage-line';
+        var a=document.createElement('span');a.textContent=left;
+        var b=document.createElement('span');b.textContent=right;
+        row.appendChild(a);row.appendChild(b);
+        return row;
+    }
+
+    function usageGroup(parent,label){
+        var g=document.createElement('div');
+        g.className='usage-group';
+        var l=document.createElement('div');
+        l.className='usage-group-label';
+        l.textContent=label;
+        g.appendChild(l);
+        parent.appendChild(g);
+        return g;
+    }
+
+    function resetsText(ts){
+        if(!ts)return'';
+        var d=new Date(ts*1000);
+        var now=new Date();
+        var hhmm=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+        if(d.toDateString()===now.toDateString())return'resets '+hhmm;
+        return'resets '+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+hhmm;
+    }
+
+    function ageText(ts){
+        if(!ts)return'age unknown';
+        var s=Math.max(0,Math.floor(Date.now()/1000-ts));
+        if(s<90)return'just now';
+        if(s<5400)return Math.floor(s/60)+' min ago';
+        if(s<172800)return Math.floor(s/3600)+'h ago';
+        return Math.floor(s/86400)+'d ago';
+    }
+
+    function renderMeter(parent,meter,label){
+        var g=usageGroup(parent,label);
+        if(meter.unavailable){
+            var p=document.createElement('div');
+            p.className='usage-empty';
+            p.textContent=meter.reason;
+            g.appendChild(p);
+            return;
+        }
+        var head=(meter.plan?meter.plan+', ':'')+(meter.live?'live':ageText(meter.captured_at));
+        g.appendChild(usageLine('reading',head));
+        meter.windows.forEach(function(w){
+            g.appendChild(usageLine(w.label+' · '+w.used_percent+'% used',resetsText(w.resets_at)));
+            var bar=document.createElement('div');bar.className='usage-bar';
+            var fill=document.createElement('div');
+            fill.className='usage-bar-fill'+(w.used_percent>=95?' full':(w.used_percent>=75?' hot':''));
+            fill.style.width=Math.max(0,Math.min(100,w.used_percent))+'%';
+            bar.appendChild(fill);g.appendChild(bar);
+        });
+    }
+
+    function renderUsage(data){
+        var panel=document.getElementById('usage-panel');
+        panel.innerHTML='';
+        var you=data.you;
+        var g=usageGroup(panel,'You, last '+data.days+' days');
+        if(!you.turns){
+            var empty=document.createElement('div');
+            empty.className='usage-empty';
+            empty.textContent='Nothing recorded yet. Your next message starts the count.';
+            g.appendChild(empty);
+        }else{
+            g.appendChild(usageLine('turns',String(you.turns)+(you.failed_turns?' ('+you.failed_turns+' failed)':'')));
+            g.appendChild(usageLine('tokens in',formatTokens(you.input_tokens+you.cache_read_tokens)));
+            g.appendChild(usageLine('tokens out',formatTokens(you.output_tokens)));
+            if(you.list_cost_usd)g.appendChild(usageLine('list price, not a bill','$'+you.list_cost_usd.toFixed(2)));
+            Object.keys(you.by_model).forEach(function(m){
+                g.appendChild(usageLine(m,you.by_model[m].turns+' turns'));
+            });
+        }
+        renderMeter(panel,data.meters.claude,'Claude, shared by everyone here');
+        renderMeter(panel,data.meters.codex,'Codex, shared by everyone here');
+        if(data.everyone&&data.everyone.length){
+            var all=usageGroup(panel,'Everyone, last '+data.days+' days');
+            data.everyone.forEach(function(row){
+                all.appendChild(usageLine(row.name,row.turns+' turns'+(row.list_cost_usd?' · $'+row.list_cost_usd.toFixed(2):'')));
+            });
+        }
+    }
+
+    function toggleUsage(){
+        var panel=document.getElementById('usage-panel');
+        var btn=document.getElementById('usage-btn');
+        if(panel.classList.contains('open')){
+            panel.classList.remove('open');
+            btn.textContent='Usage';
+            return;
+        }
+        panel.classList.add('open');
+        panel.innerHTML='<div class="usage-empty">Reading the meters...</div>';
+        btn.textContent='Hide usage';
+        api('/api/usage').then(function(data){renderUsage(data)})
+            .catch(function(e){
+                panel.innerHTML='';
+                var p=document.createElement('div');
+                p.className='usage-empty';
+                p.textContent=e.message;
+                panel.appendChild(p);
+            });
     }
 
     function renderSelector(id,items,current,onSelect){

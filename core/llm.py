@@ -155,6 +155,12 @@ class LLMResponse:
     output_tokens: int = 0
     error: Optional[str] = None
     tool_use: bool = False  # Whether the response involved tool use
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    # Claude Code's own total_cost_usd for the turn. LIST PRICE, not a
+    # charge: on a subscription nobody is billed it (the CLI tags the same
+    # number costBasis "list"). Providers that report no cost leave it at 0.
+    list_cost_usd: float = 0.0
 
 
 def _error_excerpt(text: Optional[str], limit: int = 600) -> str:
@@ -243,6 +249,11 @@ class LLMProvider(ABC):
         self.model = model
         self.api_key = api_key
         self.last_health = None
+        # Set when this instance was built for one engine (core.engines), so
+        # its turns run at that engine's level rather than the install-wide
+        # LLM_EFFORT. Empty means "use the configured one", which is what
+        # every historical caller gets.
+        self.effort_override: str = ""
 
     @abstractmethod
     async def complete(
@@ -629,6 +640,79 @@ def _codex_feature_names(binary: str) -> frozenset:
         return True, frozenset(names)
 
     return _codex_cached_probe(("features", binary), probe)
+
+
+# The memoise-and-retry helper above is not Codex-specific; the name is only
+# where it was born. The Claude probe below wants exactly the same contract:
+# keep a real answer for good, retry an ask that could not be put.
+_cli_cached_probe = _codex_cached_probe
+
+
+# Claude Code's own rate-limit reading rides on --include-partial-messages.
+# Without it the stream carries no rate_limit_event at all, and the usage
+# meter has nothing to show; with it, the CLI emits one whenever a window's
+# rounded percentage changes (measured on 2.1.270: five_hour and seven_day,
+# each a utilization fraction plus a unix reset time).
+#
+# The flag is PROBED rather than assumed, because an unknown flag is fatal
+# to every turn on an older build, and this project installs on machines
+# whose CLI nobody is watching. A probe that cannot run answers False, which
+# only costs the meter.
+PARTIAL_MESSAGES_FLAG = "--include-partial-messages"
+
+
+def _claude_supports_partial_messages(binary: str) -> bool:
+    def probe():
+        try:
+            out = subprocess.run([binary, "--help"], capture_output=True,
+                                 text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return False, False
+        if out.returncode != 0:
+            return False, False
+        return True, PARTIAL_MESSAGES_FLAG in (out.stdout or "") + (out.stderr or "")
+
+    return _cli_cached_probe(("partial-messages", binary), probe)
+
+
+def _claude_usage_fields(usage: dict, list_cost_usd: float) -> dict:
+    """LLMResponse token/cost kwargs from Claude Code's result event.
+
+    Cache reads and cache writes are kept apart from input_tokens because
+    the CLI keeps them apart: on a cached turn input_tokens is a handful and
+    cache_read_input_tokens is the real context. Folding them together would
+    make a cheap turn look like an expensive one.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+
+    def count(key: str) -> int:
+        value = usage.get(key)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    return {
+        "input_tokens": count("input_tokens"),
+        "output_tokens": count("output_tokens"),
+        "cache_read_tokens": count("cache_read_input_tokens"),
+        "cache_creation_tokens": count("cache_creation_input_tokens"),
+        "list_cost_usd": float(list_cost_usd or 0.0),
+    }
+
+
+def _turn_effort(provider) -> str:
+    """The effort level this provider instance's next turn runs at.
+
+    An instance built for an engine carries that engine's level and must not
+    read LLM_EFFORT, which belongs to the install's own default. The override
+    is clamped against the model exactly like the configured value is: the
+    engine table and the model table are edited by different hands, and a
+    level the model does not accept is silently ignored by both CLIs.
+    """
+    from core.config import get_llm_effort
+    from core.model_efforts import clamp_effort
+    override = getattr(provider, "effort_override", "")
+    if override:
+        return clamp_effort(provider.provider_name, provider.model, override)
+    return get_llm_effort(provider.provider_name, provider.model)
 
 
 def _frozen_volume_cause() -> str:
@@ -1146,7 +1230,6 @@ class ClaudeCLIProvider(LLMProvider):
             prompt += wrap_turn(msg.role, msg.content) + "\n"
         prompt += "\nContinue the conversation naturally, responding to the latest message."
 
-        from core.config import get_llm_effort
         # Configured MCP servers, or nothing. This provider runs its own agent
         # loop and never reaches core.tools, so a server in mcp_servers.json is
         # unreachable from here unless it is passed on the command line.
@@ -1164,7 +1247,7 @@ class ClaudeCLIProvider(LLMProvider):
             # instance may have been constructed with a model override, and
             # the effort has to be validated against the model that is
             # actually going to run.
-            "--effort", get_llm_effort(self.provider_name, self.model),
+            "--effort", _turn_effort(self),
             "--dangerously-skip-permissions",
             # One comma-joined argument, never one argv entry per tool: the
             # flag is variadic (<tools...>), so loose names would run on and
@@ -1175,6 +1258,12 @@ class ClaudeCLIProvider(LLMProvider):
             *mcp_args,
             "-",  # Read from stdin
         ]
+        # Asks the CLI to also stream partial messages, which is the only way
+        # it reports what is left of the subscription (rate_limit_event).
+        # Probed, never assumed: an unknown flag would fail every turn on an
+        # older build. The extra stream_event lines are skipped unparsed.
+        if _claude_supports_partial_messages(self._cli_binary):
+            cmd.insert(-1, PARTIAL_MESSAGES_FLAG)
 
         typing_task = None
         process = None
@@ -1187,6 +1276,11 @@ class ClaudeCLIProvider(LLMProvider):
         final_result = None
         result_is_error = False
         api_error_status = None
+        # What this turn cost, and what is left. Filled from the CLI's own
+        # result and rate_limit_event; zero when it reported neither.
+        usage_counts: dict = {}
+        list_cost_usd = 0.0
+        rate_limit_info = None
         partial_text = ""
         all_text_blocks = []  # Every text block in order, for reply composition
         last_turn_text_blocks = []
@@ -1369,11 +1463,31 @@ class ClaudeCLIProvider(LLMProvider):
 
                 if line:
                     last_activity = asyncio.get_running_loop().time()
+                    # Partial messages are the price of the rate-limit event
+                    # and carry nothing this loop reads: one per text delta,
+                    # thousands on a long turn. Dropped before the JSON parse.
+                    # A build that emits the key in another order simply
+                    # falls through to the parse below and is ignored there.
+                    if line.startswith(b'{"type":"stream_event"'):
+                        continue
                     line_str = line.decode(errors="replace").strip()
                     if line_str:
                         try:
                             data = json.loads(line_str)
                             msg_type = data.get("type")
+
+                            if msg_type == "stream_event":
+                                continue
+
+                            if msg_type == "rate_limit_event":
+                                # What is left of the subscription, as the CLI
+                                # itself sees it. Held and written once at the
+                                # end of the turn: this loop must not do disk
+                                # I/O per event.
+                                info = data.get("rate_limit_info")
+                                if isinstance(info, dict):
+                                    rate_limit_info = info
+                                continue
 
                             if msg_type == "assistant":
                                 current_status = "generating response"
@@ -1418,6 +1532,12 @@ class ClaudeCLIProvider(LLMProvider):
                             if msg_type == "result":
                                 if "result" in data:
                                     final_result = data["result"]
+                                turn_usage = data.get("usage")
+                                if isinstance(turn_usage, dict):
+                                    usage_counts = turn_usage
+                                cost = data.get("total_cost_usd")
+                                if isinstance(cost, (int, float)):
+                                    list_cost_usd = float(cost)
                                 # The CLI reports a FAILED turn inside an
                                 # otherwise normal result event. Measured
                                 # against the live CLI 2026-07-20: an auth
@@ -1587,6 +1707,7 @@ class ClaudeCLIProvider(LLMProvider):
                     text=_compose_full_reply(final_result, all_text_blocks),
                     model=self.model,
                     provider=self.provider_name, tool_use=True,
+                    **_claude_usage_fields(usage_counts, list_cost_usd),
                 )
 
             # No "result" message — use last assistant turn if available,
@@ -1597,6 +1718,7 @@ class ClaudeCLIProvider(LLMProvider):
                 return LLMResponse(
                     text=last_turn + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
+                    **_claude_usage_fields(usage_counts, list_cost_usd),
                 )
             if partial_text.strip():
                 fallback_text = partial_text.strip()
@@ -1604,6 +1726,7 @@ class ClaudeCLIProvider(LLMProvider):
                 return LLMResponse(
                     text=fallback_text + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
+                    **_claude_usage_fields(usage_counts, list_cost_usd),
                 )
 
             elapsed = time.monotonic() - start_time
@@ -1627,6 +1750,12 @@ class ClaudeCLIProvider(LLMProvider):
                 provider=self.provider_name, error=str(e),
             )
         finally:
+            if rate_limit_info is not None:
+                try:
+                    from core.usage import save_claude_rate_limits
+                    save_claude_rate_limits(rate_limit_info)
+                except Exception as exc:
+                    logger.debug("rate-limit snapshot not stored: %s", exc)
             if typing_task:
                 typing_task.cancel()
                 try:
@@ -1874,8 +2003,7 @@ class CodexCLIProvider(LLMProvider):
         # Empty means this repo has not read that model's levels, and then no
         # override is sent at all: the CLI applies the model's own default.
         # Inventing a level is how "max" reaches gpt-5.5, which has no max.
-        from core.config import get_llm_effort
-        effort = get_llm_effort(self.provider_name, self.model)
+        effort = _turn_effort(self)
         if effort:
             cmd.insert(-1, "-c")
             cmd.insert(-1, f'model_reasoning_effort="{effort}"')
@@ -1897,6 +2025,7 @@ class CodexCLIProvider(LLMProvider):
         partial_text = ""
         total_input = 0
         total_output = 0
+        total_cached = 0
         current_status = "thinking"
         tool_in_progress = None
         turn_failed_message = None
@@ -2117,6 +2246,7 @@ class CodexCLIProvider(LLMProvider):
                                 usage = data.get("usage") or {}
                                 total_input += usage.get("input_tokens", 0) or 0
                                 total_output += usage.get("output_tokens", 0) or 0
+                                total_cached += usage.get("cached_input_tokens", 0) or 0
                             elif evt_type == "turn.failed":
                                 err = data.get("error") or {}
                                 turn_failed_message = err.get("message") if isinstance(err, dict) else str(err)
@@ -2281,6 +2411,7 @@ class CodexCLIProvider(LLMProvider):
                     text=final_text, model=self.model,
                     provider=self.provider_name, tool_use=True,
                     input_tokens=total_input, output_tokens=total_output,
+                    cache_read_tokens=total_cached,
                 )
 
             if partial_text.strip():
@@ -2290,6 +2421,7 @@ class CodexCLIProvider(LLMProvider):
                     text=fallback_text + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
                     input_tokens=total_input, output_tokens=total_output,
+                    cache_read_tokens=total_cached,
                 )
 
             failure = turn_failed_message or (None if turn_completed else stream_error)

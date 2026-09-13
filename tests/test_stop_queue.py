@@ -118,7 +118,9 @@ class _StopStateMixin:
         botmod._semaphore_active = False
         botmod._llm_semaphore = None
         botmod._refresh_provider_if_env_changed = lambda: None
-        botmod.build_system_prompt = lambda uid: "sys"
+        # Two arguments: call_llm passes the provider that will answer
+        # this user, so a one-argument stand-in no longer matches.
+        botmod.build_system_prompt = lambda uid, provider=None: "sys"
         botmod.build_messages = lambda uid, msg: [Message(role="user", content=msg)]
         botmod.get_user_dir = lambda uid: str(ROOT)
 

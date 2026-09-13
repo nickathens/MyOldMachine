@@ -173,7 +173,8 @@ class CallLlmWiringTests(unittest.IsolatedAsyncioTestCase):
         provider.provider_name = response.provider
         provider.complete = AsyncMock(return_value=response)
         with patch.object(botmod, "_llm_provider", provider), \
-             patch.object(botmod, "build_system_prompt", lambda uid: "sys"), \
+             patch.object(botmod, "build_system_prompt",
+                          lambda uid, provider=None: "sys"), \
              patch.object(botmod, "build_messages",
                           lambda uid, msg: [botmod.Message(role="user", content=msg)]), \
              patch.object(botmod, "_get_llm_semaphore", return_value=asyncio.Semaphore(1)), \

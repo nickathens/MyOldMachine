@@ -707,6 +707,7 @@ _RESERVED_COMMANDS = {
     "schedule", "jobs",
     "health", "cleanup", "system", "update", "restart",
     "provider", "model", "apikey",
+    "engine", "usage",
     "alias",
     "adduser", "removeuser", "users",
     "maintenance", "skillstats",
@@ -738,6 +739,8 @@ SLASH_COMMAND_MENU: list[tuple[str, str]] = [
     ("remind", "Set a reminder"),
     ("reminders", "See your upcoming reminders"),
     ("topics", "See your conversation threads"),
+    ("engine", "Pick which AI answers you"),
+    ("usage", "See what you used and what is left"),
     ("provider", "Change the AI provider"),
     ("model", "Change the AI model"),
     ("health", "Check system health"),
@@ -1037,18 +1040,26 @@ def build_orientation_prompt(user_id: int, first_user_message: str = None) -> st
     )
 
 
-def build_system_prompt(user_id: int) -> str:
+def build_system_prompt(user_id: int, provider=None) -> str:
     """Build the system prompt with user context, skills, memories, and instructions.
 
     All providers now have tool-use capability (either native via Claude CLI,
     or through our function-calling execution layer for API providers).
+
+    ``provider`` is the one about to answer. It defaults to the install's own
+    so every existing caller is unchanged; call_llm passes the user's engine
+    provider, because the three capability questions below (native CLI, tool
+    use, MCP reachability) have different answers per engine and a prompt
+    that describes the wrong one advertises tools the turn cannot call.
     """
+    if provider is None:
+        provider = _llm_provider
     profile = get_user_profile(user_id)
     user_name = profile.get("name", "User")
     user_role = profile.get("role", "user")
     blocked_skills = profile.get("blocked_skills", [])
-    is_cli_provider = isinstance(_llm_provider, _CLI_PROVIDERS)
-    has_tool_use = _llm_provider.supports_tool_use if _llm_provider else False
+    is_cli_provider = isinstance(provider, _CLI_PROVIDERS)
+    has_tool_use = provider.supports_tool_use if provider else False
 
     parts = []
 
@@ -1113,7 +1124,7 @@ def build_system_prompt(user_id: int) -> str:
         # route and reports supports_mcp False, and listing tools a provider
         # cannot call is the same failure this wiring was added to fix.
         from core.mcp_client import get_mcp_manager
-        mcp_tools = get_mcp_manager().get_tools() if _llm_provider.supports_mcp else []
+        mcp_tools = get_mcp_manager().get_tools() if provider.supports_mcp else []
         if mcp_tools:
             parts.append("")
             parts.append("### MCP Server Tools:")
@@ -1730,11 +1741,19 @@ async def _alert_turn_failure(user_id: int, provider: str, error: str) -> None:
     )
 
 
-def _build_llm_provider(provider_name: str, model: str, api_key: str):
-    """Create an LLM provider with the CLI progress callbacks wired, and
-    record the spec it was built from so _refresh_provider_if_env_changed()
-    can detect drift. All provider (re)creation goes through here; the
-    caller assigns the returned object to the _llm_provider global."""
+def _build_llm_provider(provider_name: str, model: str, api_key: str,
+                        *, track_spec: bool = True, effort: str = ""):
+    """Create an LLM provider with the CLI progress callbacks wired.
+
+    ``track_spec`` records the spec it was built from so
+    _refresh_provider_if_env_changed() can detect .env drift; that is for the
+    ONE provider the install's config describes. A provider built for a
+    user's engine passes False, because it is not what .env is talking about
+    and rebuilding it on an unrelated .env edit would be wrong.
+
+    ``effort`` pins the instance to one reasoning level (core.engines),
+    instead of reading the install-wide LLM_EFFORT on every turn.
+    """
     global _llm_provider_spec
     kwargs = {}
     if provider_name == "ollama":
@@ -1743,9 +1762,102 @@ def _build_llm_provider(provider_name: str, model: str, api_key: str):
     if isinstance(provider, _CLI_PROVIDERS):
         provider.on_progress_save = save_task_progress
         provider.on_progress_clear = clear_task_progress
+    if effort:
+        provider.effort_override = effort
     _configure_provider_hooks(provider)
-    _llm_provider_spec = (provider_name, model, api_key)
+    if track_spec:
+        _llm_provider_spec = (provider_name, model, api_key)
     return provider
+
+
+# Providers built for an engine, keyed by the (provider, model, effort) they
+# were built from. One process, a handful of engines, so this is bounded by
+# the size of core.engines.ENGINES and never evicted: a CLI provider holds no
+# connection, only callbacks and the set of its own live subprocesses.
+_engine_providers: dict = {}
+
+
+def _provider_for_user(user_id: int):
+    """(provider, engine) for this user's next turn.
+
+    ``engine`` is None for everybody who has not picked one, and then the
+    provider is the install's own — the historical behaviour, unchanged. A
+    picked engine whose CLI has since gone missing also lands there rather
+    than failing the turn, because core.engines.resolve_engine re-checks
+    availability before answering.
+    """
+    from core.engines import engine_effort, resolve_engine
+    try:
+        engine = resolve_engine(user_id)
+    except Exception:
+        logger.exception(f"Engine lookup failed for user {user_id}")
+        return _llm_provider, None
+    if engine is None:
+        return _llm_provider, None
+    spec = (engine["provider"], engine["model"], engine_effort(engine))
+    provider = _engine_providers.get(spec)
+    if provider is None:
+        try:
+            provider = _build_llm_provider(
+                spec[0], spec[1], "", track_spec=False, effort=spec[2],
+            )
+        except Exception:
+            logger.exception(
+                f"Could not build the {engine['id']} engine for user {user_id}"
+            )
+            return _llm_provider, None
+        _engine_providers[spec] = provider
+    return provider, engine
+
+
+def _record_turn_usage(user_id: int, provider_obj, engine, response) -> None:
+    """Book one finished turn against this user. Never raises.
+
+    Called for failed turns too, with ok False: a turn that burned an hour of
+    tool calls and then died still spent the subscription, and a usage view
+    that hides those is the one that disagrees with the meter.
+    """
+    try:
+        from core.config import get_llm_effort
+        from core.usage import record_turn
+        provider_name = getattr(provider_obj, "provider_name", "") or ""
+        model = getattr(provider_obj, "model", "") or ""
+        # An engine instance carries its own level; everything else ran at
+        # whatever LLM_EFFORT resolves to for that pair, clamp included.
+        effort = getattr(provider_obj, "effort_override", "") or ""
+        if not effort:
+            effort = get_llm_effort(provider_name, model)
+        record_turn(
+            user_id,
+            provider=provider_name,
+            model=model,
+            effort=effort,
+            engine=(engine or {}).get("id", ""),
+            input_tokens=getattr(response, "input_tokens", 0),
+            output_tokens=getattr(response, "output_tokens", 0),
+            cache_read_tokens=getattr(response, "cache_read_tokens", 0),
+            cache_creation_tokens=getattr(response, "cache_creation_tokens", 0),
+            list_cost_usd=getattr(response, "list_cost_usd", 0.0),
+            ok=not getattr(response, "error", None),
+        )
+    except Exception:
+        logger.exception(f"Could not record usage for user {user_id}")
+
+
+def _live_providers() -> list:
+    """Every provider object that could be holding a running turn.
+
+    /stop and the pre-restart drain both have to look at all of them: once a
+    user picks an engine, their subprocess belongs to that engine's provider
+    and the install's own provider knows nothing about it.
+    """
+    providers = []
+    if _llm_provider is not None:
+        providers.append(_llm_provider)
+    for provider in _engine_providers.values():
+        if provider is not None and provider not in providers:
+            providers.append(provider)
+    return providers
 
 
 def _configure_provider_hooks(provider) -> None:
@@ -1824,22 +1936,29 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None,
     # broken provider without a restart.
     _refresh_provider_if_env_changed()
 
+    # Whose engine answers this turn: the user's own pick, or the install's
+    # configured provider for everybody who has not picked one.
+    provider_obj, engine = _provider_for_user(user_id)
+
     # Fast-fail guard: if the most recent health-check (run at startup or
     # after /provider, /model, /apikey) reported the provider as broken,
     # skip the LLM call and return an actionable error instead of crashing
-    # in subprocess / HTTP code on every message.
-    if _llm_provider is not None and _llm_provider.last_health is not None:
-        healthy, reason = _llm_provider.last_health
+    # in subprocess / HTTP code on every message. An engine provider is
+    # never health-checked here (it would put a probe in front of a turn),
+    # so last_health is None for it and the gate passes it through; a broken
+    # engine surfaces as that turn's own error, with the CLI's reason in it.
+    if provider_obj is not None and provider_obj.last_health is not None:
+        healthy, reason = provider_obj.last_health
         if not healthy:
             return (
-                f"This bot's LLM provider ({_llm_provider.provider_name}) "
+                f"This bot's LLM provider ({provider_obj.provider_name}) "
                 f"is not healthy:\n\n{reason}\n\n"
                 f"Use /provider to switch to a working one (claude-api, "
                 f"openrouter, gemini, ollama, etc.) or /apikey to fix the "
                 f"current key."
             )
 
-    system_prompt = build_system_prompt(user_id)
+    system_prompt = build_system_prompt(user_id, provider_obj)
     messages = build_messages(user_id, message)
 
     # Attach images to the user's message for multimodal vision support
@@ -1921,8 +2040,8 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None,
     try:
         async with sem, _SemaphoreOwner("user"), _TurnGate(user_id, turn):
             # For Claude CLI provider, pass extra kwargs for progress tracking
-            if isinstance(_llm_provider, _CLI_PROVIDERS):
-                response: LLMResponse = await _llm_provider.complete(
+            if isinstance(provider_obj, _CLI_PROVIDERS):
+                response: LLMResponse = await provider_obj.complete(
                     system_prompt=system_prompt,
                     messages=messages,
                     chat=chat,
@@ -1947,7 +2066,7 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None,
                 try:
                     if chat:
                         typing_task = asyncio.create_task(send_typing())
-                    response = await _llm_provider.complete(
+                    response = await provider_obj.complete(
                         system_prompt=system_prompt,
                         messages=messages,
                     )
@@ -1960,6 +2079,8 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None,
                             pass
     finally:
         reset_current_user_dir(_user_ctx_token)
+
+    _record_turn_usage(user_id, provider_obj, engine, response)
 
     if response.error:
         # Any provider error is a failed turn. The CLI providers (Claude, Codex)
@@ -2432,7 +2553,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         obs_count = len(_memory_manager.get_all_observations(user_id, limit=None))
     await update.message.reply_text(
         f"Status: Online\n"
-        f"Provider: {get_llm_provider()} / {get_llm_model()}\n"
+        f"{_engine_status_line(user_id)}\n"
         f"Messages in context: {len(history)}\n"
         f"Observations (long-term memory): {obs_count}\n"
         f"Has summary: {'Yes' if summary else 'No'}\n"
@@ -2856,14 +2977,20 @@ async def _apply_stop(reply, user_id: int) -> None:
     running = user_id in _running_turns
     cancelled = _pending_turns.get(user_id, 0)
     holder = _semaphore_holder
-    cli_provider = isinstance(_llm_provider, _CLI_PROVIDERS)
+    # Every CLI provider alive in this process, not just the install's own:
+    # a user on an engine has their subprocess on that engine's provider, and
+    # asking only the default one would report "nothing to stop" while their
+    # turn kept running. stop_user answers False for a user it is not
+    # holding, so asking all of them is safe.
+    cli_providers = [p for p in _live_providers() if isinstance(p, _CLI_PROVIDERS)]
+    cli_provider = bool(cli_providers)
 
     _stop_epoch[user_id] = _stop_epoch.get(user_id, 0) + 1
 
     killed = False
-    if cli_provider:
+    for provider in cli_providers:
         try:
-            killed = bool(_llm_provider.stop_user(user_id))
+            killed = bool(provider.stop_user(user_id)) or killed
         except Exception:
             logger.exception(f"stop_user failed for user {user_id}")
 
@@ -3195,7 +3322,8 @@ def _restart_blockers() -> list[str]:
     # A live CLI subprocess with no turn behind it: one that outlived its turn,
     # or work started outside the gate. Reported only when nothing else is, so
     # an ordinary request is never counted twice.
-    if not lines and getattr(_llm_provider, "has_active_processes", False):
+    if not lines and any(getattr(p, "has_active_processes", False)
+                         for p in _live_providers()):
         lines.append("  - a provider subprocess is still running")
 
     return lines
@@ -3239,10 +3367,11 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     running = registry.list_running()
     if running:
         await registry.cleanup_all()
-    if isinstance(_llm_provider, _CLI_PROVIDERS):
+    cli_providers = [p for p in _live_providers() if isinstance(p, _CLI_PROVIDERS)]
+    if cli_providers:
         # Give CLI processes up to 10 seconds to finish before restart
         for _ in range(10):
-            if not _llm_provider.has_active_processes:
+            if not any(p.has_active_processes for p in cli_providers):
                 break
             await asyncio.sleep(1)
     # Ask who is answering BEFORE the bounce, for two reasons. The restart is
@@ -3495,6 +3624,178 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _format_when(timestamp) -> str:
+    """A unix timestamp as a short local time, or "" when there is none."""
+    if not isinstance(timestamp, (int, float)) or timestamp <= 0:
+        return ""
+    when = datetime.fromtimestamp(timestamp)
+    now = datetime.now()
+    if when.date() == now.date():
+        return when.strftime("%H:%M")
+    return when.strftime("%a %H:%M")
+
+
+def _format_age(timestamp) -> str:
+    """How long ago a reading was taken, in plain words."""
+    if not isinstance(timestamp, (int, float)) or timestamp <= 0:
+        return "unknown"
+    seconds = max(0, int(time.time() - timestamp))
+    if seconds < 90:
+        return "just now"
+    if seconds < 5400:
+        return f"{seconds // 60} min ago"
+    if seconds < 172800:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def _engine_status_line(user_id: int) -> str:
+    """The one line /status prints about which AI is answering THIS user.
+
+    It used to print the install's configured pair to everybody, which is a
+    false statement to anyone running their own engine.
+    """
+    from core.engines import resolve_engine
+    engine = resolve_engine(user_id)
+    if engine is None:
+        return f"Provider: {get_llm_provider()} / {get_llm_model()}"
+    return (f"Engine: {engine['label']} — {engine['model']}, "
+            f"{engine['effort']} effort (yours, /engine)")
+
+
+def _engine_lines(user_id: int) -> list[str]:
+    """One line per engine, marking the current one and explaining any gap."""
+    from core.engines import available_engines, user_engine_id
+    picked = user_engine_id(user_id)
+    lines = []
+    for engine in available_engines():
+        marks = []
+        if engine["id"] == picked:
+            marks.append("current")
+        if engine.get("is_default"):
+            marks.append("default")
+        if not engine["available"]:
+            marks.append(f"unavailable: {engine['reason']}")
+        suffix = f"  [{'; '.join(marks)}]" if marks else ""
+        lines.append(f"  {engine['label']} — {engine['sub']}{suffix}")
+    return lines
+
+
+@requires_auth
+async def engine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pick the engine this user's own turns run on.
+
+    Per user, not per install: /provider and /model stay admin-only and keep
+    setting what everybody without a pick gets.
+    """
+    from core.engines import ENGINE_IDS, set_user_engine, user_engine_id
+    user_id = update.effective_user.id
+    choice = command_body(update.message.text).strip().lower()
+
+    if choice:
+        if choice in ("default", "none", "clear", "reset"):
+            ok, message = set_user_engine(user_id, "")
+        elif choice in ENGINE_IDS:
+            ok, message = set_user_engine(user_id, choice)
+        else:
+            ok, message = False, (
+                f"No engine called {choice!r}. Options: "
+                f"{', '.join(ENGINE_IDS)}, or default."
+            )
+        if ok:
+            message += " It applies from your next message."
+        await update.message.reply_text(message)
+        return
+
+    from core.engines import get_engine
+    picked = user_engine_id(user_id)
+    chosen = get_engine(picked)
+    header = (f"Engine: {chosen['label']}" if chosen
+              else f"Engine: the bot's default ({get_llm_model()})")
+    body = [header, ""] + _engine_lines(user_id) + [
+        "",
+        f"Switch with /engine {' or /engine '.join(ENGINE_IDS)}.",
+        "/engine default hands you back to the bot's own setting "
+        f"({get_llm_model()}).",
+    ]
+    await update.message.reply_text("\n".join(body))
+
+
+def _meter_lines(meter: dict, label: str) -> list[str]:
+    """One block per subscription meter: the windows, or why there are none."""
+    if meter.get("unavailable"):
+        return [f"  {label}: no reading — {meter.get('reason', '')}"]
+    plan = f" ({meter['plan']})" if meter.get("plan") else ""
+    freshness = "live" if meter.get("live") else _format_age(meter.get("captured_at"))
+    lines = [f"  {label}{plan}, {freshness}:"]
+    for window in meter.get("windows", []):
+        resets = _format_when(window.get("resets_at"))
+        tail = f", resets {resets}" if resets else ""
+        lines.append(
+            f"    {window['label']}: {window['used_percent']}% used{tail}"
+        )
+    return lines
+
+
+def _usage_block(summary: dict) -> list[str]:
+    """A person's consumption, in the order that answers "what did I spend"."""
+    if not summary["turns"]:
+        return ["  nothing recorded yet"]
+    lines = [
+        f"  {summary['turns']} turns"
+        + (f" ({summary['failed_turns']} failed)" if summary["failed_turns"] else "")
+    ]
+    lines.append(
+        f"  {summary['input_tokens'] + summary['cache_read_tokens']:,} tokens in, "
+        f"{summary['output_tokens']:,} out"
+    )
+    if summary["list_cost_usd"]:
+        lines.append(
+            f"  ${summary['list_cost_usd']:.2f} at list price "
+            f"(a meter, not a bill — the subscription is what pays)"
+        )
+    for model, bucket in sorted(summary["by_model"].items(),
+                                key=lambda kv: -kv[1]["turns"]):
+        lines.append(f"    {model}: {bucket['turns']} turns")
+    return lines
+
+
+@requires_auth
+async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """What this person spent, and what is left on the subscription."""
+    from core.usage import meters, summarise, summarise_everyone
+    user_id = update.effective_user.id
+    days = 7
+    body = command_body(update.message.text).strip()
+    if body.isdigit():
+        days = max(1, min(90, int(body)))
+
+    lines = [f"Your usage, last {days} days"]
+    lines += _usage_block(summarise(user_id, days))
+
+    # The meters are shared: one subscription behind everybody on this
+    # machine. The Codex read is a subprocess and a network round trip, so it
+    # goes off the event loop.
+    reading = await asyncio.to_thread(meters)
+    lines += ["", "Subscription left (shared by everyone here)"]
+    lines += _meter_lines(reading["claude"], "Claude")
+    lines += _meter_lines(reading["codex"], "Codex")
+
+    if is_admin(user_id):
+        everyone = summarise_everyone(days)
+        if len(everyone) > 1 or (everyone and str(user_id) not in everyone):
+            lines += ["", f"Everyone, last {days} days"]
+            for uid, summary in sorted(everyone.items(),
+                                       key=lambda kv: -kv[1]["turns"]):
+                profile = get_user_profile(int(uid))
+                name = profile.get("display_name") or profile.get("name") or uid
+                cost = (f", ${summary['list_cost_usd']:.2f} list"
+                        if summary["list_cost_usd"] else "")
+                lines.append(f"  {name}: {summary['turns']} turns{cost}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
 @requires_auth
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Change the model for the current provider without switching providers."""
@@ -3677,6 +3978,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /topics — See all your conversation threads\n\n"
         "Shortcuts:\n"
         "  /alias — Create quick shortcuts for things you ask often\n\n"
+        "Your engine and usage:\n"
+        "  /engine — Pick which AI answers you\n"
+        "  /usage — What you used, and what is left\n\n"
         "Settings (advanced):\n"
         "  /provider — Change AI brain\n"
         "  /model — Change AI model\n"
@@ -4194,8 +4498,11 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
     # Collect image paths for multimodal vision support
     image_paths = [str(p) for p, t in attachments if t == "image"] if attachments else []
 
-    # Auto-transcribe voice for non-CLI providers (they can't invoke Whisper via tools)
-    if attachments and not isinstance(_llm_provider, _CLI_PROVIDERS):
+    # Auto-transcribe voice for non-CLI providers (they can't invoke Whisper
+    # via tools). Asked of the provider that will answer THIS user: on an
+    # install whose default is an API provider, somebody on a CLI engine
+    # transcribes their own voice notes and must not have it done for them.
+    if attachments and not isinstance(_provider_for_user(user_id)[0], _CLI_PROVIDERS):
         for path, ftype in attachments:
             if ftype == "voice":
                 transcript = await _auto_transcribe_voice(str(path))
@@ -5737,6 +6044,8 @@ def main():
     app.add_handler(CommandHandler("restart", restart_command))
     app.add_handler(CommandHandler("provider", provider_command))
     app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler("engine", engine_command))
+    app.add_handler(CommandHandler("usage", usage_command))
     app.add_handler(CommandHandler("apikey", apikey_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("alias", alias_command))
@@ -5935,8 +6244,9 @@ def main():
         if running:
             logger.info(f"Killing {len(running)} background processes on shutdown...")
             await registry.cleanup_all()
-        if isinstance(_llm_provider, _CLI_PROVIDERS):
-            await _llm_provider.graceful_shutdown()
+        for provider in _live_providers():
+            if isinstance(provider, _CLI_PROVIDERS):
+                await provider.graceful_shutdown()
 
     app.post_init = post_init
     app.post_shutdown = post_shutdown
