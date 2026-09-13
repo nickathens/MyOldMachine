@@ -14,11 +14,9 @@ What this module deliberately is NOT:
   levels each one accepts. Every engine below is checked against BOTH by
   ``tests/test_engine_picker.py``; a level this repo has not read for a model
   can never ship in an engine row.
-* It is not a new default. A user who has never picked anything keeps running
-  whatever .env says, exactly as before. This matters because MOM installs on
-  machines whose provider may be Ollama or Gemini, where neither engine below
-  exists at all. Nothing here changes an install until somebody presses a
-  button.
+* Ordinary users on a CLI installation default to Opus at Max when its
+  subscription login is available. Administrators and API/local installs
+  retain the machine default unless they explicitly pick an engine.
 
 Availability is PROBED, never assumed. Both engines are subprocess CLIs that
 may not be installed, may not be logged in, and (for Astra) may be too old:
@@ -29,6 +27,7 @@ that cannot work is worse than offering no button.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from typing import Optional
@@ -110,14 +109,39 @@ def _cli_version_text(binary: str) -> Optional[str]:
     return (result.stdout or "") + (result.stderr or "")
 
 
+def _login_status(engine: dict, binary: str) -> tuple[bool, str]:
+    """Check local subscription login, without claiming remote model access."""
+    from core.llm import ClaudeCLIProvider, CodexCLIProvider
+    cls = ClaudeCLIProvider if engine["id"] == "opus" else CodexCLIProvider
+    provider = cls(engine["model"])
+    args = ["auth", "status", "--json"] if engine["id"] == "opus" else ["login", "status"]
+    try:
+        result = subprocess.run([binary, *args], env=provider._get_cli_env(None),
+                                capture_output=True, text=True, timeout=10)
+        if engine["id"] == "opus":
+            info = json.loads(result.stdout)
+            logged_in = (isinstance(info, dict) and info.get("loggedIn") is True
+                         and info.get("authMethod") in ("claude.ai", "oauth_token"))
+        else:
+            text = (result.stdout or "") + (result.stderr or "")
+            logged_in = "logged in using chatgpt" in text.lower()
+        if result.returncode == 0 and logged_in:
+            return True, ""
+        return False, f"{engine['cli']} needs a subscription login on this machine"
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return False, f"Could not verify {engine['cli']} subscription login"
+
+
 def _probe(engine: dict) -> tuple[bool, str]:
-    version_text = _cli_version_text(engine["cli"])
+    from core.llm import _find_cli_binary
+    binary = _find_cli_binary(engine["cli"])
+    version_text = _cli_version_text(binary)
     if version_text is None:
         return False, f"{engine['cli']} CLI is not installed on this machine"
     too_old = model_needs_newer_cli(engine["model"], version_text)
     if too_old:
         return False, too_old
-    return True, ""
+    return _login_status(engine, binary)
 
 
 def engine_available(engine: dict, *, refresh: bool = False) -> tuple[bool, str]:
@@ -190,8 +214,9 @@ def set_user_engine(user_id: int, engine_id: str) -> tuple[bool, str]:
     """
     from core.user_prefs import clear_pref, set_pref
     if not engine_id:
-        clear_pref(user_id, "engine")
-        return True, "Cleared. You are back on the bot's default engine."
+        if not clear_pref(user_id, "engine"):
+            return False, "Could not save your choice (the preferences file did not write)."
+        return True, "Cleared. Your default engine applies from the next message."
     engine = get_engine(engine_id)
     if engine is None:
         return False, f"No such engine: {engine_id}"
@@ -203,15 +228,24 @@ def set_user_engine(user_id: int, engine_id: str) -> tuple[bool, str]:
     return True, f"{engine['label']} it is: {engine['sub']}."
 
 
-def resolve_engine(user_id: int) -> Optional[dict]:
-    """The engine that should run this user's next turn, or None.
+def resolve_engine(user_id: int, *, default_provider: str | None = None,
+                   admin: bool | None = None) -> Optional[dict]:
+    """Resolve a saved choice or the ordinary CLI user's Opus default.
 
-    None means "no engine applies, use the install's own .env settings",
-    which is the answer for every user who has not pressed a button and for
-    every install where the chosen CLI has since gone missing.
+    No available engine means the machine provider remains in use. A stored
+    preference survives an unavailable login, and both UIs expose fallback.
     """
+    from core.config import get_llm_provider, get_llm_api_key, is_admin
     engine = get_engine(user_engine_id(user_id))
     if engine is None:
-        return None
+        if admin is None:
+            admin = is_admin(user_id)
+        if default_provider is None:
+            default_provider = get_llm_provider()
+        if default_provider == "claude" and get_llm_api_key():
+            default_provider = "claude-api"
+        if admin or default_provider not in ("claude", "claude-cli", "codex", "codex-cli"):
+            return None
+        engine = default_engine()
     available, _reason = engine_available(engine)
     return engine if available else None

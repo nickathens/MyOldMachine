@@ -164,9 +164,12 @@ class ClaudeMeterTests(_TempTree):
                                               "resetsAt": 1}}})
         self.assertEqual(usage.claude_meter()["windows"][0]["used_percent"], 100.0)
 
-    def test_a_payload_with_no_windows_is_no_reading(self):
+    def test_a_payload_with_no_windows_keeps_its_status(self):
         usage.save_claude_rate_limits({"status": "allowed"})
-        self.assertIsNone(usage.claude_meter())
+        meter = usage.claude_meter()
+        self.assertEqual(meter["status"], "allowed")
+        self.assertEqual(meter["windows"], [])
+
 
     def test_junk_is_refused_rather_than_stored(self):
         self.assertFalse(usage.save_claude_rate_limits("not a dict"))
@@ -191,7 +194,7 @@ class CodexMeterTests(_TempTree):
         self.assertEqual(meter["plan"], "pro")
         self.assertTrue(meter["live"])
         labels = [(w["label"], w["used_percent"]) for w in meter["windows"]]
-        self.assertEqual(labels, [("7 days", 16.0), ("5 hours", 3.0)])
+        self.assertEqual(labels, [("codex: 7 days", 16.0), ("codex: 5 hours", 3.0)])
 
     def test_a_missing_secondary_window_is_simply_absent(self):
         result = {"rateLimits": {"primary": {"usedPercent": 16,
@@ -244,6 +247,7 @@ class CodexTransportTests(_TempTree):
         script.write_text(textwrap.dedent(f'''
             import json, sys, threading, time
             answered = threading.Event()
+            initialized = False
 
             def answer():
                 time.sleep(0.3)
@@ -257,7 +261,12 @@ class CodexTransportTests(_TempTree):
 
             for line in sys.stdin:
                 msg = json.loads(line)
-                if msg.get("id") == 2:
+                if msg.get("id") == 1:
+                    print(json.dumps({{"id": 1, "result": {{}}}}), flush=True)
+                elif msg.get("method") == "initialized":
+                    initialized = True
+                elif msg.get("id") == 2:
+                    assert initialized
                     threading.Thread(target=answer, daemon=True).start()
             # stdin closed: the server shuts down.
             if not {die_on_eof!r}:
@@ -299,6 +308,8 @@ class CodexTransportTests(_TempTree):
             import json, sys
             for line in sys.stdin:
                 msg = json.loads(line)
+                if msg.get("id") == 1:
+                    print(json.dumps({"id": 1, "result": {}}), flush=True)
                 if msg.get("id") == 2:
                     sys.stdout.write(json.dumps(
                         {"id": 2, "error": {"message": "not signed in"}}) + "\\n")

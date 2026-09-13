@@ -263,6 +263,7 @@ body{
     box-shadow:0 0 20px rgba(255,255,255,0.06);
 }
 
+.engine-btn.accent-astra{border-color:rgba(255,190,80,.45);color:#ffc56e;background:rgba(255,190,80,.06)}
 .engine-btn.accent-astra.selected{
     background:linear-gradient(165deg, #e8b552 0%, #c8902c 100%);
     color:#180f02;
@@ -1893,14 +1894,14 @@ body{
         // No engine this machine can actually run: no picker. The install's
         // own provider keeps answering, and a button that cannot work is
         // worse than no button.
-        if(!usable.length){section.style.display='none';return}
+        if(!usable.length&&!data.picked){section.style.display='none';return}
         section.style.display='block';
         grid.innerHTML='';
         data.engines.forEach(function(e){
             var btn=document.createElement('button');
             btn.type='button';
             btn.className='engine-btn accent-'+e.accent
-                +(e.id===data.picked?' selected':'')
+                +(e.id===data.effective?' selected':'')
                 +(e.available?'':' unavailable');
             var label=document.createElement('span');
             label.className='engine-btn-label';
@@ -1912,10 +1913,12 @@ body{
             if(e.available)btn.onclick=function(){setEngine(e.id===data.picked?'':e.id)};
             grid.appendChild(btn);
         });
-        if(data.picked){
-            note.textContent='Your messages run on this. Tap it again to go back to the bot default ('+data.bot_default_model+').';
+        if(data.picked && data.picked!==data.effective){
+            note.textContent='Your saved engine is unavailable. Currently using '+data.bot_default_model+'.';
+        }else if(data.effective){
+            note.textContent='Applies from your next message. '+(data.picked?'Tap the selected engine to clear your saved choice.':'Opus at Max is your default.');
         }else{
-            note.textContent='You are on the bot default ('+data.bot_default_model+'). Pick one to change only your own messages.';
+            note.textContent='You are on the machine setting ('+data.bot_default_model+'). Pick an engine for your own messages.';
         }
     }
 
@@ -1923,7 +1926,6 @@ body{
         api('/api/engine',{method:'POST',body:JSON.stringify({engine:id})})
             .then(function(data){
                 renderEngine(data);
-                showRestartHint();
                 if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');
             })
             .catch(function(e){showError(e.message)});
@@ -1985,8 +1987,14 @@ body{
             g.appendChild(p);
             return;
         }
-        var head=(meter.plan?meter.plan+', ':'')+(meter.live?'live':ageText(meter.captured_at));
+        var head=(meter.plan?meter.plan+', ':'')+ageText(meter.captured_at);
         g.appendChild(usageLine('reading',head));
+        var status={allowed:'Allowed',allowed_warning:'Allowed, approaching a limit',rejected:'Blocked',unknown:'Permission unknown'};
+        var access=usageLine('access',status[meter.status]||'Permission unknown');
+        if(meter.status==='rejected')access.style.color='#ff7777';
+        g.appendChild(access);
+        if(meter.blocked_reason)g.appendChild(usageLine('reason',meter.blocked_reason));
+        (meter.restrictions||[]).forEach(function(r){g.appendChild(usageLine(r.label,r.message||r.reason.replace(/_/g,' ')))});
         meter.windows.forEach(function(w){
             g.appendChild(usageLine(w.label+' · '+w.used_percent+'% used',resetsText(w.resets_at)));
             var bar=document.createElement('div');bar.className='usage-bar';
@@ -2009,11 +2017,14 @@ body{
             g.appendChild(empty);
         }else{
             g.appendChild(usageLine('turns',String(you.turns)+(you.failed_turns?' ('+you.failed_turns+' failed)':'')));
-            g.appendChild(usageLine('tokens in',formatTokens(you.input_tokens+you.cache_read_tokens)));
+            g.appendChild(usageLine('tokens in',formatTokens(you.total_input_tokens)));
             g.appendChild(usageLine('tokens out',formatTokens(you.output_tokens)));
             if(you.list_cost_usd)g.appendChild(usageLine('list price, not a bill','$'+you.list_cost_usd.toFixed(2)));
+            if(you.unmeasured_turns)g.appendChild(usageLine('consumption unreported',you.unmeasured_turns+' turns; totals incomplete'));
+            if(you.unpriced_turns)g.appendChild(usageLine('list cost unavailable',you.unpriced_turns+' turns'));
             Object.keys(you.by_model).forEach(function(m){
-                g.appendChild(usageLine(m,you.by_model[m].turns+' turns'));
+                var b=you.by_model[m];
+                g.appendChild(usageLine(m,b.turns+' turns · '+formatTokens(b.total_input_tokens)+' in · '+formatTokens(b.output_tokens)+' out'));
             });
         }
         renderMeter(panel,data.meters.claude,'Claude, shared by everyone here');
@@ -2021,7 +2032,14 @@ body{
         if(data.everyone&&data.everyone.length){
             var all=usageGroup(panel,'Everyone, last '+data.days+' days');
             data.everyone.forEach(function(row){
-                all.appendChild(usageLine(row.name,row.turns+' turns'+(row.list_cost_usd?' · $'+row.list_cost_usd.toFixed(2):'')));
+                all.appendChild(usageLine(row.name,row.turns+' turns · '+formatTokens(row.total_input_tokens)+' in · '+formatTokens(row.output_tokens)+' out'));
+                if(row.list_cost_usd)all.appendChild(usageLine('list price, not a bill','$'+row.list_cost_usd.toFixed(2)));
+                if(row.unmeasured_turns)all.appendChild(usageLine('consumption unreported',row.unmeasured_turns+' turns; totals incomplete'));
+                if(row.unpriced_turns)all.appendChild(usageLine('list cost unavailable',row.unpriced_turns+' turns'));
+                Object.keys(row.by_model||{}).forEach(function(m){
+                    var b=row.by_model[m];
+                    all.appendChild(usageLine(m,b.turns+' turns · '+formatTokens(b.total_input_tokens)+' in · '+formatTokens(b.output_tokens)+' out'));
+                });
             });
         }
     }

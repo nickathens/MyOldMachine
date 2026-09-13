@@ -102,7 +102,7 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-09-13] linux: per-user engine picker (/engine, Mini App) and usage accounting (PR #170)
+[2026-09-13] linux: per-user engine picker and usage accounting; audit fixes for defaults, counting, login, allowance and stop handling (PR #170)
 
 (Entries removed above: #166 merged 2026-09-11, its own line cleared in the
 PR rather than in a follow-up, since the same edit already had the file open.

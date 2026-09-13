@@ -30,6 +30,8 @@ silently shows zero when the real answer is 95% is worse than no bar.
 """
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -83,6 +85,8 @@ def record_turn(
     cache_creation_tokens: int = 0,
     list_cost_usd: float = 0.0,
     ok: bool = True,
+    usage_reported: bool | None = None,
+    cost_reported: bool | None = None,
 ) -> bool:
     """Append one finished turn to this user's ledger. Never raises.
 
@@ -102,6 +106,9 @@ def record_turn(
         "cache_creation_tokens": int(cache_creation_tokens or 0),
         "list_cost_usd": round(float(list_cost_usd or 0.0), 6),
         "ok": bool(ok),
+        "usage_reported": usage_reported if usage_reported is not None else bool(
+            input_tokens or output_tokens or cache_read_tokens or cache_creation_tokens),
+        "cost_reported": cost_reported if cost_reported is not None else bool(list_cost_usd),
     }
     path = ledger_path(user_id)
     try:
@@ -159,28 +166,45 @@ def _read_rows(path: Path) -> list[dict]:
     return rows
 
 
+def total_input_tokens(row: dict) -> int:
+    """Input including cache, once. Codex includes cache reads in input already."""
+    total = row.get("input_tokens", 0) or 0
+    if row.get("provider") in ("claude-cli", "claude", "claude-api", "freecc"):
+        total += (row.get("cache_read_tokens", 0) or 0)
+        total += (row.get("cache_creation_tokens", 0) or 0)
+    return total
+
+
 def _blank_summary() -> dict:
-    summary = {"turns": 0, "failed_turns": 0, "by_model": {}}
+    summary = {"turns": 0, "failed_turns": 0, "by_model": {},
+               "total_input_tokens": 0, "unmeasured_turns": 0,
+               "unpriced_turns": 0}
     for field in _NUMERIC_FIELDS:
         summary[field] = 0 if field != "list_cost_usd" else 0.0
     return summary
 
 
 def _add_row(summary: dict, row: dict) -> None:
-    summary["turns"] += 1
-    if not row.get("ok", True):
-        summary["failed_turns"] += 1
-    for field in _NUMERIC_FIELDS:
-        summary[field] += row.get(field, 0) or 0
     key = row.get("model") or row.get("provider") or "unknown"
-    bucket = summary["by_model"].setdefault(
-        key, {"turns": 0, "input_tokens": 0, "output_tokens": 0,
-              "list_cost_usd": 0.0, "engine": row.get("engine", "")},
-    )
-    bucket["turns"] += 1
-    bucket["input_tokens"] += row.get("input_tokens", 0) or 0
-    bucket["output_tokens"] += row.get("output_tokens", 0) or 0
-    bucket["list_cost_usd"] += row.get("list_cost_usd", 0.0) or 0.0
+    if key not in summary["by_model"]:
+        bucket = _blank_summary()
+        del bucket["by_model"]
+        bucket["engine"] = row.get("engine", "")
+        summary["by_model"][key] = bucket
+    measured = row.get("usage_reported")
+    if measured is None:
+        measured = any(row.get(k) for k in _NUMERIC_FIELDS if k != "list_cost_usd")
+    priced = row.get("cost_reported")
+    if priced is None:
+        priced = bool(row.get("list_cost_usd"))
+    for target in (summary, summary["by_model"][key]):
+        target["turns"] += 1
+        target["failed_turns"] += int(not row.get("ok", True))
+        target["unmeasured_turns"] += int(not measured)
+        target["unpriced_turns"] += int(not priced)
+        target["total_input_tokens"] += total_input_tokens(row)
+        for field in _NUMERIC_FIELDS:
+            target[field] += row.get(field, 0) or 0
 
 
 def summarise(user_id: int, days: int = 7) -> dict:
@@ -240,13 +264,19 @@ def _ensure_usage_dir() -> None:
         log.warning("Could not chmod %s to 0700: %s", USAGE_DIR, exc)
 
 
-def save_claude_rate_limits(info: dict) -> bool:
+def save_claude_rate_limits(info: dict, *, captured_at: float | None = None) -> bool:
     """Store one ``rate_limit_info`` payload, stamped with the time seen."""
     if not isinstance(info, dict):
         return False
     try:
         _ensure_usage_dir()
-        save_json(CLAUDE_LIMITS_FILE, {"captured_at": int(time.time()), "info": info})
+        captured_at = int(time.time() if captured_at is None else captured_at)
+        with open(USAGE_DIR / "claude_rate_limits.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            stored = load_json(CLAUDE_LIMITS_FILE, {})
+            if isinstance(stored, dict) and (stored.get("captured_at") or 0) > captured_at:
+                return True
+            save_json(CLAUDE_LIMITS_FILE, {"captured_at": captured_at, "info": info})
         return True
     except OSError as exc:
         log.warning("Could not store Claude rate limits: %s", exc)
@@ -287,7 +317,7 @@ def claude_meter() -> Optional[dict]:
                 "resets_at": window.get("resetsAt") or window.get("resets_at"),
             })
     windows.sort(key=lambda w: w["id"])
-    if not windows:
+    if not windows and not info.get("status"):
         return None
     return {
         "source": "claude-cli",
@@ -301,7 +331,7 @@ def claude_meter() -> Optional[dict]:
 # ─── Codex: a live read over its own app-server protocol ─────────────
 
 _CODEX_CACHE_TTL = 60.0
-_codex_cache: tuple[float, Optional[dict]] | None = None
+_codex_cache: tuple[tuple, float, Optional[dict]] | None = None
 
 
 def _codex_rpc_rate_limits(binary: str, timeout: float) -> Optional[dict]:
@@ -318,9 +348,11 @@ def _codex_rpc_rate_limits(binary: str, timeout: float) -> Optional[dict]:
     * **the server is killed either way.** It is a daemon by design and must
       not outlive the question.
     """
+    from core.llm import CodexCLIProvider
     try:
         proc = subprocess.Popen(
             [binary, "app-server"],
+            env=CodexCLIProvider()._get_cli_env(None),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True,
         )
@@ -340,6 +372,14 @@ def _codex_rpc_rate_limits(binary: str, timeout: float) -> Optional[dict]:
                     message = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(message, dict) and message.get("id") == 1:
+                    if "error" in message:
+                        answer["message"] = message
+                        return
+                    proc.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+                    proc.stdin.write(json.dumps({"id": 2, "method": "account/rateLimits/read",
+                                                "params": None}) + "\n")
+                    proc.stdin.flush()
                 if isinstance(message, dict) and message.get("id") == 2:
                     answer["message"] = message
                     return
@@ -358,9 +398,6 @@ def _codex_rpc_rate_limits(binary: str, timeout: float) -> Optional[dict]:
                     "capabilities": {},
                 },
             })
-            + "\n"
-            + json.dumps({"jsonrpc": "2.0", "id": 2,
-                          "method": "account/rateLimits/read", "params": None})
             + "\n"
         )
         try:
@@ -432,7 +469,7 @@ def _codex_window_label(minutes: object, fallback: str) -> str:
     return f"{minutes} minutes"
 
 
-def codex_meter(*, timeout: float = 25.0, binary: str = "codex",
+def codex_meter(*, timeout: float = 25.0, binary: str | None = None,
                 use_cache: bool = True) -> Optional[dict]:
     """Live subscription usage for the Codex account, or None.
 
@@ -440,30 +477,55 @@ def codex_meter(*, timeout: float = 25.0, binary: str = "codex",
     and the picker asks on every render.
     """
     global _codex_cache
+    from core.llm import _find_cli_binary, CodexCLIProvider
+    binary = binary or _find_cli_binary("codex")
+    env = CodexCLIProvider()._get_cli_env(None)
+    home = Path(env.get("CODEX_HOME") or str(Path.home() / ".codex"))
+    try:
+        auth = (home / "auth.json").stat()
+        stamp = (auth.st_ino, auth.st_mtime_ns, auth.st_size)
+    except OSError:
+        stamp = None
+    context_key = (binary, str(home), stamp, env.get("OPENAI_BASE_URL"),
+           hashlib.sha256(env.get("OPENAI_API_KEY", "").encode()).hexdigest())
     now = time.monotonic()
-    if use_cache and _codex_cache is not None and (now - _codex_cache[0]) < _CODEX_CACHE_TTL:
-        return _codex_cache[1]
+    cached = _codex_cache
+    if (use_cache and cached is not None and cached[0] == context_key
+            and (now - cached[1]) < _CODEX_CACHE_TTL):
+        return dict(cached[2], live=False) if cached[2] else None
     raw = _codex_rpc_rate_limits(binary, timeout)
     meter = None
     if isinstance(raw, dict):
-        limits = raw.get("rateLimits")
-        if isinstance(limits, dict):
-            windows = [
-                w for w in (
-                    _codex_window(limits.get("primary"), "primary"),
-                    _codex_window(limits.get("secondary"), "secondary"),
-                ) if w
-            ]
-            if windows:
-                meter = {
-                    "source": "codex-app-server",
-                    "live": True,
-                    "captured_at": int(time.time()),
-                    "plan": limits.get("planType"),
-                    "status": None if raw.get("ordinaryUsageAllowed", True) else "rejected",
-                    "windows": windows,
-                }
-    _codex_cache = (now, meter)
+        buckets = raw.get("rateLimitsByLimitId")
+        buckets = dict(buckets) if isinstance(buckets, dict) else {}
+        legacy = raw.get("rateLimits")
+        if isinstance(legacy, dict):
+            buckets.setdefault(legacy.get("limitId") or "codex", legacy)
+        windows, restrictions = [], []
+        for key, limits in buckets.items():
+            if not isinstance(limits, dict):
+                continue
+            label = limits.get("limitName") or key
+            reason = limits.get("rateLimitReachedType")
+            if reason:
+                restrictions.append({"id": key, "label": label, "reason": reason,
+                                     "message": str(reason).replace("_", " ")})
+            for field in ("primary", "secondary"):
+                window = _codex_window(limits.get(field), field)
+                if window:
+                    window.update(id=f"{key}:{field}", bucket_id=key,
+                                  label=f"{label}: {window['label']}")
+                    windows.append(window)
+        allowed = raw.get("ordinaryUsageAllowed")
+        if windows or restrictions or isinstance(allowed, bool):
+            meter = {
+                "source": "codex-app-server", "live": True,
+                "captured_at": int(time.time()),
+                "plan": legacy.get("planType") if isinstance(legacy, dict) else None,
+                "status": "allowed" if allowed is True else "rejected" if allowed is False else "unknown",
+                "windows": windows, "restrictions": restrictions,
+            }
+    _codex_cache = (context_key, now, meter)
     return meter
 
 

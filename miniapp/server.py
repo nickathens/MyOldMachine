@@ -631,8 +631,11 @@ from core.engines import (  # noqa: E402
 )
 
 
-def _engine_payload(user_id: int) -> dict:
+def _engine_payload(user_id: int, admin: bool | None = None) -> dict:
+    from core.engines import resolve_engine
+    effective = resolve_engine(user_id, admin=admin)
     return {
+        "effective": (effective or {}).get("id", ""),
         "picked": _user_engine_id(user_id),
         "engines": [
             {
@@ -651,19 +654,21 @@ def _engine_payload(user_id: int) -> dict:
 
 @app.get("/api/engine")
 def get_engine(user: dict = Depends(_get_user)):
-    return _engine_payload(int(user["_id"]))
+    return _engine_payload(int(user["_id"]), _is_admin(user))
 
 
 @app.post("/api/engine")
 async def set_engine(request: Request, user: dict = Depends(_get_user)):
     """Store the caller's own engine. Never takes a user id from the body."""
     body = await request.json()
-    engine_id = (body.get("engine") or "").strip()
+    if not isinstance(body, dict) or not isinstance(body.get("engine", ""), str):
+        raise HTTPException(status_code=400, detail="engine must be a string")
+    engine_id = body.get("engine", "").strip()
     user_id = int(user["_id"])
     ok, message = await run_in_threadpool(_set_user_engine, user_id, engine_id)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
-    payload = _engine_payload(user_id)
+    payload = await run_in_threadpool(_engine_payload, user_id, _is_admin(user))
     payload["message"] = message
     return payload
 
@@ -692,10 +697,7 @@ def get_usage(days: int = 7, user: dict = Depends(_get_user)):
             rows.append({
                 "id": uid,
                 "name": profile.get("display_name") or profile.get("name") or uid,
-                "turns": summary["turns"],
-                "input_tokens": summary["input_tokens"] + summary["cache_read_tokens"],
-                "output_tokens": summary["output_tokens"],
-                "list_cost_usd": summary["list_cost_usd"],
+                **summary,
             })
         payload["everyone"] = sorted(rows, key=lambda r: -r["turns"])
     return payload

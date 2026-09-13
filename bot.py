@@ -20,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1775,39 +1776,35 @@ def _build_llm_provider(provider_name: str, model: str, api_key: str,
 # the size of core.engines.ENGINES and never evicted: a CLI provider holds no
 # connection, only callbacks and the set of its own live subprocesses.
 _engine_providers: dict = {}
+_engine_provider_lock = threading.RLock()
 
 
 def _provider_for_user(user_id: int):
-    """(provider, engine) for this user's next turn.
-
-    ``engine`` is None for everybody who has not picked one, and then the
-    provider is the install's own — the historical behaviour, unchanged. A
-    picked engine whose CLI has since gone missing also lands there rather
-    than failing the turn, because core.engines.resolve_engine re-checks
-    availability before answering.
-    """
+    """The effective engine; administrators retain the machine default."""
     from core.engines import engine_effort, resolve_engine
     try:
-        engine = resolve_engine(user_id)
+        engine = resolve_engine(user_id, default_provider=getattr(_llm_provider, "provider_name", None),
+                                admin=is_admin(user_id))
     except Exception:
         logger.exception(f"Engine lookup failed for user {user_id}")
         return _llm_provider, None
     if engine is None:
         return _llm_provider, None
-    spec = (engine["provider"], engine["model"], engine_effort(engine))
-    provider = _engine_providers.get(spec)
-    if provider is None:
-        try:
-            provider = _build_llm_provider(
-                spec[0], spec[1], "", track_spec=False, effort=spec[2],
-            )
-        except Exception:
-            logger.exception(
-                f"Could not build the {engine['id']} engine for user {user_id}"
-            )
-            return _llm_provider, None
-        _engine_providers[spec] = provider
-    return provider, engine
+    with _engine_provider_lock:
+        spec = (engine["provider"], engine["model"], engine_effort(engine))
+        provider = _engine_providers.get(spec)
+        if provider is None:
+            try:
+                provider = _build_llm_provider(
+                    spec[0], spec[1], "", track_spec=False, effort=spec[2],
+                )
+            except Exception:
+                logger.exception(
+                    f"Could not build the {engine['id']} engine for user {user_id}"
+                )
+                return _llm_provider, None
+            _engine_providers[spec] = provider
+        return provider, engine
 
 
 def _record_turn_usage(user_id: int, provider_obj, engine, response) -> None:
@@ -1838,7 +1835,10 @@ def _record_turn_usage(user_id: int, provider_obj, engine, response) -> None:
             cache_read_tokens=getattr(response, "cache_read_tokens", 0),
             cache_creation_tokens=getattr(response, "cache_creation_tokens", 0),
             list_cost_usd=getattr(response, "list_cost_usd", 0.0),
-            ok=not getattr(response, "error", None),
+            ok=(not getattr(response, "error", None)
+                and getattr(response, "completed", None) is not False),
+            usage_reported=getattr(response, "usage_reported", None),
+            cost_reported=getattr(response, "cost_reported", None),
         )
     except Exception:
         logger.exception(f"Could not record usage for user {user_id}")
@@ -1854,7 +1854,7 @@ def _live_providers() -> list:
     providers = []
     if _llm_provider is not None:
         providers.append(_llm_provider)
-    for provider in _engine_providers.values():
+    for provider in list(_engine_providers.values()):
         if provider is not None and provider not in providers:
             providers.append(provider)
     return providers
@@ -1934,11 +1934,11 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None,
     # rebuild the provider if the file's LLM settings drifted from the live
     # object. Must run before the health gate so a config fix can clear a
     # broken provider without a restart.
-    _refresh_provider_if_env_changed()
+    await asyncio.to_thread(_refresh_provider_if_env_changed)
 
     # Whose engine answers this turn: the user's own pick, or the install's
     # configured provider for everybody who has not picked one.
-    provider_obj, engine = _provider_for_user(user_id)
+    provider_obj, engine = await asyncio.to_thread(_provider_for_user, user_id)
 
     # Fast-fail guard: if the most recent health-check (run at startup or
     # after /provider, /model, /apikey) reported the provider as broken,
@@ -2553,7 +2553,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         obs_count = len(_memory_manager.get_all_observations(user_id, limit=None))
     await update.message.reply_text(
         f"Status: Online\n"
-        f"{_engine_status_line(user_id)}\n"
+        f"{await asyncio.to_thread(_engine_status_line, user_id)}\n"
         f"Messages in context: {len(history)}\n"
         f"Observations (long-term memory): {obs_count}\n"
         f"Has summary: {'Yes' if summary else 'No'}\n"
@@ -3656,7 +3656,7 @@ def _engine_status_line(user_id: int) -> str:
     false statement to anyone running their own engine.
     """
     from core.engines import resolve_engine
-    engine = resolve_engine(user_id)
+    engine = resolve_engine(user_id, default_provider=get_llm_provider(), admin=is_admin(user_id))
     if engine is None:
         return f"Provider: {get_llm_provider()} / {get_llm_model()}"
     return (f"Engine: {engine['label']} — {engine['model']}, "
@@ -3665,8 +3665,8 @@ def _engine_status_line(user_id: int) -> str:
 
 def _engine_lines(user_id: int) -> list[str]:
     """One line per engine, marking the current one and explaining any gap."""
-    from core.engines import available_engines, user_engine_id
-    picked = user_engine_id(user_id)
+    from core.engines import available_engines, resolve_engine
+    picked = (resolve_engine(user_id) or {}).get("id", "")
     lines = []
     for engine in available_engines():
         marks = []
@@ -3688,15 +3688,15 @@ async def engine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Per user, not per install: /provider and /model stay admin-only and keep
     setting what everybody without a pick gets.
     """
-    from core.engines import ENGINE_IDS, set_user_engine, user_engine_id
+    from core.engines import ENGINE_IDS, set_user_engine, resolve_engine
     user_id = update.effective_user.id
     choice = command_body(update.message.text).strip().lower()
 
     if choice:
         if choice in ("default", "none", "clear", "reset"):
-            ok, message = set_user_engine(user_id, "")
+            ok, message = await asyncio.to_thread(set_user_engine, user_id, "")
         elif choice in ENGINE_IDS:
-            ok, message = set_user_engine(user_id, choice)
+            ok, message = await asyncio.to_thread(set_user_engine, user_id, choice)
         else:
             ok, message = False, (
                 f"No engine called {choice!r}. Options: "
@@ -3707,16 +3707,14 @@ async def engine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(message)
         return
 
-    from core.engines import get_engine
-    picked = user_engine_id(user_id)
-    chosen = get_engine(picked)
+    chosen = await asyncio.to_thread(resolve_engine, user_id)
     header = (f"Engine: {chosen['label']}" if chosen
               else f"Engine: the bot's default ({get_llm_model()})")
-    body = [header, ""] + _engine_lines(user_id) + [
+    body = [header, ""] + await asyncio.to_thread(_engine_lines, user_id) + [
         "",
         f"Switch with /engine {' or /engine '.join(ENGINE_IDS)}.",
-        "/engine default hands you back to the bot's own setting "
-        f"({get_llm_model()}).",
+        "/engine default clears your saved choice. Ordinary CLI users default "
+        "to Opus at Max; administrators retain the machine setting.",
     ]
     await update.message.reply_text("\n".join(body))
 
@@ -3726,8 +3724,16 @@ def _meter_lines(meter: dict, label: str) -> list[str]:
     if meter.get("unavailable"):
         return [f"  {label}: no reading — {meter.get('reason', '')}"]
     plan = f" ({meter['plan']})" if meter.get("plan") else ""
-    freshness = "live" if meter.get("live") else _format_age(meter.get("captured_at"))
+    freshness = _format_age(meter.get("captured_at"))
     lines = [f"  {label}{plan}, {freshness}:"]
+    status = meter.get("status")
+    status_label = {"allowed": "Allowed", "allowed_warning": "Allowed, approaching a limit",
+                    "rejected": "Blocked", "unknown": "Permission unknown"}.get(status, "Permission unknown")
+    lines.append(f"    {status_label}")
+    if meter.get("blocked_reason"):
+        lines.append(f"    {meter['blocked_reason']}")
+    for restriction in meter.get("restrictions", []):
+        lines.append(f"    {restriction['label']}: {restriction.get('message') or restriction['reason'].replace('_', ' ')}")
     for window in meter.get("windows", []):
         resets = _format_when(window.get("resets_at"))
         tail = f", resets {resets}" if resets else ""
@@ -3746,9 +3752,13 @@ def _usage_block(summary: dict) -> list[str]:
         + (f" ({summary['failed_turns']} failed)" if summary["failed_turns"] else "")
     ]
     lines.append(
-        f"  {summary['input_tokens'] + summary['cache_read_tokens']:,} tokens in, "
+        f"  {summary['total_input_tokens']:,} tokens in, "
         f"{summary['output_tokens']:,} out"
     )
+    if summary.get("unmeasured_turns"):
+        lines.append(f"  Consumption unreported for {summary['unmeasured_turns']} turns; totals are incomplete.")
+    if summary.get("unpriced_turns"):
+        lines.append(f"  List cost unavailable for {summary['unpriced_turns']} turns.")
     if summary["list_cost_usd"]:
         lines.append(
             f"  ${summary['list_cost_usd']:.2f} at list price "
@@ -3756,7 +3766,8 @@ def _usage_block(summary: dict) -> list[str]:
         )
     for model, bucket in sorted(summary["by_model"].items(),
                                 key=lambda kv: -kv[1]["turns"]):
-        lines.append(f"    {model}: {bucket['turns']} turns")
+        lines.append(f"    {model}: {bucket['turns']} turns, "
+                     f"{bucket['total_input_tokens']:,} tokens in, {bucket['output_tokens']:,} out")
     return lines
 
 
@@ -3789,11 +3800,17 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                        key=lambda kv: -kv[1]["turns"]):
                 profile = get_user_profile(int(uid))
                 name = profile.get("display_name") or profile.get("name") or uid
-                cost = (f", ${summary['list_cost_usd']:.2f} list"
-                        if summary["list_cost_usd"] else "")
-                lines.append(f"  {name}: {summary['turns']} turns{cost}")
+                lines.append(f"  {name}:")
+                lines += _usage_block(summary)
 
-    await update.message.reply_text("\n".join(lines))
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > 3900:
+            await update.message.reply_text(chunk)
+            chunk = ""
+        chunk += ("\n" if chunk else "") + line
+    if chunk:
+        await update.message.reply_text(chunk)
 
 
 @requires_auth
@@ -4502,7 +4519,7 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
     # via tools). Asked of the provider that will answer THIS user: on an
     # install whose default is an API provider, somebody on a CLI engine
     # transcribes their own voice notes and must not have it done for them.
-    if attachments and not isinstance(_provider_for_user(user_id)[0], _CLI_PROVIDERS):
+    if attachments and not isinstance((await asyncio.to_thread(_provider_for_user, user_id))[0], _CLI_PROVIDERS):
         for path, ftype in attachments:
             if ftype == "voice":
                 transcript = await _auto_transcribe_voice(str(path))

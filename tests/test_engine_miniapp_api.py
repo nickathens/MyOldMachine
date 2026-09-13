@@ -40,6 +40,9 @@ def _user(uid: str, role: str = "user") -> dict:
 
 class EngineEndpointTests(unittest.TestCase):
     def setUp(self):
+        login = patch("core.engines._login_status", return_value=(True, ""))
+        login.start()
+        self.addCleanup(login.stop)
         self.tmp = Path(tempfile.mkdtemp(prefix="mom-mini-engine-"))
         self._saved_users = users.USERS_DATA_DIR
         users.USERS_DATA_DIR = self.tmp
@@ -104,6 +107,9 @@ class EngineEndpointTests(unittest.TestCase):
 
 class UsageEndpointTests(unittest.TestCase):
     def setUp(self):
+        login = patch("core.engines._login_status", return_value=(True, ""))
+        login.start()
+        self.addCleanup(login.stop)
         self.tmp = Path(tempfile.mkdtemp(prefix="mom-mini-usage-"))
         self._saved_users = users.USERS_DATA_DIR
         self._saved_limits = usage.CLAUDE_LIMITS_FILE

@@ -280,6 +280,9 @@ class ProviderRoutingTests(unittest.TestCase):
     """bot.py: whose provider answers, and who gets asked to stop."""
 
     def setUp(self):
+        login = patch("core.engines._login_status", return_value=(True, ""))
+        login.start()
+        self.addCleanup(login.stop)
         import bot as botmod
         self.bot = botmod
         self.tmp = Path(tempfile.mkdtemp(prefix="mom-routing-"))
@@ -363,7 +366,7 @@ class ProviderRoutingTests(unittest.TestCase):
         provider.effort_override = "xhigh"
         response = MagicMock(input_tokens=100, output_tokens=20,
                              cache_read_tokens=5, cache_creation_tokens=1,
-                             list_cost_usd=0.0, error=None)
+                             list_cost_usd=0.0, error=None, usage_reported=True, cost_reported=False, completed=True)
         self.bot._record_turn_usage(7, provider, {"id": "astra"}, response)
         summary = usage.summarise(7, 7)
         self.assertEqual(summary["turns"], 1)
@@ -379,7 +382,7 @@ class ProviderRoutingTests(unittest.TestCase):
         provider.effort_override = "max"
         response = MagicMock(input_tokens=0, output_tokens=0,
                              cache_read_tokens=0, cache_creation_tokens=0,
-                             list_cost_usd=0.0, error="OOM killed")
+                             list_cost_usd=0.0, error="OOM killed", usage_reported=False, cost_reported=False, completed=False)
         self.bot._record_turn_usage(7, provider, None, response)
         self.assertEqual(usage.summarise(7, 7)["failed_turns"], 1)
 

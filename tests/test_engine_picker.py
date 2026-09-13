@@ -98,6 +98,9 @@ class EngineCatalogTests(unittest.TestCase):
 
 class AvailabilityProbeTests(unittest.TestCase):
     def setUp(self):
+        login = patch("core.engines._login_status", return_value=(True, ""))
+        login.start()
+        self.addCleanup(login.stop)
         engines.probe_cache_clear()
         self.addCleanup(engines.probe_cache_clear)
 
@@ -154,10 +157,16 @@ class _UserDirTestCase(unittest.TestCase):
     """Every test below writes under a temp users tree, never the real one."""
 
     def setUp(self):
+        login = patch("core.engines._login_status", return_value=(True, ""))
+        login.start()
+        self.addCleanup(login.stop)
         self.tmp = Path(tempfile.mkdtemp(prefix="mom-engine-"))
         self._saved = users.USERS_DATA_DIR
         users.USERS_DATA_DIR = self.tmp
         engines.probe_cache_clear()
+        config = patch("core.config.get_llm_provider", return_value="openai")
+        config.start()
+        self.addCleanup(config.stop)
 
     def tearDown(self):
         users.USERS_DATA_DIR = self._saved
@@ -203,13 +212,16 @@ class PreferenceStoreTests(_UserDirTestCase):
 
 class SelectionTests(_UserDirTestCase):
     def setUp(self):
+        login = patch("core.engines._login_status", return_value=(True, ""))
+        login.start()
+        self.addCleanup(login.stop)
         super().setUp()
         self._probe = patch("core.engines._cli_version_text",
                             return_value="codex-cli 0.154.0")
         self._probe.start()
         self.addCleanup(self._probe.stop)
 
-    def test_nobody_starts_with_an_engine(self):
+    def test_api_install_keeps_machine_default(self):
         self.assertEqual(engines.user_engine_id(7), "")
         self.assertIsNone(engines.resolve_engine(7))
 

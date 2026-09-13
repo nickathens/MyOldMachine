@@ -130,16 +130,38 @@ without touching anybody else's:
 ```
 /engine                      show the options and which one you are on
 /engine astra                your messages only, from the next one
-/engine default              back to the machine's own setting
+/engine default              clear your saved engine choice
 /usage                       your turns and tokens, plus what is left
 ```
 
-The engine buttons are offered only where the CLI behind them is installed
-and new enough, and each one carries its own reasoning effort. The same two
-buttons, in colour, are in the Mini App's Settings panel along with a usage
-view. Subscription meters come from the CLIs themselves: Claude Code reports
-its five hour and seven day windows during a turn, Codex answers a live usage
-read. A meter that cannot be read says so rather than showing an empty bar.
+On a Claude CLI or Codex installation, ordinary users default to **Opus at
+Max effort** when the Claude subscription login is available. **Astra at
+Extra High effort** has a separate amber button. Administrators retain the
+machine setting, and API or local model installations retain their existing
+defaults. A saved choice applies from the next message without a restart.
+If its CLI or login becomes unavailable, the machine setting is used and the
+picker shows the fallback while keeping the saved preference.
+
+The buttons check binary discovery, supported version and local subscription
+login. This does not prove remote model access or that an expired credential
+will be accepted; the next real turn can still report an account error.
+Both buttons and Usage are in Mini App Settings, with `/engine` and `/usage`
+available in Telegram too.
+
+Usage records each person's turns, completion state and reported token counts.
+Input totals include cached input exactly once, following each provider's
+counting convention. Administrators see totals and model breakdowns for every
+person. Missing consumption is marked unreported, so an interrupted turn with
+no usage report is never presented as a measured zero. Claude's reported list
+cost is accounting, not a subscription charge; missing costs stay unavailable.
+Tracking covers turns recorded by this bot, not activity elsewhere on the account.
+
+Subscription allowance is shared by everyone on the machine. Claude readings
+come from events during turns, stamped when observed; Codex readings come from
+its app server and may be cached for 60 seconds. Both show the reading's age.
+All reported quota buckets and block reasons are retained. Allowed, blocked
+and unknown permission are distinct, and a reset time or low percentage never
+implies permission to run. A missing meter says why it could not be read.
 
 ## Install modes
 
