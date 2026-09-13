@@ -102,9 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-09-13] linux: per-user engine picker and usage accounting; audit fixes for defaults, counting, login, allowance and stop handling (PR #170)
+(none open)
 
-(Entries removed above: #166 merged 2026-09-11, its own line cleared in the
+(Entries removed above: #170 merged 2026-09-13.
+#166 merged 2026-09-11, its own line cleared in the
 PR rather than in a follow-up, since the same edit already had the file open.
 #165 merged 2026-09-11, its line cleared inside #166's
 own edit because the two share lines - the same call as #127 and #161.
