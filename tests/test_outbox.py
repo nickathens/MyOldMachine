@@ -600,8 +600,14 @@ class StartupWiringTests(unittest.TestCase):
         # Matches the redirect itself, not the save/restore lines around it: a
         # bare "USERS_DATA_DIR" scan still passes after the redirect is deleted,
         # so it could not detect the very bug it was written for.
+        # The second alternative is the same redirect written with
+        # patch.object, which unittest undoes for you. Both name a temp dir
+        # explicitly, so pointing the root at anything real still offends.
+        temp = r"(Path\(self\._tmp\.name\)|self\.users_dir)"
         redirect = re.compile(
-            r"users_mod\.USERS_DATA_DIR\s*=\s*(Path\(self\._tmp\.name\)|self\.users_dir)"
+            r"users_mod\.USERS_DATA_DIR\s*=\s*" + temp
+            + r"|patch\.object\(\s*users_mod,\s*[\"']USERS_DATA_DIR[\"']\s*,\s*"
+            + temp + r"\s*\)"
         )
         offenders = []
         for path in sorted((ROOT / "tests").glob("test_*.py")):

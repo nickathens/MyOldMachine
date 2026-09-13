@@ -66,6 +66,7 @@ core/
   updater.py        — Git pull + restart mechanism
   self_install.py   — Runtime dependency installer
   memory.py         — Deep memory system (person models, observations, reflection)
+  project_context.py — Bounded per-project summaries for the system prompt
   health.py         — Health check endpoint
   message_log.py    — FTS5 SQLite log of user/assistant messages and attachments
   mcp_client.py     — MCP server client (AsyncExitStack, env sanitization)

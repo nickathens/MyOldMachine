@@ -34,6 +34,15 @@ Optional flags:
     --project SLUG   — scope observation to a project (routes to project state during reflection)
     --importance N   — importance score 1-10 (default: 5). Higher = more impactful.
     --no-semantic    — skip the semantic corroboration pass (lexical dedup only)
+    --basis          — explicit (the user said it), inferred (you concluded it), or
+                       unspecified (default, and what older entries read as)
+    --source         — telegram:CHAT_ID:MESSAGE_ID or file:/absolute/path
+    --quote          — the exact supporting words from that source
+
+Evidence rules: a quote needs its source, and an explicit entry needs both. Never
+invent either one. A self-eval is the assistant's own inference and cannot be
+explicit. Two entries with different evidence are never folded together; the same
+evidence saved twice is a duplicate, not a second confirmation.
 """
 
 import argparse
@@ -44,7 +53,8 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.memory import MemoryManager, VALID_OBSERVATION_TYPES
+from core.memory import (VALID_BASIS, VALID_OBSERVATION_TYPES, MemoryManager,
+                         render_observation)
 from core.config import DATA_DIR
 
 
@@ -61,6 +71,12 @@ def main():
     parser.add_argument("--list", "-l", action="store_true", help="List recent observations")
     parser.add_argument("--search", "-s", help="Search observations for a keyword")
     parser.add_argument("--limit", type=int, default=20, help="Number of entries to show (default: 20)")
+    parser.add_argument("--basis", choices=VALID_BASIS, default="unspecified",
+                        help="explicit (the user said it), inferred (you concluded it), or unspecified")
+    parser.add_argument("--source", help="telegram:CHAT_ID:MESSAGE_ID or file:/absolute/path")
+    parser.add_argument("--quote", help="Exact supporting words from that source")
+    parser.add_argument("--raw", action="store_true",
+                        help="Print stored lines verbatim instead of the readable form")
 
     args = parser.parse_args()
 
@@ -73,9 +89,9 @@ def main():
         # Search observations
         observations = mm.get_all_observations(args.user, limit=200)
         query = args.search.lower()
-        matches = [o for o in observations if query in o.lower()]
+        matches = [o for o in observations if query in render_observation(o).lower()]
         for line in matches:
-            print(line)
+            print(line if args.raw else render_observation(line))
         print(f"\n--- {len(matches)} matches for '{args.search}' ---")
 
     elif args.list:
@@ -87,7 +103,7 @@ def main():
             print(f"No observations found for user {args.user}")
             return
         for line in observations:
-            print(line)
+            print(line if args.raw else render_observation(line))
         print(f"\n--- {len(observations)} observations ---")
 
     elif args.type and args.content:
@@ -104,10 +120,16 @@ def main():
         # Add observation (dedup/corroboration is handled inside MemoryManager)
         result = mm.add_observation(args.user, args.type, args.content,
                                     importance=args.importance, project=args.project,
-                                    use_semantic=not args.no_semantic)
+                                    use_semantic=not args.no_semantic,
+                                    basis=args.basis, source=args.source, quote=args.quote)
         status = result.get("status")
 
-        if status == "invalid_type":
+        if status == "invalid_evidence":
+            print(f"ERROR: {result.get('reason', 'evidence rejected')}")
+            sys.exit(1)
+        elif status == "duplicate_evidence":
+            print(f"DUPLICATE: the same source evidence is already saved for user {args.user}")
+        elif status == "invalid_type":
             print(f"ERROR: Invalid type '{args.type}'. Must be one of: {', '.join(VALID_OBSERVATION_TYPES)}")
             sys.exit(1)
         elif status == "corroborated_lexical":
@@ -122,6 +144,9 @@ def main():
                 extras.append(f"project={args.project}")
             if args.importance != 5:
                 extras.append(f"importance={args.importance}")
+            extras.append(f"basis={args.basis}")
+            if args.source:
+                extras.append(f"source={args.source}")
             extra_str = f" ({', '.join(extras)})" if extras else ""
             print(f"OK: Saved {args.type} observation for user {args.user}{extra_str}")
 

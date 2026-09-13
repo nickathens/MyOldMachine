@@ -186,7 +186,7 @@ class CallLlmWiringTests(unittest.IsolatedAsyncioTestCase):
              patch.object(botmod, "_provider_for_user", lambda uid: (provider, None)), \
              patch.object(botmod, "_llm_provider", provider), \
              patch.object(botmod, "build_system_prompt",
-                          lambda uid, provider=None: "sys"), \
+                          lambda uid, provider=None, new_message=None: "sys"), \
              patch.object(botmod, "build_messages",
                           lambda uid, msg: [botmod.Message(role="user", content=msg)]), \
              patch.object(botmod, "_get_llm_semaphore", return_value=asyncio.Semaphore(1)), \
