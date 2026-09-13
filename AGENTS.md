@@ -102,9 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-09-13] mac: admin picks the machine engine from every model it runs, usage leaves the picker (PR #172)
+(none open)
 
-(Entries removed above: #170 merged 2026-09-13.
+(Entries removed above: #172 cleared in its reviewed merge revision.
+#170 merged 2026-09-13.
 #166 merged 2026-09-11, its own line cleared in the
 PR rather than in a follow-up, since the same edit already had the file open.
 #165 merged 2026-09-11, its line cleared inside #166's

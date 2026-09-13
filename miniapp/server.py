@@ -22,6 +22,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -153,54 +154,74 @@ def _save_json(path: Path, data: dict) -> None:
 
 def _read_env_var(key: str, default: str = "") -> str:
     """Read a single variable from .env without polluting os.environ."""
+    return _read_env_values().get(key, default)
+
+
+def _read_env_values() -> dict[str, str]:
+    """Read one file snapshot so a settings pair cannot span two writes."""
     if not ENV_FILE.exists():
-        return default
+        return {}
     try:
         lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return default
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=\s*(.*?)\s*$")
+        return {}
+    pattern = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+    values = {}
     for line in lines:
         if line.lstrip().startswith("#"):
             continue
         m = pattern.match(line)
         if m:
-            value = m.group(1)
+            value = m.group(2)
             if value.startswith('"') and value.endswith('"') and len(value) >= 2:
                 value = value[1:-1]
-            return value
-    return default
+            values.setdefault(m.group(1), value)
+    return values
 
 
 def _write_env_var(key: str, value: str) -> None:
-    """Write or update a single key in .env atomically. Preserves comments
+    _write_env_vars({key: value})
+
+
+_env_write_lock = threading.RLock()
+
+
+def _write_env_vars(values: dict[str, str]) -> None:
+    """Publish related settings once; serialize concurrent panel writes."""
+    with _env_write_lock:
+        _write_env_vars_locked(values)
+
+
+def _write_env_vars_locked(values: dict[str, str]) -> None:
+    """Write related keys in .env atomically. Preserves comments
     and ordering. Creates .env if missing. Raises on disk errors.
 
     Empty string is allowed for clearing a value (e.g. unset LLM_MODEL when
     a provider has no safe default).
     """
-    if key not in WRITABLE_ENV_KEYS:
-        raise ValueError(f"Refused to write env key {key!r}")
-    if value != "" and not re.fullmatch(r"[A-Za-z0-9_.:/@\-+]+", value):
-        raise ValueError(f"Refused to write env value with unsafe chars: {value!r}")
+    for key, value in values.items():
+        if key not in WRITABLE_ENV_KEYS:
+            raise ValueError(f"Refused to write env key {key!r}")
+        if value != "" and not re.fullmatch(r"[A-Za-z0-9_.:/@\-+]+", value):
+            raise ValueError(f"Refused to write env value with unsafe chars: {value!r}")
 
     existing_lines: list[str] = []
     if ENV_FILE.exists():
-        try:
-            existing_lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            existing_lines = []
+        existing_lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
 
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
     new_lines: list[str] = []
-    replaced = False
+    replaced = set()
     for line in existing_lines:
-        if pattern.match(line) and not line.lstrip().startswith("#"):
-            new_lines.append(f"{key}={value}")
-            replaced = True
+        for key, value in values.items():
+            if re.match(rf"^\s*{re.escape(key)}\s*=", line):
+                new_lines.append(f"{key}={value}")
+                replaced.add(key)
+                break
         else:
             new_lines.append(line)
-    if not replaced:
+    for key, value in values.items():
+        if key in replaced:
+            continue
         if new_lines and new_lines[-1].strip() != "":
             new_lines.append("")
         new_lines.append(f"{key}={value}")
@@ -251,7 +272,8 @@ def _available_providers() -> list[dict]:
     """Return providers in display order. Keep the wizard as the single
     source of truth — if the wizard knows a provider, expose it here."""
     order = [
-        ("claude", "Claude Code CLI"),
+        ("claude", "Claude (CLI or configured API key)"),
+        ("claude-cli", "Claude Code subscription"),
         ("codex", "Codex CLI"),
         ("claude-api", "Claude API"),
         ("openai", "OpenAI"),
@@ -277,7 +299,8 @@ def _available_models(provider: str) -> list[dict]:
         return [{"id": mid, "label": desc} for mid, desc in _WIZARD_OPENROUTER_MODELS]
     if provider == "ollama":
         return []
-    entries = _WIZARD_PROVIDER_MODELS.get(provider, [])
+    catalog_provider = {"claude-cli": "claude", "codex-cli": "codex"}.get(provider, provider)
+    entries = _WIZARD_PROVIDER_MODELS.get(catalog_provider, [])
     return [{"id": mid, "label": desc} for mid, desc in entries]
 
 
@@ -292,8 +315,10 @@ def _current_pair() -> tuple[str, str]:
     clamp on a switch all have to be about the SAME pair, and .env is a file
     another process rewrites.
     """
-    provider = _read_env_var("LLM_PROVIDER", "claude")
-    model = _read_env_var("LLM_MODEL", _WIZARD_DEFAULT_MODELS.get(provider, ""))
+    values = _read_env_values()
+    provider = values.get("LLM_PROVIDER", "claude")
+    catalog_provider = {"claude-cli": "claude", "codex-cli": "codex"}.get(provider, provider)
+    model = values.get("LLM_MODEL", _WIZARD_DEFAULT_MODELS.get(catalog_provider, ""))
     return provider, model
 
 
@@ -573,15 +598,9 @@ async def set_provider(request: Request, user: dict = Depends(_get_user)):
     valid = {p["id"] for p in _available_providers()}
     if provider_id not in valid:
         raise HTTPException(status_code=400, detail="Invalid provider")
-    _write_env_var("LLM_PROVIDER", provider_id)
-    default_model = _WIZARD_DEFAULT_MODELS.get(provider_id, "")
-    if default_model:
-        _write_env_var("LLM_MODEL", default_model)
-    else:
-        # No safe default for this provider (e.g. ollama — user must pick a
-        # tag they have pulled locally). Clear LLM_MODEL so the bot can't try
-        # to use the previous provider's model string as an ollama tag.
-        _write_env_var("LLM_MODEL", "")
+    catalog_provider = {"claude-cli": "claude"}.get(provider_id, provider_id)
+    default_model = _WIZARD_DEFAULT_MODELS.get(catalog_provider, "")
+    _write_env_vars({"LLM_PROVIDER": provider_id, "LLM_MODEL": default_model})
     effort = _effort_after_switch(provider_id, default_model)
     return {"provider": provider_id, "model": default_model, "effort": effort}
 
@@ -650,7 +669,7 @@ def _machine_engine_payload() -> dict:
     a stale import would light the wrong button.
     """
     provider, model = _current_pair()
-    rows = _machine_engines(provider, model)
+    rows = _machine_engines(provider, model, api_key=_read_env_var("LLM_API_KEY"))
     return {
         "admin": True,
         "machine": True,
@@ -718,17 +737,19 @@ def _set_machine_engine(engine_id: str) -> dict:
     that is about to run, so a trip through a model with fewer levels must
     not burn the level to come back to.
     """
-    engine = _machine_engine(engine_id)
+    rows = _machine_engines(*_current_pair(), api_key=_read_env_var("LLM_API_KEY"))
+    engine = _machine_engine(engine_id, rows)
     if engine is None:
         raise HTTPException(status_code=400, detail=f"No such engine: {engine_id}")
+    if engine["current"]:
+        return _machine_engine_payload()
     # Re-probed at the press, not trusted from the render: a CLI can be
     # removed or logged out between the two, and this write lands on every
     # user who has not picked an engine of their own.
     available, reason = _engine_available(engine, refresh=True)
     if not available:
         raise HTTPException(status_code=400, detail=reason)
-    _write_env_var("LLM_PROVIDER", engine["provider"])
-    _write_env_var("LLM_MODEL", engine["model"])
+    _write_env_vars({"LLM_PROVIDER": engine["provider"], "LLM_MODEL": engine["model"]})
     payload = _machine_engine_payload()
     payload["message"] = f"The machine runs {engine['label']} from the next message."
     # The Provider, Model and Effort rows above show this same setting, so

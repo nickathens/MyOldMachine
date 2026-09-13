@@ -182,7 +182,7 @@ class MachineCatalogTests(unittest.TestCase):
     def test_every_row_is_a_model_the_install_catalog_carries(self):
         for row in engines.machine_engines("claude", "claude-opus-5"):
             with self.subTest(row=row["id"]):
-                catalog = dict(wizard.PROVIDER_MODELS[row["provider"]])
+                catalog = dict(wizard.PROVIDER_MODELS[row["cli"]])
                 self.assertIn(row["model"], catalog)
 
     def test_every_alias_points_at_a_model_that_exists(self):
@@ -280,8 +280,6 @@ class MachineCatalogTests(unittest.TestCase):
         # The real probe, not this class's stubs of it: the argv is the point.
         self.version.stop()
         self.login.stop()
-        self.addCleanup(self.version.start)
-        self.addCleanup(self.login.start)
         with (patch("core.engines._cli_version_text", return_value="1.0.0"),
               patch("core.engines.subprocess.run", side_effect=fake_run)):
             engines.probe_cache_clear()

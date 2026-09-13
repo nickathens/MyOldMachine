@@ -312,7 +312,7 @@ def resolve_engine(user_id: int, *, default_provider: str | None = None,
 # it is running already even when that is neither CLI.
 MACHINE_CLI_PROVIDERS: tuple[tuple[str, str, str], ...] = (
     # (.env provider id, CLI binary, accent)
-    ("claude", "claude", "default"),
+    ("claude-cli", "claude", "default"),
     ("codex", "codex", "astra"),
 )
 
@@ -333,8 +333,9 @@ MACHINE_ALIASES: dict[str, str] = {
 
 MACHINE_PICKER_NOTE = (
     "This is the machine setting, the same one the Provider and Model rows "
-    "hold. Changing it here changes it there, and it applies to every user "
-    "who has not picked an engine of their own."
+    "hold. Your messages use this setting. Ordinary users keep their own "
+    "engine, defaulting to Opus at Max on CLI installations when available. "
+    "This setting also supplies their fallback when no personal engine is available."
 )
 
 
@@ -367,7 +368,7 @@ def _machine_catalog() -> list[dict]:
     reverse = {model: alias for alias, model in MACHINE_ALIASES.items()}
     rows: list[dict] = []
     for provider, cli, accent in MACHINE_CLI_PROVIDERS:
-        for model, description in PROVIDER_MODELS.get(provider, ()):
+        for model, description in PROVIDER_MODELS.get(cli, ()):
             label, sub = _catalog_split(description)
             rows.append({
                 "id": model,
@@ -384,7 +385,7 @@ def _machine_catalog() -> list[dict]:
 
 def machine_engines(current_provider: str | None = None,
                     current_model: str | None = None,
-                    *, refresh: bool = False) -> list[dict]:
+                    *, refresh: bool = False, api_key: str | None = None) -> list[dict]:
     """The administrator's list: every runnable engine, current one marked.
 
     ``current_provider``/``current_model`` are passed in rather than read
@@ -396,14 +397,17 @@ def machine_engines(current_provider: str | None = None,
     is added at the front. A list of things to switch to that cannot show
     what is switched on is the "which one is live" question all over again.
     """
-    from core.config import get_llm_model, get_llm_provider
+    from core.config import get_llm_api_key, get_llm_model, get_llm_provider
     if current_provider is None:
         current_provider = get_llm_provider()
     if current_model is None:
         current_model = get_llm_model()
-    # claude-cli / codex-cli are the same engines under their other spelling,
-    # which core.llm.create_provider accepts and .env may therefore hold.
-    canonical = {"claude-cli": "claude", "codex-cli": "codex"}
+    if api_key is None:
+        api_key = get_llm_api_key()
+    # Bare claude selects the API when a key exists. Match the factory,
+    # otherwise the page calls a billed API turn a subscription turn.
+    canonical = {"claude": "claude-api" if api_key else "claude-cli",
+                 "codex-cli": "codex"}
     current_provider = canonical.get(current_provider, current_provider)
 
     rows = []
@@ -418,7 +422,7 @@ def machine_engines(current_provider: str | None = None,
 
     if not any(row["current"] for row in rows):
         rows.insert(0, {
-            "id": current_model or current_provider,
+            "id": f"current:{current_provider}:{current_model}",
             "alias": "",
             "label": current_model or current_provider,
             "sub": f"set on {current_provider}",

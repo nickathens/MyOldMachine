@@ -1561,10 +1561,8 @@ body{
     </section>
 
     <!-- Not nested in the picker above, and not hidden by anything: the
-         picker disappears for an administrator and for anyone whose machine
-         has no engine to offer, and usage is neither of those people's to
-         lose. Every role reads their own consumption and the shared
-         subscription meters here. -->
+         picker can disappear when no engine is available. Every role still
+         reads their own consumption and the shared subscription meters here. -->
     <section id="usage-section" class="section">
         <div class="section-label">Usage</div>
         <button id="usage-btn" class="usage-btn" type="button">Show usage</button>
@@ -1975,11 +1973,9 @@ body{
                 if(data.machine){
                     // Provider, Model and Effort are views of what just
                     // changed, so they are re-read rather than left to
-                    // disagree with the button now lit; and the running bot
-                    // holds the old pair until it restarts, as with any
-                    // other write to the machine setting from this panel.
+                    // disagree with the button now lit. The bot rereads
+                    // this setting before its next message.
                     loadStatus();
-                    showRestartHint();
                 }else{
                     renderEngine(data);
                 }

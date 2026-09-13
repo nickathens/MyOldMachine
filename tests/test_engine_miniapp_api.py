@@ -153,7 +153,7 @@ class AdminMachinePickerTests(_EngineCase):
     def test_an_admin_write_moves_the_machine_and_stores_no_preference(self):
         payload = asyncio.run(srv.set_engine(_FakeRequest({"engine": "sonnet"}),
                                              user=_user("7", "admin")))
-        self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "claude")
+        self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "claude-cli")
         self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-sonnet-5")
         # The preference store stays empty: an admin has no engine of their
         # own, so nothing here can outrank what was just written.

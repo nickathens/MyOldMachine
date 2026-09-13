@@ -120,6 +120,7 @@ class AdminEngineCommandTests(_BotSurface):
         # engine_command rebuilds the module-level provider on a switch, and
         # a bare stub left in that global outlives this file: later modules
         # read bot._llm_provider and ask it whether it supports tool use.
+        self.addCleanup(setattr, bot, "_llm_provider_spec", bot._llm_provider_spec)
         self._saved_provider = bot._llm_provider
         self.addCleanup(setattr, bot, "_llm_provider", self._saved_provider)
 
@@ -165,10 +166,10 @@ class AdminEngineCommandTests(_BotSurface):
               patch("bot._build_llm_provider", return_value=self._stub_provider()),
               patch("bot._refresh_provider_health", health)):
             said = _said(self._run("/engine sonnet"))
-        self.assertEqual(written, [("claude", "claude-sonnet-5")])
+        self.assertEqual(written, [("claude-cli", "claude-sonnet-5")])
         self.assertEqual(engines.user_engine_id(7), "")
         self.assertIn("Claude Sonnet 5", said)
-        self.assertIn("every user without an engine of their own", said)
+        self.assertIn("Ordinary users keep their personal engine or available Opus default", said)
 
     def test_a_health_check_failure_is_reported_not_swallowed(self):
         health = AsyncMock(return_value=(False, "no login"))
@@ -373,7 +374,7 @@ class PageStructureTests(unittest.TestCase):
         body = body.split("\n    function ")[0]
         self.assertIn("if(data.machine){", body)
         self.assertIn("loadStatus()", body)
-        self.assertIn("showRestartHint()", body)
+        self.assertNotIn("showRestartHint()", body)
 
 
 if __name__ == "__main__":

@@ -3699,7 +3699,7 @@ async def _admin_engine_switch(update: Update, user_id: int, choice: str) -> Non
     rebuilt here rather than left for a restart, which is what /provider and
     /model have always done from this side.
     """
-    global _llm_provider
+    global _llm_provider, _llm_provider_spec
     from core.config import get_llm_effort
     from core.engines import engine_available, machine_engine, machine_engines
     rows = await asyncio.to_thread(machine_engines, get_llm_provider(), get_llm_model())
@@ -3720,17 +3720,26 @@ async def _admin_engine_switch(update: Update, user_id: int, choice: str) -> Non
     if not available:
         await update.message.reply_text(f"{engine['label']} cannot run here: {reason}")
         return
-    if not _write_machine_llm(engine["provider"], engine["model"]):
-        await update.message.reply_text("Error: .env file not found.")
-        return
+    api_key = get_llm_api_key()
     try:
-        _llm_provider = _build_llm_provider(engine["provider"], engine["model"],
-                                           get_llm_api_key())
+        candidate = await asyncio.to_thread(
+            _build_llm_provider, engine["provider"], engine["model"],
+            api_key, track_spec=False)
     except Exception as exc:
         logger.exception(f"Failed to switch machine engine: {exc}")
         await update.message.reply_text(
             "Failed to create provider. Check the bot log for details.")
         return
+    try:
+        if not _write_machine_llm(engine["provider"], engine["model"]):
+            await update.message.reply_text("Error: .env file not found.")
+            return
+    except OSError:
+        logger.exception("Failed to save machine engine")
+        await update.message.reply_text("Could not save the engine. Your previous setting is still in use.")
+        return
+    _llm_provider = candidate
+    _llm_provider_spec = (engine["provider"], engine["model"], api_key)
     logger.info("Machine engine switched to %s/%s by user %s",
                 engine["provider"], engine["model"], user_id)
     healthy, health_reason = await _refresh_provider_health(_llm_provider)
@@ -3745,8 +3754,8 @@ async def _admin_engine_switch(update: Update, user_id: int, choice: str) -> Non
         f"Provider: {engine['provider']}\n"
         f"Model: {engine['model']}\n"
         + (f"Effort: {effort}\n" if effort else "")
-        + f"\n{health_line}\n\nNo restart needed. This is the setting every "
-        "user without an engine of their own runs on.")
+        + f"\n{health_line}\n\nNo restart needed. Your messages use this setting. "
+        "Ordinary users keep their personal engine or available Opus default.")
 
 
 async def _admin_engine_lines(user_id: int) -> list[str]:
