@@ -625,6 +625,7 @@ async def set_effort(request: Request, user: dict = Depends(_get_user)):
 # anybody else's. Reads and writes both go through core.engines, which owns
 # the catalog, the availability probe and the per-user store.
 from core.engines import (  # noqa: E402
+    ADMIN_KEEPS_MACHINE_SETTING,
     available_engines as _available_engines,
     set_user_engine as _set_user_engine,
     user_engine_id as _user_engine_id,
@@ -632,9 +633,16 @@ from core.engines import (  # noqa: E402
 
 
 def _engine_payload(user_id: int, admin: bool | None = None) -> dict:
+    from core.config import is_admin as _config_is_admin
     from core.engines import resolve_engine
+    if admin is None:
+        admin = _config_is_admin(user_id)
     effective = resolve_engine(user_id, admin=admin)
     return {
+        # An admin has the provider, model and effort sections above; the
+        # picker would be a second setting that outranks them. The front end
+        # hides the whole section on this flag rather than on a role string.
+        "admin": bool(admin),
         "effective": (effective or {}).get("id", ""),
         "picked": _user_engine_id(user_id),
         "engines": [
@@ -664,6 +672,12 @@ async def set_engine(request: Request, user: dict = Depends(_get_user)):
     if not isinstance(body, dict) or not isinstance(body.get("engine", ""), str):
         raise HTTPException(status_code=400, detail="engine must be a string")
     engine_id = body.get("engine", "").strip()
+    # Refused here as well as in core.engines: this endpoint answers with the
+    # flag that hides the picker, and a payload saying "admin" while the write
+    # lands would be the same two-settings fault one layer down. Clearing an
+    # older pick stays allowed.
+    if engine_id and _is_admin(user):
+        raise HTTPException(status_code=400, detail=ADMIN_KEEPS_MACHINE_SETTING)
     user_id = int(user["_id"])
     ok, message = await run_in_threadpool(_set_user_engine, user_id, engine_id)
     if not ok:

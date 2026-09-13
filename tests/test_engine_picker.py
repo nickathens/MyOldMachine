@@ -264,6 +264,35 @@ class SelectionTests(_UserDirTestCase):
         self.assertEqual(engines.user_engine_id(7), "")
         self.assertIsNone(engines.resolve_engine(7))
 
+    def test_an_admin_runs_the_machine_setting_even_with_a_pick_stored(self):
+        # A pick made before the refusal existed must not outrank the model
+        # and effort the same person sets in the settings panel.
+        user_prefs.set_pref(7, "engine", "astra")
+        with patch("core.config.is_admin", return_value=True):
+            self.assertIsNone(engines.resolve_engine(7))
+        # Nothing is deleted behind their back; it is simply not consulted.
+        self.assertEqual(engines.user_engine_id(7), "astra")
+
+    def test_an_admin_cannot_store_a_pick(self):
+        with patch("core.config.is_admin", return_value=True):
+            ok, message = engines.set_user_engine(7, "astra")
+        self.assertFalse(ok)
+        self.assertEqual(message, engines.ADMIN_KEEPS_MACHINE_SETTING)
+        self.assertEqual(engines.user_engine_id(7), "")
+
+    def test_an_admin_may_still_clear_a_pick_stored_earlier(self):
+        user_prefs.set_pref(7, "engine", "astra")
+        with patch("core.config.is_admin", return_value=True):
+            ok, _ = engines.set_user_engine(7, "")
+        self.assertTrue(ok)
+        self.assertEqual(engines.user_engine_id(7), "")
+
+    def test_an_ordinary_user_is_untouched_by_the_admin_rule(self):
+        with patch("core.config.is_admin", return_value=False):
+            ok, _ = engines.set_user_engine(7, "astra")
+            self.assertTrue(ok)
+            self.assertEqual(engines.resolve_engine(7)["model"], "gpt-6-astra")
+
     def test_picking_does_not_touch_the_global_env(self):
         before = {k: os.environ.get(k) for k in
                   ("LLM_PROVIDER", "LLM_MODEL", "LLM_EFFORT")}

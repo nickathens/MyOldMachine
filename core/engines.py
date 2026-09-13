@@ -15,8 +15,11 @@ What this module deliberately is NOT:
   ``tests/test_engine_picker.py``; a level this repo has not read for a model
   can never ship in an engine row.
 * Ordinary users on a CLI installation default to Opus at Max when its
-  subscription login is available. Administrators and API/local installs
-  retain the machine default unless they explicitly pick an engine.
+  subscription login is available. API/local installs retain the machine
+  default unless a user explicitly picks an engine.
+* An administrator never runs on an engine at all. They own the three .env
+  knobs, and an engine would silently outrank the model and effort they just
+  set, so the picker is offered to everybody except them.
 
 Availability is PROBED, never assumed. Both engines are subprocess CLIs that
 may not be installed, may not be logged in, and (for Astra) may be too old:
@@ -66,6 +69,13 @@ ENGINES: tuple[dict, ...] = (
 )
 
 ENGINE_IDS = tuple(e["id"] for e in ENGINES)
+
+# Said to an administrator by every surface that offers the picker, so the
+# Mini App, /engine and the API cannot drift into three different stories.
+ADMIN_KEEPS_MACHINE_SETTING = (
+    "You set the machine's provider, model and effort, and your own messages "
+    "run on those. The engine picker is for the other users."
+)
 
 # A probe answer is kept this long. Short enough that installing the CLI, or
 # logging in, takes effect without a restart; long enough that a picker open
@@ -211,12 +221,20 @@ def set_user_engine(user_id: int, engine_id: str) -> tuple[bool, str]:
     render: the CLI could have been removed between the two, and a stored
     choice that cannot run would fail every later turn with a CLI error
     instead of a sentence.
+
+    An administrator is refused: their turns follow LLM_PROVIDER, LLM_MODEL
+    and LLM_EFFORT, so a stored engine here would be a second, invisible
+    setting that beats the visible one. Clearing is always allowed, so a
+    pick made before this rule can be removed by the person who made it.
     """
+    from core.config import is_admin
     from core.user_prefs import clear_pref, set_pref
     if not engine_id:
         if not clear_pref(user_id, "engine"):
             return False, "Could not save your choice (the preferences file did not write)."
         return True, "Cleared. Your default engine applies from the next message."
+    if is_admin(user_id):
+        return False, ADMIN_KEEPS_MACHINE_SETTING
     engine = get_engine(engine_id)
     if engine is None:
         return False, f"No such engine: {engine_id}"
@@ -232,19 +250,26 @@ def resolve_engine(user_id: int, *, default_provider: str | None = None,
                    admin: bool | None = None) -> Optional[dict]:
     """Resolve a saved choice or the ordinary CLI user's Opus default.
 
+    An administrator always resolves to None, the machine setting, even with
+    a choice stored from before ``set_user_engine`` began refusing them: two
+    settings that disagree are worse than one, and the one they can see in
+    the settings panel is the one that must win.
+
     No available engine means the machine provider remains in use. A stored
     preference survives an unavailable login, and both UIs expose fallback.
     """
     from core.config import get_llm_provider, get_llm_api_key, is_admin
+    if admin is None:
+        admin = is_admin(user_id)
+    if admin:
+        return None
     engine = get_engine(user_engine_id(user_id))
     if engine is None:
-        if admin is None:
-            admin = is_admin(user_id)
         if default_provider is None:
             default_provider = get_llm_provider()
         if default_provider == "claude" and get_llm_api_key():
             default_provider = "claude-api"
-        if admin or default_provider not in ("claude", "claude-cli", "codex", "codex-cli"):
+        if default_provider not in ("claude", "claude-cli", "codex", "codex-cli"):
             return None
         engine = default_engine()
     available, _reason = engine_available(engine)

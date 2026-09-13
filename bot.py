@@ -3688,12 +3688,40 @@ async def engine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Per user, not per install: /provider and /model stay admin-only and keep
     setting what everybody without a pick gets.
     """
-    from core.engines import ENGINE_IDS, set_user_engine, resolve_engine
+    from core.engines import (ADMIN_KEEPS_MACHINE_SETTING, ENGINE_IDS,
+                              get_engine, set_user_engine, resolve_engine,
+                              user_engine_id)
+    from core.config import get_llm_effort
     user_id = update.effective_user.id
     choice = command_body(update.message.text).strip().lower()
+    clearing = choice in ("default", "none", "clear", "reset")
+
+    # The administrator's own turns follow the .env knobs they set, so there
+    # is nothing here to pick. Clearing still works: a pick stored before
+    # this rule is inert, and they should be able to delete it.
+    if is_admin(user_id) and not clearing:
+        effort = get_llm_effort(get_llm_provider(), get_llm_model())
+        pair = f"{get_llm_provider()} / {get_llm_model()}"
+        lines = [
+            f"Engine: the machine setting ({pair}" + (f", {effort} effort)" if effort else ")"),
+            "",
+            ADMIN_KEEPS_MACHINE_SETTING,
+            "Change it with /provider or /model, or the effort row in the panel.",
+        ]
+        # A pick stored before this rule is inert, and silence about it is
+        # the confusion the rule exists to end: they saw two settings and
+        # asked which one wins. Name it, and say how to be rid of it.
+        stored = await asyncio.to_thread(user_engine_id, user_id)
+        if stored:
+            label = (get_engine(stored) or {}).get("label", stored)
+            lines += ["", f"A {label} pick is still stored against you from "
+                          "before this rule. It is not used. Clear it with "
+                          "/engine default."]
+        await update.message.reply_text("\n".join(lines))
+        return
 
     if choice:
-        if choice in ("default", "none", "clear", "reset"):
+        if clearing:
             ok, message = await asyncio.to_thread(set_user_engine, user_id, "")
         elif choice in ENGINE_IDS:
             ok, message = await asyncio.to_thread(set_user_engine, user_id, choice)
@@ -3714,7 +3742,7 @@ async def engine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",
         f"Switch with /engine {' or /engine '.join(ENGINE_IDS)}.",
         "/engine default clears your saved choice. Ordinary CLI users default "
-        "to Opus at Max; administrators retain the machine setting.",
+        "to Opus at Max; the administrator always runs the machine setting.",
     ]
     await update.message.reply_text("\n".join(body))
 
@@ -3972,6 +4000,13 @@ async def apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_name = get_bot_name()
+    # Open to strangers, so this cannot assume a profile: is_admin answers
+    # False for an unknown id, which is the line an unknown id should read.
+    engine_line = (
+        "  /engine — See the engine setting your messages run on\n"
+        if update.effective_user and is_admin(update.effective_user.id)
+        else "  /engine — Pick which AI answers you\n"
+    )
     text = (
         f"{bot_name} — What I Can Do\n\n"
         "Just send me a message describing what you need. "
@@ -3996,7 +4031,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Shortcuts:\n"
         "  /alias — Create quick shortcuts for things you ask often\n\n"
         "Your engine and usage:\n"
-        "  /engine — Pick which AI answers you\n"
+        + engine_line +
         "  /usage — What you used, and what is left\n\n"
         "Settings (advanced):\n"
         "  /provider — Change AI brain\n"

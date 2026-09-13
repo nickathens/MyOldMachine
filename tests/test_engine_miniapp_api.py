@@ -38,7 +38,10 @@ def _user(uid: str, role: str = "user") -> dict:
                                      "display_name": f"User {uid}"}}
 
 
-class EngineEndpointTests(unittest.TestCase):
+class _EngineCase(unittest.TestCase):
+    """The fixture both endpoint classes need, and no tests of its own:
+    inheriting from a class that HAS tests re-runs all of them."""
+
     def setUp(self):
         login = patch("core.engines._login_status", return_value=(True, ""))
         login.start()
@@ -58,6 +61,8 @@ class EngineEndpointTests(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+
+class EngineEndpointTests(_EngineCase):
     def test_the_payload_carries_every_engine_and_the_bot_default(self):
         payload = srv.get_engine(user=_user("7"))
         self.assertEqual(payload["picked"], "")
@@ -103,6 +108,30 @@ class EngineEndpointTests(unittest.TestCase):
         payload = asyncio.run(
             srv.set_engine(_FakeRequest({"engine": "opus"}), user=_user("7")))
         self.assertEqual(payload["picked"], "opus")
+
+
+class AdminPickerTests(_EngineCase):
+    """An admin sets provider, model and effort; the picker is not theirs.
+
+    Two settings that disagree is the fault being locked out here: the
+    picker sat below the model and effort sections and quietly beat them.
+    """
+
+    def test_the_payload_tells_the_front_end_to_hide_the_picker(self):
+        payload = srv.get_engine(user=_user("7", "admin"))
+        self.assertTrue(payload["admin"])
+        self.assertEqual(payload["effective"], "")
+
+    def test_an_ordinary_user_still_gets_the_picker(self):
+        payload = srv.get_engine(user=_user("7"))
+        self.assertFalse(payload["admin"])
+
+    def test_a_write_from_an_admin_is_a_400_and_stores_nothing(self):
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(srv.set_engine(_FakeRequest({"engine": "astra"}),
+                                       user=_user("7", "admin")))
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(engines.user_engine_id(7), "")
 
 
 class UsageEndpointTests(unittest.TestCase):
