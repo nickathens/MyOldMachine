@@ -240,14 +240,47 @@ class CodexInterruptedTurnTests(unittest.TestCase):
         self.assertTrue(notice.strip(), "a cut turn must carry a trailer")
 
     def test_the_verdict_is_turn_completed_not_the_exit_code(self):
-        source = (REPO / "core" / "llm.py").read_text(encoding="utf-8")
-        self.assertIn("turn_completed = True", source)
-        self.assertIn("if not turn_completed:", source)
-        # An `error` EVENT is a retry notice on a turn that often still
-        # completes, so it must not be the verdict on its own.
-        self.assertIn("stream_error = data.get(\"message\")", source)
-        self.assertIn("failure = turn_failed_message or (None if turn_completed else stream_error)",
-                      source)
+        message = {"type": "item.completed", "item": {
+            "type": "agent_message", "text": "Saved work",
+        }}
+        completed = {"type": "turn.completed", "usage": {
+            "input_tokens": 10, "output_tokens": 2,
+        }}
+        retry = {"type": "error", "message": "Reconnecting 1/5"}
+        failed = {"type": "turn.failed", "error": {"message": "quota reached"}}
+
+        async def run(events, rc):
+            stdout = asyncio.StreamReader()
+            stdout.feed_data(b"".join((json.dumps(e) + "\n").encode() for e in events))
+            stdout.feed_eof()
+            stderr = asyncio.StreamReader()
+            stderr.feed_eof()
+            process = mock.Mock(
+                stdout=stdout, stderr=stderr, returncode=rc,
+                stdin=mock.Mock(drain=mock.AsyncMock(), wait_closed=mock.AsyncMock()),
+                wait=mock.AsyncMock(return_value=rc),
+            )
+            with (
+                mock.patch.object(llm_mod, "_codex_feature_names", return_value=frozenset()),
+                mock.patch.object(llm_mod, "_codex_accepts_hook_trust_bypass", return_value=False),
+                mock.patch.object(llm_mod.CodexCLIProvider, "_get_cli_env", return_value={}),
+                mock.patch("asyncio.create_subprocess_exec", new=mock.AsyncMock(return_value=process)),
+            ):
+                return await llm_mod.CodexCLIProvider("gpt-6-astra").complete("sys", [])
+
+        for events, rc, success in (
+            ([message], 0, False),
+            ([message], -9, False),
+            ([message, completed], 0, True),
+            ([retry, message, completed], 0, True),
+            ([message, failed], 0, False),
+            ([message, completed], 1, False),
+        ):
+            with self.subTest(events=events, rc=rc):
+                response = asyncio.run(run(events, rc))
+                self.assertEqual(response.completed, success)
+                self.assertIn("Saved work", response.text)
+                self.assertEqual("Unfinished:" in response.text, not success)
 
 
 # --- F05: history is not shortened before its summary exists ----------------
