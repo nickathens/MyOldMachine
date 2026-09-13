@@ -102,7 +102,7 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(none open)
+[2026-09-13] mac: admin runs the machine setting, usage leaves the picker (PR #172)
 
 (Entries removed above: #170 merged 2026-09-13.
 #166 merged 2026-09-11, its own line cleared in the
