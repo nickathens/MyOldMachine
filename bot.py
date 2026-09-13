@@ -867,12 +867,20 @@ def _pending_message_path(user_id: int) -> Path:
     return get_user_dir(user_id) / "pending_message.json"
 
 
-def save_pending_message(user_id: int, message_text: str, message_id: int):
-    """Write a marker before processing so we can detect lost messages on restart."""
+def save_pending_message(user_id: int, message_text: str, message_id: int,
+                         chat_id: int = None):
+    """Write a marker before processing so we can detect lost messages on restart.
+
+    `chat_id` is the chat the message arrived in, which is the user's own id
+    in a private chat and is not in any other. A caller that cannot name one
+    falls back to the private chat, which is what every caller meant before
+    the field carried a reference anybody could check.
+    """
     try:
         data = {
             "user_id": user_id,
-            "chat_id": user_id,
+            # bool passes isinstance(int) and would write telegram:True:24663.
+            "chat_id": chat_id if type(chat_id) is int and chat_id != 0 else user_id,
             "message_id": message_id,
             "text": message_text[:500],
             # The stored text is cut at 500 characters, so a long message could
@@ -4425,12 +4433,16 @@ async def _process_media_group_inner(updates, user_id, context, turn=None):
         logger.info(f"Daily reset performed for user {user_id}")
 
     all_attachments = []
-    caption = ""
+    caption, caption_msg_id = "", None
     for idx, upd in enumerate(updates):
         attachments = await download_attachments(upd, context, group_index=idx)
         all_attachments.extend(attachments)
         if not caption:
             caption = upd.message.text or upd.message.caption or ""
+            # An album's caption rides on whichever photo the sender typed it
+            # on, so the words and the reference have to come off the same
+            # message or a quote is filed against a photo that never held it.
+            caption_msg_id = upd.message.message_id if caption else None
 
     user_message = caption
     image_paths = [str(p) for p, t in all_attachments if t == "image"] if all_attachments else []
@@ -4451,8 +4463,8 @@ async def _process_media_group_inner(updates, user_id, context, turn=None):
         return
 
     chat = updates[0].message.chat
-    first_msg_id = updates[0].message.message_id
-    save_pending_message(user_id, user_message, first_msg_id)
+    source_msg_id = caption_msg_id or updates[0].message.message_id
+    save_pending_message(user_id, user_message, source_msg_id, chat.id)
 
     # Cleared below unless the reply is genuinely lost. Defaults to True so
     # every other exit (a /stop cancellation, an error we already reported)
@@ -4470,7 +4482,7 @@ async def _process_media_group_inner(updates, user_id, context, turn=None):
         except _TurnCancelled:
             return
 
-        _save_and_send(user_id, user_message, response, session=session, message_id=first_msg_id)
+        _save_and_send(user_id, user_message, response, session=session, message_id=source_msg_id)
 
         reply_is_safe = await send_chunks_with_retry(chat.send_message, response, user_id)
     except Exception as e:
@@ -4701,7 +4713,7 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     logger.info(f"From {user_id}: {user_message[:100]}...")
-    save_pending_message(user_id, user_message, update.message.message_id)
+    save_pending_message(user_id, user_message, update.message.message_id, update.message.chat_id)
 
     # Cleared below unless the reply is genuinely lost. Defaults to True so
     # every other exit (a /stop cancellation, an error we already reported)
