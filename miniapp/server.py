@@ -31,6 +31,7 @@ from typing import Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 # Make MOM modules importable when running as a uvicorn child.
@@ -615,6 +616,91 @@ async def set_effort(request: Request, user: dict = Depends(_get_user)):
                             detail="Invalid effort level for this model")
     _write_env_var("LLM_EFFORT", effort_id)
     return {"effort": effort_id}
+
+
+# ─── /api/engine, /api/usage ─────────────────────────────────────────
+
+# The engine picker is the one setting a non-admin may change, and it is
+# theirs alone: it never touches .env, so one person's choice cannot move
+# anybody else's. Reads and writes both go through core.engines, which owns
+# the catalog, the availability probe and the per-user store.
+from core.engines import (  # noqa: E402
+    available_engines as _available_engines,
+    set_user_engine as _set_user_engine,
+    user_engine_id as _user_engine_id,
+)
+
+
+def _engine_payload(user_id: int, admin: bool | None = None) -> dict:
+    from core.engines import resolve_engine
+    effective = resolve_engine(user_id, admin=admin)
+    return {
+        "effective": (effective or {}).get("id", ""),
+        "picked": _user_engine_id(user_id),
+        "engines": [
+            {
+                "id": e["id"], "label": e["label"], "sub": e["sub"],
+                "accent": e["accent"], "is_default": e["is_default"],
+                "model": e["model"], "effort": e["effort"],
+                "available": e["available"], "reason": e["reason"],
+            }
+            for e in _available_engines()
+        ],
+        # What a user with no pick is actually running, so the picker can say
+        # so instead of implying the default button is already selected.
+        "bot_default_model": _current_pair()[1],
+    }
+
+
+@app.get("/api/engine")
+def get_engine(user: dict = Depends(_get_user)):
+    return _engine_payload(int(user["_id"]), _is_admin(user))
+
+
+@app.post("/api/engine")
+async def set_engine(request: Request, user: dict = Depends(_get_user)):
+    """Store the caller's own engine. Never takes a user id from the body."""
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get("engine", ""), str):
+        raise HTTPException(status_code=400, detail="engine must be a string")
+    engine_id = body.get("engine", "").strip()
+    user_id = int(user["_id"])
+    ok, message = await run_in_threadpool(_set_user_engine, user_id, engine_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    payload = await run_in_threadpool(_engine_payload, user_id, _is_admin(user))
+    payload["message"] = message
+    return payload
+
+
+@app.get("/api/usage")
+def get_usage(days: int = 7, user: dict = Depends(_get_user)):
+    """This person's consumption, plus the shared subscription meters.
+
+    A plain def, not async: the Codex meter is a subprocess and a network
+    round trip, and FastAPI runs a sync endpoint in a worker thread instead
+    of stalling the event loop for every other request on this server.
+    """
+    from core.usage import meters, summarise, summarise_everyone
+    days = max(1, min(90, int(days)))
+    user_id = int(user["_id"])
+    payload = {
+        "days": days,
+        "you": summarise(user_id, days),
+        "meters": meters(),
+        "everyone": None,
+    }
+    if _is_admin(user):
+        rows = []
+        for uid, summary in summarise_everyone(days).items():
+            profile = _load_users().get(uid, {})
+            rows.append({
+                "id": uid,
+                "name": profile.get("display_name") or profile.get("name") or uid,
+                **summary,
+            })
+        payload["everyone"] = sorted(rows, key=lambda r: -r["turns"])
+    return payload
 
 
 # ─── /api/restart ───────────────────────────────────────────────────

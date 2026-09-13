@@ -14,10 +14,11 @@ its mtime changes, and call_llm() rebuilds the provider object when the
 """
 from __future__ import annotations
 
+import asyncio
 import os
-import re
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -249,18 +250,37 @@ class TestSourcePins(unittest.TestCase):
         self.assertEqual(self.bot_src.count("create_provider("), 1)
 
     def test_call_llm_refreshes_before_health_gate(self):
-        m = re.search(
-            r"async def call_llm\(.*?(?=\nasync def |\ndef )",
-            self.bot_src,
-            re.S,
-        )
-        self.assertIsNotNone(m, "call_llm not found in bot.py")
-        body = m.group(0)
-        refresh = body.find("_refresh_provider_if_env_changed()")
-        health = body.find("last_health")
-        self.assertNotEqual(refresh, -1, "call_llm does not refresh the provider")
-        self.assertNotEqual(health, -1, "health gate not found in call_llm")
-        self.assertLess(refresh, health, "refresh must run before the health gate")
+        import bot
+        calls = []
+        loop_thread = threading.get_ident()
+
+        class Provider:
+            provider_name = "test-provider"
+
+            @property
+            def last_health(self):
+                calls.append(("health", threading.get_ident()))
+                return False, "test gate"
+
+        def refresh():
+            calls.append(("refresh", threading.get_ident()))
+
+        def select(_user_id):
+            calls.append(("select", threading.get_ident()))
+            return Provider(), None
+
+        with (
+            patch.object(bot, "_failed_turns", set()),
+            patch.object(bot, "_refresh_provider_if_env_changed", side_effect=refresh),
+            patch.object(bot, "_provider_for_user", side_effect=select),
+        ):
+            result = asyncio.run(bot.call_llm(101, "hello"))
+        self.assertIn("test gate", result)
+        order = [name for name, _thread in calls]
+        self.assertEqual(order[:2], ["refresh", "select"])
+        self.assertEqual(order[2:], ["health", "health"])
+        for name, thread_id in calls[:2]:
+            self.assertNotEqual(thread_id, loop_thread, f"{name} blocked the event loop")
 
     def test_config_getters_stat_the_file(self):
         for fn in ("def _env(", "def _env_int(", "def _env_list("):

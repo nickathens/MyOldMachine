@@ -155,6 +155,15 @@ class LLMResponse:
     output_tokens: int = 0
     error: Optional[str] = None
     tool_use: bool = False  # Whether the response involved tool use
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    # Claude Code's own total_cost_usd for the turn. LIST PRICE, not a
+    # charge: on a subscription nobody is billed it (the CLI tags the same
+    # number costBasis "list"). Providers that report no cost leave it at 0.
+    list_cost_usd: float = 0.0
+    usage_reported: Optional[bool] = None
+    cost_reported: Optional[bool] = None
+    completed: Optional[bool] = None
 
 
 def _error_excerpt(text: Optional[str], limit: int = 600) -> str:
@@ -243,6 +252,11 @@ class LLMProvider(ABC):
         self.model = model
         self.api_key = api_key
         self.last_health = None
+        # Set when this instance was built for one engine (core.engines), so
+        # its turns run at that engine's level rather than the install-wide
+        # LLM_EFFORT. Empty means "use the configured one", which is what
+        # every historical caller gets.
+        self.effort_override: str = ""
 
     @abstractmethod
     async def complete(
@@ -631,6 +645,79 @@ def _codex_feature_names(binary: str) -> frozenset:
     return _codex_cached_probe(("features", binary), probe)
 
 
+# The memoise-and-retry helper above is not Codex-specific; the name is only
+# where it was born. The Claude probe below wants exactly the same contract:
+# keep a real answer for good, retry an ask that could not be put.
+_cli_cached_probe = _codex_cached_probe
+
+
+# Claude Code's own rate-limit reading rides on --include-partial-messages.
+# Without it the stream carries no rate_limit_event at all, and the usage
+# meter has nothing to show; with it, the CLI emits one whenever a window's
+# rounded percentage changes (measured on 2.1.270: five_hour and seven_day,
+# each a utilization fraction plus a unix reset time).
+#
+# The flag is PROBED rather than assumed, because an unknown flag is fatal
+# to every turn on an older build, and this project installs on machines
+# whose CLI nobody is watching. A probe that cannot run answers False, which
+# only costs the meter.
+PARTIAL_MESSAGES_FLAG = "--include-partial-messages"
+
+
+def _claude_supports_partial_messages(binary: str) -> bool:
+    def probe():
+        try:
+            out = subprocess.run([binary, "--help"], capture_output=True,
+                                 text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return False, False
+        if out.returncode != 0:
+            return False, False
+        return True, PARTIAL_MESSAGES_FLAG in (out.stdout or "") + (out.stderr or "")
+
+    return _cli_cached_probe(("partial-messages", binary), probe)
+
+
+def _claude_usage_fields(usage: dict, list_cost_usd: float) -> dict:
+    """LLMResponse token/cost kwargs from Claude Code's result event.
+
+    Cache reads and cache writes are kept apart from input_tokens because
+    the CLI keeps them apart: on a cached turn input_tokens is a handful and
+    cache_read_input_tokens is the real context. Folding them together would
+    make a cheap turn look like an expensive one.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+
+    def count(key: str) -> int:
+        value = usage.get(key)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    return {
+        "input_tokens": count("input_tokens"),
+        "output_tokens": count("output_tokens"),
+        "cache_read_tokens": count("cache_read_input_tokens"),
+        "cache_creation_tokens": count("cache_creation_input_tokens"),
+        "list_cost_usd": float(list_cost_usd or 0.0),
+    }
+
+
+def _turn_effort(provider) -> str:
+    """The effort level this provider instance's next turn runs at.
+
+    An instance built for an engine carries that engine's level and must not
+    read LLM_EFFORT, which belongs to the install's own default. The override
+    is clamped against the model exactly like the configured value is: the
+    engine table and the model table are edited by different hands, and a
+    level the model does not accept is silently ignored by both CLIs.
+    """
+    from core.config import get_llm_effort
+    from core.model_efforts import clamp_effort
+    override = getattr(provider, "effort_override", "")
+    if override:
+        return clamp_effort(provider.provider_name, provider.model, override)
+    return get_llm_effort(provider.provider_name, provider.model)
+
+
 def _frozen_volume_cause() -> str:
     """Why a turn most likely went silent, when the health probe has seen a
     frozen external drive: a command that touched it never returned. Reads the
@@ -938,6 +1025,7 @@ class ClaudeCLIProvider(LLMProvider):
         self._user_processes: dict = {}
         # Users who have issued /stop on an in-flight turn.
         self._stop_requested: set = set()
+        self._preparing_users: set = set()
         # Callbacks set by bot.py
         self.on_progress_save = None  # (user_id, message, partial, status, tool) -> None
         self.on_progress_clear = None  # (user_id) -> None
@@ -968,14 +1056,16 @@ class ClaudeCLIProvider(LLMProvider):
         )
 
     def stop_user(self, user_id: int) -> bool:
-        """Signal the active Claude process for user_id to stop.
+        """Stop this user's task, including preparation before process start.
 
-        Returns True if a process was killed, False if there was no active task.
+        Returns True if cancellation was requested, False if no task was active.
         """
         proc = self._user_processes.get(user_id)
-        if proc is None:
+        if proc is None and user_id not in self._preparing_users:
             return False
         self._stop_requested.add(user_id)
+        if proc is None:
+            return True
         try:
             if proc.returncode is None:
                 _kill_turn(proc)
@@ -1146,7 +1236,6 @@ class ClaudeCLIProvider(LLMProvider):
             prompt += wrap_turn(msg.role, msg.content) + "\n"
         prompt += "\nContinue the conversation naturally, responding to the latest message."
 
-        from core.config import get_llm_effort
         # Configured MCP servers, or nothing. This provider runs its own agent
         # loop and never reaches core.tools, so a server in mcp_servers.json is
         # unreachable from here unless it is passed on the command line.
@@ -1164,7 +1253,7 @@ class ClaudeCLIProvider(LLMProvider):
             # instance may have been constructed with a model override, and
             # the effort has to be validated against the model that is
             # actually going to run.
-            "--effort", get_llm_effort(self.provider_name, self.model),
+            "--effort", _turn_effort(self),
             "--dangerously-skip-permissions",
             # One comma-joined argument, never one argv entry per tool: the
             # flag is variadic (<tools...>), so loose names would run on and
@@ -1175,6 +1264,10 @@ class ClaudeCLIProvider(LLMProvider):
             *mcp_args,
             "-",  # Read from stdin
         ]
+        # Asks the CLI to also stream partial messages, which is the only way
+        # it reports what is left of the subscription (rate_limit_event).
+        # Probed, never assumed: an unknown flag would fail every turn on an
+        # older build. The extra stream_event lines are skipped unparsed.
 
         typing_task = None
         process = None
@@ -1187,17 +1280,46 @@ class ClaudeCLIProvider(LLMProvider):
         final_result = None
         result_is_error = False
         api_error_status = None
+        # What this turn cost, and what is left. Filled from the CLI's own
+        # result and rate_limit_event; zero when it reported neither.
+        usage_counts: dict = {}
+        list_cost_usd = 0.0
+        rate_limit_info = None
+        rate_limit_captured_at = None
+        usage_reported = False
+        cost_reported = False
         partial_text = ""
         all_text_blocks = []  # Every text block in order, for reply composition
         last_turn_text_blocks = []
         current_status = "thinking"
         tool_in_progress = None
 
+        def finish_response(response):
+            for key, value in _claude_usage_fields(usage_counts, list_cost_usd).items():
+                setattr(response, key, value)
+            response.usage_reported = usage_reported
+            response.cost_reported = cost_reported
+            response.completed = bool(final_result and not result_is_error
+                                      and process is not None and process.returncode == 0
+                                      and not response.error
+                                      and user_id not in self._stop_requested)
+            return response
+
+        if user_id is not None:
+            self._stop_requested.discard(user_id)
+            self._preparing_users.add(user_id)
         try:
             if chat:
                 typing_task = asyncio.create_task(_send_typing_periodically(chat))
 
-            cli_env = self._get_cli_env(user_id)
+            if await asyncio.to_thread(_claude_supports_partial_messages, self._cli_binary):
+                cmd.insert(-1, PARTIAL_MESSAGES_FLAG)
+
+            if user_id is not None and user_id in self._stop_requested:
+                return finish_response(_stopped_response("", self.model, self.provider_name))
+            cli_env = await asyncio.to_thread(self._get_cli_env, user_id)
+            if user_id is not None and user_id in self._stop_requested:
+                return finish_response(_stopped_response("", self.model, self.provider_name))
 
             cwd = str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
@@ -1215,11 +1337,10 @@ class ClaudeCLIProvider(LLMProvider):
             self._active_processes.add(process)
             drain_deadline = None
             if user_id is not None:
-                # Drop any stale stop flag from a previous turn before
-                # registering this process, so the incoming process isn't
-                # killed by a leftover request.
-                self._stop_requested.discard(user_id)
                 self._user_processes[user_id] = process
+                self._preparing_users.discard(user_id)
+                if user_id in self._stop_requested:
+                    return finish_response(_stopped_response("", self.model, self.provider_name))
 
             # Write prompt to stdin
             process.stdin.write(prompt.encode())
@@ -1246,7 +1367,7 @@ class ClaudeCLIProvider(LLMProvider):
                     fallback = final_result or last_turn or partial_text.strip()
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
-                    return _stopped_response(fallback, self.model, self.provider_name)
+                    return finish_response(_stopped_response(fallback, self.model, self.provider_name))
 
                 # Absolute ceiling: kill the turn even if Claude is producing
                 # activity continuously. Prevents runaway multi-hour sessions.
@@ -1269,14 +1390,14 @@ class ClaudeCLIProvider(LLMProvider):
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
                     if fallback:
-                        return LLMResponse(
+                        return finish_response(LLMResponse(
                             text=fallback + f"\n\n[Hit {self.ABSOLUTE_TIMEOUT // 3600}-hour time limit. Break into smaller steps.]",
                             model=self.model, provider=self.provider_name, tool_use=True,
-                        )
-                    return LLMResponse(
+                        ))
+                    return finish_response(LLMResponse(
                         text=f"Claude hit the {self.ABSOLUTE_TIMEOUT // 3600}-hour time limit. Try breaking the task into smaller steps.",
                         model=self.model, provider=self.provider_name,
-                    )
+                    ))
 
                 if time_since_activity > self.IDLE_TIMEOUT:
                     logger.warning(f"Claude idle timeout for user {user_id} after {self.IDLE_TIMEOUT}s. Last status: {current_status}, tool: {tool_in_progress}")
@@ -1288,15 +1409,15 @@ class ClaudeCLIProvider(LLMProvider):
                     if final_result:
                         if self.on_progress_clear and user_id:
                             self.on_progress_clear(user_id)
-                        return LLMResponse(
+                        return finish_response(LLMResponse(
                             text=_idle_timeout_message(
                                 "Claude", self.IDLE_TIMEOUT // 60, tool_in_progress, "",
                                 preserved_reply=_compose_full_reply(final_result, all_text_blocks)),
                             model=self.model, provider=self.provider_name, tool_use=True,
-                        )
+                        ))
                     timeout_msg = _idle_timeout_message("Claude", self.IDLE_TIMEOUT // 60,
                                                         tool_in_progress, partial_text)
-                    return LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name)
+                    return finish_response(LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name))
 
                 # Deliberately no separate "no text while a tool runs" kill
                 # here. A single long tool call (stem separation, ffmpeg,
@@ -1369,11 +1490,32 @@ class ClaudeCLIProvider(LLMProvider):
 
                 if line:
                     last_activity = asyncio.get_running_loop().time()
+                    # Partial messages are the price of the rate-limit event
+                    # and carry nothing this loop reads: one per text delta,
+                    # thousands on a long turn. Dropped before the JSON parse.
+                    # A build that emits the key in another order simply
+                    # falls through to the parse below and is ignored there.
+                    if line.startswith(b'{"type":"stream_event"'):
+                        continue
                     line_str = line.decode(errors="replace").strip()
                     if line_str:
                         try:
                             data = json.loads(line_str)
                             msg_type = data.get("type")
+
+                            if msg_type == "stream_event":
+                                continue
+
+                            if msg_type == "rate_limit_event":
+                                # What is left of the subscription, as the CLI
+                                # itself sees it. Held and written once at the
+                                # end of the turn: this loop must not do disk
+                                # I/O per event.
+                                info = data.get("rate_limit_info")
+                                if isinstance(info, dict):
+                                    rate_limit_info = info
+                                    rate_limit_captured_at = time.time()
+                                continue
 
                             if msg_type == "assistant":
                                 current_status = "generating response"
@@ -1418,6 +1560,15 @@ class ClaudeCLIProvider(LLMProvider):
                             if msg_type == "result":
                                 if "result" in data:
                                     final_result = data["result"]
+                                turn_usage = data.get("usage")
+                                if isinstance(turn_usage, dict):
+                                    usage_counts = turn_usage
+                                    usage_reported = all(isinstance(turn_usage.get(k), (int, float))
+                                                         for k in ("input_tokens", "output_tokens"))
+                                cost = data.get("total_cost_usd")
+                                if isinstance(cost, (int, float)):
+                                    list_cost_usd = float(cost)
+                                    cost_reported = True
                                 # The CLI reports a FAILED turn inside an
                                 # otherwise normal result event. Measured
                                 # against the live CLI 2026-07-20: an auth
@@ -1473,10 +1624,10 @@ class ClaudeCLIProvider(LLMProvider):
                 if self.on_progress_clear and user_id:
                     self.on_progress_clear(user_id)
                 last_turn = "\n".join(last_turn_text_blocks).strip()
-                return _stopped_response(
+                return finish_response(_stopped_response(
                     final_result or last_turn or partial_text.strip(),
                     self.model, self.provider_name,
-                )
+                ))
 
             # A turn the CLI itself marked failed. This MUST be checked
             # before the exit-code guard below, which requires an empty
@@ -1500,7 +1651,7 @@ class ClaudeCLIProvider(LLMProvider):
                     # The "partial work" here is only the auth error string
                     # itself, so there is nothing worth salvaging. Say what
                     # is actually wrong instead of relaying CLI wording.
-                    return LLMResponse(
+                    return finish_response(LLMResponse(
                         text=(
                             "I can't reach Claude right now because the bot's "
                             "login was rejected. This needs fixing on the "
@@ -1510,18 +1661,18 @@ class ClaudeCLIProvider(LLMProvider):
                         ),
                         model=self.model, provider=self.provider_name,
                         error=f"auth failure: {detail}",
-                    )
+                    ))
                 # Other failures can arrive after real work, so keep any
                 # genuine output rather than discarding it -- but still mark
                 # the turn failed so it alerts and stays out of history.
                 last_turn = "\n".join(last_turn_text_blocks).strip()
                 salvage = last_turn or partial_text.strip()
-                return LLMResponse(
+                return finish_response(LLMResponse(
                     text=(salvage + _interrupted_notice(process.returncode)) if salvage
                     else f"That turn failed before it finished: {detail}",
                     model=self.model, provider=self.provider_name,
                     error=detail, tool_use=bool(salvage),
-                )
+                ))
 
             if process.returncode != 0 and not final_result:
                 logger.error(f"Claude error for user {user_id} (exit {process.returncode}): {stderr_text}")
@@ -1544,10 +1695,10 @@ class ClaudeCLIProvider(LLMProvider):
                             f"Partial work above may be incomplete. "
                             f"Use /recover if needed.]"
                         )
-                    return LLMResponse(
+                    return finish_response(LLMResponse(
                         text=fallback_text + suffix, model=self.model,
                         provider=self.provider_name, tool_use=True,
-                    )
+                    ))
                 if self.on_progress_save and user_id:
                     self.on_progress_save(user_id, original_message, partial_text,
                                           f"error: {_error_excerpt(stderr_text, 100)}", tool_in_progress)
@@ -1568,43 +1719,43 @@ class ClaudeCLIProvider(LLMProvider):
                     )
                     if partial_text.strip():
                         oom_msg += "\n\nPartial progress was saved. Use /recover to see it."
-                    return LLMResponse(
+                    return finish_response(LLMResponse(
                         text=oom_msg, model=self.model, provider=self.provider_name,
                         error="OOM killed",
-                    )
-                return LLMResponse(
+                    ))
+                return finish_response(LLMResponse(
                     text=f"Error (exit code {process.returncode}): {_error_excerpt(stderr_text, 500)}",
                     model=self.model, provider=self.provider_name,
                     error=_error_excerpt(stderr_text, 200),
-                )
+                ))
 
             # Success
             if self.on_progress_clear and user_id:
                 self.on_progress_clear(user_id)
 
             if final_result:
-                return LLMResponse(
+                return finish_response(LLMResponse(
                     text=_compose_full_reply(final_result, all_text_blocks),
                     model=self.model,
                     provider=self.provider_name, tool_use=True,
-                )
+                ))
 
             # No "result" message — use last assistant turn if available,
             # otherwise fall back to the full partial_text
             last_turn = "\n".join(last_turn_text_blocks).strip()
             if last_turn:
                 logger.warning(f"No final result for user {user_id}, returning last turn ({len(last_turn)} chars)")
-                return LLMResponse(
+                return finish_response(LLMResponse(
                     text=last_turn + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
-                )
+                ))
             if partial_text.strip():
                 fallback_text = partial_text.strip()
                 logger.warning(f"No final result for user {user_id}, returning full partial_text ({len(fallback_text)} chars)")
-                return LLMResponse(
+                return finish_response(LLMResponse(
                     text=fallback_text + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
-                )
+                ))
 
             elapsed = time.monotonic() - start_time
             logger.warning(
@@ -1614,19 +1765,26 @@ class ClaudeCLIProvider(LLMProvider):
                 f"partial_text_len={len(partial_text)}, "
                 f"stderr={_error_excerpt(stderr_text, 200) if stderr_text else 'none'}"
             )
-            return LLMResponse(
+            return finish_response(LLMResponse(
                 text="Claude produced no response. This can happen when the context is too large. Try /clear to reset, or send a shorter message.",
                 model=self.model, provider=self.provider_name,
                 error="No output",
-            )
+            ))
 
         except Exception as e:
             logger.exception(f"Failed to call Claude for user {user_id}")
-            return LLMResponse(
+            return finish_response(LLMResponse(
                 text=f"Error: {str(e)}", model=self.model,
                 provider=self.provider_name, error=str(e),
-            )
+            ))
         finally:
+            if rate_limit_info is not None:
+                try:
+                    from core.usage import save_claude_rate_limits
+                    await asyncio.to_thread(save_claude_rate_limits, rate_limit_info,
+                                            captured_at=rate_limit_captured_at)
+                except Exception as exc:
+                    logger.debug("rate-limit snapshot not stored: %s", exc)
             if typing_task:
                 typing_task.cancel()
                 try:
@@ -1645,6 +1803,7 @@ class ClaudeCLIProvider(LLMProvider):
                 if self._user_processes.get(user_id) is process:
                     self._user_processes.pop(user_id, None)
                 self._stop_requested.discard(user_id)
+                self._preparing_users.discard(user_id)
                 # If the CLI refreshed its OAuth token during this turn it
                 # left the fresh token somewhere private: a detached copy of
                 # the credential symlink, or (on macOS) a per-config-dir
@@ -1729,15 +1888,33 @@ class CodexCLIProvider(LLMProvider):
         self._active_processes: set = set()
         self._user_processes: dict = {}
         self._stop_requested: set = set()
+        self._preparing_users: set = set()
         self.on_progress_save = None
         self.on_progress_clear = None
+
+    def _get_cli_env(self, user_id: int = None) -> dict:
+        """The same credential context for turns, login and quota reads."""
+        from core.tools import build_cli_env
+        extra = {"OPENAI_API_KEY": self.api_key} if self.api_key else {}
+        extra = {**_user_identity_env(user_id), **extra}
+        cli_env = build_cli_env(
+            provider_keys=frozenset({
+                "OPENAI_API_KEY",
+                "OPENAI_BASE_URL",
+                "CODEX_HOME",
+            }),
+            extra=extra or None,
+        )
+        for key in [k for k in cli_env if k.startswith(("CLAUDE", "ANTHROPIC"))]:
+            del cli_env[key]
+        return cli_env
 
     def warm_hook_trust_probe(self) -> bool:
         """Run the one-off capability probes now.
 
         Called at startup so the first turn does not pay for them: both are
-        synchronous subprocesses and would otherwise block the event loop
-        inside complete(). Two are warmed here — `codex exec --help` for the
+        subprocesses; complete() also runs them off the event loop on a miss.
+        Two are warmed here: `codex exec --help` for the
         hook-trust flag, and `codex features list` for the feature names
         `--disable` may safely be handed.
         """
@@ -1746,9 +1923,11 @@ class CodexCLIProvider(LLMProvider):
 
     def stop_user(self, user_id: int) -> bool:
         proc = self._user_processes.get(user_id)
-        if proc is None:
+        if proc is None and user_id not in self._preparing_users:
             return False
         self._stop_requested.add(user_id)
+        if proc is None:
+            return True
         try:
             if proc.returncode is None:
                 _kill_turn(proc)
@@ -1855,9 +2034,6 @@ class CodexCLIProvider(LLMProvider):
         # has not been told to trust, and there is no interactive session to
         # tell it in, so trust is bypassed per invocation. The hook sources
         # are the install's own files (audit F16, 2026-09-06).
-        if (self._bot_dir / ".codex" / "hooks.json").is_file() and \
-                _codex_accepts_hook_trust_bypass(self._cli_binary):
-            cmd.insert(-1, _CODEX_HOOK_TRUST_FLAG)
 
         # Reasoning effort rides on a config override because `codex exec` has
         # no --effort flag. model_reasoning_effort is the real key, confirmed
@@ -1874,16 +2050,11 @@ class CodexCLIProvider(LLMProvider):
         # Empty means this repo has not read that model's levels, and then no
         # override is sent at all: the CLI applies the model's own default.
         # Inventing a level is how "max" reaches gpt-5.5, which has no max.
-        from core.config import get_llm_effort
-        effort = get_llm_effort(self.provider_name, self.model)
+        effort = _turn_effort(self)
         if effort:
             cmd.insert(-1, "-c")
             cmd.insert(-1, f'model_reasoning_effort="{effort}"')
 
-        for feature in _CODEX_DISABLED_FEATURES:
-            if feature in _codex_feature_names(self._cli_binary):
-                cmd.insert(-1, "--disable")
-                cmd.insert(-1, feature)
 
         typing_task = None
         process = None
@@ -1897,6 +2068,8 @@ class CodexCLIProvider(LLMProvider):
         partial_text = ""
         total_input = 0
         total_output = 0
+        total_cached = 0
+        usage_reported = False
         current_status = "thinking"
         tool_in_progress = None
         turn_failed_message = None
@@ -1909,43 +2082,39 @@ class CodexCLIProvider(LLMProvider):
         stream_error = None
         turn_completed = False
 
+        def finish_response(response):
+            response.input_tokens = total_input
+            response.output_tokens = total_output
+            response.cache_read_tokens = total_cached
+            response.usage_reported = usage_reported
+            response.cost_reported = False
+            response.completed = bool(turn_completed and not turn_failed_message
+                                      and process is not None and process.returncode == 0
+                                      and not response.error
+                                      and user_id not in self._stop_requested)
+            return response
+
+        if user_id is not None:
+            self._stop_requested.discard(user_id)
+            self._preparing_users.add(user_id)
         try:
             if chat:
                 typing_task = asyncio.create_task(_send_typing_periodically(chat))
 
-            # Codex CLI: allow-list env (SAFE_ENV_VARS) plus the provider's
-            # own auth vars. Codex authenticates via `codex login` (token at
-            # ~/.codex/auth.json) or OPENAI_API_KEY. Per-instance api_key
-            # override gets injected into the env after the allow-list build.
-            from core.tools import build_cli_env
-            extra = {"OPENAI_API_KEY": self.api_key} if self.api_key else {}
-            extra = {**_user_identity_env(user_id), **extra}
-            cli_env = build_cli_env(
-                provider_keys=frozenset({
-                    "OPENAI_API_KEY",
-                    "OPENAI_BASE_URL",
-                    "CODEX_HOME",
-                }),
-                extra=extra or None,
-            )
-            # Anthropic variables are STRIPPED, not merely not added.
-            # build_cli_env's filter is a DENY list, not an allow list
-            # (core.tools._is_env_var_safe returns True for anything that
-            # matches no blocked pattern), so only the ones shaped like a
-            # secret are removed: CLAUDE_CODE_OAUTH_TOKEN matches `.*_TOKEN$`
-            # and goes, while CLAUDE_CONFIG_DIR, CLAUDECODE,
-            # CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_MESSAGING_SOCKET and
-            # ANTHROPIC_BASE_URL all pass straight through. Verified by
-            # calling build_cli_env from inside a Claude Code session on
-            # 2026-09-07: eight CLAUDE* keys reached the child.
-            #
-            # Under a service manager the bot's ambient environment carries
-            # none of them, but "today's launcher happens to be clean" is not
-            # the same as not handing a second vendor's CLI the messaging
-            # socket of a live Claude Code session.
-            for key in [k for k in cli_env
-                        if k.startswith(("CLAUDE", "ANTHROPIC"))]:
-                del cli_env[key]
+            if (self._bot_dir / ".codex" / "hooks.json").is_file() and \
+                    await asyncio.to_thread(_codex_accepts_hook_trust_bypass, self._cli_binary):
+                cmd.insert(-1, _CODEX_HOOK_TRUST_FLAG)
+            feature_names = await asyncio.to_thread(_codex_feature_names, self._cli_binary)
+            for feature in _CODEX_DISABLED_FEATURES:
+                if feature in feature_names:
+                    cmd.insert(-1, "--disable")
+                    cmd.insert(-1, feature)
+
+            if user_id is not None and user_id in self._stop_requested:
+                return finish_response(_stopped_response("", self.model, self.provider_name))
+            cli_env = await asyncio.to_thread(self._get_cli_env, user_id)
+            if user_id is not None and user_id in self._stop_requested:
+                return finish_response(_stopped_response("", self.model, self.provider_name))
 
             cwd = str(self._bot_dir)
             process = await asyncio.create_subprocess_exec(
@@ -1962,8 +2131,10 @@ class CodexCLIProvider(LLMProvider):
             )
             self._active_processes.add(process)
             if user_id is not None:
-                self._stop_requested.discard(user_id)
                 self._user_processes[user_id] = process
+                self._preparing_users.discard(user_id)
+                if user_id in self._stop_requested:
+                    return finish_response(_stopped_response("", self.model, self.provider_name))
 
             process.stdin.write(prompt.encode())
             await process.stdin.drain()
@@ -1986,7 +2157,7 @@ class CodexCLIProvider(LLMProvider):
                     fallback = "\n\n".join(agent_message_blocks).strip() or partial_text.strip()
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
-                    return _stopped_response(fallback, self.model, self.provider_name)
+                    return finish_response(_stopped_response(fallback, self.model, self.provider_name))
 
                 if elapsed > self.ABSOLUTE_TIMEOUT:
                     logger.warning(
@@ -2006,14 +2177,14 @@ class CodexCLIProvider(LLMProvider):
                     if self.on_progress_clear and user_id:
                         self.on_progress_clear(user_id)
                     if fallback:
-                        return LLMResponse(
+                        return finish_response(LLMResponse(
                             text=fallback + f"\n\n[Hit {self.ABSOLUTE_TIMEOUT // 3600}-hour time limit. Break into smaller steps.]",
                             model=self.model, provider=self.provider_name, tool_use=True,
-                        )
-                    return LLMResponse(
+                        ))
+                    return finish_response(LLMResponse(
                         text=f"Codex hit the {self.ABSOLUTE_TIMEOUT // 3600}-hour time limit. Try breaking the task into smaller steps.",
                         model=self.model, provider=self.provider_name,
-                    )
+                    ))
 
                 if time_since_activity > self.IDLE_TIMEOUT:
                     logger.warning(f"Codex idle timeout for user {user_id} after {self.IDLE_TIMEOUT}s. Last status: {current_status}, tool: {tool_in_progress}")
@@ -2026,15 +2197,15 @@ class CodexCLIProvider(LLMProvider):
                     if fallback:
                         if self.on_progress_clear and user_id:
                             self.on_progress_clear(user_id)
-                        return LLMResponse(
+                        return finish_response(LLMResponse(
                             text=_idle_timeout_message(
                                 "Codex", self.IDLE_TIMEOUT // 60, tool_in_progress, "",
                                 preserved_reply=fallback),
                             model=self.model, provider=self.provider_name, tool_use=True,
-                        )
+                        ))
                     timeout_msg = _idle_timeout_message("Codex", self.IDLE_TIMEOUT // 60,
                                                         tool_in_progress, partial_text)
-                    return LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name)
+                    return finish_response(LLMResponse(text=timeout_msg, model=self.model, provider=self.provider_name))
 
                 # No-text kill removed deliberately (same reasoning as the Claude
                 # provider): long tool runs (stem separation, transcription,
@@ -2115,8 +2286,11 @@ class CodexCLIProvider(LLMProvider):
                                 tool_in_progress = None
                                 turn_completed = True
                                 usage = data.get("usage") or {}
+                                usage_reported = all(isinstance(usage.get(k), (int, float))
+                                                     for k in ("input_tokens", "output_tokens"))
                                 total_input += usage.get("input_tokens", 0) or 0
                                 total_output += usage.get("output_tokens", 0) or 0
+                                total_cached += usage.get("cached_input_tokens", 0) or 0
                             elif evt_type == "turn.failed":
                                 err = data.get("error") or {}
                                 turn_failed_message = err.get("message") if isinstance(err, dict) else str(err)
@@ -2210,10 +2384,10 @@ class CodexCLIProvider(LLMProvider):
                 )
                 if self.on_progress_clear and user_id:
                     self.on_progress_clear(user_id)
-                return _stopped_response(
+                return finish_response(_stopped_response(
                     "\n\n".join(agent_message_blocks).strip() or partial_text.strip(),
                     self.model, self.provider_name,
-                )
+                ))
 
             if process.returncode != 0 and not agent_message_blocks:
                 logger.error(f"Codex error for user {user_id} (exit {process.returncode}): {stderr_text}")
@@ -2232,10 +2406,10 @@ class CodexCLIProvider(LLMProvider):
                             f"Partial work above may be incomplete. "
                             f"Use /recover if needed.]"
                         )
-                    return LLMResponse(
+                    return finish_response(LLMResponse(
                         text=fallback_text + suffix, model=self.model,
                         provider=self.provider_name, tool_use=True,
-                    )
+                    ))
                 if self.on_progress_save and user_id:
                     self.on_progress_save(user_id, original_message, partial_text,
                                           f"error: {_error_excerpt(stderr_text, 100)}", tool_in_progress)
@@ -2252,20 +2426,20 @@ class CodexCLIProvider(LLMProvider):
                         "or accumulates too much tool output in a single session. "
                         "Try breaking the task into smaller steps, or use /clear to reset context."
                     )
-                    return LLMResponse(
+                    return finish_response(LLMResponse(
                         text=oom_msg, model=self.model, provider=self.provider_name,
                         error="OOM killed",
-                    )
+                    ))
                 err_detail = (turn_failed_message or stream_error
                               or _error_excerpt(stderr_text, 500) or f"exit {process.returncode}")
                 hint = ""
                 if "auth" in err_detail.lower() or "login" in err_detail.lower() or "unauthor" in err_detail.lower():
                     hint = "\n\nRun `codex login` to authenticate with your ChatGPT plan, or set OPENAI_API_KEY."
-                return LLMResponse(
+                return finish_response(LLMResponse(
                     text=f"Codex error: {err_detail}{hint}",
                     model=self.model, provider=self.provider_name,
                     error=_error_excerpt(err_detail, 200),
-                )
+                ))
 
             if self.on_progress_clear and user_id:
                 self.on_progress_clear(user_id)
@@ -2275,30 +2449,28 @@ class CodexCLIProvider(LLMProvider):
                 # Text without turn.completed is a cut turn, not an answer:
                 # exit -9 with a message already emitted used to ship the
                 # fragment dressed as finished (audit F04, 2026-09-06).
-                if not turn_completed:
+                if not turn_completed or turn_failed_message or process.returncode != 0:
                     final_text += _interrupted_notice(process.returncode)
-                return LLMResponse(
+                return finish_response(LLMResponse(
                     text=final_text, model=self.model,
                     provider=self.provider_name, tool_use=True,
-                    input_tokens=total_input, output_tokens=total_output,
-                )
+                ))
 
             if partial_text.strip():
                 fallback_text = partial_text.strip()
                 logger.warning(f"No agent_message for Codex user {user_id}, returning full partial_text ({len(fallback_text)} chars)")
-                return LLMResponse(
+                return finish_response(LLMResponse(
                     text=fallback_text + _interrupted_notice(process.returncode), model=self.model,
                     provider=self.provider_name, tool_use=True,
-                    input_tokens=total_input, output_tokens=total_output,
-                )
+                ))
 
             failure = turn_failed_message or (None if turn_completed else stream_error)
             if failure:
-                return LLMResponse(
+                return finish_response(LLMResponse(
                     text=f"Codex failed: {failure}",
                     model=self.model, provider=self.provider_name,
                     error=_error_excerpt(failure, 200),
-                )
+                ))
             elapsed = time.monotonic() - start_time
             logger.warning(
                 f"No response from Codex for user {user_id}. "
@@ -2307,25 +2479,25 @@ class CodexCLIProvider(LLMProvider):
                 f"partial_text_len={len(partial_text)}, "
                 f"stderr={_error_excerpt(stderr_text, 200) if stderr_text else 'none'}"
             )
-            return LLMResponse(
+            return finish_response(LLMResponse(
                 text="Codex produced no response. This can happen when the context is too large. Try /clear to reset, or send a shorter message.",
                 model=self.model, provider=self.provider_name,
                 error="No output",
-            )
+            ))
 
         except FileNotFoundError:
-            return LLMResponse(
+            return finish_response(LLMResponse(
                 text="Codex CLI is not installed. Install it with `npm install -g @openai/codex` "
                      "(requires Node.js 22+), then run `codex login` or set OPENAI_API_KEY.",
                 model=self.model, provider=self.provider_name,
                 error="codex binary not found",
-            )
+            ))
         except Exception as e:
             logger.exception(f"Failed to call Codex for user {user_id}")
-            return LLMResponse(
+            return finish_response(LLMResponse(
                 text=f"Error: {str(e)}", model=self.model,
                 provider=self.provider_name, error=str(e),
-            )
+            ))
         finally:
             if typing_task:
                 typing_task.cancel()
@@ -2345,6 +2517,7 @@ class CodexCLIProvider(LLMProvider):
                 if self._user_processes.get(user_id) is process:
                     self._user_processes.pop(user_id, None)
                 self._stop_requested.discard(user_id)
+                self._preparing_users.discard(user_id)
 
     @property
     def has_active_processes(self) -> bool:
