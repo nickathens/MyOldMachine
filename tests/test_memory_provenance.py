@@ -123,10 +123,11 @@ class MetadataCannotBeForgedTests(MemoryFixture, unittest.TestCase):
         self.assertIn("[basis:explicit]", render_observation(line))
 
     def test_a_reflected_marker_in_the_content_does_not_hide_the_entry(self):
+        """The nightly pass skips a line containing [reflected], anywhere in it."""
         self.add("he asked why [reflected] shows up in the log")
 
         line = self.lines()[0]
-        self.assertNotIn("[reflected]", line.split(" \"", 1)[0])
+        self.assertNotIn("[reflected]", line)
         record = reflectmod.parse_observation(line)
         self.assertIn("[reflected]", record["content"])
 
