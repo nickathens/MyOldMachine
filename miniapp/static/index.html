@@ -234,9 +234,10 @@ body{
     border-color:rgba(255,255,255,0.15);
 }
 
-/* Engine picker: one button per engine, each with its own colour, plus the
-   usage view underneath. Unlike the provider/model/effort rows above, this
-   is per person and every user may use it. */
+/* Engine picker: one button per engine, each with its own colour. Two
+   different settings share these buttons: a non-admin picks their own
+   engine, an administrator picks the machine's from every model it can
+   run. Both are one setting, never a second one layered over the first. */
 .engine-btn{
     display:block;
     width:100%;
@@ -281,9 +282,12 @@ body{
     color:var(--text-muted);
 }
 
+/* Usage: the one section on this page every person sees, whatever their
+   role and whatever this machine has installed. It sits outside the picker
+   above for exactly that reason. */
 .usage-btn{
     width:100%;
-    margin-top:6px;
+    margin-top:0;
     padding:13px 10px;
     border-radius:10px;
     border:1px solid rgba(255,255,255,0.05);
@@ -1551,10 +1555,17 @@ body{
     </section>
 
     <section id="engine-section" class="section" style="display:none">
-        <div class="section-label">Engine</div>
+        <div id="engine-label" class="section-label">Engine</div>
         <div id="engine-selector" class="option-grid option-grid-2"></div>
         <div id="engine-note" class="engine-note"></div>
-        <button id="usage-btn" class="usage-btn" type="button">Usage</button>
+    </section>
+
+    <!-- Not nested in the picker above, and not hidden by anything: the
+         picker can disappear when no engine is available. Every role still
+         reads their own consumption and the shared subscription meters here. -->
+    <section id="usage-section" class="section">
+        <div class="section-label">Usage</div>
+        <button id="usage-btn" class="usage-btn" type="button">Show usage</button>
         <div id="usage-panel" class="usage-panel"></div>
     </section>
 
@@ -1888,6 +1899,11 @@ body{
 
     function renderEngine(data){
         var section=document.getElementById('engine-section');
+        // An admin gets the MACHINE's engines here, not a second setting of
+        // their own: every model this install can run, the live one lit, and
+        // a press that writes the same .env the rows above write.
+        if(data.machine){renderMachineEngine(data);return}
+        document.getElementById('engine-label').textContent='Engine';
         var grid=document.getElementById('engine-selector');
         var note=document.getElementById('engine-note');
         var usable=data.engines.filter(function(e){return e.available});
@@ -1922,10 +1938,47 @@ body{
         }
     }
 
+    function renderMachineEngine(data){
+        var section=document.getElementById('engine-section');
+        var grid=document.getElementById('engine-selector');
+        var note=document.getElementById('engine-note');
+        document.getElementById('engine-label').textContent='Machine engine';
+        section.style.display='block';
+        grid.innerHTML='';
+        data.engines.forEach(function(e){
+            var btn=document.createElement('button');
+            btn.type='button';
+            btn.className='engine-btn accent-'+e.accent
+                +(e.current?' selected':'')
+                +(e.available?'':' unavailable');
+            var label=document.createElement('span');
+            label.className='engine-btn-label';
+            label.textContent=e.label;
+            var sub=document.createElement('span');
+            sub.className='engine-btn-sub';
+            sub.textContent=e.available?e.sub:e.reason;
+            btn.appendChild(label);btn.appendChild(sub);
+            // The live one is not a button: there is nothing to switch to,
+            // and a machine setting has no "clear" the way a personal pick
+            // does. Tapping it must not blank what the whole install runs on.
+            if(e.available&&!e.current)btn.onclick=function(){setEngine(e.id)};
+            grid.appendChild(btn);
+        });
+        note.textContent=data.note||'';
+    }
+
     function setEngine(id){
         api('/api/engine',{method:'POST',body:JSON.stringify({engine:id})})
             .then(function(data){
-                renderEngine(data);
+                if(data.machine){
+                    // Provider, Model and Effort are views of what just
+                    // changed, so they are re-read rather than left to
+                    // disagree with the button now lit. The bot rereads
+                    // this setting before its next message.
+                    loadStatus();
+                }else{
+                    renderEngine(data);
+                }
                 if(tg&&tg.HapticFeedback)tg.HapticFeedback.impactOccurred('light');
             })
             .catch(function(e){showError(e.message)});
@@ -2049,7 +2102,7 @@ body{
         var btn=document.getElementById('usage-btn');
         if(panel.classList.contains('open')){
             panel.classList.remove('open');
-            btn.textContent='Usage';
+            btn.textContent='Show usage';
             return;
         }
         panel.classList.add('open');

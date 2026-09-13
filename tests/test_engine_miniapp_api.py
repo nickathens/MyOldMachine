@@ -38,7 +38,10 @@ def _user(uid: str, role: str = "user") -> dict:
                                      "display_name": f"User {uid}"}}
 
 
-class EngineEndpointTests(unittest.TestCase):
+class _EngineCase(unittest.TestCase):
+    """The fixture both endpoint classes need, and no tests of its own:
+    inheriting from a class that HAS tests re-runs all of them."""
+
     def setUp(self):
         login = patch("core.engines._login_status", return_value=(True, ""))
         login.start()
@@ -58,6 +61,8 @@ class EngineEndpointTests(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+
+class EngineEndpointTests(_EngineCase):
     def test_the_payload_carries_every_engine_and_the_bot_default(self):
         payload = srv.get_engine(user=_user("7"))
         self.assertEqual(payload["picked"], "")
@@ -103,6 +108,108 @@ class EngineEndpointTests(unittest.TestCase):
         payload = asyncio.run(
             srv.set_engine(_FakeRequest({"engine": "opus"}), user=_user("7")))
         self.assertEqual(payload["picked"], "opus")
+
+
+class AdminMachinePickerTests(_EngineCase):
+    """The same endpoint, the machine's setting behind it.
+
+    An admin gets no engine of their own: it would sit below the provider,
+    model and effort sections and quietly beat them, which is the fault that
+    started this. What they get instead is every engine this install can
+    run, writing the .env pair the rows above already write. One setting
+    with every option, never a second setting with two.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.env = self.tmp / ".env"
+        self.env.write_text("# header\nTELEGRAM_BOT_TOKEN=abc\n"
+                            "LLM_PROVIDER=claude\nLLM_MODEL=claude-opus-5\n"
+                            "LLM_EFFORT=max\nOTHER=keep-me\n", encoding="utf-8")
+        self._saved_env = srv.ENV_FILE
+        srv.ENV_FILE = self.env
+        self.addCleanup(setattr, srv, "ENV_FILE", self._saved_env)
+
+    def test_the_admin_payload_is_the_machine_and_says_so(self):
+        payload = srv.get_engine(user=_user("7", "admin"))
+        self.assertTrue(payload["admin"])
+        self.assertTrue(payload["machine"])
+        self.assertEqual(payload["effective"], "claude-opus-5")
+        self.assertTrue(payload["note"])
+
+    def test_the_admin_sees_more_than_the_curated_pair(self):
+        payload = srv.get_engine(user=_user("7", "admin"))
+        self.assertGreater(len(payload["engines"]), len(engines.ENGINES))
+        self.assertEqual([e["id"] for e in payload["engines"] if e["current"]],
+                         ["claude-opus-5"])
+
+    def test_an_ordinary_user_still_gets_their_own_two(self):
+        payload = srv.get_engine(user=_user("7"))
+        self.assertFalse(payload["admin"])
+        self.assertFalse(payload["machine"])
+        self.assertEqual([e["id"] for e in payload["engines"]],
+                         list(engines.ENGINE_IDS))
+
+    def test_an_admin_write_moves_the_machine_and_stores_no_preference(self):
+        payload = asyncio.run(srv.set_engine(_FakeRequest({"engine": "sonnet"}),
+                                             user=_user("7", "admin")))
+        self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "claude-cli")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-sonnet-5")
+        # The preference store stays empty: an admin has no engine of their
+        # own, so nothing here can outrank what was just written.
+        self.assertEqual(engines.user_engine_id(7), "")
+        self.assertEqual(payload["effective"], "claude-sonnet-5")
+        self.assertEqual(payload["model"], "claude-sonnet-5")
+
+    def test_a_write_carries_what_the_rows_above_must_now_read(self):
+        # Provider, Model and Effort are views of the value this just wrote.
+        # The front end re-reads them on this answer rather than leaving them
+        # to disagree with the button now lit.
+        payload = asyncio.run(srv.set_engine(_FakeRequest({"engine": "astra"}),
+                                             user=_user("7", "admin")))
+        self.assertEqual(payload["provider"], "codex")
+        self.assertEqual(payload["model"], "gpt-6-astra")
+        self.assertEqual(payload["effort"], "max")
+
+    def test_a_switch_across_providers_writes_both_keys_together(self):
+        asyncio.run(srv.set_engine(_FakeRequest({"engine": "spark"}),
+                                   user=_user("7", "admin")))
+        self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "codex")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "gpt-5.3-codex-spark")
+        self.assertEqual(srv._read_env_var("OTHER"), "keep-me")
+
+    def test_the_stored_effort_is_left_alone_by_an_engine_switch(self):
+        # Exactly as /api/model leaves it: the level is a preference every
+        # reader clamps against the model about to run, so a trip through a
+        # model with fewer levels must not burn the level to come back to.
+        asyncio.run(srv.set_engine(_FakeRequest({"engine": "gpt-5.5"}),
+                                   user=_user("7", "admin")))
+        self.assertEqual(srv._read_env_var("LLM_EFFORT"), "max")
+
+    def test_an_unknown_engine_from_an_admin_writes_nothing(self):
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(srv.set_engine(_FakeRequest({"engine": "nope"}),
+                                       user=_user("7", "admin")))
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5")
+
+    def test_an_engine_this_machine_cannot_run_is_refused_at_the_press(self):
+        # Re-probed on the way in, because this write lands on every user
+        # who has not picked an engine of their own.
+        with patch("core.engines._cli_version_text", return_value=None):
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(srv.set_engine(_FakeRequest({"engine": "astra"}),
+                                           user=_user("7", "admin")))
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("codex", caught.exception.detail)
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5")
+
+    def test_a_non_admin_write_still_never_touches_the_machine(self):
+        asyncio.run(srv.set_engine(_FakeRequest({"engine": "astra"}),
+                                   user=_user("7")))
+        self.assertEqual(engines.user_engine_id(7), "astra")
+        self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "claude")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5")
 
 
 class UsageEndpointTests(unittest.TestCase):

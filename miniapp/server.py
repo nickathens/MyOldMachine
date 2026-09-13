@@ -22,6 +22,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -153,54 +154,74 @@ def _save_json(path: Path, data: dict) -> None:
 
 def _read_env_var(key: str, default: str = "") -> str:
     """Read a single variable from .env without polluting os.environ."""
+    return _read_env_values().get(key, default)
+
+
+def _read_env_values() -> dict[str, str]:
+    """Read one file snapshot so a settings pair cannot span two writes."""
     if not ENV_FILE.exists():
-        return default
+        return {}
     try:
         lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return default
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=\s*(.*?)\s*$")
+        return {}
+    pattern = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+    values = {}
     for line in lines:
         if line.lstrip().startswith("#"):
             continue
         m = pattern.match(line)
         if m:
-            value = m.group(1)
+            value = m.group(2)
             if value.startswith('"') and value.endswith('"') and len(value) >= 2:
                 value = value[1:-1]
-            return value
-    return default
+            values.setdefault(m.group(1), value)
+    return values
 
 
 def _write_env_var(key: str, value: str) -> None:
-    """Write or update a single key in .env atomically. Preserves comments
+    _write_env_vars({key: value})
+
+
+_env_write_lock = threading.RLock()
+
+
+def _write_env_vars(values: dict[str, str]) -> None:
+    """Publish related settings once; serialize concurrent panel writes."""
+    with _env_write_lock:
+        _write_env_vars_locked(values)
+
+
+def _write_env_vars_locked(values: dict[str, str]) -> None:
+    """Write related keys in .env atomically. Preserves comments
     and ordering. Creates .env if missing. Raises on disk errors.
 
     Empty string is allowed for clearing a value (e.g. unset LLM_MODEL when
     a provider has no safe default).
     """
-    if key not in WRITABLE_ENV_KEYS:
-        raise ValueError(f"Refused to write env key {key!r}")
-    if value != "" and not re.fullmatch(r"[A-Za-z0-9_.:/@\-+]+", value):
-        raise ValueError(f"Refused to write env value with unsafe chars: {value!r}")
+    for key, value in values.items():
+        if key not in WRITABLE_ENV_KEYS:
+            raise ValueError(f"Refused to write env key {key!r}")
+        if value != "" and not re.fullmatch(r"[A-Za-z0-9_.:/@\-+]+", value):
+            raise ValueError(f"Refused to write env value with unsafe chars: {value!r}")
 
     existing_lines: list[str] = []
     if ENV_FILE.exists():
-        try:
-            existing_lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            existing_lines = []
+        existing_lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
 
-    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
     new_lines: list[str] = []
-    replaced = False
+    replaced = set()
     for line in existing_lines:
-        if pattern.match(line) and not line.lstrip().startswith("#"):
-            new_lines.append(f"{key}={value}")
-            replaced = True
+        for key, value in values.items():
+            if re.match(rf"^\s*{re.escape(key)}\s*=", line):
+                new_lines.append(f"{key}={value}")
+                replaced.add(key)
+                break
         else:
             new_lines.append(line)
-    if not replaced:
+    for key, value in values.items():
+        if key in replaced:
+            continue
         if new_lines and new_lines[-1].strip() != "":
             new_lines.append("")
         new_lines.append(f"{key}={value}")
@@ -251,7 +272,8 @@ def _available_providers() -> list[dict]:
     """Return providers in display order. Keep the wizard as the single
     source of truth — if the wizard knows a provider, expose it here."""
     order = [
-        ("claude", "Claude Code CLI"),
+        ("claude", "Claude (CLI or configured API key)"),
+        ("claude-cli", "Claude Code subscription"),
         ("codex", "Codex CLI"),
         ("claude-api", "Claude API"),
         ("openai", "OpenAI"),
@@ -277,7 +299,8 @@ def _available_models(provider: str) -> list[dict]:
         return [{"id": mid, "label": desc} for mid, desc in _WIZARD_OPENROUTER_MODELS]
     if provider == "ollama":
         return []
-    entries = _WIZARD_PROVIDER_MODELS.get(provider, [])
+    catalog_provider = {"claude-cli": "claude", "codex-cli": "codex"}.get(provider, provider)
+    entries = _WIZARD_PROVIDER_MODELS.get(catalog_provider, [])
     return [{"id": mid, "label": desc} for mid, desc in entries]
 
 
@@ -292,8 +315,10 @@ def _current_pair() -> tuple[str, str]:
     clamp on a switch all have to be about the SAME pair, and .env is a file
     another process rewrites.
     """
-    provider = _read_env_var("LLM_PROVIDER", "claude")
-    model = _read_env_var("LLM_MODEL", _WIZARD_DEFAULT_MODELS.get(provider, ""))
+    values = _read_env_values()
+    provider = values.get("LLM_PROVIDER", "claude")
+    catalog_provider = {"claude-cli": "claude", "codex-cli": "codex"}.get(provider, provider)
+    model = values.get("LLM_MODEL", _WIZARD_DEFAULT_MODELS.get(catalog_provider, ""))
     return provider, model
 
 
@@ -573,15 +598,9 @@ async def set_provider(request: Request, user: dict = Depends(_get_user)):
     valid = {p["id"] for p in _available_providers()}
     if provider_id not in valid:
         raise HTTPException(status_code=400, detail="Invalid provider")
-    _write_env_var("LLM_PROVIDER", provider_id)
-    default_model = _WIZARD_DEFAULT_MODELS.get(provider_id, "")
-    if default_model:
-        _write_env_var("LLM_MODEL", default_model)
-    else:
-        # No safe default for this provider (e.g. ollama — user must pick a
-        # tag they have pulled locally). Clear LLM_MODEL so the bot can't try
-        # to use the previous provider's model string as an ollama tag.
-        _write_env_var("LLM_MODEL", "")
+    catalog_provider = {"claude-cli": "claude"}.get(provider_id, provider_id)
+    default_model = _WIZARD_DEFAULT_MODELS.get(catalog_provider, "")
+    _write_env_vars({"LLM_PROVIDER": provider_id, "LLM_MODEL": default_model})
     effort = _effort_after_switch(provider_id, default_model)
     return {"provider": provider_id, "model": default_model, "effort": effort}
 
@@ -620,21 +639,73 @@ async def set_effort(request: Request, user: dict = Depends(_get_user)):
 
 # ─── /api/engine, /api/usage ─────────────────────────────────────────
 
-# The engine picker is the one setting a non-admin may change, and it is
-# theirs alone: it never touches .env, so one person's choice cannot move
-# anybody else's. Reads and writes both go through core.engines, which owns
-# the catalog, the availability probe and the per-user store.
+# One endpoint, two settings behind it, and which one is behind it is the
+# caller's role:
+#
+#   not an admin -> their own engine, stored per user, .env never touched,
+#                   so one person's choice cannot move anybody else's;
+#   an admin     -> the MACHINE setting, LLM_PROVIDER and LLM_MODEL, the
+#                   same two values /api/provider and /api/model write.
+#
+# The admin used to be offered the non-admin's two curated rows, which is
+# both a second setting outranking their own and a catalog of two on a
+# machine that runs ten. Both halves read their catalog from core.engines.
 from core.engines import (  # noqa: E402
+    MACHINE_PICKER_NOTE,
     available_engines as _available_engines,
+    engine_available as _engine_available,
+    machine_engine as _machine_engine,
+    machine_engines as _machine_engines,
     set_user_engine as _set_user_engine,
     user_engine_id as _user_engine_id,
 )
 
 
+def _machine_engine_payload() -> dict:
+    """The administrator's picker: every engine this machine can run.
+
+    The pair is read from the FILE, not from this process's environment: the
+    bot rewrites .env on /provider and /model, and a panel that answered from
+    a stale import would light the wrong button.
+    """
+    provider, model = _current_pair()
+    rows = _machine_engines(provider, model, api_key=_read_env_var("LLM_API_KEY"))
+    return {
+        "admin": True,
+        "machine": True,
+        # The id of the row that is live, so the front end lights exactly one
+        # and never has to compare strings itself.
+        "effective": next((r["id"] for r in rows if r["current"]), ""),
+        "picked": "",
+        "note": MACHINE_PICKER_NOTE,
+        "engines": [
+            {
+                "id": r["id"], "label": r["label"], "sub": r["sub"],
+                "accent": r["accent"], "is_default": False,
+                "model": r["model"], "provider": r["provider"], "effort": "",
+                "available": r["available"], "reason": r["reason"],
+                "current": r["current"],
+            }
+            for r in rows
+        ],
+        "bot_default_model": model,
+    }
+
+
 def _engine_payload(user_id: int, admin: bool | None = None) -> dict:
+    from core.config import is_admin as _config_is_admin
     from core.engines import resolve_engine
+    if admin is None:
+        admin = _config_is_admin(user_id)
+    if admin:
+        return _machine_engine_payload()
     effective = resolve_engine(user_id, admin=admin)
     return {
+        # False here, always: the admin payload is built above and never
+        # reaches this branch. The front end renders one of two pickers on
+        # this flag rather than on a role string.
+        "admin": bool(admin),
+        "machine": False,
         "effective": (effective or {}).get("id", ""),
         "picked": _user_engine_id(user_id),
         "engines": [
@@ -657,13 +728,52 @@ def get_engine(user: dict = Depends(_get_user)):
     return _engine_payload(int(user["_id"]), _is_admin(user))
 
 
+def _set_machine_engine(engine_id: str) -> dict:
+    """Point the machine at one of its own engines: .env, not a preference.
+
+    Provider and model are written together because the pair is the choice;
+    LLM_EFFORT is deliberately left alone, exactly as /api/model leaves it.
+    The stored effort is a preference every reader clamps against the model
+    that is about to run, so a trip through a model with fewer levels must
+    not burn the level to come back to.
+    """
+    rows = _machine_engines(*_current_pair(), api_key=_read_env_var("LLM_API_KEY"))
+    engine = _machine_engine(engine_id, rows)
+    if engine is None:
+        raise HTTPException(status_code=400, detail=f"No such engine: {engine_id}")
+    if engine["current"]:
+        return _machine_engine_payload()
+    # Re-probed at the press, not trusted from the render: a CLI can be
+    # removed or logged out between the two, and this write lands on every
+    # user who has not picked an engine of their own.
+    available, reason = _engine_available(engine, refresh=True)
+    if not available:
+        raise HTTPException(status_code=400, detail=reason)
+    _write_env_vars({"LLM_PROVIDER": engine["provider"], "LLM_MODEL": engine["model"]})
+    payload = _machine_engine_payload()
+    payload["message"] = f"The machine runs {engine['label']} from the next message."
+    # The Provider, Model and Effort rows above show this same setting, so
+    # the front end is handed what they must now read rather than being left
+    # to guess whether they still agree.
+    payload["provider"] = engine["provider"]
+    payload["model"] = engine["model"]
+    payload["effort"] = _effort_after_switch(engine["provider"], engine["model"])
+    return payload
+
+
 @app.post("/api/engine")
 async def set_engine(request: Request, user: dict = Depends(_get_user)):
-    """Store the caller's own engine. Never takes a user id from the body."""
+    """The caller's own engine, or the machine's when the caller is an admin.
+
+    Never takes a user id from the body: a non-admin write lands on the
+    caller's own preferences and nowhere else.
+    """
     body = await request.json()
     if not isinstance(body, dict) or not isinstance(body.get("engine", ""), str):
         raise HTTPException(status_code=400, detail="engine must be a string")
     engine_id = body.get("engine", "").strip()
+    if _is_admin(user):
+        return await run_in_threadpool(_set_machine_engine, engine_id)
     user_id = int(user["_id"])
     ok, message = await run_in_threadpool(_set_user_engine, user_id, engine_id)
     if not ok:
