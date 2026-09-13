@@ -67,7 +67,11 @@ def _section(label, value, limit):
     used = len(lines[0]) + 1
     omitted = False
     for entry in entries:
-        remaining = limit - used - len(OMITTED) - 2
+        # The marker costs a line of its own: two spaces, its text, and the
+        # newline that joins it on. Reserving two of those three let a section
+        # that ends in the marker come back one character past the budget it
+        # was handed, and the caller spends that character before it knows.
+        remaining = limit - used - len(OMITTED) - 3
         kept = _shorten(entry, min(800, remaining))
         if kept == entry:
             lines.append(entry)

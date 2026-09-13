@@ -29,7 +29,7 @@ if str(ROOT) not in sys.path:
 os.environ["MOM_TEST"] = "1"
 
 import bot as botmod  # noqa: E402
-from core.project_context import (OMITTED, compact_project_line,  # noqa: E402
+from core.project_context import (OMITTED, _section, compact_project_line,  # noqa: E402
                                   format_project_block, summarize_projects)
 
 USER = 111111111
@@ -296,6 +296,29 @@ class UnspentAllowanceGoesBackToTheRecordTests(PromptFixture, unittest.TestCase)
             with self.subTest(limit=limit):
                 self.assertLessEqual(
                     len(format_project_block(state, "shared", limit=limit)), limit)
+
+    def test_a_section_never_runs_past_the_budget_it_was_given(self):
+        """The growth pass spends the spare on the strength of this.
+
+        A field that ends in the omission marker reserved the marker's two
+        spaces and its own text, but not the newline that joins it on, so a
+        section could come back one character past the budget it was handed
+        and the block would spend that character before knowing it was gone.
+        The boundary is exact: an entry accepted at its largest allowed size,
+        and a second entry that cannot fit behind it.
+        """
+        label = "Blockers"
+        for budget in range(60, 1200, 13):
+            # `  Blockers:` and the `    - ` on the entry are what stand
+            # between the budget and the text, and the marker line costs
+            # len(OMITTED) + 3 with its newline.
+            boundary = budget - len(label) - len(OMITTED) - 12
+            for size in range(boundary - 2, boundary + 3):
+                with self.subTest(budget=budget, size=size):
+                    section = _section(label, ["x" * max(1, size),
+                                               "a second entry that cannot fit"],
+                                       budget)
+                    self.assertLessEqual(len(section), budget)
 
     def test_the_whole_list_is_still_named_when_every_record_is_long(self):
         for index in range(20):
