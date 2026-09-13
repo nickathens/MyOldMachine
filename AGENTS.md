@@ -102,7 +102,7 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(none open)
+[2026-09-13] linux: observation provenance and the active-projects block (PR #173)
 
 (Entries removed above: #172 cleared in its reviewed merge revision.
 #170 merged 2026-09-13.
