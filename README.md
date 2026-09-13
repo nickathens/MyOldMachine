@@ -545,6 +545,18 @@ The Claude CLI provider extends this scoping to the model's own workspace. Each 
 | `factual` | "User's timezone is Europe/Athens" |
 | `relationship` | "User expressed frustration with verbose responses" |
 
+### Where a memory came from
+
+Every observation records how it was arrived at, because "prefers short answers" reads the same whether the user said it or the bot decided it, and the nightly rewrite turns both into the same line of the model.
+
+| Basis | Meaning |
+|-------|---------|
+| `explicit` | the user said it, and the entry carries the message reference and their exact words |
+| `inferred` | the bot concluded it, from the conversation or from a file |
+| `unspecified` | the origin was not recorded, which is what entries written before this read as |
+
+An explicit entry cannot exist without both its source (`telegram:CHAT_ID:MESSAGE_ID` or `file:/absolute/path`) and the quote that supports it, and a self-evaluation can never be explicit: the bot grading its own work is an inference about itself. The nightly reflection is told the difference and asked not to attribute an inference to the user. Two entries with different evidence stay two entries however alike the wording, and the same evidence saved twice is a duplicate rather than a second confirmation. `/memories` shows the origin beside each line.
+
 The bot saves observations automatically during conversations, and the nightly reflection folds them into the person model. Observations are a moving window: the ones not yet reflected are shown ten at a time, and after reflection they live on only through the model, which is itself capped in the prompt.
 
 `/remember` is deliberately not that path. An explicitly remembered fact becomes an **anchor**: ground truth, rendered at the top of the memory context in every mode, exempt from truncation, and never rewritten by reflection. That is the guarantee the command implies, so a busy day of observations can never push a fact the user asked for out of context. `/memories` lists anchors by number and `/forget <number>` removes one; the observation log itself stays append-only and is corrected by recording a correction, not by deletion.

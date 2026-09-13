@@ -149,9 +149,10 @@ class _RestartStateMixin:
         self.registry = _FakeRegistry()
         botmod.get_process_registry = lambda: self.registry
         botmod._refresh_provider_if_env_changed = lambda: None
-        # Two arguments: call_llm passes the provider that will answer
-        # this user, so a one-argument stand-in no longer matches.
-        botmod.build_system_prompt = lambda uid, provider=None: "sys"
+        # Three arguments: call_llm passes the provider that will answer
+        # this user, and the message being answered, which the prompt turns
+        # into the source reference an observation may cite.
+        botmod.build_system_prompt = lambda uid, provider=None, new_message=None: "sys"
         botmod.build_messages = lambda uid, msg: [Message(role="user", content=msg)]
         botmod.get_user_dir = lambda uid: str(ROOT)
         # call_llm books every finished turn into data/users/<id>/usage.jsonl

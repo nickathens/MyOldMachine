@@ -11,6 +11,7 @@ OpenRouter, Ollama, and Ollama Cloud.
 import asyncio
 import functools
 import glob as _glob_mod
+import hashlib
 import json
 import logging
 import os
@@ -53,7 +54,9 @@ _CLI_PROVIDERS = (ClaudeCLIProvider, CodexCLIProvider)
 from core.tools import get_process_registry
 from core.skill_loader import SkillManager
 from core.session import SessionManager, clear_session_manager, get_session_manager
-from core.memory import MemoryManager
+from core.memory import MemoryManager, render_observation
+from core.project_context import (compact_project_line, format_project_block,
+                                  summarize_projects)
 from core.scheduler import init_scheduler, get_scheduler, parse_natural_time
 from core.health import (
     build_health_report, run_health_check,
@@ -869,8 +872,13 @@ def save_pending_message(user_id: int, message_text: str, message_id: int):
     try:
         data = {
             "user_id": user_id,
+            "chat_id": user_id,
             "message_id": message_id,
             "text": message_text[:500],
+            # The stored text is cut at 500 characters, so a long message could
+            # not be recognised as the one being handled. The digest covers the
+            # whole of it and is what _observation_source matches on.
+            "text_sha256": hashlib.sha256(message_text.encode("utf-8")).hexdigest(),
             "received": datetime.now().isoformat(),
         }
         target = _pending_message_path(user_id)
@@ -882,6 +890,28 @@ def save_pending_message(user_id: int, message_text: str, message_id: int):
         tmp.rename(target)
     except Exception as e:
         logger.warning(f"Failed to save pending message for {user_id}: {e}")
+
+
+def _observation_source(user_id: int, message: str) -> str:
+    """Return a reference to the turn being handled, or "".
+
+    Only ever the message this prompt is being built for. A nearby entry from
+    the history would put a real, checkable reference on words it did not
+    cover, which is worse than recording no source at all.
+    """
+    try:
+        record = json.loads(_pending_message_path(user_id).read_text(encoding="utf-8"))
+        mid = record.get("message_id")
+        chat_id = record.get("chat_id", user_id)
+        digest = record.get("text_sha256")
+        matches = (digest == hashlib.sha256(message.encode("utf-8")).hexdigest() if digest
+                   else len(message) <= 500 and record.get("text") == message)
+        if (record.get("user_id") == user_id and matches
+                and type(mid) is int and mid > 0 and type(chat_id) is int and chat_id != 0):
+            return f"telegram:{chat_id}:{mid}"
+    except (OSError, ValueError, AttributeError):
+        pass
+    return ""
 
 
 def clear_pending_message(user_id: int):
@@ -1041,7 +1071,7 @@ def build_orientation_prompt(user_id: int, first_user_message: str = None) -> st
     )
 
 
-def build_system_prompt(user_id: int, provider=None) -> str:
+def build_system_prompt(user_id: int, provider=None, new_message: str = None) -> str:
     """Build the system prompt with user context, skills, memories, and instructions.
 
     All providers now have tool-use capability (either native via Claude CLI,
@@ -1344,30 +1374,24 @@ def build_system_prompt(user_id: int, provider=None) -> str:
             owner = state.get("owner") or "shared"
             if owner != "shared" and str(owner) != str(user_id):
                 continue
-            candidates.append((status not in ACTIVE_PROJECT_STATUSES, state, owner))
-        # Recognised-live first, everything else after. The sort is stable, so
-        # alphabetical order survives inside each tier and the only thing that
-        # moves is an unrecognised status giving up a slot to a live job.
+            updated = state.get("updated") if isinstance(state.get("updated"), str) else ""
+            candidates.append((status not in ACTIVE_PROJECT_STATUSES, updated, state, owner))
+        # Most recently updated first, recognised-live tier ahead of the rest.
+        # Alphabetical order used to decide which projects got a slot, so a job
+        # touched this week could be cut while one untouched since spring
+        # survived on its name. Undated records keep directory order at the end
+        # of their tier; both sorts are stable.
+        candidates.sort(key=lambda c: c[1], reverse=True)
         candidates.sort(key=lambda c: c[0])
-        project_lines = []
-        for _tier, state, owner in candidates[:MAX_CONTEXT_PROJECTS]:
-            block = []
+        records = []
+        for _tier, _updated, state, owner in candidates:
             visibility = "shared" if owner == "shared" else "private"
-            block.append(f"\n**{state.get('name', 'Unknown')}** [{visibility}]")
-            block.append(f"  Location: {state.get('location', 'unknown')}")
-            if state.get("summary"):
-                block.append(f"  Summary: {state['summary']}")
-            if state.get("next_steps"):
-                for step in state["next_steps"][:3]:
-                    block.append(f"  - {step}")
-            block_text = "\n".join(block)
-            # Cap per-project block at 1500 chars
-            if len(block_text) > 1500:
-                block_text = block_text[:1400] + "\n  [... truncated]"
-            project_lines.append(block_text)
-        if project_lines:
+            records.append((format_project_block(state, visibility),
+                            compact_project_line(state, visibility)))
+        block = summarize_projects(records, expand_max=MAX_CONTEXT_PROJECTS)
+        if block:
             parts.append("### Active Projects:")
-            parts.extend(project_lines)
+            parts.append(block)
             parts.append("")
 
     # A mounted drive that has stopped answering: said right after the projects
@@ -1444,6 +1468,12 @@ def build_system_prompt(user_id: int, provider=None) -> str:
             parts.append(_memory_manager.build_observation_instructions(
                 user_id, venv_python, BOT_DIR
             ))
+            source = _observation_source(user_id, new_message) if new_message else ""
+            if source:
+                parts.append(f"Current user message source for observations: {source}")
+                parts.append("This reference covers only the message being answered now. "
+                             "Use its exact words as --quote. An older claim needs its own "
+                             "source, and if you do not have one, leave it out.")
             parts.append("")
 
     # MemPalace per-user permanent conversation memory (if provisioned)
@@ -1958,7 +1988,7 @@ async def call_llm(user_id: int, message: str, chat=None, images: list = None,
                 f"current key."
             )
 
-    system_prompt = build_system_prompt(user_id, provider_obj)
+    system_prompt = build_system_prompt(user_id, provider_obj, new_message=message)
     messages = build_messages(user_id, message)
 
     # Attach images to the user's message for multimodal vision support
@@ -2667,7 +2697,9 @@ async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if obs_lines:
         text += ("What I have noticed lately (woven into your model nightly, "
                  "not individually removable):\n\n")
-        text += "\n".join(obs_lines)
+        # Stored lines are JSON encoded, so printed raw they show escape codes
+        # and repeat the quoted evidence. render_observation is the human form.
+        text += "\n".join(render_observation(line) for line in obs_lines)
     for chunk in split_message(text):
         await update.message.reply_text(chunk)
 

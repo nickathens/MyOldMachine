@@ -100,10 +100,108 @@ def _extract_keywords(text: str) -> set:
     return {w for w in words if w not in _DEDUP_STOPWORDS}
 
 
+VALID_BASIS = ("explicit", "inferred", "unspecified")
+
+
+def _json_tag(value: str) -> str:
+    """Quote a value so it cannot introduce bracket or line-control markers."""
+    return (json.dumps(value, ensure_ascii=False)
+            .replace("[", "\\u005b").replace("]", "\\u005d")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+def _tag_value(line: str, key: str, default=None):
+    """Read a [key:value] tag from the metadata prefix only.
+
+    Bounded to the tags between the (type) marker and the content, so a word
+    inside the observation, or inside a quoted excerpt of what the user said,
+    can never answer as metadata.
+    """
+    prefix = re.match(r"\[[^\]]+\] \([\w-]+\)((?:\s+\[[^\]]*\])*)", line)
+    match = re.search(r"\[" + re.escape(key) + r":([^\]]+)\]", prefix.group(1)) if prefix else None
+    if not match:
+        return default
+    value = match.group(1)
+    if key in ("source", "quote"):
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError):
+            return default
+    return value
+
+
 def _observation_content(line: str) -> str:
-    """Extract the observation content after the [ts] (type) [tags...] prefix."""
+    """Extract the observation content after the [ts] (type) [tags...] prefix.
+
+    Entries written with a basis tag store their content as a JSON string, so a
+    bracket the user typed cannot pose as a metadata tag. Legacy entries are
+    plain text and are returned unchanged.
+    """
     m = re.search(r'\)\s+(?:\[[^\]]*\]\s*)*(.+)$', line)
-    return m.group(1).strip() if m else ""
+    content = m.group(1).strip() if m else ""
+    if content.startswith('"') and _tag_value(line, "basis") is not None:
+        try:
+            decoded = json.loads(content)
+            if isinstance(decoded, str):
+                return decoded
+        except ValueError:
+            pass
+    return content
+
+
+def render_observation(line: str) -> str:
+    """Readable form of one stored line, for people rather than parsers.
+
+    Content is stored JSON encoded with escaped brackets. Printed raw that
+    shows \\u005b escapes and the supporting quote twice, so every surface a
+    person reads goes through here.
+    """
+    content = _observation_content(line)
+    if not content:
+        return line
+    type_match = re.search(r'\(([\w-]+)\)', line)
+    marks = []
+    basis = _tag_value(line, "basis")
+    if basis and basis != "unspecified":
+        marks.append(basis)
+    source = _tag_value(line, "source")
+    if source:
+        marks.append(source)
+    importance = _get_int_tag(line, "importance", 5)
+    if importance != 5:
+        marks.append(f"importance {importance}")
+    seen = _get_int_tag(line, "seen", 1)
+    if seen > 1:
+        marks.append(f"seen {seen}")
+    if "[reflected]" in line:
+        marks.append("reflected")
+    project = _tag_value(line, "project")
+    if project:
+        marks.append(f"project {project}")
+    suffix = f"  ({', '.join(marks)})" if marks else ""
+    return (f"[{_observation_timestamp(line)}] "
+            f"({type_match.group(1) if type_match else 'observation'}) {content}{suffix}")
+
+
+def validate_evidence(basis, source, quote):
+    """Return an error string if the evidence is not self-consistent, else ""."""
+    if basis not in VALID_BASIS:
+        return "basis must be explicit, inferred, or unspecified"
+    if source is not None:
+        if not isinstance(source, str) or any(ord(ch) < 32 for ch in source):
+            return "source must be a single reference without control characters"
+        if not (re.fullmatch(r"telegram:-?[1-9]\d*:[1-9]\d*", source)
+                or (source.startswith("file:/") and len(source) > 6)):
+            return "source must be telegram:CHAT_ID:MESSAGE_ID or file:/absolute/path"
+        if len(source) > 2048:
+            return "source must be at most 2048 characters"
+    if quote is not None and (not isinstance(quote, str) or not quote.strip() or len(quote) > 8000):
+        return "quote must contain 1 to 8000 characters"
+    if quote and not source:
+        return "a quote requires its source reference"
+    if basis == "explicit" and (not source or not quote):
+        return "explicit observations require both source and quote"
+    return ""
 
 
 def _observation_timestamp(line: str) -> str:
@@ -301,12 +399,15 @@ class MemoryManager:
         for a in anchors:
             cat = f"({a['category']}) " if a["category"] else ""
             body += f"- [id:{a['id']}] {cat}{a['text']}\n"
-        with open(f, "w", encoding="utf-8") as fh:
-            if fcntl:
-                fcntl.flock(fh, fcntl.LOCK_EX)
+        # Written whole and renamed into place. Opening the live file "w"
+        # truncates it at open, before the lock is taken, so a crash between
+        # the two lost every pinned fact and a reader in that window saw none.
+        tmp = f.with_suffix(".md.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(body)
-            if fcntl:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.rename(f)
 
     def add_anchor(self, user_id: int, text: str, anchor_id: str = None,
                    category: str = "") -> dict:
@@ -358,10 +459,14 @@ class MemoryManager:
         needle_low = needle.lower()
         matches = []
         for line in obs_file.read_text(encoding="utf-8").split("\n"):
-            if line.startswith("[") and needle_low in line.lower():
-                content = _observation_content(line)
-                if content:
-                    matches.append(content)
+            if not line.startswith("["):
+                continue
+            content = _observation_content(line)
+            # Match the observation itself, never its metadata. A word that
+            # appears only inside the quoted evidence, or inside a source
+            # reference, must not pin a fact whose text never said it.
+            if content and needle_low in content.lower():
+                matches.append(content)
         if not matches:
             return {"status": "error", "reason": "no_match"}
         result = self.add_anchor(user_id, matches[-1], anchor_id=anchor_id, category=category)
@@ -394,7 +499,8 @@ class MemoryManager:
 
     def add_observation(self, user_id: int, obs_type: str, content: str,
                         importance: int = 5, project: str = None,
-                        use_semantic: bool = True) -> dict:
+                        use_semantic: bool = True, *, basis: str = "unspecified",
+                        source: str = None, quote: str = None) -> dict:
         """
         Append an observation to the user's log, with two-tier dedup/corroboration.
 
@@ -405,6 +511,12 @@ class MemoryManager:
             importance: 1-10 score (default 5). Higher = more impactful.
             project: Optional project slug to scope this observation to.
             use_semantic: Run the semantic corroboration pass (lexical always runs).
+            basis: explicit (the user said it), inferred (the bot concluded it),
+                or unspecified. Entries written before this existed read as
+                unspecified rather than claiming an origin they never had.
+            source: Where it came from — telegram:CHAT_ID:MESSAGE_ID or
+                file:/absolute/path. Never invented.
+            quote: The exact supporting words from that source.
 
         Tiers:
           - Lexical near-restatement (Jaccard >= LEXICAL_THRESHOLD): SUPPRESS the
@@ -417,6 +529,8 @@ class MemoryManager:
 
         Returns a status dict:
           {"status": "invalid_type"}
+          {"status": "invalid_evidence", "reason": str}
+          {"status": "duplicate_evidence"}
           {"status": "corroborated_lexical", "seen": N}
           {"status": "corroborated_semantic", "seen": N, "score": float}
           {"status": "saved"}
@@ -424,6 +538,16 @@ class MemoryManager:
         if obs_type not in VALID_OBSERVATION_TYPES:
             logger.warning(f"Invalid observation type '{obs_type}' for user {user_id}")
             return {"status": "invalid_type"}
+
+        problem = validate_evidence(basis, source, quote)
+        if not problem and obs_type == "self-eval" and basis == "explicit":
+            # The bot grading its own work is an inference about itself, whoever
+            # prompted it. Letting it be filed as something the user stated is
+            # how an assistant's own conclusion becomes "they told me so".
+            problem = "self evaluations are assistant inferences, not user statements"
+        if problem:
+            logger.warning(f"Rejected observation for user {user_id}: {problem}")
+            return {"status": "invalid_evidence", "reason": problem}
 
         obs_file = self._observations_file(user_id)
 
@@ -438,10 +562,27 @@ class MemoryManager:
 
         existing_content = obs_file.read_text(encoding="utf-8")
         existing_lines = [ln for ln in existing_content.split("\n") if ln.startswith("[")]
-        recent = existing_lines[-RECENT_WINDOW:]
+        # Two observations with different evidence are two observations, however
+        # alike the wording. Only lines carrying exactly this evidence may
+        # suppress this one or lend it their confidence; untagged lines read as
+        # unspecified, which is what the entries written before this were.
+        evidence = (basis, source, quote)
+        candidates = [line for line in existing_lines
+                      if tuple(_tag_value(line, key, "unspecified" if key == "basis" else None)
+                               for key in ("basis", "source", "quote")) == evidence]
+        recent = candidates[-RECENT_WINDOW:]
 
         # ── Tier 1: lexical near-restatement, suppress new and corroborate existing ──
-        lex = _find_lexical_match(content, existing_lines)
+        # With a source, only an identical restatement of the same evidence
+        # counts: near-enough wording from one message is still one message.
+        lex = (next((line for line in reversed(candidates)
+                     if _observation_content(line) == content), None)
+               if source else _find_lexical_match(content, candidates))
+        if lex is not None and source:
+            # Replaying the same evidence is not independent corroboration, so
+            # the count stays where it is and the original line is left intact.
+            logger.info(f"Duplicate source evidence for user {user_id}, not saved again")
+            return {"status": "duplicate_evidence"}
         if lex is not None:
             seen = _get_int_tag(lex, "seen", 1) + 1
             updated = _set_tag(lex, "seen", seen)
@@ -456,7 +597,7 @@ class MemoryManager:
         corrob_ts = None
         seen_for_new = 1
         score = 0.0
-        if use_semantic and SEMANTIC_ENABLED_DEFAULT:
+        if use_semantic and SEMANTIC_ENABLED_DEFAULT and not source:
             sem = self._semantic_best_match(content, recent, obs_file.parent / ".embcache.json")
             if sem is not None:
                 matched_line, score = sem
@@ -467,7 +608,11 @@ class MemoryManager:
 
         # Build and append the new entry.
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        metadata_parts = [f"[importance:{importance}]"]
+        metadata_parts = [f"[importance:{importance}]", f"[basis:{basis}]"]
+        if source:
+            metadata_parts.append(f"[source:{_json_tag(source)}]")
+        if quote:
+            metadata_parts.append(f"[quote:{_json_tag(quote)}]")
         if project:
             metadata_parts.append(f"[project:{project}]")
         if seen_for_new > 1:
@@ -476,7 +621,10 @@ class MemoryManager:
         if corrob_ts:
             metadata_parts.append(f"[corrob:{corrob_ts}]")
 
-        entry = f"[{timestamp}] ({obs_type}) {' '.join(metadata_parts)} {content}\n"
+        # Content is stored JSON encoded: a bracket in what the user typed must
+        # never be readable as a metadata tag, and a literal [reflected] in an
+        # observation must never make the nightly pass skip a real entry.
+        entry = f"[{timestamp}] ({obs_type}) {' '.join(metadata_parts)} {_json_tag(content)}\n"
         with open(obs_file, "a", encoding="utf-8") as f:
             if fcntl:
                 fcntl.flock(f, fcntl.LOCK_EX)
@@ -708,14 +856,14 @@ class MemoryManager:
             if observations:
                 parts.append("### Recent Observations (not yet reflected):")
                 for obs in observations:
-                    parts.append(f"  {obs}")
+                    parts.append(f"  {render_observation(obs)}")
                 parts.append("")
         else:
             observations = self.get_all_observations(user_id, limit=30)
             if observations:
                 parts.append("### Recent Observations:")
                 for obs in observations[-20:]:
-                    parts.append(f"  {obs}")
+                    parts.append(f"  {render_observation(obs)}")
                 parts.append("")
 
         return "\n".join(parts)
@@ -734,8 +882,17 @@ class MemoryManager:
             f"--user {user_id} --type <type> --content '<what you learned>'\n\n"
             "Types: behavioral, state, correction, preference, relationship, project, factual, self-eval\n\n"
             "Optional flags:\n"
-            f"  --importance N    Importance score 1-10 (default: 5)\n"
-            f"  --project SLUG   Scope to a project\n\n"
+            "  --importance N    Importance score 1-10 (default: 5)\n"
+            "  --project SLUG   Scope to a project\n"
+            "  --basis explicit|inferred|unspecified   Did the user say this, or did you conclude it?\n"
+            "  --source REFERENCE   telegram:CHAT_ID:MESSAGE_ID or file:/absolute/path\n"
+            "  --quote TEXT   The exact words that support it (required with a source "
+            "on an explicit entry)\n\n"
+            "Give every new observation a basis, and the source you have. An explicit "
+            "entry needs both a source and the user's exact words; anything you worked "
+            "out yourself is inferred, including a conclusion drawn from a file. Never "
+            "invent a source or a quote: an unsourced entry is honest, a fabricated one "
+            "is not. Entries saved before this read as unspecified.\n\n"
             "Importance guidelines:\n"
             "  - Corrections (bot got something wrong): --importance 8\n"
             "  - Relationship signals (trust, frustration): --importance 7\n"
