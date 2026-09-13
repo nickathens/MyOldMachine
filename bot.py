@@ -3474,6 +3474,41 @@ def provider_default_models() -> dict[str, str]:
     return models
 
 
+def _write_machine_llm(provider: str, model: str,
+                       env_file: Path | None = None) -> bool:
+    """Point .env at a provider/model pair. False when there is no .env.
+
+    One writer, because three commands set the same two keys: /provider,
+    /model and /engine. They each carried their own copy of this loop, and a
+    copy is how a key gets appended in one path and replaced in another.
+
+    LLM_EFFORT is deliberately untouched. The stored level is a preference
+    every reader clamps against the model about to run, so a trip through a
+    model with fewer levels must not burn the level to come back to.
+    """
+    env_file = env_file or Path(__file__).parent / ".env"
+    if not env_file.exists():
+        return False
+    lines = env_file.read_text(encoding="utf-8").splitlines()
+    new_lines = []
+    found = {"LLM_PROVIDER": False, "LLM_MODEL": False}
+    for line in lines:
+        for key, value in (("LLM_PROVIDER", provider), ("LLM_MODEL", model)):
+            if line.startswith(f"{key}="):
+                new_lines.append(f"{key}={value}")
+                found[key] = True
+                break
+        else:
+            new_lines.append(line)
+    for key, value in (("LLM_PROVIDER", provider), ("LLM_MODEL", model)):
+        if not found[key]:
+            new_lines.append(f"{key}={value}")
+    _atomic_env_write(env_file, "\n".join(new_lines) + "\n")
+    os.environ["LLM_PROVIDER"] = provider
+    os.environ["LLM_MODEL"] = model
+    return True
+
+
 @requires_auth
 async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Switch LLM provider and/or model without restarting."""
@@ -3559,34 +3594,9 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Update .env file
-    env_file = Path(__file__).parent / ".env"
-    if env_file.exists():
-        lines = env_file.read_text(encoding="utf-8").splitlines()
-        new_lines = []
-        found_provider = False
-        found_model = False
-        for line in lines:
-            if line.startswith("LLM_PROVIDER="):
-                new_lines.append(f"LLM_PROVIDER={new_provider}")
-                found_provider = True
-            elif line.startswith("LLM_MODEL="):
-                new_lines.append(f"LLM_MODEL={new_model}")
-                found_model = True
-            else:
-                new_lines.append(line)
-        if not found_provider:
-            new_lines.append(f"LLM_PROVIDER={new_provider}")
-        if not found_model:
-            new_lines.append(f"LLM_MODEL={new_model}")
-        _atomic_env_write(env_file, "\n".join(new_lines) + "\n")
-    else:
+    if not _write_machine_llm(new_provider, new_model):
         await update.message.reply_text("Error: .env file not found.")
         return
-
-    # Update environment variables so get_llm_provider/get_llm_model return new values
-    os.environ["LLM_PROVIDER"] = new_provider
-    os.environ["LLM_MODEL"] = new_model
 
     # Reload provider in memory
     try:
@@ -3681,43 +3691,122 @@ def _engine_lines(user_id: int) -> list[str]:
     return lines
 
 
+async def _admin_engine_switch(update: Update, user_id: int, choice: str) -> None:
+    """Point the machine at one of its own engines, from Telegram.
+
+    The same write the panel's machine picker makes and the same one
+    /provider makes, because it is the same setting. The running process is
+    rebuilt here rather than left for a restart, which is what /provider and
+    /model have always done from this side.
+    """
+    global _llm_provider
+    from core.config import get_llm_effort
+    from core.engines import engine_available, machine_engine, machine_engines
+    rows = await asyncio.to_thread(machine_engines, get_llm_provider(), get_llm_model())
+    engine = machine_engine(choice, rows)
+    if engine is None:
+        names = ", ".join(r["alias"] or r["id"] for r in rows if not r["current"])
+        await update.message.reply_text(
+            f"No engine called {choice!r} on this machine.\nOptions: {names}, "
+            "or default to clear a saved pick.")
+        return
+    if engine["current"]:
+        await update.message.reply_text(
+            f"{engine['label']} is already what this machine runs.")
+        return
+    # Re-probed at the press: the render above may be up to five minutes old,
+    # and this write lands on every user who has not picked an engine.
+    available, reason = await asyncio.to_thread(engine_available, engine, refresh=True)
+    if not available:
+        await update.message.reply_text(f"{engine['label']} cannot run here: {reason}")
+        return
+    if not _write_machine_llm(engine["provider"], engine["model"]):
+        await update.message.reply_text("Error: .env file not found.")
+        return
+    try:
+        _llm_provider = _build_llm_provider(engine["provider"], engine["model"],
+                                           get_llm_api_key())
+    except Exception as exc:
+        logger.exception(f"Failed to switch machine engine: {exc}")
+        await update.message.reply_text(
+            "Failed to create provider. Check the bot log for details.")
+        return
+    logger.info("Machine engine switched to %s/%s by user %s",
+                engine["provider"], engine["model"], user_id)
+    healthy, health_reason = await _refresh_provider_health(_llm_provider)
+    health_line = (f"Health-check: OK ({health_reason})" if healthy else
+                   f"Health-check FAILED: {health_reason}\n"
+                   "Messages will be rejected until resolved.")
+    if not healthy:
+        logger.error(f"Health-check failed after /engine switch: {health_reason}")
+    effort = get_llm_effort(engine["provider"], engine["model"])
+    await update.message.reply_text(
+        f"The machine now runs {engine['label']}.\n"
+        f"Provider: {engine['provider']}\n"
+        f"Model: {engine['model']}\n"
+        + (f"Effort: {effort}\n" if effort else "")
+        + f"\n{health_line}\n\nNo restart needed. This is the setting every "
+        "user without an engine of their own runs on.")
+
+
+async def _admin_engine_lines(user_id: int) -> list[str]:
+    """The administrator's /engine: the machine setting, and every option."""
+    from core.config import get_llm_effort
+    from core.engines import (MACHINE_PICKER_NOTE, get_engine, machine_engines,
+                              user_engine_id)
+    rows = await asyncio.to_thread(machine_engines, get_llm_provider(), get_llm_model())
+    live = next((r for r in rows if r["current"]), None)
+    effort = get_llm_effort(get_llm_provider(), get_llm_model())
+    header = f"Engine: {live['label'] if live else get_llm_model()}, the machine setting."
+    lines = [header,
+             f"Provider {get_llm_provider()}, model {get_llm_model()}"
+             + (f", {effort} effort." if effort else "."),
+             "",
+             "Every engine this machine can run:"]
+    for row in rows:
+        name = row["alias"] or row["id"]
+        if row["current"]:
+            mark = "  (running now)"
+        elif not row["available"]:
+            mark = f"  (unavailable: {row['reason']})"
+        else:
+            mark = f"  (/engine {name})"
+        lines.append(f"  {row['label']}: {row['sub']}{mark}" if row["sub"]
+                     else f"  {row['label']}{mark}")
+    lines += ["", MACHINE_PICKER_NOTE]
+    # A pick stored before an admin stopped having one of their own is inert,
+    # and silence about it is the confusion this rule exists to end: they saw
+    # two settings and asked which one wins. Name it, and say how to be rid of it.
+    stored = await asyncio.to_thread(user_engine_id, user_id)
+    if stored:
+        label = (get_engine(stored) or {}).get("label", stored)
+        lines += ["", f"A {label} pick is also stored against you from before "
+                      "this rule. It is not used, because an administrator "
+                      "runs the machine setting. Clear it with /engine default."]
+    return lines
+
+
 @requires_auth
 async def engine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pick the engine this user's own turns run on.
+    """The engine a person's turns run on: theirs, or the machine's.
 
-    Per user, not per install: /provider and /model stay admin-only and keep
-    setting what everybody without a pick gets.
+    Two settings, one command, and which one it is depends on who asks. A
+    non-admin picks from the curated pair and it is stored against them
+    alone. An administrator has no pick of their own (it would outrank the
+    provider, model and effort they set) and picks the MACHINE engine here
+    instead, from every model this install can actually run.
     """
-    from core.engines import (ADMIN_KEEPS_MACHINE_SETTING, ENGINE_IDS,
-                              get_engine, set_user_engine, resolve_engine,
-                              user_engine_id)
-    from core.config import get_llm_effort
+    from core.engines import ENGINE_IDS, set_user_engine, resolve_engine
     user_id = update.effective_user.id
     choice = command_body(update.message.text).strip().lower()
     clearing = choice in ("default", "none", "clear", "reset")
 
-    # The administrator's own turns follow the .env knobs they set, so there
-    # is nothing here to pick. Clearing still works: a pick stored before
-    # this rule is inert, and they should be able to delete it.
     if is_admin(user_id) and not clearing:
-        effort = get_llm_effort(get_llm_provider(), get_llm_model())
-        pair = f"{get_llm_provider()} / {get_llm_model()}"
-        lines = [
-            f"Engine: the machine setting ({pair}" + (f", {effort} effort)" if effort else ")"),
-            "",
-            ADMIN_KEEPS_MACHINE_SETTING,
-            "Change it with /provider or /model, or the effort row in the panel.",
-        ]
-        # A pick stored before this rule is inert, and silence about it is
-        # the confusion the rule exists to end: they saw two settings and
-        # asked which one wins. Name it, and say how to be rid of it.
-        stored = await asyncio.to_thread(user_engine_id, user_id)
-        if stored:
-            label = (get_engine(stored) or {}).get("label", stored)
-            lines += ["", f"A {label} pick is still stored against you from "
-                          "before this rule. It is not used. Clear it with "
-                          "/engine default."]
-        await update.message.reply_text("\n".join(lines))
+        if choice:
+            await _admin_engine_switch(update, user_id, choice)
+        else:
+            await update.message.reply_text(
+                "\n".join(await _admin_engine_lines(user_id)))
         return
 
     if choice:
@@ -3742,7 +3831,8 @@ async def engine_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",
         f"Switch with /engine {' or /engine '.join(ENGINE_IDS)}.",
         "/engine default clears your saved choice. Ordinary CLI users default "
-        "to Opus at Max; the administrator always runs the machine setting.",
+        "to Opus at Max; the administrator sets the machine's engine here "
+        "instead of picking one of their own.",
     ]
     await update.message.reply_text("\n".join(body))
 
@@ -3868,23 +3958,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(model_err)
         return
 
-    # Update .env
-    env_file = Path(__file__).parent / ".env"
-    if env_file.exists():
-        lines = env_file.read_text(encoding="utf-8").splitlines()
-        new_lines = []
-        found = False
-        for line in lines:
-            if line.startswith("LLM_MODEL="):
-                new_lines.append(f"LLM_MODEL={new_model}")
-                found = True
-            else:
-                new_lines.append(line)
-        if not found:
-            new_lines.append(f"LLM_MODEL={new_model}")
-        _atomic_env_write(env_file, "\n".join(new_lines) + "\n")
-
-    os.environ["LLM_MODEL"] = new_model
+    _write_machine_llm(current_provider, new_model)
 
     # Reload provider
     try:
@@ -4003,7 +4077,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Open to strangers, so this cannot assume a profile: is_admin answers
     # False for an unknown id, which is the line an unknown id should read.
     engine_line = (
-        "  /engine — See the engine setting your messages run on\n"
+        "  /engine — Set the engine this machine runs on\n"
         if update.effective_user and is_admin(update.effective_user.id)
         else "  /engine — Pick which AI answers you\n"
     )

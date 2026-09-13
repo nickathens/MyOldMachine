@@ -620,16 +620,57 @@ async def set_effort(request: Request, user: dict = Depends(_get_user)):
 
 # ─── /api/engine, /api/usage ─────────────────────────────────────────
 
-# The engine picker is the one setting a non-admin may change, and it is
-# theirs alone: it never touches .env, so one person's choice cannot move
-# anybody else's. Reads and writes both go through core.engines, which owns
-# the catalog, the availability probe and the per-user store.
+# One endpoint, two settings behind it, and which one is behind it is the
+# caller's role:
+#
+#   not an admin -> their own engine, stored per user, .env never touched,
+#                   so one person's choice cannot move anybody else's;
+#   an admin     -> the MACHINE setting, LLM_PROVIDER and LLM_MODEL, the
+#                   same two values /api/provider and /api/model write.
+#
+# The admin used to be offered the non-admin's two curated rows, which is
+# both a second setting outranking their own and a catalog of two on a
+# machine that runs ten. Both halves read their catalog from core.engines.
 from core.engines import (  # noqa: E402
-    ADMIN_KEEPS_MACHINE_SETTING,
+    MACHINE_PICKER_NOTE,
     available_engines as _available_engines,
+    engine_available as _engine_available,
+    machine_engine as _machine_engine,
+    machine_engines as _machine_engines,
     set_user_engine as _set_user_engine,
     user_engine_id as _user_engine_id,
 )
+
+
+def _machine_engine_payload() -> dict:
+    """The administrator's picker: every engine this machine can run.
+
+    The pair is read from the FILE, not from this process's environment: the
+    bot rewrites .env on /provider and /model, and a panel that answered from
+    a stale import would light the wrong button.
+    """
+    provider, model = _current_pair()
+    rows = _machine_engines(provider, model)
+    return {
+        "admin": True,
+        "machine": True,
+        # The id of the row that is live, so the front end lights exactly one
+        # and never has to compare strings itself.
+        "effective": next((r["id"] for r in rows if r["current"]), ""),
+        "picked": "",
+        "note": MACHINE_PICKER_NOTE,
+        "engines": [
+            {
+                "id": r["id"], "label": r["label"], "sub": r["sub"],
+                "accent": r["accent"], "is_default": False,
+                "model": r["model"], "provider": r["provider"], "effort": "",
+                "available": r["available"], "reason": r["reason"],
+                "current": r["current"],
+            }
+            for r in rows
+        ],
+        "bot_default_model": model,
+    }
 
 
 def _engine_payload(user_id: int, admin: bool | None = None) -> dict:
@@ -637,12 +678,15 @@ def _engine_payload(user_id: int, admin: bool | None = None) -> dict:
     from core.engines import resolve_engine
     if admin is None:
         admin = _config_is_admin(user_id)
+    if admin:
+        return _machine_engine_payload()
     effective = resolve_engine(user_id, admin=admin)
     return {
-        # An admin has the provider, model and effort sections above; the
-        # picker would be a second setting that outranks them. The front end
-        # hides the whole section on this flag rather than on a role string.
+        # False here, always: the admin payload is built above and never
+        # reaches this branch. The front end renders one of two pickers on
+        # this flag rather than on a role string.
         "admin": bool(admin),
+        "machine": False,
         "effective": (effective or {}).get("id", ""),
         "picked": _user_engine_id(user_id),
         "engines": [
@@ -665,19 +709,50 @@ def get_engine(user: dict = Depends(_get_user)):
     return _engine_payload(int(user["_id"]), _is_admin(user))
 
 
+def _set_machine_engine(engine_id: str) -> dict:
+    """Point the machine at one of its own engines: .env, not a preference.
+
+    Provider and model are written together because the pair is the choice;
+    LLM_EFFORT is deliberately left alone, exactly as /api/model leaves it.
+    The stored effort is a preference every reader clamps against the model
+    that is about to run, so a trip through a model with fewer levels must
+    not burn the level to come back to.
+    """
+    engine = _machine_engine(engine_id)
+    if engine is None:
+        raise HTTPException(status_code=400, detail=f"No such engine: {engine_id}")
+    # Re-probed at the press, not trusted from the render: a CLI can be
+    # removed or logged out between the two, and this write lands on every
+    # user who has not picked an engine of their own.
+    available, reason = _engine_available(engine, refresh=True)
+    if not available:
+        raise HTTPException(status_code=400, detail=reason)
+    _write_env_var("LLM_PROVIDER", engine["provider"])
+    _write_env_var("LLM_MODEL", engine["model"])
+    payload = _machine_engine_payload()
+    payload["message"] = f"The machine runs {engine['label']} from the next message."
+    # The Provider, Model and Effort rows above show this same setting, so
+    # the front end is handed what they must now read rather than being left
+    # to guess whether they still agree.
+    payload["provider"] = engine["provider"]
+    payload["model"] = engine["model"]
+    payload["effort"] = _effort_after_switch(engine["provider"], engine["model"])
+    return payload
+
+
 @app.post("/api/engine")
 async def set_engine(request: Request, user: dict = Depends(_get_user)):
-    """Store the caller's own engine. Never takes a user id from the body."""
+    """The caller's own engine, or the machine's when the caller is an admin.
+
+    Never takes a user id from the body: a non-admin write lands on the
+    caller's own preferences and nowhere else.
+    """
     body = await request.json()
     if not isinstance(body, dict) or not isinstance(body.get("engine", ""), str):
         raise HTTPException(status_code=400, detail="engine must be a string")
     engine_id = body.get("engine", "").strip()
-    # Refused here as well as in core.engines: this endpoint answers with the
-    # flag that hides the picker, and a payload saying "admin" while the write
-    # lands would be the same two-settings fault one layer down. Clearing an
-    # older pick stays allowed.
-    if engine_id and _is_admin(user):
-        raise HTTPException(status_code=400, detail=ADMIN_KEEPS_MACHINE_SETTING)
+    if _is_admin(user):
+        return await run_in_threadpool(_set_machine_engine, engine_id)
     user_id = int(user["_id"])
     ok, message = await run_in_threadpool(_set_user_engine, user_id, engine_id)
     if not ok:

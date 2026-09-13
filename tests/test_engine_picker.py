@@ -153,6 +153,148 @@ class AvailabilityProbeTests(unittest.TestCase):
             self.assertTrue(row["reason"])
 
 
+class MachineCatalogTests(unittest.TestCase):
+    """The administrator's list: every model this install can actually run.
+
+    The curated pair above is for people who cannot touch .env. An admin can,
+    so offering them the same two said this machine had two engines when the
+    catalog it ships has ten on these CLIs alone. This list is DERIVED from
+    install/wizard.PROVIDER_MODELS rather than re-typed, so the tests here
+    are about the derivation holding, not about the rows being memorised.
+    """
+
+    def setUp(self):
+        # Kept on self: one test below stops both to exercise the real probe.
+        self.login = patch("core.engines._login_status", return_value=(True, ""))
+        self.login.start()
+        self.addCleanup(self.login.stop)
+        self.version = patch("core.engines._cli_version_text",
+                             return_value="codex-cli 0.154.0")
+        self.version.start()
+        self.addCleanup(self.version.stop)
+        engines.probe_cache_clear()
+        self.addCleanup(engines.probe_cache_clear)
+
+    def test_the_machine_list_is_longer_than_the_curated_pair(self):
+        rows = engines.machine_engines("claude", "claude-opus-5")
+        self.assertGreater(len(rows), len(engines.ENGINES))
+
+    def test_every_row_is_a_model_the_install_catalog_carries(self):
+        for row in engines.machine_engines("claude", "claude-opus-5"):
+            with self.subTest(row=row["id"]):
+                catalog = dict(wizard.PROVIDER_MODELS[row["provider"]])
+                self.assertIn(row["model"], catalog)
+
+    def test_every_alias_points_at_a_model_that_exists(self):
+        # A typo here is a /engine name that answers "no such engine", and
+        # the name is the only way to reach that model from Telegram.
+        known = {model for models in wizard.PROVIDER_MODELS.values()
+                 for model, _desc in models}
+        for alias, model in engines.MACHINE_ALIASES.items():
+            with self.subTest(alias=alias):
+                self.assertIn(model, known)
+
+    def test_exactly_one_row_is_marked_current(self):
+        rows = engines.machine_engines("codex", "gpt-6-astra")
+        current = [r for r in rows if r["current"]]
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]["model"], "gpt-6-astra")
+
+    def test_the_cli_spelling_of_a_provider_still_matches_its_row(self):
+        # .env may hold claude-cli: core.llm.create_provider accepts it, and
+        # the per-user engine rows use it. Nothing would be lit otherwise.
+        rows = engines.machine_engines("claude-cli", "claude-opus-5")
+        current = [r for r in rows if r["current"]]
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]["model"], "claude-opus-5")
+
+    def test_a_pair_on_neither_cli_is_still_shown_as_what_runs(self):
+        # A machine set to Gemini has no row in this catalog. A list that
+        # cannot show what is switched on is the "which one is live?"
+        # question the whole change exists to answer.
+        rows = engines.machine_engines("gemini", "gemini-3.5-flash")
+        self.assertTrue(rows[0]["current"])
+        self.assertEqual(rows[0]["model"], "gemini-3.5-flash")
+        self.assertEqual(len([r for r in rows if r["current"]]), 1)
+
+    def test_a_row_resolves_by_alias_and_by_model_id(self):
+        rows = engines.machine_engines("claude", "claude-opus-5")
+        self.assertEqual(engines.machine_engine("sonnet", rows)["model"],
+                         "claude-sonnet-5")
+        self.assertEqual(engines.machine_engine("claude-sonnet-5", rows)["model"],
+                         "claude-sonnet-5")
+        self.assertIsNone(engines.machine_engine("nope", rows))
+        self.assertIsNone(engines.machine_engine("", rows))
+
+    def test_a_label_and_a_short_line_come_off_the_catalog_text(self):
+        rows = engines.machine_engines("claude", "claude-opus-5")
+        opus = engines.machine_engine("opus", rows)
+        self.assertEqual(opus["label"], "Claude Opus 5")
+        self.assertTrue(opus["sub"])
+        for row in rows:
+            with self.subTest(row=row["id"]):
+                # A button, not a paragraph: the catalog line is written for
+                # a terminal and runs to 120 characters.
+                self.assertLessEqual(len(row["sub"]), 52)
+                self.assertNotIn("—", row["label"])
+
+    def test_a_codex_too_old_for_astra_leaves_the_other_codex_rows_alone(self):
+        # The per-model floor, across a list rather than a single row: the
+        # old code asked once per ENGINE ID, so one model's answer could not
+        # be told apart from another's on the same CLI.
+        with patch("core.engines._cli_version_text", return_value="codex-cli 0.152.0"):
+            rows = engines.machine_engines("claude", "claude-opus-5")
+        by_id = {r["id"]: r for r in rows}
+        self.assertFalse(by_id["gpt-6-astra"]["available"])
+        self.assertIn("0.153.1", by_id["gpt-6-astra"]["reason"])
+        self.assertTrue(by_id["gpt-5.5"]["available"])
+
+    def test_the_probe_cache_is_per_model_not_per_engine_id(self):
+        # Two rows share the id "opus" in spirit (the curated engine and the
+        # machine row for the same model) and ten share two binaries. Keyed
+        # on the id, the first answer would have been served to all of them.
+        with patch("core.engines._cli_version_text",
+                   return_value="codex-cli 0.154.0") as probe:
+            engines.machine_engines("claude", "claude-opus-5")
+            first = probe.call_count
+            engines.machine_engines("claude", "claude-opus-5")
+            self.assertEqual(probe.call_count, first)
+        self.assertGreaterEqual(first, len(engines.machine_engines(
+            "claude", "claude-opus-5")) - 1)
+
+    def test_a_claude_row_is_probed_with_the_claude_login_check(self):
+        # The old check read engine["id"] == "opus", so every machine row but
+        # one would have been asked "codex login status" about a Claude model
+        # and every Claude model but Opus would have read as logged out.
+        seen = []
+
+        class Result:
+            returncode = 0
+            stdout = '{"loggedIn": true, "authMethod": "claude.ai"}'
+            stderr = ""
+
+        def fake_run(args, **kwargs):
+            seen.append(list(args))
+            return Result()
+
+        # The real probe, not this class's stubs of it: the argv is the point.
+        self.version.stop()
+        self.login.stop()
+        self.addCleanup(self.version.start)
+        self.addCleanup(self.login.start)
+        with (patch("core.engines._cli_version_text", return_value="1.0.0"),
+              patch("core.engines.subprocess.run", side_effect=fake_run)):
+            engines.probe_cache_clear()
+            rows = engines.machine_engines("claude", "claude-opus-5")
+        self.assertIn("claude-sonnet-5", {r["id"] for r in rows})
+        claude_calls = [a for a in seen if a[0].endswith("claude")]
+        self.assertTrue(claude_calls)
+        for args in claude_calls:
+            self.assertEqual(args[1:], ["auth", "status", "--json"])
+        self.assertTrue({r["id"] for r in rows if r["available"]}
+                        >= {"claude-sonnet-5", "claude-fable-5-1"})
+
+
 class _UserDirTestCase(unittest.TestCase):
     """Every test below writes under a temp users tree, never the real one."""
 

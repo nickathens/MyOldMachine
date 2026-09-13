@@ -1,11 +1,14 @@
 """Two rules that only hold if every surface agrees, so every surface is here.
 
-1. **An administrator has no engine to pick.** They set the machine's
-   provider, model and effort, and a stored engine would quietly outrank all
-   three: a second setting, below the first one, winning. So /engine answers
-   them with the machine setting, the Mini App hides the picker, and both the
-   endpoint and the store refuse a write. Clearing stays open, because a pick
-   made before this rule existed is theirs to delete.
+1. **An administrator picks the MACHINE's engine, not one of their own.**
+   A stored engine would sit below the provider, model and effort they set
+   and quietly outrank all three: a second setting, underneath the first,
+   winning. So the picker they are offered is the machine setting itself,
+   and it carries every engine this install can actually run rather than the
+   two curated rows a non-admin chooses between. Pressing one writes
+   LLM_PROVIDER and LLM_MODEL, the same pair /provider and /model write.
+   Clearing an older personal pick stays open, because a pick made before
+   this rule existed is theirs to delete.
 
 2. **Usage is everybody's.** It used to sit *inside* the picker's section,
    which made it collateral of rule 1 and, before that, collateral of a
@@ -110,23 +113,94 @@ class _BotSurface(unittest.TestCase):
 
 
 class AdminEngineCommandTests(_BotSurface):
-    def test_engine_answers_an_admin_with_the_machine_setting(self):
-        update = _update(7)
-        with patch("bot.is_admin", return_value=True):
+    """/engine, asked by an administrator: the machine, with every option."""
+
+    def setUp(self):
+        super().setUp()
+        # engine_command rebuilds the module-level provider on a switch, and
+        # a bare stub left in that global outlives this file: later modules
+        # read bot._llm_provider and ask it whether it supports tool use.
+        self._saved_provider = bot._llm_provider
+        self.addCleanup(setattr, bot, "_llm_provider", self._saved_provider)
+
+    @staticmethod
+    def _stub_provider():
+        return SimpleNamespace(supports_tool_use=True, last_health=(True, "ok"),
+                               provider_name="claude", model="claude-sonnet-5")
+
+    def _run(self, text: str = ""):
+        """/engine as an admin, with both CLIs answering as installed."""
+        update = _update(7, text)
+        with (patch("bot.is_admin", return_value=True),
+              patch("core.engines._login_status", return_value=(True, "")),
+              patch("core.engines._cli_version_text",
+                    return_value="codex-cli 0.154.0")):
             asyncio.run(bot.engine_command(update, None))
-        said = _said(update)
-        self.assertIn("machine setting", said)
+        return update
+
+    def test_engine_shows_the_machine_setting_and_every_option(self):
+        said = _said(self._run())
+        self.assertIn("the machine setting", said)
         self.assertIn("claude-opus-5", said)
         self.assertIn("max effort", said)
-        # No list of buttons to press, and no instruction to press one.
+        # The complaint that produced this: a machine that runs ten engines
+        # offering two. Every model the install catalog carries for a
+        # subscription CLI is named here.
+        for label in ("Claude Sonnet 5", "Claude Fable 5.1", "GPT-6 Astra",
+                      "GPT-5.6 Sol", "GPT-5.3 Codex Spark"):
+            with self.subTest(label=label):
+                self.assertIn(label, said)
+        self.assertIn("(running now)", said)
+        self.assertIn("/engine sonnet", said)
+
+    def test_the_running_engine_is_not_offered_as_a_switch(self):
+        said = _said(self._run())
         self.assertNotIn("/engine opus", said)
 
-    def test_an_admin_naming_an_engine_stores_nothing(self):
-        update = _update(7, "/engine astra")
-        with patch("bot.is_admin", return_value=True):
-            asyncio.run(bot.engine_command(update, None))
+    def test_an_admin_naming_an_engine_moves_the_machine_not_a_preference(self):
+        written = []
+        health = AsyncMock(return_value=(True, "ok"))
+        with (patch("bot._write_machine_llm",
+                    side_effect=lambda p, m: written.append((p, m)) or True),
+              patch("bot._build_llm_provider", return_value=self._stub_provider()),
+              patch("bot._refresh_provider_health", health)):
+            said = _said(self._run("/engine sonnet"))
+        self.assertEqual(written, [("claude", "claude-sonnet-5")])
         self.assertEqual(engines.user_engine_id(7), "")
-        self.assertIn("machine setting", _said(update))
+        self.assertIn("Claude Sonnet 5", said)
+        self.assertIn("every user without an engine of their own", said)
+
+    def test_a_health_check_failure_is_reported_not_swallowed(self):
+        health = AsyncMock(return_value=(False, "no login"))
+        with (patch("bot._write_machine_llm", return_value=True),
+              patch("bot._build_llm_provider", return_value=self._stub_provider()),
+              patch("bot._refresh_provider_health", health)):
+            said = _said(self._run("/engine astra"))
+        self.assertIn("Health-check FAILED", said)
+
+    def test_switching_to_what_is_already_running_writes_nothing(self):
+        with patch("bot._write_machine_llm") as write:
+            said = _said(self._run("/engine opus"))
+        write.assert_not_called()
+        self.assertIn("already", said)
+
+    def test_an_engine_this_machine_cannot_run_is_refused_at_the_press(self):
+        update = _update(7, "/engine astra")
+        with (patch("bot.is_admin", return_value=True),
+              patch("core.engines._login_status", return_value=(True, "")),
+              patch("core.engines._cli_version_text",
+                    return_value="codex-cli 0.152.0"),
+              patch("bot._write_machine_llm") as write):
+            asyncio.run(bot.engine_command(update, None))
+        write.assert_not_called()
+        self.assertIn("0.153.1", _said(update))
+
+    def test_a_name_that_is_not_an_engine_lists_the_ones_that_are(self):
+        with patch("bot._write_machine_llm") as write:
+            said = _said(self._run("/engine banana"))
+        write.assert_not_called()
+        self.assertIn("sonnet", said)
+        self.assertEqual(engines.user_engine_id(7), "")
 
     def test_an_admin_can_still_clear_a_pick_made_before_the_rule(self):
         user_prefs.set_pref(7, "engine", "astra")
@@ -141,21 +215,15 @@ class AdminEngineCommandTests(_BotSurface):
         # tell which one won. A stored pick that no longer does anything is
         # still a thing they can see elsewhere, so /engine says so.
         user_prefs.set_pref(7, "engine", "astra")
-        update = _update(7)
-        with patch("bot.is_admin", return_value=True):
-            asyncio.run(bot.engine_command(update, None))
-        said = _said(update)
+        said = _said(self._run())
         self.assertIn("Astra", said)
         self.assertIn("not used", said)
         self.assertIn("/engine default", said)
 
     def test_no_such_line_when_nothing_is_stored(self):
-        update = _update(7)
-        with patch("bot.is_admin", return_value=True):
-            asyncio.run(bot.engine_command(update, None))
-        self.assertNotIn("still stored", _said(update))
+        self.assertNotIn("also stored", _said(self._run()))
 
-    def test_an_ordinary_user_still_gets_the_picker(self):
+    def test_an_ordinary_user_still_gets_their_own_two(self):
         update = _update(7)
         with (patch("bot.is_admin", return_value=False),
               patch("core.engines._login_status", return_value=(True, "")),
@@ -164,7 +232,62 @@ class AdminEngineCommandTests(_BotSurface):
             asyncio.run(bot.engine_command(update, None))
         said = _said(update)
         self.assertIn("Switch with /engine", said)
-        self.assertNotIn("machine setting (", said)
+        self.assertNotIn("the machine setting.", said)
+        self.assertNotIn("GPT-5.6 Sol", said)
+
+
+class MachineEnvWriteTests(unittest.TestCase):
+    """One writer for three commands, because they set the same two keys.
+
+    /provider, /model and /engine each carried a copy of this loop, and a
+    copy is how a key gets replaced in one path and appended in another.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mom-env-write-"))
+        self.env = self.tmp / ".env"
+        self.saved = {k: os.environ.get(k) for k in ("LLM_PROVIDER", "LLM_MODEL")}
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_both_keys_are_replaced_and_everything_else_survives(self):
+        self.env.write_text("# top\nLLM_PROVIDER=claude\nLLM_MODEL=claude-opus-5\n"
+                            "LLM_EFFORT=max\nOTHER=keep\n", encoding="utf-8")
+        self.assertTrue(bot._write_machine_llm("codex", "gpt-6-astra", self.env))
+        text = self.env.read_text(encoding="utf-8")
+        self.assertIn("LLM_PROVIDER=codex", text)
+        self.assertIn("LLM_MODEL=gpt-6-astra", text)
+        self.assertIn("LLM_EFFORT=max", text)
+        self.assertIn("OTHER=keep", text)
+        self.assertIn("# top", text)
+        self.assertEqual(text.count("LLM_PROVIDER="), 1)
+        self.assertEqual(text.count("LLM_MODEL="), 1)
+
+    def test_a_missing_key_is_appended_once(self):
+        self.env.write_text("OTHER=keep\n", encoding="utf-8")
+        bot._write_machine_llm("codex", "gpt-5.5", self.env)
+        text = self.env.read_text(encoding="utf-8")
+        self.assertEqual(text.count("LLM_PROVIDER=codex"), 1)
+        self.assertEqual(text.count("LLM_MODEL=gpt-5.5"), 1)
+
+    def test_the_live_process_sees_the_new_pair_without_a_restart(self):
+        self.env.write_text("LLM_PROVIDER=claude\nLLM_MODEL=claude-opus-5\n",
+                            encoding="utf-8")
+        bot._write_machine_llm("codex", "gpt-5.5", self.env)
+        self.assertEqual(os.environ["LLM_PROVIDER"], "codex")
+        self.assertEqual(os.environ["LLM_MODEL"], "gpt-5.5")
+
+    def test_no_env_file_is_false_rather_than_a_new_one(self):
+        self.assertFalse(bot._write_machine_llm("codex", "gpt-5.5", self.env))
+        self.assertFalse(self.env.exists())
 
 
 class HelpTextTests(_BotSurface):
@@ -178,9 +301,9 @@ class HelpTextTests(_BotSurface):
             asyncio.run(bot.help_command(update, None))
         return _said(update)
 
-    def test_an_admin_is_not_told_to_pick(self):
+    def test_an_admin_is_told_what_they_actually_set(self):
         said = self._help(True)
-        self.assertIn("/engine — See the engine setting", said)
+        self.assertIn("/engine — Set the engine this machine runs on", said)
         self.assertNotIn("Pick which AI answers you", said)
 
     def test_an_ordinary_user_is(self):
@@ -228,11 +351,29 @@ class PageStructureTests(unittest.TestCase):
         self.assertNotIn("getElementById('usage-section')", self.source)
         self.assertNotIn('getElementById("usage-section")', self.source)
 
-    def test_the_page_hides_the_picker_on_the_admin_flag(self):
+    def test_the_page_renders_the_machine_picker_on_the_payload_flag(self):
         # The flag in the payload is worthless if the front end ignores it,
         # and nothing here runs a browser, so the line itself is the guard.
-        self.assertIn("if(data.admin){section.style.display='none';return}",
+        self.assertIn("if(data.machine){renderMachineEngine(data);return}",
                       self.source)
+        # And the picker is no longer hidden from an admin: the whole point
+        # is that they have every option, not none.
+        self.assertNotIn("if(data.admin){section.style.display='none';return}",
+                         self.source)
+
+    def test_the_live_machine_engine_is_not_a_button(self):
+        # A machine setting has no "clear" the way a personal pick does.
+        # Tapping the lit row must not blank what the install runs on.
+        self.assertIn("if(e.available&&!e.current)btn.onclick=", self.source)
+
+    def test_the_rows_above_are_reread_after_a_machine_switch(self):
+        # Provider, Model and Effort are views of the value the press just
+        # wrote. Two views of one setting may never disagree on screen.
+        body = self.source.split("function setEngine(id){")[1]
+        body = body.split("\n    function ")[0]
+        self.assertIn("if(data.machine){", body)
+        self.assertIn("loadStatus()", body)
+        self.assertIn("showRestartHint()", body)
 
 
 if __name__ == "__main__":
