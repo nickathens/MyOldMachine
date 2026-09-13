@@ -21,7 +21,6 @@ runs. Four places that could quietly disagree with the button:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
