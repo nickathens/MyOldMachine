@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -33,6 +35,7 @@ if str(ROOT) not in sys.path:
 os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
 import bot as botmod  # noqa: E402
+from core import users as users_mod  # noqa: E402
 from core.llm import ClaudeCLIProvider, CodexCLIProvider, LLMResponse, Message  # noqa: E402
 
 
@@ -109,6 +112,7 @@ class _StopStateMixin:
             "sys_prompt": botmod.build_system_prompt,
             "messages": botmod.build_messages,
             "user_dir": botmod.get_user_dir,
+            "users_data_dir": users_mod.USERS_DATA_DIR,
         }
         botmod._stop_epoch = {}
         botmod._pending_turns = {}
@@ -123,8 +127,15 @@ class _StopStateMixin:
         botmod.build_system_prompt = lambda uid, provider=None: "sys"
         botmod.build_messages = lambda uid, msg: [Message(role="user", content=msg)]
         botmod.get_user_dir = lambda uid: str(ROOT)
+        # call_llm books every finished turn into data/users/<id>/usage.jsonl
+        # through core.users, not through get_user_dir, so without this the
+        # suite leaves phantom users 1 and 7 in the live data tree.
+        self._usage_tmp = tempfile.mkdtemp()
+        users_mod.USERS_DATA_DIR = Path(self._usage_tmp)
 
     def tearDown(self):
+        users_mod.USERS_DATA_DIR = self._saved["users_data_dir"]
+        shutil.rmtree(self._usage_tmp, ignore_errors=True)
         botmod._stop_epoch = self._saved["epoch"]
         botmod._pending_turns = self._saved["pending"]
         botmod._running_turns = self._saved["running"]

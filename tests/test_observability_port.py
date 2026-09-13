@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
 
 import bot as botmod  # noqa: E402
+from core import users as users_mod  # noqa: E402
 from core.llm import _error_excerpt  # noqa: E402
 
 
@@ -172,7 +174,17 @@ class CallLlmWiringTests(unittest.IsolatedAsyncioTestCase):
         provider.last_health = None
         provider.provider_name = response.provider
         provider.complete = AsyncMock(return_value=response)
-        with patch.object(botmod, "_llm_provider", provider), \
+        # call_llm no longer answers from _llm_provider alone: it asks
+        # _provider_for_user, which resolves a per-user engine and, for a
+        # non-admin on a CLI install, probes THIS machine for Opus. Where the
+        # claude binary is installed and logged in (a developer's Mac, not
+        # the CI runner) that builds a real ClaudeCLIProvider and the mock
+        # above is never called. Pin the route to the mock, and book the
+        # turn's usage into a scratch tree rather than data/users/123/.
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(users_mod, "USERS_DATA_DIR", Path(tmp)), \
+             patch.object(botmod, "_provider_for_user", lambda uid: (provider, None)), \
+             patch.object(botmod, "_llm_provider", provider), \
              patch.object(botmod, "build_system_prompt",
                           lambda uid, provider=None: "sys"), \
              patch.object(botmod, "build_messages",
