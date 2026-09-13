@@ -77,8 +77,14 @@ class CurrentStateReachesThePromptTests(PromptFixture, unittest.TestCase):
         self.assertIn("phase: colour", block)
 
     def test_the_current_phase_is_not_pushed_out_by_a_long_note(self):
+        # Enough long entries to contest the whole per-project allowance, not
+        # merely the field cap. One long note no longer crowds anything out:
+        # entries are capped at 800 each, so a block with room to spare seats
+        # the phase whatever order it comes in, and the fixture would pass
+        # with the ordering deleted.
         self._project("films", current_state={
-            "notes": "a long note " * 40, "phase": "colour"})
+            "notes": "a long note " * 200, "handover": "a handover line " * 60,
+            "risks": "a risk line " * 60, "phase": "colour"})
 
         block = self._block()
 
@@ -128,7 +134,7 @@ class NothingIsCutMidPathTests(unittest.TestCase):
 
     def test_a_long_field_is_shortened_rather_than_deleted(self):
         state = {"name": "X", "summary": "the brief lives at /work/films/brief.pdf "
-                 + "and there is a great deal more prose after it " * 10}
+                 + "and there is a great deal more prose after it " * 40}
 
         block = format_project_block(state, "shared")
 
@@ -137,7 +143,9 @@ class NothingIsCutMidPathTests(unittest.TestCase):
         self.assertNotIn("Summary:\n", block)
 
     def test_a_field_that_cannot_be_shortened_safely_is_dropped_whole(self):
-        state = {"name": "X", "summary": "/" + "a" * 900}
+        # No word break anywhere, and longer than the block itself, so no
+        # budget this project could hand the field makes it safe to show.
+        state = {"name": "X", "summary": "/" + "a" * 2400}
 
         block = format_project_block(state, "shared")
 
@@ -208,3 +216,94 @@ class OrderAndOverflowTests(PromptFixture, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnspentAllowanceGoesBackToTheRecordTests(PromptFixture, unittest.TestCase):
+    """A field cap is a floor, not a ration.
+
+    Every field had its own cap and the leftovers went nowhere, so a record
+    whose length sits in one field spent a third of its allowance and left the
+    rest empty. Measured on the real store the day this was written: the Frame
+    Repair record rendered 773 characters of its 1500, and the 400 the summary
+    was allowed ran out inside the sentence naming the client's rejection, so
+    the prompt carried the warning's first four words and not the warning.
+    """
+
+    REJECTION = ("READ CONTEXT.md FIRST, including the section 'THE CLIENT "
+                 "REJECTED THAT DELIVERY', which overrides everything above it.")
+    # Shaped like the record it was measured on: the warning sits just past the
+    # field cap, with most of the prose behind it.
+    LEAD = "Reusable frame repair system. " + "Prose about the planner. " * 14
+    TAIL = " Prose about the windows planner and what it pins. " * 40
+    SUMMARY = LEAD + REJECTION + TAIL
+
+    def test_a_record_spends_the_allowance_its_caps_left_over(self):
+        state = {"name": "X", "summary": self.SUMMARY}
+
+        block = format_project_block(state, "shared")
+
+        self.assertGreater(len(block), 1200)
+        self.assertLessEqual(len(block), 1500)
+
+    def test_the_sentence_past_the_field_cap_reaches_the_prompt(self):
+        self._project("films", summary=self.SUMMARY)
+
+        self.assertIn(self.REJECTION, self._block())
+
+    def test_a_field_that_now_fits_is_rendered_whole(self):
+        state = {"name": "X", "summary": "a readable summary. " * 30}
+
+        block = format_project_block(state, "shared")
+
+        self.assertNotIn(OMITTED, block)
+        self.assertTrue(block.rstrip().endswith("a readable summary."))
+
+    def test_the_spare_is_shared_rather_than_taken_by_the_first_long_field(self):
+        state = {"name": "X", "summary": "summary prose here. " * 60,
+                 "current_state": {"phase": "colour",
+                                   "notes": "state prose here. " * 60}}
+
+        block = format_project_block(state, "shared")
+        summary = block.split("  Summary: ", 1)[1].split("\n", 1)[0]
+        note = block.split("    notes: ", 1)[1].split("\n", 1)[0]
+
+        # Measured: 630 and 692 with the spare shared, 342 and 410 with it
+        # not shared at all, 910 and 410 with the first long field taking it.
+        self.assertGreater(len(summary), 500)
+        self.assertGreater(len(note), 500)
+        self.assertLess(abs(len(summary) - len(note)), 200)
+
+    def test_a_long_field_cannot_take_the_floor_of_a_short_one(self):
+        state = {"name": "X", "summary": "x " * 3000,
+                 "current_state": {"phase": "colour"},
+                 "blockers": ["client has not signed off"],
+                 "related_files": ["/work/films/brief.pdf"]}
+
+        block = format_project_block(state, "shared")
+
+        self.assertIn("phase: colour", block)
+        self.assertIn("client has not signed off", block)
+        self.assertIn("/work/films/brief.pdf", block)
+
+    def test_the_ceiling_holds_with_every_field_over_its_cap(self):
+        state = {"name": "X" * 300, "location": "/p/" + "loc " * 200,
+                 "summary": "s " * 3000, "current_state": {"a": "y " * 3000},
+                 "related_files": ["/work/f%d/cues.json" % i for i in range(300)],
+                 "next_steps": ["step %d " % i + "detail " * 60 for i in range(5)],
+                 "blockers": ["b " * 900], "lessons": [{"content": "l " * 900}] * 4}
+
+        for limit in (200, 400, 1500, 4000):
+            with self.subTest(limit=limit):
+                self.assertLessEqual(
+                    len(format_project_block(state, "shared", limit=limit)), limit)
+
+    def test_the_whole_list_is_still_named_when_every_record_is_long(self):
+        for index in range(20):
+            self._project("p%02d" % index, summary="prose here. " * 400,
+                          updated="2026-09-%02d" % (index % 28 + 1))
+
+        block = self._block()
+
+        for index in range(20):
+            self.assertIn("P%02d" % index, block)
+        self.assertLessEqual(len(block), 14000 + 200)

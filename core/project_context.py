@@ -14,6 +14,9 @@ import json
 PROJECT_LIMIT = 1500
 CONTEXT_LIMIT = 14000
 OMITTED = "[Details omitted; read the state file.]"
+# Large enough that _section renders a field whole, so its natural length
+# can be measured against the field cap.
+UNBOUNDED = 1 << 20
 COMPACT_HEADER = "Also live, not expanded here (read the state file for detail):"
 
 
@@ -79,6 +82,36 @@ def _section(label, value, limit):
     return "\n".join(lines)
 
 
+def _share(shortfalls, spare):
+    """Hand a project's unspent allowance back to the fields that were cut.
+
+    Each field keeps its own cap as a floor, so nothing here can starve a
+    field that fit. What is shared is only what no field is using: a record
+    whose summary runs to 2000 characters spent 773 of its 1500 and left 727
+    empty, and the cut landed inside the sentence naming a client rejection.
+
+    An even share first, so one long field cannot take everything a shorter
+    one also needed, then the remainder in field order.
+    """
+    grants = {}
+    wanted = {index: short for index, short in shortfalls.items() if short > 0}
+    while wanted and spare >= len(wanted):
+        share = spare // len(wanted)
+        for index in sorted(wanted):
+            take = min(share, wanted[index], spare)
+            grants[index] = grants.get(index, 0) + take
+            spare -= take
+            wanted[index] -= take
+        wanted = {index: short for index, short in wanted.items() if short > 0}
+    for index in sorted(wanted):
+        if spare <= 0:
+            break
+        take = min(spare, wanted[index])
+        grants[index] = grants.get(index, 0) + take
+        spare -= take
+    return grants
+
+
 def format_project_block(state, visibility: str, limit: int = PROJECT_LIMIT) -> str:
     """One project, current state first, bounded to `limit` characters."""
     if not isinstance(state, dict):
@@ -96,10 +129,35 @@ def format_project_block(state, visibility: str, limit: int = PROJECT_LIMIT) -> 
         ("Recent lessons", state.get("lessons", [])[-2:]
          if isinstance(state.get("lessons"), list) else state.get("lessons"), 300),
     )
+    # Pass one: every field at its own cap, and what it would have run to.
+    rendered = []
     for label, value, field_limit in fields:
-        section = _section(label, value, field_limit)
-        if section:
-            sections.append(section)
+        whole = _section(label, value, UNBOUNDED)
+        if not whole:
+            continue
+        rendered.append([_section(label, value, field_limit), label, value,
+                         field_limit, len(whole)])
+    # Pass two: spend what the caps left over, measuring after every field.
+    spare = limit - len(sections[0]) - sum(len(item[0]) + 1 for item in rendered)
+    # A field asks for the omission marker's room on top of what it is missing:
+    # _section reserves that room before it decides an entry fits, so a field
+    # given only its shortfall stops one marker short of rendering whole.
+    shortfalls = {index: item[4] - len(item[0]) + len(OMITTED) + 2
+                  for index, item in enumerate(rendered) if item[4] > len(item[0])}
+    for index, extra in sorted(_share(shortfalls, max(0, spare)).items()):
+        section, label, value, cap, _natural = rendered[index]
+        # A section never runs longer than the budget it was given, so holding
+        # the budget to what the field already renders plus the spare still
+        # unspent keeps the block inside `limit` whatever the field does with
+        # it. Never below the cap: that is the floor, and it is already drawn.
+        budget = max(cap, min(cap + extra, len(section) + spare))
+        grown = _section(label, value, budget)
+        if grown and grown != section:
+            # A completed field drops its omission marker and can come back
+            # shorter. That is more content, and it hands the spare back.
+            spare -= len(grown) - len(section)
+            rendered[index][0] = grown
+    sections.extend(item[0] for item in rendered)
     text = "\n".join(sections)
     if len(text) <= limit:
         return text
