@@ -39,7 +39,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from core import users as _users
 from core.users import resolve_user_dir
@@ -220,11 +220,20 @@ def summarise(user_id: int, days: int = 7) -> dict:
     return summary
 
 
-def summarise_everyone(days: int = 7) -> dict:
-    """``{telegram_id: summary}`` for every user with a ledger. Admin view.
+def summarise_everyone(days: int = 7, roster: Iterable = ()) -> dict:
+    """``{telegram_id: summary}`` for everyone who consumed something, plus
+    every member of ``roster`` who did not. Admin view.
 
     Reads across user directories, which only the bot's own account can do.
     Every caller must gate on admin before showing it.
+
+    The roster is what makes this comparable. An admin opens this view to see
+    one person against another, and a person who simply drops out of the list
+    when they are idle is indistinguishable from a person this bot failed to
+    meter: both are silence. A zero row says which it is. The roster is passed
+    in rather than read here because the caller already holds the registry
+    (the bot reads ``core.users``, the Mini App its own copy) and because a
+    reader of ledgers should not also decide who exists.
     """
     out: dict[str, dict] = {}
     try:
@@ -233,7 +242,7 @@ def summarise_everyone(days: int = 7) -> dict:
         # at the real tree when a caller (or a test) moves it.
         entries = sorted(_users.USERS_DATA_DIR.iterdir())
     except OSError:
-        return out
+        entries = []
     for entry in entries:
         if not entry.is_dir() or not (entry / LEDGER_FILENAME).is_file():
             continue
@@ -244,7 +253,47 @@ def summarise_everyone(days: int = 7) -> dict:
         summary = summarise(uid, days)
         if summary["turns"]:
             out[str(uid)] = summary
+    for member in roster:
+        try:
+            uid = int(member)
+        except (TypeError, ValueError):
+            continue
+        out.setdefault(str(uid), _blank_summary())
     return out
+
+
+def accounting_started(days: int = 0) -> Optional[int]:
+    """Unix time of the oldest turn any ledger still holds, or None.
+
+    A zero row only reads correctly next to this. Counting began the day this
+    feature shipped and ``_trim`` drops anything past RETENTION_DAYS, so a
+    person with nothing recorded is usually one who has not spoken since the
+    meter existed, not a frugal one, and nothing here can tell the difference
+    without saying when the count starts.
+
+    ``days`` bounds the answer to the window the caller actually read, and
+    None then means the record already covers the whole of it. Retention is
+    RETENTION_DAYS and a view is usually seven, so the unbounded answer
+    reaches back past what was read: a person idle this week but busy last
+    month would be reported as having had no turns since last month, which is
+    the reading this date exists to rule out.
+    """
+    oldest: Optional[int] = None
+    try:
+        entries = sorted(_users.USERS_DATA_DIR.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        ledger = entry / LEDGER_FILENAME
+        if not entry.is_dir() or not ledger.is_file():
+            continue
+        for row in _read_rows(ledger):
+            ts = row.get("ts") or 0
+            if ts and (oldest is None or ts < oldest):
+                oldest = int(ts)
+    if oldest is not None and days > 0 and oldest <= time.time() - days * 86400:
+        return None
+    return oldest
 
 
 # ─── Claude: the snapshot its own stream hands us ────────────────────

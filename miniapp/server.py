@@ -791,7 +791,7 @@ def get_usage(days: int = 7, user: dict = Depends(_get_user)):
     round trip, and FastAPI runs a sync endpoint in a worker thread instead
     of stalling the event loop for every other request on this server.
     """
-    from core.usage import meters, summarise, summarise_everyone
+    from core.usage import accounting_started, meters, summarise, summarise_everyone
     days = max(1, min(90, int(days)))
     user_id = int(user["_id"])
     payload = {
@@ -801,15 +801,25 @@ def get_usage(days: int = 7, user: dict = Depends(_get_user)):
         "everyone": None,
     }
     if _is_admin(user):
-        rows = []
-        for uid, summary in summarise_everyone(days).items():
-            profile = _load_users().get(uid, {})
-            rows.append({
-                "id": uid,
-                "name": profile.get("display_name") or profile.get("name") or uid,
-                **summary,
-            })
-        payload["everyone"] = sorted(rows, key=lambda r: -r["turns"])
+        # The roster, not only the ledgers. An admin reads this to compare,
+        # and a person who vanishes from the list when idle looks exactly
+        # like a person the bot failed to meter.
+        registry = _load_users()
+        everyone = summarise_everyone(days, roster=registry.keys())
+        # A list of one is not a comparison: it is the "you" group above,
+        # rendered a second time. The same rule as /usage, so the two
+        # surfaces cannot drift.
+        if len(everyone) > 1 or (everyone and str(user_id) not in everyone):
+            rows = []
+            for uid, summary in everyone.items():
+                profile = registry.get(uid, {})
+                rows.append({
+                    "id": uid,
+                    "name": profile.get("display_name") or profile.get("name") or uid,
+                    **summary,
+                })
+            payload["everyone"] = sorted(rows, key=lambda r: (-r["turns"], -r["total_input_tokens"]))
+            payload["counting_since"] = accounting_started(days)
     return payload
 
 

@@ -3685,6 +3685,13 @@ def _format_when(timestamp) -> str:
     return when.strftime("%a %H:%M")
 
 
+def _format_day(timestamp) -> str:
+    """A unix timestamp as a short local date, or "" when there is none."""
+    if not isinstance(timestamp, (int, float)) or timestamp <= 0:
+        return ""
+    return datetime.fromtimestamp(timestamp).strftime("%d %b").lstrip("0")
+
+
 def _format_age(timestamp) -> str:
     """How long ago a reading was taken, in plain words."""
     if not isinstance(timestamp, (int, float)) or timestamp <= 0:
@@ -3938,10 +3945,57 @@ def _usage_block(summary: dict) -> list[str]:
     return lines
 
 
+def _usage_person_lines(name: str, summary: dict) -> list[str]:
+    """One person on one line, so the next person reads against them.
+
+    ``_usage_block`` spreads the same numbers over several lines, which is
+    right when there is one person to report and unreadable when there are
+    five to compare. A person who consumed nothing still gets a line: absence
+    from a list cannot be told apart from a meter that failed.
+    """
+    if not summary["turns"]:
+        return [f"  {name}: nothing recorded yet"]
+    parts = [f"{summary['turns']} turns"]
+    if summary["failed_turns"]:
+        parts.append(f"{summary['failed_turns']} failed")
+    parts.append(f"{summary['total_input_tokens']:,} tokens in")
+    parts.append(f"{summary['output_tokens']:,} out")
+    if summary["list_cost_usd"]:
+        parts.append(f"${summary['list_cost_usd']:.2f} at list price")
+    lines = [f"  {name}: " + ", ".join(parts)]
+    if summary.get("unmeasured_turns"):
+        lines.append(f"    consumption unreported for {summary['unmeasured_turns']} turns; "
+                     f"totals are incomplete")
+    if summary.get("unpriced_turns"):
+        lines.append(f"    list cost unavailable for {summary['unpriced_turns']} turns")
+    for model, bucket in sorted(summary["by_model"].items(),
+                                key=lambda kv: -kv[1]["turns"]):
+        lines.append(f"    {model}: {bucket['turns']} turns, "
+                     f"{bucket['total_input_tokens']:,} tokens in, {bucket['output_tokens']:,} out")
+    return lines
+
+
+def _usage_everyone(days: int) -> tuple[dict, dict, int | None]:
+    """The admin comparison: the registry, a row per person, and the date.
+
+    Its own function because reading every ledger on the machine is file work
+    and this bot is expected to run on a decade-old laptop, so the caller
+    hands it to a thread rather than stalling every other chat on the disk.
+    """
+    from core.usage import accounting_started, summarise_everyone
+    from core.users import list_users
+    # The roster, not just the ledgers: the admin asked for everyone, and a
+    # person missing from the list reads as a broken meter.
+    registry = list_users()
+    return (registry,
+            summarise_everyone(days, roster=registry.keys()),
+            accounting_started(days))
+
+
 @requires_auth
 async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """What this person spent, and what is left on the subscription."""
-    from core.usage import meters, summarise, summarise_everyone
+    from core.usage import meters, summarise
     user_id = update.effective_user.id
     days = 7
     body = command_body(update.message.text).strip()
@@ -3960,15 +4014,23 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines += _meter_lines(reading["codex"], "Codex")
 
     if is_admin(user_id):
-        everyone = summarise_everyone(days)
+        registry, everyone, since = await asyncio.to_thread(_usage_everyone, days)
+        # A list of one is not a comparison: on a machine with one person on
+        # it, this is the block at the top of the message printed a second
+        # time. Any second person brings it back, including one at zero,
+        # which is the whole reason the roster is read.
         if len(everyone) > 1 or (everyone and str(user_id) not in everyone):
             lines += ["", f"Everyone, last {days} days"]
+            started = _format_day(since)
+            if started:
+                lines.append(f"  counting since {started}, so nothing recorded "
+                             f"means no turns since then")
             for uid, summary in sorted(everyone.items(),
-                                       key=lambda kv: -kv[1]["turns"]):
-                profile = get_user_profile(int(uid))
-                name = profile.get("display_name") or profile.get("name") or uid
-                lines.append(f"  {name}:")
-                lines += _usage_block(summary)
+                                       key=lambda kv: (-kv[1]["turns"],
+                                                       -kv[1]["total_input_tokens"])):
+                profile = registry.get(str(uid)) or {}
+                name = profile.get("display_name") or profile.get("name") or f"user {uid}"
+                lines += _usage_person_lines(name, summary)
 
     chunk = ""
     for line in lines:
