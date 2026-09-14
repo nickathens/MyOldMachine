@@ -2022,6 +2022,12 @@ body{
         return'resets '+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+hhmm;
     }
 
+    function dayText(ts){
+        if(!ts)return'';
+        var d=new Date(ts*1000);
+        return d.getDate()+' '+['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+    }
+
     function ageText(ts){
         if(!ts)return'age unknown';
         var s=Math.max(0,Math.floor(Date.now()/1000-ts));
@@ -2084,7 +2090,17 @@ body{
         renderMeter(panel,data.meters.codex,'Codex, shared by everyone here');
         if(data.everyone&&data.everyone.length){
             var all=usageGroup(panel,'Everyone, last '+data.days+' days');
+            if(data.counting_since){
+                var since=document.createElement('div');
+                since.className='usage-empty';
+                since.textContent='Counting since '+dayText(data.counting_since)+', so nothing recorded means no turns since then.';
+                all.appendChild(since);
+            }
             data.everyone.forEach(function(row){
+                if(!row.turns){
+                    all.appendChild(usageLine(row.name,'nothing recorded yet'));
+                    return;
+                }
                 all.appendChild(usageLine(row.name,row.turns+' turns · '+formatTokens(row.total_input_tokens)+' in · '+formatTokens(row.output_tokens)+' out'));
                 if(row.list_cost_usd)all.appendChild(usageLine('list price, not a bill','$'+row.list_cost_usd.toFixed(2)));
                 if(row.unmeasured_turns)all.appendChild(usageLine('consumption unreported',row.unmeasured_turns+' turns; totals incomplete'));
