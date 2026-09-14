@@ -102,6 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+- [2026-09-14] mac: the admin usage view lists the whole roster, not only
+  the ledgers that exist, and dates a zero row (PR #174)
+
 (Entries removed above: #173 cleared in its reviewed merge revision, the same
 call as #172, since the merge revision already had the file open.
 #172 cleared in its reviewed merge revision.
