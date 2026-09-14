@@ -262,7 +262,7 @@ def summarise_everyone(days: int = 7, roster: Iterable = ()) -> dict:
     return out
 
 
-def accounting_started() -> Optional[int]:
+def accounting_started(days: int = 0) -> Optional[int]:
     """Unix time of the oldest turn any ledger still holds, or None.
 
     A zero row only reads correctly next to this. Counting began the day this
@@ -270,6 +270,13 @@ def accounting_started() -> Optional[int]:
     person with nothing recorded is usually one who has not spoken since the
     meter existed, not a frugal one, and nothing here can tell the difference
     without saying when the count starts.
+
+    ``days`` bounds the answer to the window the caller actually read, and
+    None then means the record already covers the whole of it. Retention is
+    RETENTION_DAYS and a view is usually seven, so the unbounded answer
+    reaches back past what was read: a person idle this week but busy last
+    month would be reported as having had no turns since last month, which is
+    the reading this date exists to rule out.
     """
     oldest: Optional[int] = None
     try:
@@ -284,6 +291,8 @@ def accounting_started() -> Optional[int]:
             ts = row.get("ts") or 0
             if ts and (oldest is None or ts < oldest):
                 oldest = int(ts)
+    if oldest is not None and days > 0 and oldest <= time.time() - days * 86400:
+        return None
     return oldest
 
 

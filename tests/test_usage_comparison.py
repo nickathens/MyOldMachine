@@ -57,6 +57,20 @@ def isolated():
         usage.codex_cache_clear()
 
 
+SOLO = {"7": {"display_name": "Admin One", "role": "admin"}}
+
+
+def _ledger(user_id: int, *timestamps: int) -> None:
+    """Turns at chosen times, because half of this is about the window."""
+    path = usage.ledger_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        for ts in timestamps:
+            f.write(json.dumps({"ts": ts, "provider": "claude-cli",
+                                "model": "claude-opus-5", "input_tokens": 100,
+                                "output_tokens": 20, "ok": True}) + "\n")
+
+
 def _update(user_id: int, text: str = "/usage"):
     message = SimpleNamespace(text=text, reply_text=AsyncMock())
     return SimpleNamespace(effective_user=SimpleNamespace(id=user_id),
@@ -111,16 +125,33 @@ class RosterTests(unittest.TestCase):
         with isolated():
             self.assertIsNone(usage.accounting_started())
 
+    def test_the_start_date_never_reaches_past_the_window_that_was_read(self):
+        """Retention is 90 days and a view is 7, so the oldest turn on record
+        is routinely older than anything the view looked at. Named anyway, it
+        says the silence covers weeks nobody read."""
+        now = int(time.time())
+        with isolated():
+            _ledger(7, now - 60 * 86400, now)
+            _ledger(8, now - 30 * 86400)
+            self.assertIsNone(usage.accounting_started(7))
+            self.assertEqual(usage.accounting_started(), now - 60 * 86400)
+
+    def test_a_count_that_began_inside_the_window_is_still_named(self):
+        now = int(time.time())
+        with isolated():
+            _ledger(7, now - 2 * 86400)
+            self.assertEqual(usage.accounting_started(7), now - 2 * 86400)
+
 
 class TelegramViewTests(unittest.TestCase):
     """/usage, the surface the complaint came from."""
 
-    def _run(self, user_id: int, admin: bool) -> str:
+    def _run(self, user_id: int, admin: bool, registry: dict = REGISTRY) -> str:
         update = _update(user_id)
         blank = {"unavailable": True, "reason": "not read in this test"}
         with (patch("bot.get_allowed_users", return_value={user_id}),
               patch("bot.is_admin", return_value=admin),
-              patch.object(users, "list_users", return_value=REGISTRY),
+              patch.object(users, "list_users", return_value=registry),
               patch.object(usage, "meters", return_value={"claude": blank, "codex": blank})):
             asyncio.run(bot.usage_command(update, None))
         return _said(update)
@@ -151,6 +182,87 @@ class TelegramViewTests(unittest.TestCase):
             with self.subTest(figure=figure):
                 self.assertIn(figure, line[0])
 
+    def test_an_old_record_does_not_claim_the_silence_covers_unread_time(self):
+        now = int(time.time())
+        with isolated():
+            _ledger(7, now - 60 * 86400, now)
+            _ledger(8, now - 30 * 86400)
+            said = self._run(7, admin=True)
+        self.assertIn("Quiet One: nothing recorded yet", said)
+        self.assertNotIn(f"counting since {bot._format_day(now - 60 * 86400)}", said)
+
+    def test_the_only_person_on_the_machine_is_not_compared_with_themselves(self):
+        """A list of one is the block at the top of the same message again."""
+        with isolated():
+            usage.record_turn(7, provider="claude-cli", model="claude-opus-5", input_tokens=100)
+            said = self._run(7, admin=True, registry=SOLO)
+        self.assertNotIn("Everyone", said)
+        self.assertIn("Your usage, last 7 days", said)
+
+    def test_control_a_spender_off_the_roster_brings_the_section_back(self):
+        """The guard is "more than the reader", not "more than one registry
+        entry": a person dropped from the registry still spent the
+        subscription and still has to be listed."""
+        with isolated():
+            usage.record_turn(7, provider="claude-cli", model="claude-opus-5", input_tokens=100)
+            usage.record_turn(9, provider="codex-cli", model="gpt-6-astra", input_tokens=100)
+            said = self._run(7, admin=True, registry=SOLO)
+        self.assertIn("Everyone, last 7 days", said)
+        self.assertIn("user 9:", said)
+
+    def test_the_admin_read_does_not_stall_the_other_chats(self):
+        """Every ledger on the machine, read on the event loop, is every other
+        person's turn waiting on this one's disk. Measured, not assumed."""
+        with isolated():
+            usage.record_turn(7, provider="claude-cli", model="claude-opus-5", input_tokens=100)
+
+            real = usage.summarise_everyone
+
+            def slow(days, roster=()):
+                time.sleep(0.3)
+                return real(days, roster=roster)
+
+            async def drive():
+                """Tick all the way through the read, so the measurement
+                covers the blocking region rather than the moment before it."""
+                update = _update(7)
+                blank = {"unavailable": True, "reason": "not read in this test"}
+                worst, ticks = 0.0, 0
+                with (patch("bot.get_allowed_users", return_value={7}),
+                      patch("bot.is_admin", return_value=True),
+                      patch.object(usage, "summarise_everyone", side_effect=slow),
+                      patch.object(users, "list_users", return_value=REGISTRY),
+                      patch.object(usage, "meters", return_value={"claude": blank, "codex": blank})):
+                    task = asyncio.ensure_future(bot.usage_command(update, None))
+                    while not task.done():
+                        started = time.perf_counter()
+                        await asyncio.sleep(0.01)
+                        worst = max(worst, time.perf_counter() - started - 0.01)
+                        ticks += 1
+                    await task
+                return worst, ticks, _said(update)
+
+            waited, ticks, said = asyncio.run(drive())
+        self.assertIn("Everyone, last 7 days", said)
+        self.assertGreater(ticks, 0, "nothing was measured")
+        self.assertLess(waited, 0.15, "the admin read blocked the event loop")
+
+    def test_the_only_row_being_someone_else_is_still_a_comparison(self):
+        """One row that is not the reader is a comparison, not an echo: the
+        guard has to ask who the row belongs to, not just how many there are."""
+        with isolated():
+            usage.record_turn(9, provider="codex-cli", model="gpt-6-astra", input_tokens=100)
+            said = self._run(7, admin=True, registry={})
+        self.assertIn("Everyone, last 7 days", said)
+        self.assertIn("user 9:", said)
+
+    def test_an_empty_registry_does_not_print_a_heading_over_nothing(self):
+        """users.json unreadable and no ledger yet: a heading with no rows
+        under it is the same silence with no reading attached."""
+        with isolated():
+            said = self._run(7, admin=True, registry={})
+        self.assertNotIn("Everyone", said)
+
     def test_control_an_ordinary_user_is_told_nothing_about_anyone_else(self):
         with isolated():
             usage.record_turn(7, provider="claude-cli", model="claude-opus-5", input_tokens=100)
@@ -180,6 +292,26 @@ class MiniAppViewTests(unittest.TestCase):
                 payload = server.get_usage(days=7, user={"_id": "8", "_profile": {"role": "user"}})
         self.assertIsNone(payload["everyone"])
         self.assertIsNone(payload.get("counting_since"))
+
+    def test_the_solo_admin_gets_no_roster_to_compare_with(self):
+        with isolated():
+            usage.record_turn(7, provider="claude-cli", model="claude-opus-5", input_tokens=100)
+            with (patch.object(usage, "meters", return_value={}),
+                  patch.object(server, "_load_users", return_value=SOLO)):
+                payload = server.get_usage(days=7, user={"_id": "7", "_profile": {"role": "admin"}})
+        self.assertIsNone(payload["everyone"])
+        self.assertIsNone(payload.get("counting_since"))
+
+    def test_the_payload_start_date_is_bounded_by_the_window_too(self):
+        now = int(time.time())
+        with isolated():
+            _ledger(7, now - 60 * 86400, now)
+            _ledger(8, now - 30 * 86400)
+            with (patch.object(usage, "meters", return_value={}),
+                  patch.object(server, "_load_users", return_value=REGISTRY)):
+                payload = server.get_usage(days=7, user={"_id": "7", "_profile": {"role": "admin"}})
+        self.assertEqual(len(payload["everyone"]), 2)
+        self.assertIsNone(payload["counting_since"])
 
     def test_the_page_renders_both_the_zero_row_and_the_date(self):
         """A string check, because nothing in this repo runs a browser."""

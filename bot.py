@@ -3975,10 +3975,27 @@ def _usage_person_lines(name: str, summary: dict) -> list[str]:
     return lines
 
 
+def _usage_everyone(days: int) -> tuple[dict, dict, int | None]:
+    """The admin comparison: the registry, a row per person, and the date.
+
+    Its own function because reading every ledger on the machine is file work
+    and this bot is expected to run on a decade-old laptop, so the caller
+    hands it to a thread rather than stalling every other chat on the disk.
+    """
+    from core.usage import accounting_started, summarise_everyone
+    from core.users import list_users
+    # The roster, not just the ledgers: the admin asked for everyone, and a
+    # person missing from the list reads as a broken meter.
+    registry = list_users()
+    return (registry,
+            summarise_everyone(days, roster=registry.keys()),
+            accounting_started(days))
+
+
 @requires_auth
 async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """What this person spent, and what is left on the subscription."""
-    from core.usage import accounting_started, meters, summarise, summarise_everyone
+    from core.usage import meters, summarise
     user_id = update.effective_user.id
     days = 7
     body = command_body(update.message.text).strip()
@@ -3997,22 +4014,23 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines += _meter_lines(reading["codex"], "Codex")
 
     if is_admin(user_id):
-        from core.users import list_users
-        # The roster, not just the ledgers: the admin asked for everyone, and
-        # a person missing from the list reads as a broken meter.
-        registry = list_users()
-        everyone = summarise_everyone(days, roster=registry.keys())
-        lines += ["", f"Everyone, last {days} days"]
-        started = _format_day(accounting_started())
-        if started:
-            lines.append(f"  counting since {started}, so nothing recorded "
-                         f"means no turns since then")
-        for uid, summary in sorted(everyone.items(),
-                                   key=lambda kv: (-kv[1]["turns"],
-                                                   -kv[1]["total_input_tokens"])):
-            profile = registry.get(str(uid)) or {}
-            name = profile.get("display_name") or profile.get("name") or f"user {uid}"
-            lines += _usage_person_lines(name, summary)
+        registry, everyone, since = await asyncio.to_thread(_usage_everyone, days)
+        # A list of one is not a comparison: on a machine with one person on
+        # it, this is the block at the top of the message printed a second
+        # time. Any second person brings it back, including one at zero,
+        # which is the whole reason the roster is read.
+        if len(everyone) > 1 or (everyone and str(user_id) not in everyone):
+            lines += ["", f"Everyone, last {days} days"]
+            started = _format_day(since)
+            if started:
+                lines.append(f"  counting since {started}, so nothing recorded "
+                             f"means no turns since then")
+            for uid, summary in sorted(everyone.items(),
+                                       key=lambda kv: (-kv[1]["turns"],
+                                                       -kv[1]["total_input_tokens"])):
+                profile = registry.get(str(uid)) or {}
+                name = profile.get("display_name") or profile.get("name") or f"user {uid}"
+                lines += _usage_person_lines(name, summary)
 
     chunk = ""
     for line in lines:
