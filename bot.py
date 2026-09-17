@@ -5836,10 +5836,13 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"Closed {len(closed)} app(s) ({names}), freed ~{freed:.0f} MB."
                 )
             else:
+                mins = load_config().get("close_idle_gui_app_minutes", 60)
                 await update.message.reply_text(
-                    "Nothing closed. Either no managed app is running, one is "
-                    "still in use, someone is at the machine, or something is "
-                    "unsaved. Use /maintenance close-apps status to see which."
+                    f"Nothing closed. Either no managed app is running, one is "
+                    f"still in use, someone is at the machine, something is "
+                    f"unsaved, or the bot has been watching it for less than "
+                    f"{mins} minutes (the idle clock restarts with the bot). "
+                    f"Use /maintenance close-apps status to see which."
                 )
         else:
             await update.message.reply_text(

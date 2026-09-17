@@ -546,13 +546,17 @@ async def sweep(config: Optional[dict] = None,
     synthetic rows, a fake keyboard idle, a fake prober and a fake quitter --
     no Adobe app is ever launched or signalled by the suite.
     """
+    # The platform check comes first. Off macOS this is a no-op, and the
+    # reaper loop calls it every 30 seconds for the life of the process, so a
+    # no-op that read the config file each time would be a real cost for
+    # nothing on every Linux install.
+    if platform.system() != "Darwin":
+        return []
     if config is None:
         from utils.maintenance import load_config
         config = load_config()
 
     if not force and not config.get("close_idle_gui_apps", True):
-        return []
-    if platform.system() != "Darwin":
         return []
 
     minutes = config.get("close_idle_gui_app_minutes", DEFAULT_GUI_IDLE_MINUTES)

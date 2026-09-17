@@ -11,9 +11,11 @@ keyboard idle, the unsaved-work probe and the quit are all injected.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -23,6 +25,14 @@ from utils import gui_app_closer as gac  # noqa: E402
 
 TTL_MIN = 60
 TTL = TTL_MIN * 60.0
+
+# The pid the fixture app runs under. The sweep drops its own pid and its
+# parent's from the sample, and inside a PID namespace (a container, or
+# `unshare --pid`) the runner's parent IS pid 1, so a fixture pinned to pid 1
+# silently vanished from the sample and every "it closes" test failed there
+# while passing on a desktop. Pick one that is neither.
+APP_PID = next(p for p in range(70001, 70010)
+               if p not in (os.getpid(), os.getppid()))
 
 # Real command lines, copied from `ps -axo command=` on the machine this was
 # written for. The Photoshop one is the app; the rest must never match it.
@@ -273,9 +283,9 @@ class SweepTests(unittest.TestCase):
         # Two samples an hour apart with a believable idle CPU rate: 5.1% of a
         # core over 3600s is 184 seconds of CPU.
         self.tracker.observe(
-            gac.sample_apps([row(1, "9:00.00", PHOTOSHOP)], gac.DEFAULT_GUI_APPS, set()),
+            gac.sample_apps([row(APP_PID, "9:00.00", PHOTOSHOP)], gac.DEFAULT_GUI_APPS, set()),
             now=0.0)
-        self.lines = [row(1, "12:04.00", PHOTOSHOP)]
+        self.lines = [row(APP_PID, "12:04.00", PHOTOSHOP)]
 
     def _sweep(self, **kw):
         kw.setdefault("config", self.config)
@@ -285,14 +295,17 @@ class SweepTests(unittest.TestCase):
         kw.setdefault("prober", lambda needle, bundle: ("clean", ""))
         kw.setdefault("quitter", self.quitter)
         kw.setdefault("now", TTL + 1)
-        if sys.platform != "darwin":
-            self.skipTest("macOS-only sweep")
-        return asyncio.run(gac.sweep(**kw))
+        # The sweep's own platform check is what makes it a no-op off macOS.
+        # Faking that one answer runs every gate on every CI runner, where the
+        # suite actually executes (the macOS job runs no unit tests). The two
+        # tests that need a real macOS, osascript and ps, still skip below.
+        with patch.object(gac.platform, "system", return_value="Darwin"):
+            return asyncio.run(gac.sweep(**kw))
 
     def test_closes_when_every_gate_passes(self):
         closed = self._sweep()
         self.assertEqual([c["bundle"] for c in closed], ["Adobe Photoshop 2026"])
-        self.assertEqual(self.quit_calls, [("Adobe Photoshop 2026", 1)])
+        self.assertEqual(self.quit_calls, [("Adobe Photoshop 2026", APP_PID)])
 
     def test_not_closed_while_someone_is_at_the_machine(self):
         self.assertEqual(self._sweep(human_idle_probe=lambda: 120.0), [])
@@ -318,7 +331,7 @@ class SweepTests(unittest.TestCase):
 
     def test_not_closed_when_the_app_has_been_working(self):
         # Same hour, but the CPU says it did 40 minutes of work in it.
-        self.assertEqual(self._sweep(ps_lines=[row(1, "49:00.00", PHOTOSHOP)]), [])
+        self.assertEqual(self._sweep(ps_lines=[row(APP_PID, "49:00.00", PHOTOSHOP)]), [])
         self.assertEqual(self.quit_calls, [])
 
     def test_toggle_off_does_nothing(self):
@@ -354,12 +367,12 @@ class SweepTests(unittest.TestCase):
         # One tick later (30s), with the app still idle, it must be skipped.
         self.assertEqual(
             self._sweep(prober=prober, now=TTL + 31,
-                        ps_lines=[row(1, "12:05.54", PHOTOSHOP)]), [])
+                        ps_lines=[row(APP_PID, "12:05.54", PHOTOSHOP)]), [])
         self.assertEqual(len(probes), 1, "the app was probed again too soon")
         # A full window later it is tried once more.
         self.assertEqual(
             self._sweep(prober=prober, now=2 * TTL + 2,
-                        ps_lines=[row(1, "15:04.00", PHOTOSHOP)]), [])
+                        ps_lines=[row(APP_PID, "15:04.00", PHOTOSHOP)]), [])
         self.assertEqual(len(probes), 2)
 
     def test_a_refused_quit_also_backs_off(self):
@@ -369,12 +382,45 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(self._sweep(quitter=stubborn), [])
         self.assertEqual(
             self._sweep(quitter=stubborn, now=TTL + 31,
-                        ps_lines=[row(1, "12:05.54", PHOTOSHOP)]), [])
+                        ps_lines=[row(APP_PID, "12:05.54", PHOTOSHOP)]), [])
         self.assertEqual(len(self.quit_calls), 1)
 
     def test_a_bad_minutes_value_falls_back_to_the_default(self):
         cfg = dict(self.config, close_idle_gui_app_minutes="not a number")
         self.assertEqual(self._sweep(config=cfg, now=TTL - 1), [])
+
+
+class OffMacOSTests(unittest.TestCase):
+    """Off macOS the sweep is a no-op, and a no-op has to cost nothing: the
+    reaper loop calls it every 30 seconds for the life of the process."""
+
+    def test_never_reads_the_config_and_closes_nothing(self):
+        import utils.maintenance as maintenance
+        reads = []
+        real = maintenance.load_config
+
+        def spy():
+            reads.append(1)
+            return real()
+
+        quits = []
+
+        async def quitter(bundle, pid, grace=0.0):
+            quits.append((bundle, pid))
+            return True
+
+        with patch.object(gac.platform, "system", return_value="Linux"), \
+                patch.object(maintenance, "load_config", spy):
+            plain = asyncio.run(gac.sweep())
+            forced = asyncio.run(gac.sweep(
+                force=True, ps_lines=[row(APP_PID, "12:04.00", PHOTOSHOP)],
+                human_idle_probe=lambda: TTL + 60,
+                prober=lambda n, b: ("clean", ""),
+                quitter=quitter, now=TTL + 1))
+        self.assertEqual(plain, [])
+        self.assertEqual(forced, [])
+        self.assertEqual(quits, [])
+        self.assertEqual(reads, [], "a non-macOS tick read the config file")
 
 
 class LiveFormatTests(unittest.TestCase):

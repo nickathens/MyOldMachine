@@ -347,12 +347,14 @@ async def _reaper_loop(
 ) -> None:
     """Run the janitors on a fixed interval until cancelled.
 
-    reap_once runs every tick (cheap, in-memory). The other two read the
-    process table, so they share ONE `ps` snapshot per tick rather than taking
-    one each. The headless sweep is throttled to DEFAULT_APP_SWEEP_SECONDS on
-    top of that; the GUI-app sweep runs every tick because its idle measure is
-    a CPU rate between consecutive samples, and a coarser sample would let a
-    short burst of real work hide inside the average.
+    reap_once runs every tick (cheap, in-memory). The other two each read the
+    process table with a `ps` call of their own: they need different columns,
+    and the comment below says why they were not folded into one. The
+    headless sweep is throttled to DEFAULT_APP_SWEEP_SECONDS; the GUI-app
+    sweep runs every tick on macOS because its idle measure is a CPU rate
+    between consecutive samples, and a coarser sample would let a short burst
+    of real work hide inside the average. Off macOS it returns before it
+    touches anything.
     """
     global _last_app_sweep_at
     logger.info(
