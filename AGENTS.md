@@ -105,7 +105,7 @@ provider.
 [2026-09-17] mac: voice models load on first voice message instead of at boot,
 and idle GUI apps (Photoshop/Illustrator/AE/Resolve) are asked to quit after an
 hour. Touches bot.py (/maintenance close-apps), utils/process_reaper.py (one
-extra sweep in the loop) and utils/maintenance.py (two config keys). (PR #TBD)
+extra sweep in the loop) and utils/maintenance.py (two config keys). (PR #175)
 
 (Entries removed above: #174 cleared in its reviewed merge revision, the same
 call as #173 and #172.
