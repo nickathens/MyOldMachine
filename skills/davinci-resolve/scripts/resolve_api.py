@@ -129,6 +129,43 @@ def cmd_quit(args):
     print("Asked Resolve to quit (it will prompt to save unsaved work).")
 
 
+def cmd_prepare_quit(args):
+    """Make Resolve safe to quit, or refuse and say why.
+
+    The API has no dirty flag, so "is it safe to close" cannot be read; it can
+    only be made true. SaveProject() through the API is the same commit
+    Resolve's own Live Save performs, so after it returns the app has nothing
+    left to prompt about and an automated quit cannot strand a modal on screen.
+
+    Prints SAVED on success. Anything else means do not quit: not running, API
+    unreachable (free edition, or external scripting switched off), a render in
+    flight, or a save that did not take.
+    """
+    if not is_running():
+        sys.exit("NOT-RUNNING: Resolve is not running.")
+    resolve, err = connect()
+    if not resolve:
+        sys.exit(f"NO-API: {err.splitlines()[0]}")
+    pm = resolve.GetProjectManager()
+    project = pm.GetCurrentProject() if pm else None
+    if project is None:
+        # Nothing open, so nothing to lose.
+        print("SAVED: no project open")
+        return
+    try:
+        if project.IsRenderingInProgress():
+            sys.exit("BUSY: a render is in progress.")
+    except Exception as e:
+        sys.exit(f"UNKNOWN: could not read render state ({e}).")
+    try:
+        saved = pm.SaveProject()
+    except Exception as e:
+        sys.exit(f"UNKNOWN: save failed ({e}).")
+    if not saved:
+        sys.exit("UNSAVED: Resolve refused to save the current project.")
+    print(f"SAVED: '{project.GetName()}' committed to the database")
+
+
 def cmd_projects(args):
     resolve, err = connect()
     if not resolve:
@@ -248,6 +285,8 @@ def main():
                    help="wait up to SEC seconds for the API to come up")
 
     sub.add_parser("quit", help="politely quit Resolve")
+    sub.add_parser("prepare-quit",
+                   help="save the open project so an automated quit cannot prompt")
     sub.add_parser("projects", help="list projects (needs external API)")
 
     p = sub.add_parser("import-media", help="import files into the open project")
@@ -275,6 +314,7 @@ def main():
         "status": cmd_status,
         "launch": cmd_launch,
         "quit": cmd_quit,
+        "prepare-quit": cmd_prepare_quit,
         "projects": cmd_projects,
         "import-media": cmd_import_media,
         "import-timeline": cmd_import_timeline,

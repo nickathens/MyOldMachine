@@ -4,10 +4,18 @@ Speech-to-text transcription using Whisper. Part of the Voice Mode pipeline (voi
 
 ## FAST PATH (default — use this)
 
-A warm listening engine (`data/stt/stt_daemon.py`, launchd-managed as
-`com.coocoo.stt-whisper`, port 8779) holds Whisper **large-v3-turbo** resident
-on the Apple GPU. A voice note transcribes in **~1 second**; no model load, no
-CPU fallback, better accuracy than the old `medium` (incl. Greek).
+A warm listening engine (`data/stt/stt_daemon.py`, port 8779) holds Whisper
+**large-v3-turbo** resident on the Apple GPU. A voice note transcribes in
+**~1 second**; no model load, no CPU fallback, better accuracy than the old
+`medium` (incl. Greek).
+
+`hear.py` starts that engine on demand and waits for it to warm, so the first
+voice note after a quiet spell costs about 2 extra seconds and every one after
+it is back to ~1s. The engine then exits on its own after 15 minutes with no
+requests, which is what keeps ~2.5 GB of model out of memory on a machine that
+has not been spoken to. See `install/voice_agents.py` for the two modes and
+`docs/voice-engines.md` for the reasoning; a machine with memory to spare can
+switch back to holding both models resident from login.
 
 ```bash
 /usr/bin/python3 data/stt/hear.py <audio_file>              # ~1s, prints transcript

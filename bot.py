@@ -5302,6 +5302,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         if platform.system() == "Darwin":
             cmd_lines.append("  /maintenance macos-updates on|off")
             cmd_lines.append("  /maintenance macos-restart on|off")
+            cmd_lines.append("  /maintenance close-apps on|off|status|<minutes>")
         cmd_lines += [
             "  /maintenance backup off",
             "  /maintenance run backup",
@@ -5310,6 +5311,8 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "  /maintenance run reaper",
             "  /maintenance run apps",
         ]
+        if platform.system() == "Darwin":
+            cmd_lines.append("  /maintenance run close-apps")
         report += "\n".join(cmd_lines)
         await update.message.reply_text(report)
         return
@@ -5628,6 +5631,65 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text("Usage: /maintenance reaper on|off")
         return
 
+    # --- /maintenance close-apps on|off|status|<minutes> (idle GUI apps) ---
+    # Same shape as the reaper toggle: no scheduled job, the sweep reads the
+    # flag every 30s. `status` renders what the sweep can see right now, so the
+    # thing can be checked without waiting an hour for it to fire.
+    if subcmd == "close-apps":
+        if platform.system() != "Darwin":
+            await update.message.reply_text(
+                "macOS-only setting. This machine is not macOS.")
+            return
+        choice = arg.lower().strip()
+        if choice in ("on", "true", "yes", "1"):
+            update_config(close_idle_gui_apps=True)
+            mins = load_config().get("close_idle_gui_app_minutes", 60)
+            await update.message.reply_text(
+                f"Idle GUI apps will be closed. Photoshop, Illustrator, After "
+                f"Effects and Resolve are asked to quit once they have gone "
+                f"{mins} minutes with no work done in them AND nobody has "
+                f"touched the keyboard or mouse for {mins} minutes. An app with "
+                f"anything unsaved is always left alone, and nothing is ever "
+                f"force-closed."
+            )
+        elif choice in ("off", "false", "no", "0"):
+            update_config(close_idle_gui_apps=False)
+            await update.message.reply_text(
+                "Idle GUI apps will be left open. Photoshop and the rest stay "
+                "resident until you close them or the machine restarts."
+            )
+        elif choice.isdigit() and int(choice) > 0:
+            update_config(close_idle_gui_app_minutes=int(choice))
+            await update.message.reply_text(
+                f"Idle window set to {int(choice)} minutes."
+            )
+        elif choice in ("status", ""):
+            from utils.gui_app_closer import describe_candidates, human_idle_seconds
+            cfg = load_config()
+            rows = await asyncio.to_thread(describe_candidates, None, cfg, None)
+            human = await asyncio.to_thread(human_idle_seconds)
+            mins = cfg.get("close_idle_gui_app_minutes", 60)
+            on = cfg.get("close_idle_gui_apps", True)
+            out = [f"Idle GUI apps: {'ON' if on else 'OFF'} (window {mins} min)"]
+            if human is None:
+                out.append("Keyboard idle: unreadable, so nothing would be closed.")
+            else:
+                out.append(f"Nobody at the machine for: {human / 60:.0f} min")
+            if not rows:
+                out.append("No managed apps are running.")
+            for r in rows:
+                out.append(
+                    f"  {r['bundle']}: idle {r['idle_seconds'] / 60:.0f} min, "
+                    f"~{r['rss_mb']:.0f} MB")
+            out.append(
+                "Idle is counted from the last time the app actually did "
+                "something, and it restarts at zero each time the bot does.")
+            await update.message.reply_text("\n".join(out))
+        else:
+            await update.message.reply_text(
+                "Usage: /maintenance close-apps on|off|status|<minutes>")
+        return
+
     # --- /maintenance macos-updates on|off (Apple softwareupdate sub-toggle) ---
     if subcmd == "macos-updates":
         if platform.system() != "Darwin":
@@ -5757,9 +5819,34 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
             else:
                 await update.message.reply_text("No idle helper apps to close.")
+        elif task == "close-apps":
+            if platform.system() != "Darwin":
+                await update.message.reply_text("macOS-only. This machine is not macOS.")
+                return
+            await update.message.reply_text("Checking for idle applications...")
+            from utils.gui_app_closer import sweep as gui_sweep
+            # force=True runs the sweep whatever the toggle says; every safety
+            # gate inside it still applies, so a manual run can never close an
+            # app that is in use or holding unsaved work.
+            closed = await gui_sweep(force=True)
+            if closed:
+                freed = sum(c["rss_mb"] for c in closed)
+                names = ", ".join(sorted({c["bundle"] for c in closed}))
+                await update.message.reply_text(
+                    f"Closed {len(closed)} app(s) ({names}), freed ~{freed:.0f} MB."
+                )
+            else:
+                mins = load_config().get("close_idle_gui_app_minutes", 60)
+                await update.message.reply_text(
+                    f"Nothing closed. Either no managed app is running, one is "
+                    f"still in use, someone is at the machine, something is "
+                    f"unsaved, or the bot has been watching it for less than "
+                    f"{mins} minutes (the idle clock restarts with the bot). "
+                    f"Use /maintenance close-apps status to see which."
+                )
         else:
             await update.message.reply_text(
-                "Usage: /maintenance run backup|update|cleanup|reaper|apps"
+                "Usage: /maintenance run backup|update|cleanup|reaper|apps|close-apps"
             )
         return
 
