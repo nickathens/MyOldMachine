@@ -102,6 +102,11 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-09-17] mac: voice models load on first voice message instead of at boot,
+and idle GUI apps (Photoshop/Illustrator/AE/Resolve) are asked to quit after an
+hour. Touches bot.py (/maintenance close-apps), utils/process_reaper.py (one
+extra sweep in the loop) and utils/maintenance.py (two config keys). (PR #TBD)
+
 (Entries removed above: #174 cleared in its reviewed merge revision, the same
 call as #173 and #172.
 #173 cleared in its reviewed merge revision, the same

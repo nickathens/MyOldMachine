@@ -24,8 +24,15 @@ Process reaper — two janitors on one background loop.
    is busy and never touched). Chrome/Chromium is also excluded outright — the
    browser skill keeps it warm as a daemon on purpose.
 
-Both are controlled by data/maintenance.json (reap_idle_apps toggle) and run
-from one asyncio task started in bot.py post_init.
+3. Idle GUI applications (utils/gui_app_closer). Photoshop, Illustrator,
+   After Effects and Resolve can never match case 2's headless latch -- they
+   are always opened as real GUI apps with real documents -- so they get their
+   own track with its own rules: measured idle, nobody at the keyboard, nothing
+   unsaved, and a polite quit that is never a signal. See that module.
+
+All three are controlled by data/maintenance.json (reap_idle_apps and
+close_idle_gui_apps toggles) and run from one asyncio task started in bot.py
+post_init.
 """
 
 from __future__ import annotations
@@ -338,11 +345,14 @@ async def _reaper_loop(
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     silence_seconds: float = DEFAULT_SILENCE_SECONDS,
 ) -> None:
-    """Run both janitors on a fixed interval until cancelled.
+    """Run the janitors on a fixed interval until cancelled.
 
-    reap_once runs every tick (cheap, in-memory). The idle-app sweep shells out
-    to `ps`, so it is throttled to DEFAULT_APP_SWEEP_SECONDS regardless of how
-    fast the loop ticks.
+    reap_once runs every tick (cheap, in-memory). The other two read the
+    process table, so they share ONE `ps` snapshot per tick rather than taking
+    one each. The headless sweep is throttled to DEFAULT_APP_SWEEP_SECONDS on
+    top of that; the GUI-app sweep runs every tick because its idle measure is
+    a CPU rate between consecutive samples, and a coarser sample would let a
+    short burst of real work hide inside the average.
     """
     global _last_app_sweep_at
     logger.info(
@@ -367,6 +377,19 @@ async def _reaper_loop(
                     raise
                 except Exception as e:
                     logger.error("Idle-app sweep failed (non-fatal): %s", e)
+
+            # The GUI sweep keeps its own `ps` snapshot rather than sharing the
+            # one above. The two read different field sets (this one needs
+            # cumulative CPU time), and folding them together would have meant
+            # re-cutting the headless sweep's parser -- a real risk of quietly
+            # breaking a working janitor to save one cheap process listing.
+            try:
+                from utils.gui_app_closer import sweep as gui_sweep
+                await gui_sweep()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Idle GUI-app sweep failed (non-fatal): %s", e)
 
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:

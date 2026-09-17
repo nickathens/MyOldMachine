@@ -68,6 +68,17 @@ DEFAULT_CONFIG = {
     "reap_idle_apps": True,
     # How many minutes a listed app may sit idle before it is closed.
     "reap_idle_app_minutes": 20,
+    # Close idle GUI applications (Photoshop, Illustrator, After Effects,
+    # DaVinci Resolve). A separate track from the reaper above, because these
+    # are real GUI apps holding real documents and can never match its headless
+    # latch. macOS only; a no-op elsewhere. Four gates must all hold: nobody has
+    # touched the keyboard or mouse for the window below, the app has done no
+    # measurable work for the same window, it reports nothing unsaved, and it is
+    # asked to quit rather than signalled. Anything unreadable counts as unsaved.
+    "close_idle_gui_apps": True,
+    # How many minutes an app must be both unused and unattended before it is
+    # asked to close.
+    "close_idle_gui_app_minutes": 60,
     # Nightly reboot. OFF by default: an unattended reboot is only safe on a
     # machine set to bring the bot back on boot, so the admin opts in. When on,
     # the bot reboots once a night at the time below, AFTER the whole nightly
@@ -150,6 +161,17 @@ def get_status_report() -> str:
         lines.append(f"Idle-app reaper: ON (closes idle helper apps after {mins} min)")
     else:
         lines.append("Idle-app reaper: OFF")
+
+    # Idle GUI apps (Photoshop/Illustrator/After Effects/Resolve)
+    if platform.system() == "Darwin":
+        if config.get("close_idle_gui_apps", True):
+            mins = config.get("close_idle_gui_app_minutes", 60)
+            lines.append(
+                f"Idle GUI apps: ON (Photoshop, Illustrator, After Effects and "
+                f"Resolve are asked to quit after {mins} min with nobody at the "
+                f"machine and nothing unsaved)")
+        else:
+            lines.append("Idle GUI apps: OFF")
 
     # Nightly reboot (opt-in; reboots the machine after nightly maintenance)
     if config.get("nightly_reboot", False):
