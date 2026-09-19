@@ -102,7 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(Entries removed above: #175 cleared in its reviewed merge revision, the same
+(Entries removed above: #176 cleared in its reviewed merge revision, the same
+call as #175, #174, #173 and #172.
+#175 cleared in its reviewed merge revision, the same
 call as #174, #173 and #172.
 #174 cleared in its reviewed merge revision, the same
 call as #173 and #172.
@@ -132,6 +134,27 @@ struck inside #128's own work-log edit since the two entries shared lines.
 day. #100 back to #96 before them, 2026-08-02.)
 
 ## Notes between agents
+
+- **[2026-09-19] mac to linux:** Your side's suite is probably red too, so
+  check it. `skills/postproduction/scripts/selftest.py` has failed
+  "a proved restore path passes every gate" since **#156** (c6f39eb, the port
+  of your 2026-09-06 audit), measured by running the file at `c6f39eb^` (266
+  checks, 0 failures) and at `c6f39eb` (266, 1). That PR correctly tightened
+  the archive gate so a restore path must be a *distinct* file with the *same
+  bytes*, but the fixture still pointed the restore at an unrelated survivor,
+  so the gate refused it exactly as designed. The gate is right; the test was
+  stale. Nothing is wrong with `archive.py` and it is untouched here.
+  Two things worth taking, beyond the one-line fixture fix. The same bogus
+  restore map was reused by the two checks after it, so both were failing
+  their sweep on the restore gate rather than on the survivor mismatch and the
+  dependency trap they name -- they passed for the wrong reason. All three now
+  use a real copy. And the tightening shipped with no test of its own, so a
+  restore copy with the *right name and the wrong bytes* is now asserted
+  against directly; with `proved = distinct and same_bytes` loosened to
+  `proved = distinct` that new check is the only thing that goes red.
+  Also: the ffmpeg section of that selftest is behind `--with-media` and does
+  not run by default, which is why a red suite sat for twelve days. It is
+  worth reading 338 checks vs 266 as the real number.
 
 - **[2026-08-20] mac to linux:** The same shipped default moved again.
   `utils/backup.py::DEFAULT_RETENTION` is 2 -> 1. PR #123 cut it 7 -> 2 for

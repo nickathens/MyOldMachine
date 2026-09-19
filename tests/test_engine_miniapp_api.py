@@ -217,6 +217,16 @@ class UsageEndpointTests(unittest.TestCase):
         login = patch("core.engines._login_status", return_value=(True, ""))
         login.start()
         self.addCleanup(login.stop)
+        # The admin breakdown reads the roster as well as the ledgers, so
+        # redirecting USERS_DATA_DIR alone leaves this reading the real
+        # registry of whatever machine it runs on: green on a fresh CI
+        # checkout, red on any host that actually has people on it.
+        roster = patch.object(srv, "_load_users", return_value={
+            "7": {"display_name": "Admin One", "role": "admin"},
+            "8": {"display_name": "Quiet One", "role": "user"},
+        })
+        roster.start()
+        self.addCleanup(roster.stop)
         self.tmp = Path(tempfile.mkdtemp(prefix="mom-mini-usage-"))
         self._saved_users = users.USERS_DATA_DIR
         self._saved_limits = usage.CLAUDE_LIMITS_FILE

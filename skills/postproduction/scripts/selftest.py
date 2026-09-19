@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -616,18 +617,56 @@ def test_deliver_and_archive():
         ledger = os.path.join(live, "SHA256.json")
         PROVE.write_ledger(PROVE.sha_files([keep]), ledger)
 
+        # A restore path is a real copy of the condemned file somewhere else.
+        # Pointing it at an unrelated survivor is what the gate exists to
+        # refuse, so the fixture has to be an actual copy or every check
+        # below it passes on the restore gate rather than on its own subject.
+        backup = os.path.join(tmp, "backup")
+        os.makedirs(backup)
+        restore = os.path.join(backup, "OLD.mov")
+        shutil.copy2(condemned, restore)
+
         r = ARC.sweep(ledger, [condemned])
         check("no restore path means no deletion", not r["pass"])
         check("nothing was deleted on a failing sweep",
               os.path.exists(condemned) and not r["executed"])
-        r2 = ARC.sweep(ledger, [condemned], {"OLD.mov": keep})
+        r2 = ARC.sweep(ledger, [condemned], {"OLD.mov": restore})
         check("a proved restore path passes every gate", r2["pass"], r2["verdict"])
         check("the condemned were hashed before anything happened",
               r2["condemned"][0].get("sha256"))
 
+        # The half of the gate that only bytes can answer: a file of the right
+        # name and the right size, holding something else.
+        decoy = os.path.join(backup, "DECOY.mov")
+        with open(decoy, "w") as fh:
+            fh.write("xxx")
+        r2b = ARC.sweep(ledger, [condemned], {"OLD.mov": decoy})
+        check("a restore copy that is not the same bytes is refused",
+              not r2b["pass"] and not r2b["restore"][0]["same_bytes"])
+
+        # The other half of the gate: the condemned file offered as its own
+        # restore path, directly or under another name. It exists, and it
+        # holds the same bytes by definition, so only distinctness can refuse
+        # it. This is the exact shape audit F01 caught, and it had no check.
+        r2c = ARC.sweep(ledger, [condemned], {"OLD.mov": condemned})
+        check("the condemned file is refused as its own restore path",
+              not r2c["pass"] and not r2c["restore"][0]["distinct"])
+        link = os.path.join(backup, "SAME_INODE.mov")
+        os.link(condemned, link)
+        r2d = ARC.sweep(ledger, [condemned], {"OLD.mov": link})
+        check("a hard link to the condemned file is refused as its restore",
+              not r2d["pass"] and not r2d["restore"][0]["distinct"])
+        os.remove(link)
+        sym = os.path.join(backup, "POINTER.mov")
+        os.symlink(condemned, sym)
+        r2e = ARC.sweep(ledger, [condemned], {"OLD.mov": sym})
+        check("a symlink to the condemned file is refused as its restore",
+              not r2e["pass"] and not r2e["restore"][0]["distinct"])
+        os.remove(sym)
+
         with open(keep, "w") as fh:
             fh.write("tampered")
-        r3 = ARC.sweep(ledger, [condemned], {"OLD.mov": keep})
+        r3 = ARC.sweep(ledger, [condemned], {"OLD.mov": restore})
         check("a survivor that does not match its record stops the sweep",
               not r3["pass"])
 
@@ -637,7 +676,7 @@ def test_deliver_and_archive():
         dep = os.path.join(live, "DEPS_SHA256.json")
         with open(dep, "w") as fh:
             json.dump({"entries": [{"path": condemned, "sha256": "x"}]}, fh)
-        r4 = ARC.sweep(ledger, [condemned], {"OLD.mov": keep})
+        r4 = ARC.sweep(ledger, [condemned], {"OLD.mov": restore})
         check("a file named by another version's records is protected",
               not r4["pass"] and r4["referenced_elsewhere"])
 
