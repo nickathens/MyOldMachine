@@ -102,10 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-09-19] mac: two stale test fixtures found by an ffmpeg 9.0.1 -> 9.0.2
-baseline; the film selftest has been red since #156 (PR #176).
-
-(Entries removed above: #175 cleared in its reviewed merge revision, the same
+(Entries removed above: #176 cleared in its reviewed merge revision, the same
+call as #175, #174, #173 and #172.
+#175 cleared in its reviewed merge revision, the same
 call as #174, #173 and #172.
 #174 cleared in its reviewed merge revision, the same
 call as #173 and #172.
