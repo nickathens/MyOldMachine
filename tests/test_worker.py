@@ -382,3 +382,64 @@ class CliGuardTests(_TempPoolStore):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CancelSignalFormTests(unittest.TestCase):
+    """The group kill uses the POSIX form: kill -s SIG -- -PGID.
+
+    procps-ng 4.0.4 (Ubuntu 24.04) reads the shorthand "kill -TERM -1443" as
+    kill(-1, SIGTERM): it keeps the first digit of the negative target, so any
+    group id that starts with a 1 becomes a broadcast to every process the user
+    owns, the bot included. "-s SIG -- -PGID" is the one spelling that bash's
+    builtin, dash's builtin and the procps binary all parse as the group
+    (strace, 2026-09-19). Nothing here sends a real signal: the transport is a
+    fake that only records what it was asked to run.
+    """
+
+    def _cancel_with_fake_transport(self, status):
+        calls = []
+
+        class FakeTransport(worker.Transport):
+            def run(self, argv, timeout=60):
+                calls.append(list(argv))
+                return 0, "", ""
+
+            def pull(self, remote_path, local_path):
+                return False
+
+        record = {"job_id": "job1", "state": "running", "worker": "w1",
+                  "remote_dir": "/nowhere/job1", "pid": status.get("pid"),
+                  "pgid": status.get("pgid"), "outputs": []}
+        tmp = Path(tempfile.mkdtemp(prefix="mom-cancel-form-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with patch.object(worker, "get_job", return_value=dict(record)), \
+             patch.object(worker, "get_worker", return_value={"name": "w1", "transport": "local"}), \
+             patch.object(worker, "make_transport", return_value=FakeTransport()), \
+             patch.object(worker, "_read_remote_status", return_value=(dict(status), True)), \
+             patch.object(worker, "_put_job"), \
+             patch.object(worker, "_results_dir", return_value=tmp), \
+             patch.object(worker.time, "sleep"):
+            ok, _msg, rec = worker.cancel_job(7, "job1")
+        self.assertTrue(ok)
+        self.assertEqual(rec["state"], "canceled")
+        return [c for c in calls if c and c[0] == "kill"]
+
+    def test_group_kill_names_the_signal_and_ends_the_options(self):
+        kills = self._cancel_with_fake_transport({"state": "running", "pid": 1443, "pgid": 1443})
+        self.assertEqual(kills, [["kill", "-s", "TERM", "--", "-1443"],
+                                 ["kill", "-s", "KILL", "--", "-1443"]])
+
+    def test_no_negative_target_ever_follows_a_signal_flag(self):
+        # The exact shape procps misreads: a "-SIG" or "-N" flag directly
+        # followed by "-PGID". Group ids that start with a 1 are the broadcast.
+        for pgid in (10, 100, 1443, 19999):
+            for argv in self._cancel_with_fake_transport({"state": "running", "pid": pgid, "pgid": pgid}):
+                for flag, target in zip(argv, argv[1:]):
+                    if (flag.startswith("-") and flag != "--"
+                            and target.startswith("-") and target[1:].isdigit()):
+                        self.fail(f"{argv}: {target!r} right after {flag!r} is read "
+                                  "by procps as its first digit")
+
+    def test_a_job_without_a_group_gets_a_plain_positive_pid(self):
+        kills = self._cancel_with_fake_transport({"state": "running", "pid": 4242, "pgid": None})
+        self.assertEqual(kills, [["kill", "-TERM", "4242"]])
