@@ -644,6 +644,26 @@ def test_deliver_and_archive():
         check("a restore copy that is not the same bytes is refused",
               not r2b["pass"] and not r2b["restore"][0]["same_bytes"])
 
+        # The other half of the gate: the condemned file offered as its own
+        # restore path, directly or under another name. It exists, and it
+        # holds the same bytes by definition, so only distinctness can refuse
+        # it. This is the exact shape audit F01 caught, and it had no check.
+        r2c = ARC.sweep(ledger, [condemned], {"OLD.mov": condemned})
+        check("the condemned file is refused as its own restore path",
+              not r2c["pass"] and not r2c["restore"][0]["distinct"])
+        link = os.path.join(backup, "SAME_INODE.mov")
+        os.link(condemned, link)
+        r2d = ARC.sweep(ledger, [condemned], {"OLD.mov": link})
+        check("a hard link to the condemned file is refused as its restore",
+              not r2d["pass"] and not r2d["restore"][0]["distinct"])
+        os.remove(link)
+        sym = os.path.join(backup, "POINTER.mov")
+        os.symlink(condemned, sym)
+        r2e = ARC.sweep(ledger, [condemned], {"OLD.mov": sym})
+        check("a symlink to the condemned file is refused as its restore",
+              not r2e["pass"] and not r2e["restore"][0]["distinct"])
+        os.remove(sym)
+
         with open(keep, "w") as fh:
             fh.write("tampered")
         r3 = ARC.sweep(ledger, [condemned], {"OLD.mov": restore})
