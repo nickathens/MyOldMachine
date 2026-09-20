@@ -60,6 +60,16 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def update_state_dir(home: Path, xdg_cache: Path) -> Path:
+    """Where check-update.mjs keeps its reminder state, which is platform
+    specific: HOME/Library/Caches on macOS, XDG_CACHE_HOME elsewhere. Watching
+    the Linux path on a Mac measures nothing, since it stays empty either way.
+    """
+    if sys.platform == "darwin":
+        return home / "Library" / "Caches" / "archify-skill"
+    return xdg_cache / "archify-skill"
+
+
 def broken_copy(example: Path, into: Path) -> Path:
     """The example with one unknown field, which the strict schema rejects."""
     spec = json.loads(example.read_text(encoding="utf-8"))
@@ -258,7 +268,11 @@ class DeliveryTests(unittest.TestCase):
     """Node only; no browser is started here."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="archify-test-"))
+        # Resolved on purpose: on macOS mkdtemp answers under /var, which is a
+        # symlink to /private/var, while the wrapper prints the path it
+        # resolved. Comparing an unresolved path against that output passes on
+        # Linux and fails on a Mac for no reason in the product.
+        self.tmp = Path(tempfile.mkdtemp(prefix="archify-test-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_every_example_type_delivers_a_self_contained_page(self):
@@ -340,18 +354,20 @@ class DeliveryTests(unittest.TestCase):
             "NODE_OPTIONS": f"--import={offline}",
         }
 
+        state = update_state_dir(self.tmp, cache)
+
         env = w.build_env(base)
         proc = subprocess.run([w.node_binary(), str(checker)], env=env, capture_output=True, text=True, timeout=60, cwd=self.tmp)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout), {"status": "silent", "reason": "disabled"})
-        self.assertEqual(sorted(p.name for p in cache.iterdir()), [], "the disabled checker still wrote state")
+        self.assertFalse(state.exists(), "the disabled checker still wrote state")
 
         control_env = {k: v for k, v in env.items() if k != "ARCHIFY_UPDATE_CHECK_DISABLED"}
         proc = subprocess.run([w.node_binary(), str(checker)], env=control_env, capture_output=True, text=True, timeout=60, cwd=self.tmp)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         verdict = json.loads(proc.stdout)
         self.assertNotEqual(verdict.get("reason"), "disabled", "the control did not exercise the switch")
-        self.assertTrue((cache / "archify-skill").is_dir(), "without the switch the checker should have written state")
+        self.assertTrue(state.is_dir(), "without the switch the checker should have written state")
 
     def test_output_must_be_html_and_spec_must_exist(self):
         proc = run_wrapper("deliver", "architecture", VENDOR / "examples" / EXAMPLES["architecture"], "-o", self.tmp / "map.htm")
@@ -371,7 +387,7 @@ class PreviewTests(unittest.TestCase):
         cls.w = load_wrapper()
         if cls.w.find_chrome() is None:
             raise unittest.SkipTest("no Chrome or Chromium on this machine; preview cannot be measured")
-        cls.tmp = Path(tempfile.mkdtemp(prefix="archify-preview-test-"))
+        cls.tmp = Path(tempfile.mkdtemp(prefix="archify-preview-test-")).resolve()  # see DeliveryTests.setUp
         cls.html = cls.tmp / "map.html"
         cls.png = cls.tmp / "map.png"
         cls.proc = run_wrapper(
