@@ -385,7 +385,7 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | qrcode | Generate QR codes |
 | rss | Parse RSS and Atom feeds |
 | regex | Pattern matching and text extraction |
-| diagram | Render Mermaid diagrams to PNG, SVG, or PDF |
+| diagram | Render Mermaid diagrams to PNG, SVG, or PDF, or build interactive self contained HTML system maps (archify) |
 | clipboard | Read and write the system clipboard, bridging phone and desktop |
 | watch | Watch any video: download it, extract keyframes, pull a timestamped transcript, then answer questions about it |
 | workflow | Multi step YAML pipelines with retries, conditions, and crash recovery |

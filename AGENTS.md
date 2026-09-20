@@ -102,6 +102,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-09-20] linux: diagram skill gains archify interactive HTML system maps (vendored MIT renderer at skills/diagram/archify, wrapper scripts/archify.py, 30 tests, README skill table line); branch linux/diagram-archify, PR not yet open
+
 (Entries removed above: #176 cleared in its reviewed merge revision, the same
 call as #175, #174, #173 and #172.
 #175 cleared in its reviewed merge revision, the same

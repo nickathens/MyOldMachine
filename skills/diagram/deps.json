@@ -1,10 +1,13 @@
 {
-  "npm": ["@mermaid-js/mermaid-cli"],
+  "npm": [
+    "@mermaid-js/mermaid-cli"
+  ],
   "check": {
-    "mmdc": "mmdc --version"
+    "mmdc": "mmdc --version",
+    "node": "node --version"
   },
   "weight": "medium",
   "min_ram_gb": 1,
   "min_disk_gb": 1,
-  "install_note": "Installs @mermaid-js/mermaid-cli (mmdc) globally via npm. Pulls a Puppeteer-managed Chromium (~150 MB) on first run."
+  "install_note": "Installs @mermaid-js/mermaid-cli (mmdc) globally via npm. Pulls a Puppeteer-managed Chromium (~150 MB) on first run. The archify HTML maps need only Node 18+ (no npm packages) and reuse that Chromium for their PNG preview."
 }

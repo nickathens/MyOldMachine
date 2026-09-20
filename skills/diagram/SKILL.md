@@ -1,6 +1,6 @@
 # Diagram
 
-Render Mermaid diagrams to PNG / SVG / PDF for sending to the user.
+Render Mermaid diagrams to PNG / SVG / PDF, or build interactive self contained HTML system maps with archify, for sending to the user.
 
 Mermaid covers ~90% of common diagrams: flowcharts, sequence diagrams, class diagrams,
 state machines, ER diagrams, Gantt charts, mindmaps, gitGraph, pie charts, journey,
@@ -122,6 +122,73 @@ For text-heavy diagrams (long Gantts, big class diagrams) prefer SVG so it stays
 $D src.mmd -o /tmp/out.svg
 python utils/send_to_telegram.py --user USER_ID --document /tmp/out.svg
 ```
+
+## Interactive HTML maps (archify)
+
+Mermaid gives a picture. For a system map someone will explore, click through
+or present, use archify: a small typed JSON spec compiles into ONE self
+contained HTML file with search, focus, route tracing, guided chapters, dark
+and light themes, and PNG, SVG and WebM export built into the page. Five
+types: `architecture` (components and boundaries), `workflow` (steps, lanes,
+gates), `sequence` (calls and returns), `dataflow` (pipelines, lineage) and
+`lifecycle` (states, retries). A pasted Mermaid flowchart, sequenceDiagram or
+stateDiagram can be read for its topology and re-authored as a spec.
+
+The renderer is vendored at `archify/` (MIT, pinned in `archify/VENDOR.md`).
+Always go through the wrapper, never `node archify/bin/archify.mjs` directly:
+the wrapper turns the package's update check off, points the browser check at
+the Chrome that Puppeteer keeps for mmdc, and adds the sandbox flag Linux
+needs (macOS runs it sandboxed).
+
+```bash
+A="python $SKILL_DIR/scripts/archify.py"
+
+# 1. Pick the type, then read ONLY the matching schema and one example:
+#    archify/schemas/<type>.schema.json, archify/schemas/common.schema.json,
+#    and one archify/examples/<name>.<type>.json. Write the spec fresh (new
+#    ids, real names, your own layout); the example shows field shape, not
+#    content. Full rules: archify/SKILL.md, then, only when a diagnostic
+#    needs it, archify/references/authoring-contract.md.
+
+# 2. Validate while iterating (0.3 s, no browser)
+$A validate architecture /tmp/map.json
+
+# 3. Deliver the HTML plus a PNG of the rendered page for Telegram
+$A deliver architecture /tmp/map.json -o /tmp/map.html --preview /tmp/map.png
+```
+
+`deliver` writes nothing for a spec that fails a check; it prints the
+diagnostics (code, subject, evidence, supportedFixes). Fix only what a
+diagnostic names, then rerun. Exit 3 means the HTML is written but the browser
+check did not pass: read the message, the PNG still shows the page when a
+capture exists.
+
+Send both. The HTML is the deliverable (it opens in the phone browser with no
+network) and the PNG is what people see in the chat:
+
+```bash
+python utils/send_to_telegram.py --user USER_ID --photo /tmp/map.png --caption "Request path"
+python utils/send_to_telegram.py --user USER_ID --document /tmp/map.html
+```
+
+Rules that matter:
+
+- Keep `meta.quality_profile` at `"showcase"` and keep every check green: the
+  receipt must read 9/9 checks, 0 errors, 0 warnings.
+- Start with one main path, at most 12 primary nodes and automatic routes. Add
+  `via`, `channelX`, `channelY` or `labelAt` only when a diagnostic asks for
+  one, one control per repair.
+- Omit `meta.visual_preset`, `meta.subtitle` and `meta.legend` unless asked.
+  Motion (`meta.animation: "trace"`) is opt in; static is the default.
+- Greek, or any language other than English and Simplified Chinese: write all
+  authored text in that language and omit `meta.locale`. The viewer's own
+  buttons stay English; say so when delivering.
+- Never run the upstream `examples` command: it writes 4 MB of rendered pages
+  into the vendored tree. For a sample page use `$A run demo /tmp/demo`.
+- Skip the "Update awareness" section of `archify/SKILL.md`. The wrapper turns
+  that check off on purpose, and the pinned version is updated by re-pull.
+- The viewer is desktop first; on a phone the page scrolls. The PNG is the
+  phone view.
 
 ## Notes
 
