@@ -796,9 +796,19 @@ def cancel_job(user_id: int, job_id: str) -> tuple[bool, str, Optional[dict]]:
     pgid = record.get("pgid")
     pid = record.get("pid")
     if isinstance(pgid, int) and pgid > 1:
-        transport.run(["kill", "-TERM", f"-{pgid}"], timeout=15)
+        # POSIX form on purpose: "-s SIG" names the signal and "--" ends the
+        # options, so the negative number can only be read as a process
+        # group. The shorthand "kill -TERM -1443" is read by procps-ng 4.0.4
+        # (Ubuntu 24.04) as kill(-1, SIGTERM): it keeps the first digit of the
+        # target, so every group id that starts with a 1 becomes a broadcast
+        # to every process the user owns, the bot included. This form is the
+        # one that bash's builtin, dash's builtin and the procps binary all
+        # parse as the group (dash rejects "-TERM -- -1443"). Proven with
+        # strace on 2026-09-19; it took a production bot down twice on
+        # 2026-09-07 while this suite ran unfenced.
+        transport.run(["kill", "-s", "TERM", "--", f"-{pgid}"], timeout=15)
         time.sleep(0.5)
-        transport.run(["kill", "-KILL", f"-{pgid}"], timeout=15)
+        transport.run(["kill", "-s", "KILL", "--", f"-{pgid}"], timeout=15)
     elif isinstance(pid, int) and pid > 1:
         transport.run(["kill", "-TERM", str(pid)], timeout=15)
 
