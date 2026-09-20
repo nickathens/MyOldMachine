@@ -187,6 +187,10 @@ Rules that matter:
   into the vendored tree. For a sample page use `$A run demo /tmp/demo`.
 - Skip the "Update awareness" section of `archify/SKILL.md`. The wrapper turns
   that check off on purpose, and the pinned version is updated by re-pull.
+- A node whose `brand` is an object with a `url` is fetched from that site at
+  build time and checked against its `sha256`: private addresses are refused,
+  a mismatch fails the delivery. Leave `brand` out when the build must stay
+  offline. The delivered page itself never fetches anything.
 - The viewer is desktop first; on a phone the page scrolls. The PNG is the
   phone view.
 
