@@ -150,6 +150,11 @@ class WrapperEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.w.build_env({"ARCHIFY_CHROME_NO_SANDBOX": "0"}, "linux")["ARCHIFY_CHROME_NO_SANDBOX"], "0")
         self.assertNotIn("ARCHIFY_CHROME_NO_SANDBOX", self.w.build_env({}, "darwin"))
 
+    # The macOS layout is not the Linux one: an arch folder either way, and
+    # for the full browser an .app bundle around the executable.
+    MAC_FULL = ("chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing")
+    MAC_SHELL = ("chrome-headless-shell-mac-arm64", "chrome-headless-shell")
+
     def _fake_cache(self, root: Path, family: str, build: str, tail: tuple, executable=True) -> Path:
         exe = root / family / build
         for part in tail:
@@ -197,16 +202,60 @@ class WrapperEnvironmentTests(unittest.TestCase):
             env = {"PUPPETEER_CACHE_DIR": str(Path(tmp) / "empty"), "PATH": ""}
             self.assertIsNone(self.w.find_chrome(env, "linux"))
 
-    def test_explicit_chrome_wins_and_other_platforms_defer_to_upstream(self):
+    def test_macos_reads_the_cache_its_own_way(self):
+        """The preview on a Mac hangs on this. Upstream only knows the two
+        /Applications bundles there, and a Mac can have neither while still
+        holding the Chrome Puppeteer downloaded for mermaid-cli, which is
+        exactly this machine (measured 2026-09-20): without the macOS layout
+        the preview is skipped on every run and the promised PNG never
+        appears.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "puppeteer"
+            self._fake_cache(cache, "chrome", "mac_arm-151.0.7922.71", self.MAC_FULL)
+            newest = self._fake_cache(cache, "chrome", "mac_arm-152.0.7977.54", self.MAC_FULL)
+            # Newer, and the shell, so it must still lose to the full browser.
+            self._fake_cache(cache, "chrome-headless-shell", "mac_arm-3000.0.0.0", self.MAC_SHELL)
+            env = {"PUPPETEER_CACHE_DIR": str(cache), "PATH": ""}
+            self.assertEqual(self.w.find_chrome(env, "darwin"), newest)
+            self.assertEqual(self.w.build_env(env, "darwin")["ARCHIFY_CHROME"], str(newest))
+            # No sandbox opt-out off Linux: that is an AppArmor workaround.
+            self.assertNotIn("ARCHIFY_CHROME_NO_SANDBOX", self.w.build_env(env, "darwin"))
+            # Neither platform may read the other's folders.
+            self.assertIsNone(self.w.find_chrome(env, "linux"))
+
+    def test_macos_falls_back_to_the_headless_shell_then_defers_to_upstream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "puppeteer"
+            shell = self._fake_cache(cache, "chrome-headless-shell", "mac_arm-152.0.7977.54", self.MAC_SHELL)
+            env = {"PUPPETEER_CACHE_DIR": str(cache), "PATH": ""}
+            self.assertEqual(self.w.find_chrome(env, "darwin"), shell)
+
+            # An empty cache defers: None hands the lookup back to archify,
+            # which searches /Applications on a Mac. A name on PATH must not
+            # pre-empt that, because upstream never consults PATH there.
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            on_path = bindir / "chromium"
+            on_path.write_text("#!/bin/sh\n")
+            on_path.chmod(0o755)
+            env = {"PUPPETEER_CACHE_DIR": str(Path(tmp) / "empty"), "PATH": str(bindir)}
+            self.assertIsNone(self.w.find_chrome(env, "darwin"))
+            self.assertEqual(self.w.find_chrome(env, "linux"), on_path)
+
+    def test_explicit_chrome_wins_and_an_unknown_platform_defers(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "puppeteer"
             self._fake_cache(cache, "chrome", "linux-152.0.7977.54", ("chrome-linux64", "chrome"))
+            self._fake_cache(cache, "chrome", "mac_arm-152.0.7977.54", self.MAC_FULL)
             env = {"PUPPETEER_CACHE_DIR": str(cache), "ARCHIFY_CHROME": "/opt/mine/chrome", "PATH": ""}
-            self.assertEqual(self.w.find_chrome(env, "linux"), Path("/opt/mine/chrome"))
+            for platform in ("linux", "darwin", "win32"):
+                with self.subTest(platform=platform):
+                    self.assertEqual(self.w.find_chrome(env, platform), Path("/opt/mine/chrome"))
+            # Windows: no layout is known here, so upstream does the looking.
             env = {"PUPPETEER_CACHE_DIR": str(cache), "PATH": ""}
-            self.assertIsNone(self.w.find_chrome(env, "darwin"))
-            built = self.w.build_env(env, "darwin")
-            self.assertNotIn("ARCHIFY_CHROME", built)
+            self.assertIsNone(self.w.find_chrome(env, "win32"))
+            self.assertNotIn("ARCHIFY_CHROME", self.w.build_env(env, "win32"))
 
     def test_cache_dir_follows_home_when_not_overridden(self):
         self.assertEqual(
@@ -260,6 +309,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
 
     def test_build_version_orders_numerically(self):
         self.assertGreater(self.w._build_version("linux-1000.0.0.0"), self.w._build_version("linux-152.0.7977.54"))
+        self.assertEqual(self.w._build_version("mac_arm-152.0.7977.54"), (152, 0, 7977, 54))
         self.assertEqual(self.w._build_version("junk"), (-1,))
         self.assertEqual(self.w._build_version("linux-1.2.x"), (-1,))
 

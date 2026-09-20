@@ -59,14 +59,35 @@ PREVIEW_VIEWPORT = "1440x900"
 PREVIEW_STEM = "preview"
 
 # Puppeteer's cache holds one folder per downloaded build, named like
-# linux-152.0.7977.54. Both the full browser and the headless shell drive the
-# DevTools pipe visual-check uses (measured 2026-09-20); the full one is
-# preferred. Only the Linux layout is known here; elsewhere archify's own
-# lookup (/Applications on macOS, PATH otherwise) takes over.
-_LINUX_CHROME_LAYOUTS = (
-    ("chrome", ("chrome-linux64", "chrome")),
-    ("chrome-headless-shell", ("chrome-headless-shell-linux64", "chrome-headless-shell")),
-)
+# linux-152.0.7977.54 or mac_arm-152.0.7977.54, with the executable under an
+# arch folder inside it. Both the full browser and the headless shell drive
+# the DevTools pipe visual-check uses (measured 2026-09-20 on both platforms);
+# the full one is preferred.
+#
+# macOS needs this lookup as much as Linux does. Upstream only knows the two
+# /Applications bundles on a Mac, and a machine can easily have neither while
+# still holding the Chrome Puppeteer downloaded for mermaid-cli. Without the
+# cache layouts below the preview is skipped on every Mac run and the PNG the
+# skill promises is quietly missing (measured 2026-09-20).
+_CHROME_LAYOUTS = {
+    "linux": (
+        ("chrome", (("chrome-linux64", "chrome"),)),
+        ("chrome-headless-shell", (("chrome-headless-shell-linux64", "chrome-headless-shell"),)),
+    ),
+    "darwin": (
+        ("chrome", (
+            ("chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+            ("chrome-mac-x64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+        )),
+        ("chrome-headless-shell", (
+            ("chrome-headless-shell-mac-arm64", "chrome-headless-shell"),
+            ("chrome-headless-shell-mac-x64", "chrome-headless-shell"),
+        )),
+    ),
+}
+# PATH names are Linux only on purpose: upstream searches PATH there too, and
+# on macOS it searches /Applications instead, which is the better lookup to
+# fall through to once the cache has nothing.
 _PATH_CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
 
 
@@ -86,36 +107,49 @@ def puppeteer_cache_dir(env: dict) -> Path:
     return Path(env.get("HOME") or Path.home()) / ".cache" / "puppeteer"
 
 
+def _chrome_layouts(platform: str) -> tuple:
+    """The Puppeteer cache layouts to try, or an empty tuple for a platform
+    whose layout is not known here (Windows), where upstream looks itself."""
+    for prefix, layouts in _CHROME_LAYOUTS.items():
+        if platform.startswith(prefix):
+            return layouts
+    return ()
+
+
 def find_chrome(env: dict | None = None, platform: str | None = None) -> Path | None:
     """The Chrome the browser check should use, or None to let archify look itself.
 
     ARCHIFY_CHROME wins when set. Otherwise the newest full Chrome in
-    Puppeteer's cache, then the newest headless shell there, then the usual
-    names on PATH. None means archify does its own lookup.
+    Puppeteer's cache, then the newest headless shell there, then on Linux the
+    usual names on PATH. None means archify does its own lookup.
     """
     env = os.environ if env is None else env
     platform = sys.platform if platform is None else platform
     explicit = env.get("ARCHIFY_CHROME")
     if explicit:
         return Path(explicit)
-    if not platform.startswith("linux"):
+    layouts = _chrome_layouts(platform)
+    if not layouts:
         return None
     cache = puppeteer_cache_dir(env)
-    for family, tail in _LINUX_CHROME_LAYOUTS:
+    for family, tails in layouts:
         root = cache / family
         if not root.is_dir():
             continue
         builds = []
         for build in root.iterdir():
-            exe = build.joinpath(*tail)
-            if exe.is_file() and os.access(exe, os.X_OK):
-                builds.append((_build_version(build.name), exe))
+            for tail in tails:
+                exe = build.joinpath(*tail)
+                if exe.is_file() and os.access(exe, os.X_OK):
+                    builds.append((_build_version(build.name), exe))
+                    break
         if builds:
             return max(builds)[1]
-    for name in _PATH_CHROME_NAMES:
-        found = shutil.which(name, path=env.get("PATH"))
-        if found:
-            return Path(found)
+    if platform.startswith("linux"):
+        for name in _PATH_CHROME_NAMES:
+            found = shutil.which(name, path=env.get("PATH"))
+            if found:
+                return Path(found)
     return None
 
 
