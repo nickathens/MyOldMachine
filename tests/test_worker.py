@@ -380,9 +380,6 @@ class CliGuardTests(_TempPoolStore):
         self.assertEqual(cm.exception.code, 2)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CancelSignalFormTests(unittest.TestCase):
     """The group kill uses the POSIX form: kill -s SIG -- -PGID.
@@ -443,3 +440,7 @@ class CancelSignalFormTests(unittest.TestCase):
     def test_a_job_without_a_group_gets_a_plain_positive_pid(self):
         kills = self._cancel_with_fake_transport({"state": "running", "pid": 4242, "pgid": None})
         self.assertEqual(kills, [["kill", "-TERM", "4242"]])
+
+
+if __name__ == "__main__":
+    unittest.main()
