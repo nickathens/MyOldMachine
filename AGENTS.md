@@ -104,6 +104,8 @@ provider.
 
 [2026-09-20] linux: worker cancel_job signals the job's process group in the POSIX form (kill -s SIG -- -PGID; procps 4.0.4 reads the shorthand as kill(-1), which took a production bot down twice), and the diagram skill gains archify interactive HTML system maps (vendored MIT renderer at skills/diagram/archify, wrapper scripts/archify.py, 30 tests, README skill table line); branch linux/posix-kill-and-archify (PR #177)
 
+[2026-09-20] mac: archify on macOS, stacked on the branch above: the wrapper's Chrome lookup learns the Puppeteer cache layout on a Mac, where upstream only knows /Applications and this machine has neither, so deliver --preview wrote no PNG at all; plus two test assumptions that only hold on Linux (the /var to /private/var symlink in five delivery subtests, and the update checker's state dir, which is HOME/Library/Caches on macOS); branch mac/archify-macos-preview-and-tests (PR #178)
+
 (Entries removed above: #176 cleared in its reviewed merge revision, the same
 call as #175, #174, #173 and #172.
 #175 cleared in its reviewed merge revision, the same

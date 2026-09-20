@@ -60,6 +60,16 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def update_state_dir(home: Path, xdg_cache: Path) -> Path:
+    """Where check-update.mjs keeps its reminder state, which is platform
+    specific: HOME/Library/Caches on macOS, XDG_CACHE_HOME elsewhere. Watching
+    the Linux path on a Mac measures nothing, since it stays empty either way.
+    """
+    if sys.platform == "darwin":
+        return home / "Library" / "Caches" / "archify-skill"
+    return xdg_cache / "archify-skill"
+
+
 def broken_copy(example: Path, into: Path) -> Path:
     """The example with one unknown field, which the strict schema rejects."""
     spec = json.loads(example.read_text(encoding="utf-8"))
@@ -140,6 +150,11 @@ class WrapperEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.w.build_env({"ARCHIFY_CHROME_NO_SANDBOX": "0"}, "linux")["ARCHIFY_CHROME_NO_SANDBOX"], "0")
         self.assertNotIn("ARCHIFY_CHROME_NO_SANDBOX", self.w.build_env({}, "darwin"))
 
+    # The macOS layout is not the Linux one: an arch folder either way, and
+    # for the full browser an .app bundle around the executable.
+    MAC_FULL = ("chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing")
+    MAC_SHELL = ("chrome-headless-shell-mac-arm64", "chrome-headless-shell")
+
     def _fake_cache(self, root: Path, family: str, build: str, tail: tuple, executable=True) -> Path:
         exe = root / family / build
         for part in tail:
@@ -187,16 +202,60 @@ class WrapperEnvironmentTests(unittest.TestCase):
             env = {"PUPPETEER_CACHE_DIR": str(Path(tmp) / "empty"), "PATH": ""}
             self.assertIsNone(self.w.find_chrome(env, "linux"))
 
-    def test_explicit_chrome_wins_and_other_platforms_defer_to_upstream(self):
+    def test_macos_reads_the_cache_its_own_way(self):
+        """The preview on a Mac hangs on this. Upstream only knows the two
+        /Applications bundles there, and a Mac can have neither while still
+        holding the Chrome Puppeteer downloaded for mermaid-cli, which is
+        exactly this machine (measured 2026-09-20): without the macOS layout
+        the preview is skipped on every run and the promised PNG never
+        appears.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "puppeteer"
+            self._fake_cache(cache, "chrome", "mac_arm-151.0.7922.71", self.MAC_FULL)
+            newest = self._fake_cache(cache, "chrome", "mac_arm-152.0.7977.54", self.MAC_FULL)
+            # Newer, and the shell, so it must still lose to the full browser.
+            self._fake_cache(cache, "chrome-headless-shell", "mac_arm-3000.0.0.0", self.MAC_SHELL)
+            env = {"PUPPETEER_CACHE_DIR": str(cache), "PATH": ""}
+            self.assertEqual(self.w.find_chrome(env, "darwin"), newest)
+            self.assertEqual(self.w.build_env(env, "darwin")["ARCHIFY_CHROME"], str(newest))
+            # No sandbox opt-out off Linux: that is an AppArmor workaround.
+            self.assertNotIn("ARCHIFY_CHROME_NO_SANDBOX", self.w.build_env(env, "darwin"))
+            # Neither platform may read the other's folders.
+            self.assertIsNone(self.w.find_chrome(env, "linux"))
+
+    def test_macos_falls_back_to_the_headless_shell_then_defers_to_upstream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "puppeteer"
+            shell = self._fake_cache(cache, "chrome-headless-shell", "mac_arm-152.0.7977.54", self.MAC_SHELL)
+            env = {"PUPPETEER_CACHE_DIR": str(cache), "PATH": ""}
+            self.assertEqual(self.w.find_chrome(env, "darwin"), shell)
+
+            # An empty cache defers: None hands the lookup back to archify,
+            # which searches /Applications on a Mac. A name on PATH must not
+            # pre-empt that, because upstream never consults PATH there.
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            on_path = bindir / "chromium"
+            on_path.write_text("#!/bin/sh\n")
+            on_path.chmod(0o755)
+            env = {"PUPPETEER_CACHE_DIR": str(Path(tmp) / "empty"), "PATH": str(bindir)}
+            self.assertIsNone(self.w.find_chrome(env, "darwin"))
+            self.assertEqual(self.w.find_chrome(env, "linux"), on_path)
+
+    def test_explicit_chrome_wins_and_an_unknown_platform_defers(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "puppeteer"
             self._fake_cache(cache, "chrome", "linux-152.0.7977.54", ("chrome-linux64", "chrome"))
+            self._fake_cache(cache, "chrome", "mac_arm-152.0.7977.54", self.MAC_FULL)
             env = {"PUPPETEER_CACHE_DIR": str(cache), "ARCHIFY_CHROME": "/opt/mine/chrome", "PATH": ""}
-            self.assertEqual(self.w.find_chrome(env, "linux"), Path("/opt/mine/chrome"))
+            for platform in ("linux", "darwin", "win32"):
+                with self.subTest(platform=platform):
+                    self.assertEqual(self.w.find_chrome(env, platform), Path("/opt/mine/chrome"))
+            # Windows: no layout is known here, so upstream does the looking.
             env = {"PUPPETEER_CACHE_DIR": str(cache), "PATH": ""}
-            self.assertIsNone(self.w.find_chrome(env, "darwin"))
-            built = self.w.build_env(env, "darwin")
-            self.assertNotIn("ARCHIFY_CHROME", built)
+            self.assertIsNone(self.w.find_chrome(env, "win32"))
+            self.assertNotIn("ARCHIFY_CHROME", self.w.build_env(env, "win32"))
 
     def test_cache_dir_follows_home_when_not_overridden(self):
         self.assertEqual(
@@ -250,6 +309,7 @@ class WrapperEnvironmentTests(unittest.TestCase):
 
     def test_build_version_orders_numerically(self):
         self.assertGreater(self.w._build_version("linux-1000.0.0.0"), self.w._build_version("linux-152.0.7977.54"))
+        self.assertEqual(self.w._build_version("mac_arm-152.0.7977.54"), (152, 0, 7977, 54))
         self.assertEqual(self.w._build_version("junk"), (-1,))
         self.assertEqual(self.w._build_version("linux-1.2.x"), (-1,))
 
@@ -258,7 +318,11 @@ class DeliveryTests(unittest.TestCase):
     """Node only; no browser is started here."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="archify-test-"))
+        # Resolved on purpose: on macOS mkdtemp answers under /var, which is a
+        # symlink to /private/var, while the wrapper prints the path it
+        # resolved. Comparing an unresolved path against that output passes on
+        # Linux and fails on a Mac for no reason in the product.
+        self.tmp = Path(tempfile.mkdtemp(prefix="archify-test-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def test_every_example_type_delivers_a_self_contained_page(self):
@@ -340,18 +404,20 @@ class DeliveryTests(unittest.TestCase):
             "NODE_OPTIONS": f"--import={offline}",
         }
 
+        state = update_state_dir(self.tmp, cache)
+
         env = w.build_env(base)
         proc = subprocess.run([w.node_binary(), str(checker)], env=env, capture_output=True, text=True, timeout=60, cwd=self.tmp)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout), {"status": "silent", "reason": "disabled"})
-        self.assertEqual(sorted(p.name for p in cache.iterdir()), [], "the disabled checker still wrote state")
+        self.assertFalse(state.exists(), "the disabled checker still wrote state")
 
         control_env = {k: v for k, v in env.items() if k != "ARCHIFY_UPDATE_CHECK_DISABLED"}
         proc = subprocess.run([w.node_binary(), str(checker)], env=control_env, capture_output=True, text=True, timeout=60, cwd=self.tmp)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         verdict = json.loads(proc.stdout)
         self.assertNotEqual(verdict.get("reason"), "disabled", "the control did not exercise the switch")
-        self.assertTrue((cache / "archify-skill").is_dir(), "without the switch the checker should have written state")
+        self.assertTrue(state.is_dir(), "without the switch the checker should have written state")
 
     def test_output_must_be_html_and_spec_must_exist(self):
         proc = run_wrapper("deliver", "architecture", VENDOR / "examples" / EXAMPLES["architecture"], "-o", self.tmp / "map.htm")
@@ -371,7 +437,7 @@ class PreviewTests(unittest.TestCase):
         cls.w = load_wrapper()
         if cls.w.find_chrome() is None:
             raise unittest.SkipTest("no Chrome or Chromium on this machine; preview cannot be measured")
-        cls.tmp = Path(tempfile.mkdtemp(prefix="archify-preview-test-"))
+        cls.tmp = Path(tempfile.mkdtemp(prefix="archify-preview-test-")).resolve()  # see DeliveryTests.setUp
         cls.html = cls.tmp / "map.html"
         cls.png = cls.tmp / "map.png"
         cls.proc = run_wrapper(
