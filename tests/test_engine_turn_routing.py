@@ -293,8 +293,12 @@ class ProviderRoutingTests(unittest.TestCase):
         botmod._engine_providers.clear()
         botmod._llm_provider = MagicMock(name="install-provider")
         engines.probe_cache_clear()
+        # One answer per binary: since Opus 5.5 the Opus default is gated
+        # on Claude Code 2.1.280, and a codex-shaped answer handed to the
+        # claude probe would read as a build too old for it.
         self._probe = patch("core.engines._cli_version_text",
-                            return_value="codex-cli 0.154.0")
+                            side_effect=lambda b: "2.1.280 (Claude Code)"
+                            if str(b).endswith("claude") else "codex-cli 0.154.0")
         self._probe.start()
         self.addCleanup(self._probe.stop)
 

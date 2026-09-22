@@ -89,6 +89,16 @@ class _Tree(HTMLParser):
                 return
 
 
+def _cli_version(binary) -> str:
+    """One answer per binary, the way the real probe sees two CLIs.
+
+    A single return value for both used to be harmless. Since Opus 5.5 the
+    Opus engine is gated on Claude Code 2.1.280, so a codex-shaped answer
+    handed to the claude probe reads as a build too old for the default.
+    """
+    return "2.1.280 (Claude Code)" if str(binary).endswith("claude") else "codex-cli 0.154.0"
+
+
 class _BotSurface(unittest.TestCase):
     """Drives the real handlers with the preference store in a temp dir."""
 
@@ -99,7 +109,7 @@ class _BotSurface(unittest.TestCase):
         engines.probe_cache_clear()
         for target, value in (("bot.get_allowed_users", {7}),
                               ("bot.get_llm_provider", "claude"),
-                              ("bot.get_llm_model", "claude-opus-5"),
+                              ("bot.get_llm_model", "claude-opus-5-5"),
                               ("core.config.get_llm_effort", "max")):
             p = patch(target, return_value=value)
             p.start()
@@ -135,14 +145,14 @@ class AdminEngineCommandTests(_BotSurface):
         with (patch("bot.is_admin", return_value=True),
               patch("core.engines._login_status", return_value=(True, "")),
               patch("core.engines._cli_version_text",
-                    return_value="codex-cli 0.154.0")):
+                    side_effect=_cli_version)):
             asyncio.run(bot.engine_command(update, None))
         return update
 
     def test_engine_shows_the_machine_setting_and_every_option(self):
         said = _said(self._run())
         self.assertIn("the machine setting", said)
-        self.assertIn("claude-opus-5", said)
+        self.assertIn("claude-opus-5-5", said)
         self.assertIn("max effort", said)
         # The complaint that produced this: a machine that runs ten engines
         # offering two. Every model the install catalog carries for a
@@ -190,7 +200,8 @@ class AdminEngineCommandTests(_BotSurface):
         with (patch("bot.is_admin", return_value=True),
               patch("core.engines._login_status", return_value=(True, "")),
               patch("core.engines._cli_version_text",
-                    return_value="codex-cli 0.152.0"),
+                    side_effect=lambda b: "2.1.280 (Claude Code)"
+                    if str(b).endswith("claude") else "codex-cli 0.152.0"),
               patch("bot._write_machine_llm") as write):
             asyncio.run(bot.engine_command(update, None))
         write.assert_not_called()
@@ -229,7 +240,7 @@ class AdminEngineCommandTests(_BotSurface):
         with (patch("bot.is_admin", return_value=False),
               patch("core.engines._login_status", return_value=(True, "")),
               patch("core.engines._cli_version_text",
-                    return_value="codex-cli 0.154.0")):
+                    side_effect=_cli_version)):
             asyncio.run(bot.engine_command(update, None))
         said = _said(update)
         self.assertIn("Switch with /engine", said)
