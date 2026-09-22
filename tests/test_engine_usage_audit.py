@@ -114,17 +114,17 @@ class EngineUsageAuditTests(unittest.TestCase):
         self.root = self.enterContext(isolated())
 
     def test_control_success_preserves_reported_usage(self):
-        r = asyncio.run(replay(llm.ClaudeCLIProvider("claude-opus-5"), [claude_result()]))
+        r = asyncio.run(replay(llm.ClaudeCLIProvider("claude-opus-5-5"), [claude_result()]))
         assert (r.input_tokens, r.cache_read_tokens, r.cache_creation_tokens, r.list_cost_usd) == (100, 900, 2000, 1.25)
 
     def test_failed_result_preserves_reported_usage(self):
-        r = asyncio.run(replay(llm.ClaudeCLIProvider("claude-opus-5"), [claude_result(True)], 1))
+        r = asyncio.run(replay(llm.ClaudeCLIProvider("claude-opus-5-5"), [claude_result(True)], 1))
         assert r.error
         assert (r.input_tokens, r.cache_read_tokens, r.cache_creation_tokens, r.list_cost_usd) == (100, 900, 2000, 1.25)
 
     def test_claude_display_includes_cache_creation(self):
-        r = asyncio.run(replay(llm.ClaudeCLIProvider("claude-opus-5"), [claude_result()]))
-        bot._record_turn_usage(101, llm.ClaudeCLIProvider("claude-opus-5"), None, r)
+        r = asyncio.run(replay(llm.ClaudeCLIProvider("claude-opus-5-5"), [claude_result()]))
+        bot._record_turn_usage(101, llm.ClaudeCLIProvider("claude-opus-5-5"), None, r)
         assert "3,000 tokens in" in "\n".join(bot._usage_block(usage.summarise(101)))
 
     def test_codex_display_does_not_count_cached_input_twice(self):
@@ -164,10 +164,10 @@ class EngineUsageAuditTests(unittest.TestCase):
         with (
             patch.object(bot, "_llm_provider", fallback),
             patch("bot.is_admin", return_value=False),
-            patch("core.engines._cli_version_text", return_value="2.1.270 (Claude Code)"),
+            patch("core.engines._cli_version_text", return_value="2.1.280 (Claude Code)"),
         ):
             p, e = bot._provider_for_user(101)
-        assert (p.model, p.effort_override) == ("claude-opus-5", "max")
+        assert (p.model, p.effort_override) == ("claude-opus-5-5", "max")
 
     def test_control_per_user_selection_and_explicit_effort(self):
         with patch("core.engines._cli_version_text", return_value="codex-cli 0.154.0"):
@@ -188,13 +188,13 @@ class EngineUsageAuditTests(unittest.TestCase):
         isolated = self.root
         binary = isolated / "bin" / "claude"
         binary.parent.mkdir()
-        binary.write_text('#!/bin/sh\necho "2.1.270 (Claude Code)"\n')
+        binary.write_text('#!/bin/sh\necho "2.1.280 (Claude Code)"\n')
         binary.chmod(0o755)
         with (
             patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}),
             patch.object(llm, "_CLI_FALLBACK_DIRS", [str(binary.parent)]),
         ):
-            assert llm.ClaudeCLIProvider("claude-opus-5")._cli_binary == str(binary)
+            assert llm.ClaudeCLIProvider("claude-opus-5-5")._cli_binary == str(binary)
             ok, reason = engines.engine_available(engines.get_engine("opus"), refresh=True)
         assert ok, reason
 
@@ -302,7 +302,7 @@ class EngineUsageAuditTests(unittest.TestCase):
                 assert engines.user_engine_id(102) == ""
 
     def test_control_stop_reaches_both_providers_without_changing_other_user(self):
-        providers = [llm.ClaudeCLIProvider("claude-opus-5"), llm.CodexCLIProvider("gpt-6-astra")]
+        providers = [llm.ClaudeCLIProvider("claude-opus-5-5"), llm.CodexCLIProvider("gpt-6-astra")]
         for p in providers:
             p._user_processes = {101: SimpleNamespace(returncode=None), 102: SimpleNamespace(returncode=None)}
         killed = []
@@ -343,7 +343,7 @@ class EngineUsageAuditTests(unittest.TestCase):
             patch("core.llm._claude_supports_partial_messages", return_value=True),
             patch("core.usage.time.time", side_effect=lambda: clock["now"]),
         ):
-            asyncio.run(llm.ClaudeCLIProvider("claude-opus-5").complete("sys", [], user_id=None))
+            asyncio.run(llm.ClaudeCLIProvider("claude-opus-5-5").complete("sys", [], user_id=None))
         assert usage.claude_meter()["captured_at"] == 1000
 
     def test_codex_cached_read_does_not_display_as_live(self):
@@ -448,7 +448,7 @@ class EngineUsageAuditTests(unittest.TestCase):
         usage.record_turn(
             101,
             provider="claude-cli",
-            model="claude-opus-5",
+            model="claude-opus-5-5",
             input_tokens=100,
             cache_read_tokens=900,
             cache_creation_tokens=2000,
@@ -456,7 +456,7 @@ class EngineUsageAuditTests(unittest.TestCase):
         usage.record_turn(101, provider="codex-cli", model="gpt-6-astra", input_tokens=10000, cache_read_tokens=8000)
         summary = usage.summarise(101)
         assert summary["total_input_tokens"] == 13000
-        assert summary["by_model"]["claude-opus-5"]["total_input_tokens"] == 3000
+        assert summary["by_model"]["claude-opus-5-5"]["total_input_tokens"] == 3000
         assert summary["by_model"]["gpt-6-astra"]["total_input_tokens"] == 10000
 
     def test_invalid_engine_payloads_return_400(self):

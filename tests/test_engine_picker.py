@@ -122,9 +122,30 @@ class AvailabilityProbeTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(reason, "")
 
-    def test_claude_has_no_version_floor(self):
+    def test_a_claude_code_too_old_for_opus_5_5_is_refused_with_the_version(self):
+        # Measured 2026-09-22 on the release day: 2.1.278 answers every
+        # claude-opus-5-5 turn with "API Error: 400 Claude Code 2.1.278 does
+        # not support this model; version 2.1.280 or newer is required", so
+        # a button on that build would fail every press.
+        with patch("core.engines._cli_version_text", return_value="2.1.278 (Claude Code)"):
+            ok, reason = engines.engine_available(engines.get_engine("opus"))
+        self.assertFalse(ok)
+        self.assertIn("2.1.280", reason)
+        self.assertIn("claude update", reason)
+        self.assertNotIn("Codex", reason)
+
+    def test_a_new_enough_claude_code_offers_opus_5_5(self):
+        with patch("core.engines._cli_version_text", return_value="2.1.280 (Claude Code)"):
+            ok, reason = engines.engine_available(engines.get_engine("opus"))
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    def test_a_claude_model_without_a_floor_runs_on_any_build(self):
+        # The control: the floor is per model, not per CLI. Sonnet 5 has no
+        # entry, so an old build is not refused for it.
+        row = dict(engines.get_engine("opus"), model="claude-sonnet-5")
         with patch("core.engines._cli_version_text", return_value="1.0.0 (Claude Code)"):
-            ok, _ = engines.engine_available(engines.get_engine("opus"))
+            ok, _ = engines.engine_available(row)
         self.assertTrue(ok)
 
     def test_the_answer_is_cached_then_refreshable(self):
@@ -176,11 +197,11 @@ class MachineCatalogTests(unittest.TestCase):
         self.addCleanup(engines.probe_cache_clear)
 
     def test_the_machine_list_is_longer_than_the_curated_pair(self):
-        rows = engines.machine_engines("claude", "claude-opus-5")
+        rows = engines.machine_engines("claude", "claude-opus-5-5")
         self.assertGreater(len(rows), len(engines.ENGINES))
 
     def test_every_row_is_a_model_the_install_catalog_carries(self):
-        for row in engines.machine_engines("claude", "claude-opus-5"):
+        for row in engines.machine_engines("claude", "claude-opus-5-5"):
             with self.subTest(row=row["id"]):
                 catalog = dict(wizard.PROVIDER_MODELS[row["cli"]])
                 self.assertIn(row["model"], catalog)
@@ -203,10 +224,10 @@ class MachineCatalogTests(unittest.TestCase):
     def test_the_cli_spelling_of_a_provider_still_matches_its_row(self):
         # .env may hold claude-cli: core.llm.create_provider accepts it, and
         # the per-user engine rows use it. Nothing would be lit otherwise.
-        rows = engines.machine_engines("claude-cli", "claude-opus-5")
+        rows = engines.machine_engines("claude-cli", "claude-opus-5-5")
         current = [r for r in rows if r["current"]]
         self.assertEqual(len(current), 1)
-        self.assertEqual(current[0]["model"], "claude-opus-5")
+        self.assertEqual(current[0]["model"], "claude-opus-5-5")
 
     def test_a_pair_on_neither_cli_is_still_shown_as_what_runs(self):
         # A machine set to Gemini has no row in this catalog. A list that
@@ -218,7 +239,7 @@ class MachineCatalogTests(unittest.TestCase):
         self.assertEqual(len([r for r in rows if r["current"]]), 1)
 
     def test_a_row_resolves_by_alias_and_by_model_id(self):
-        rows = engines.machine_engines("claude", "claude-opus-5")
+        rows = engines.machine_engines("claude", "claude-opus-5-5")
         self.assertEqual(engines.machine_engine("sonnet", rows)["model"],
                          "claude-sonnet-5")
         self.assertEqual(engines.machine_engine("claude-sonnet-5", rows)["model"],
@@ -227,9 +248,9 @@ class MachineCatalogTests(unittest.TestCase):
         self.assertIsNone(engines.machine_engine("", rows))
 
     def test_a_label_and_a_short_line_come_off_the_catalog_text(self):
-        rows = engines.machine_engines("claude", "claude-opus-5")
+        rows = engines.machine_engines("claude", "claude-opus-5-5")
         opus = engines.machine_engine("opus", rows)
-        self.assertEqual(opus["label"], "Claude Opus 5")
+        self.assertEqual(opus["label"], "Claude Opus 5.5")
         self.assertTrue(opus["sub"])
         for row in rows:
             with self.subTest(row=row["id"]):
@@ -243,7 +264,7 @@ class MachineCatalogTests(unittest.TestCase):
         # old code asked once per ENGINE ID, so one model's answer could not
         # be told apart from another's on the same CLI.
         with patch("core.engines._cli_version_text", return_value="codex-cli 0.152.0"):
-            rows = engines.machine_engines("claude", "claude-opus-5")
+            rows = engines.machine_engines("claude", "claude-opus-5-5")
         by_id = {r["id"]: r for r in rows}
         self.assertFalse(by_id["gpt-6-astra"]["available"])
         self.assertIn("0.153.1", by_id["gpt-6-astra"]["reason"])
@@ -255,12 +276,12 @@ class MachineCatalogTests(unittest.TestCase):
         # on the id, the first answer would have been served to all of them.
         with patch("core.engines._cli_version_text",
                    return_value="codex-cli 0.154.0") as probe:
-            engines.machine_engines("claude", "claude-opus-5")
+            engines.machine_engines("claude", "claude-opus-5-5")
             first = probe.call_count
-            engines.machine_engines("claude", "claude-opus-5")
+            engines.machine_engines("claude", "claude-opus-5-5")
             self.assertEqual(probe.call_count, first)
         self.assertGreaterEqual(first, len(engines.machine_engines(
-            "claude", "claude-opus-5")) - 1)
+            "claude", "claude-opus-5-5")) - 1)
 
     def test_a_claude_row_is_probed_with_the_claude_login_check(self):
         # The old check read engine["id"] == "opus", so every machine row but
@@ -283,7 +304,7 @@ class MachineCatalogTests(unittest.TestCase):
         with (patch("core.engines._cli_version_text", return_value="1.0.0"),
               patch("core.engines.subprocess.run", side_effect=fake_run)):
             engines.probe_cache_clear()
-            rows = engines.machine_engines("claude", "claude-opus-5")
+            rows = engines.machine_engines("claude", "claude-opus-5-5")
         self.assertIn("claude-sonnet-5", {r["id"] for r in rows})
         claude_calls = [a for a in seen if a[0].endswith("claude")]
         self.assertTrue(claude_calls)

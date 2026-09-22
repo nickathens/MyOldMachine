@@ -48,11 +48,19 @@ class CatalogIntegrityTests(unittest.TestCase):
 
 
 class CurrentFlagshipsPresentTests(unittest.TestCase):
-    def test_opus_5_present(self):
-        # Opus 5 (claude-opus-5) launched July 24, 2026 as the current Opus
-        # flagship, same $5/$25 per MTok tier and 1M ctx as the 4.8 it replaces.
-        self.assertIn("claude-opus-5", _ids("claude"))
-        self.assertIn("claude-opus-5", _ids("claude-api"))
+    def test_opus_5_5_present(self):
+        # Opus 5.5 (claude-opus-5-5) launched September 22, 2026 as the
+        # current Opus flagship: $4/$20 per MTok (down from Opus 5's $5/$25),
+        # 1M ctx, 128K output, replacing Opus 5 the way Opus 5 replaced 4.8.
+        self.assertIn("claude-opus-5-5", _ids("claude"))
+        self.assertIn("claude-opus-5-5", _ids("claude-api"))
+
+    def test_opus_5_5_carries_its_cli_floor_in_the_offer_text(self):
+        # The CLI list only: the claude-api row never touches Claude Code.
+        from core.model_efforts import MODEL_MIN_CLI
+        floor = ".".join(str(p) for p in MODEL_MIN_CLI["claude-opus-5-5"])
+        self.assertIn(floor, dict(wizard.PROVIDER_MODELS["claude"])["claude-opus-5-5"])
+        self.assertNotIn(floor, dict(wizard.PROVIDER_MODELS["claude-api"])["claude-opus-5-5"])
 
     def test_opus_5_does_not_hijack_default(self):
         # Opus is offered, never recommended: the default stays on Sonnet so a
@@ -104,11 +112,13 @@ class RetiredModelsAbsentTests(unittest.TestCase):
         self.assertNotIn("gpt-5", _ids("openai"))
 
     def test_superseded_opus_removed(self):
-        # Each Opus is retired by its successor at identical pricing: 4.6/4.7
-        # by 4.8, then 4.8 by Opus 5 (July 24, 2026), which is also when the
-        # docs moved 4.8 into the Legacy models table.
+        # Each Opus is retired by its successor: 4.6/4.7 by 4.8, 4.8 by Opus 5
+        # (July 24, 2026), then Opus 5 by Opus 5.5 (September 22, 2026, at a
+        # LOWER price), each the day the docs moved the predecessor into the
+        # Legacy models table.
         for provider in ("claude", "claude-api"):
             ids = _ids(provider)
+            self.assertNotIn("claude-opus-5", ids)
             self.assertNotIn("claude-opus-4-8", ids)
             self.assertNotIn("claude-opus-4-7", ids)
             self.assertNotIn("claude-opus-4-6", ids)
@@ -169,11 +179,11 @@ class ClaudeSamplingGateTests(unittest.TestCase):
     API provider must omit it for them and keep sending it to legacy models."""
 
     def test_new_models_omit_temperature(self):
-        # Opus 5 has no entry in _CLAUDE_SAMPLING_OK and must not gain one:
-        # omitting temperature is accepted by every model, sending it 400s on
-        # everything from Opus 4.7 forward.
-        for model in ("claude-sonnet-5", "claude-fable-5-1", "claude-opus-5",
-                      "claude-opus-4-8", "claude-opus-4-7"):
+        # Opus 5 and 5.5 have no entry in _CLAUDE_SAMPLING_OK and must not
+        # gain one: omitting temperature is accepted by every model, sending
+        # it 400s on everything from Opus 4.7 forward.
+        for model in ("claude-sonnet-5", "claude-fable-5-1", "claude-opus-5-5",
+                      "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7"):
             with self.subTest(model=model):
                 self.assertFalse(_claude_accepts_temperature(model))
 

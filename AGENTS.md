@@ -102,6 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+- [2026-09-22] linux: Claude Opus 5.5 (claude-opus-5-5) replaces Opus 5 in
+  install/wizard.py, core/engines.py (engine row, /engine opus alias) and
+  core/model_efforts.py (Claude Code 2.1.280 floor); tests updated. PR to follow.
+
 (Entries removed above: #177 and #178 cleared in #177's reviewed merge revision,
 #178 squashed into #177's branch first; the same call as #176 to #172.
 #176 cleared in its reviewed merge revision, the same

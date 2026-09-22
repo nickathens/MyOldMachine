@@ -396,11 +396,22 @@ DEFAULT_MODELS = {
 # core/llm.py sends any of those — the Claude API body is model/max_tokens/
 # system/messages, and _claude_accepts_temperature already omits temperature
 # for it — so the swap is a catalog edit only. Sonnet 5 stays the default.
-# Last updated: July 24, 2026 (other Anthropic rows) — verified live against the
-# platform.claude.com models overview: Claude Opus 5 (claude-opus-5) is the
-# current Opus at Opus 4.8's price ($5/$25 per MTok, 1M ctx), and Opus 4.8 has
-# moved to the docs' Legacy models table, so it retires here exactly the way
-# 4.6 and 4.7 did. Sonnet 5 stays the recommended default. Do NOT verify
+# Last updated: September 22, 2026 (Opus row) — verified live against the
+# platform.claude.com models overview on release day: Claude Opus 5.5
+# (claude-opus-5-5) is the current Opus at $4/$20 per MTok (down from Opus 5's
+# $5/$25), 1M ctx, 128K output, adaptive thinking always on, API default
+# effort medium. Opus 5 has moved to the docs' Legacy models table, so it
+# retires here the way 4.6, 4.7 and 4.8 did. The four API breaking changes
+# (thinking cannot be disabled, forced tool_choice 400s, thinking blocks bound
+# to the model, computer_20251124 refused) touch nothing core/llm.py sends:
+# ClaudeAPIProvider builds model/max_tokens/system/messages only (no tools,
+# no thinking field), and temperature is already omitted for it. The CLI side
+# is different: Claude Code 2.1.278 answers every claude-opus-5-5 turn with
+# "API Error: 400 ... version 2.1.280 or newer is required" before the API is
+# contacted, measured 2026-09-22, so core.model_efforts.MODEL_MIN_CLI carries
+# the floor and the engine picker refuses to offer the model below it.
+# July 24, 2026 (other Anthropic rows) — verified live the same way when Opus 5
+# replaced 4.8. Sonnet 5 stays the recommended default. Do NOT verify
 # Anthropic against cached references, they lag launches.
 # July 18, 2026 for every other provider: Gemini + OpenRouter queried live
 # against their /models endpoints; OpenAI, xAI, DeepSeek, Kimi, MiniMax, Z.ai
@@ -440,7 +451,7 @@ PROVIDER_MODELS = {
     "claude": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, near-Opus performance, 1M ctx (recommended)"),
         ("claude-fable-5-1", "Claude Fable 5.1 — next-gen flagship, hardest coding + agentic work, uses plan quota fast"),
-        ("claude-opus-5", "Claude Opus 5 — complex agentic coding and enterprise work, 1M ctx"),
+        ("claude-opus-5-5", "Claude Opus 5.5 — long-running agentic coding and knowledge work, 1M ctx; needs Claude Code 2.1.280+"),
     ],
     # Codex ids are NOT the API's ids, and the difference is not cosmetic:
     # `gpt-5.6`, `gpt-5.4` and `gpt-5.3-codex` are valid on the OpenAI API
@@ -466,7 +477,7 @@ PROVIDER_MODELS = {
     "claude-api": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, 1M ctx, $3/$15 per MTok, intro $2/$10 through Aug 31 (recommended)"),
         ("claude-fable-5-1", "Claude Fable 5.1 — next-gen flagship, hardest coding + agentic work, $10/$50 per MTok"),
-        ("claude-opus-5", "Claude Opus 5 — complex agentic coding and enterprise work, 1M ctx, $5/$25 per MTok"),
+        ("claude-opus-5-5", "Claude Opus 5.5 — long-running agentic coding and knowledge work, 1M ctx, $4/$20 per MTok"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, 200K ctx, $1/$5 per MTok"),
     ],
     "openai": [

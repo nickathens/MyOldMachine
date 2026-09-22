@@ -26,11 +26,13 @@ What this module deliberately is NOT:
   setting with every option in it, rather than a second setting with two.
 
 Availability is PROBED, never assumed. Both engines are subprocess CLIs that
-may not be installed, may not be logged in, and (for Astra) may be too old:
-Codex answers every single turn for an unknown model with "The 'gpt-6-astra'
-model is not supported when using Codex with a ChatGPT account", which reads
-like an account problem rather than an out-of-date binary. Offering a button
-that cannot work is worse than offering no button.
+may not be installed, may not be logged in, and may be too old: Astra needs
+Codex 0.153.1+, Opus 5.5 needs Claude Code 2.1.280+ (both floors live in
+core.model_efforts.MODEL_MIN_CLI). Codex answers every single turn for an
+unknown model with "The 'gpt-6-astra' model is not supported when using Codex
+with a ChatGPT account", which reads like an account problem rather than an
+out-of-date binary, and Claude Code answers with a 400 naming the build it
+wants. Offering a button that cannot work is worse than offering no button.
 """
 from __future__ import annotations
 
@@ -48,13 +50,13 @@ ENGINES: tuple[dict, ...] = (
     {
         "id": "opus",
         "label": "Opus",
-        "sub": "Claude Opus 5, max effort",
+        "sub": "Claude Opus 5.5, max effort",
         # "claude-cli", never bare "claude": create_provider maps the bare
         # name to the HTTP API provider the moment LLM_API_KEY is set, and
         # this button is a Claude Code subscription choice. On an install
         # that has both, the bare name would quietly bill the API key.
         "provider": "claude-cli",
-        "model": "claude-opus-5",
+        "model": "claude-opus-5-5",
         "effort": "max",
         "accent": "default",
         "is_default": True,
@@ -320,7 +322,7 @@ MACHINE_CLI_PROVIDERS: tuple[tuple[str, str, str], ...] = (
 # /engine claude-sonnet-5. The model id is always the real id; these are
 # aliases onto it, and a model with no alias is picked by its own id.
 MACHINE_ALIASES: dict[str, str] = {
-    "opus": "claude-opus-5",
+    "opus": "claude-opus-5-5",
     "sonnet": "claude-sonnet-5",
     "fable": "claude-fable-5-1",
     "astra": "gpt-6-astra",
@@ -342,7 +344,7 @@ MACHINE_PICKER_NOTE = (
 def _catalog_split(description: str) -> tuple[str, str]:
     """A wizard catalog line as (name, what it is).
 
-    The catalog writes "Claude Opus 5 — complex agentic coding ..., 1M ctx".
+    The catalog writes "Claude Opus 5.5 — long-running agentic coding ..., 1M ctx".
     The name is a button label; the rest is a sentence written for a terminal
     and far too long for one, so the sub-line keeps its first clauses only.
     Derived rather than re-typed: a model added to the wizard appears here

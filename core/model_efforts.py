@@ -204,16 +204,40 @@ def clamp_effort(provider: str, model: str | None, effort: str | None) -> str:
 # 'gpt-6-astra' model is not supported when using Codex with a ChatGPT
 # account", which reads like an account problem rather than an out-of-date
 # binary. This project installs on machines whose CLI nobody is watching.
+#
+# Claude Code has the same shape of floor. Measured 2026-09-22, the day
+# Opus 5.5 shipped: 2.1.278 answers every claude-opus-5-5 turn with "API
+# Error: 400 Claude Code 2.1.278 does not support this model; version 2.1.280
+# or newer is required" before the API is contacted, and 2.1.280 (whose
+# changelog adds the model) answers on claude-opus-5-5. A picker button on
+# the older build would fail every press, and the Opus engine is the default
+# for every ordinary user, so the floor is read here before it is offered.
 MODEL_MIN_CLI = {
     "gpt-6-astra": (0, 153, 1),
+    "claude-opus-5-5": (2, 1, 280),
+}
+
+# Which CLI each floor is measured against. Keyed by the same ids as
+# MODEL_MIN_CLI (tests pin the two key sets equal), and explicit rather than
+# a prefix rule on the id, for the same reason the engine rows carry a `cli`.
+MODEL_CLI = {
+    "gpt-6-astra": "codex",
+    "claude-opus-5-5": "claude",
+}
+
+# What the refusal calls each CLI, and how that CLI updates itself.
+_CLI_UPDATE_HINT = {
+    "codex": ("Codex CLI", "`npm i -g @openai/codex`"),
+    "claude": ("Claude Code", "`claude update`"),
 }
 
 
 def parse_cli_version(text: str) -> tuple | None:
     """(major, minor, patch) out of a `--version` line, or None.
 
-    Codex 0.153.4 prints "codex-cli 0.153.4". Anything without a dotted
-    triple returns None, and an unknown version is never treated as too old:
+    Codex 0.153.4 prints "codex-cli 0.153.4"; Claude Code prints
+    "2.1.280 (Claude Code)". Anything without a dotted triple returns None,
+    and an unknown version is never treated as too old:
     a wrong refusal here would take a working install off the air.
     """
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
@@ -232,8 +256,8 @@ def model_needs_newer_cli(model: str, version_text: str) -> str | None:
         return None
     want = ".".join(str(n) for n in required)
     have = ".".join(str(n) for n in found)
+    name, update = _CLI_UPDATE_HINT[MODEL_CLI[model]]
     return (
-        f"Codex CLI {have} is too old for {model}, which needs {want} or "
-        f"newer. Update with `npm i -g @openai/codex`, or pick another "
-        f"model with /model."
+        f"{name} {have} is too old for {model}, which needs {want} or "
+        f"newer. Update with {update}, or pick another model with /model."
     )
