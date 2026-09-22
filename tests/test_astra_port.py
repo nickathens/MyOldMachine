@@ -150,7 +150,7 @@ class ClampTests(unittest.TestCase):
         # picker rendered, for every model in the table and every input the
         # picker could ever hold. Enumerated from the table rather than
         # hand-listed, so a model added later is covered without an edit.
-        pairs = [("claude", "claude-sonnet-5"), ("claude", "claude-opus-5")]
+        pairs = [("claude", "claude-sonnet-5"), ("claude", "claude-opus-5-5")]
         pairs += [("codex", m) for m in me._MODEL_EFFORTS]
         inputs = list(me.EFFORT_ORDER) + ["", None, "NONSENSE", "MAX"]
         for provider, model in pairs:
@@ -605,6 +605,30 @@ class VersionGateTests(unittest.TestCase):
     def test_an_ungated_model_is_never_refused(self):
         self.assertIsNone(_codex_model_needs_newer_cli("gpt-5.5", "codex-cli 0.1.0"))
 
+    def test_parses_the_claude_code_version_line(self):
+        self.assertEqual(_parse_codex_version("2.1.280 (Claude Code)"), (2, 1, 280))
+
+    def test_opus_5_5_below_the_floor_names_claude_code_and_its_updater(self):
+        # Measured 2026-09-22: 2.1.278 refuses claude-opus-5-5 with a 400
+        # naming 2.1.280. The refusal must name the CLI that was probed and
+        # the command that fixes it, not Codex's.
+        message = me.model_needs_newer_cli("claude-opus-5-5", "2.1.278 (Claude Code)")
+        self.assertIsNotNone(message)
+        for needle in ("Claude Code", "2.1.278", "2.1.280", "claude-opus-5-5", "claude update"):
+            self.assertIn(needle, message)
+        self.assertNotIn("Codex", message)
+        self.assertNotIn("npm", message)
+
+    def test_opus_5_5_at_and_above_the_floor_is_allowed(self):
+        self.assertIsNone(me.model_needs_newer_cli("claude-opus-5-5", "2.1.280 (Claude Code)"))
+        self.assertIsNone(me.model_needs_newer_cli("claude-opus-5-5", "2.2.0 (Claude Code)"))
+
+    def test_the_codex_refusal_still_names_codex(self):
+        # The control for the Claude case above.
+        message = _codex_model_needs_newer_cli(ASTRA, "codex-cli 0.153.0")
+        self.assertIn("Codex CLI", message)
+        self.assertIn("npm i -g @openai/codex", message)
+
 
 class HealthCheckTests(unittest.IsolatedAsyncioTestCase):
     """The version gate, with the binary-presence check satisfied by a real
@@ -933,9 +957,13 @@ class CliFloorOwnershipTests(unittest.TestCase):
         self.assertIs(_codex_model_needs_newer_cli, me.model_needs_newer_cli)
 
     def test_every_gated_model_is_one_the_catalog_offers(self):
-        offered = {m for m, _ in wizard.PROVIDER_MODELS["codex"]}
-        for model in me.MODEL_MIN_CLI:
-            self.assertIn(model, offered)
+        # On the list of the CLI its floor is measured against: a Claude
+        # floor checked against the codex list would pass on nothing.
+        self.assertEqual(set(me.MODEL_CLI), set(me.MODEL_MIN_CLI))
+        for model, cli in me.MODEL_CLI.items():
+            with self.subTest(model=model):
+                self.assertIn(cli, me._CLI_UPDATE_HINT)
+                self.assertIn(model, {m for m, _ in wizard.PROVIDER_MODELS[cli]})
 
     def test_the_module_stays_stdlib_only(self):
         """install/wizard.py imports it before dependencies exist."""

@@ -44,7 +44,7 @@ class MachineEngineReviewTests(unittest.TestCase):
         payload = server._machine_engine_payload()
         ids = [r["id"] for r in payload["engines"]]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertNotEqual(payload["effective"], "claude-opus-5")
+        self.assertNotEqual(payload["effective"], "claude-opus-5-5")
 
     def test_legacy_claude_with_key_is_displayed_as_api_not_subscription(self):
         self.env.write_text("LLM_PROVIDER=claude\nLLM_MODEL=claude-opus-5\nLLM_API_KEY=test-key\n")
@@ -52,7 +52,7 @@ class MachineEngineReviewTests(unittest.TestCase):
         current = next(row for row in rows if row["current"])
         self.assertIsInstance(llm.create_provider(current["provider"], current["model"], "test-key"),
                               llm.ClaudeAPIProvider)
-        self.assertFalse(next(row for row in rows if row["id"] == "claude-opus-5")["current"])
+        self.assertFalse(next(row for row in rows if row["id"] == "claude-opus-5-5")["current"])
 
     def test_selecting_current_api_row_is_a_noop(self):
         self.env.write_text("LLM_PROVIDER=gemini\nLLM_MODEL=gemini-custom\n")

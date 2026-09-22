@@ -33,6 +33,16 @@ class _FakeRequest:
         return self._body
 
 
+def _cli_version(binary) -> str:
+    """One answer per binary, the way the real probe sees two CLIs.
+
+    A single return value for both used to be harmless. Since Opus 5.5 the
+    Opus engine is gated on Claude Code 2.1.280, so a codex-shaped answer
+    handed to the claude probe reads as a build too old for the default.
+    """
+    return "2.1.280 (Claude Code)" if str(binary).endswith("claude") else "codex-cli 0.154.0"
+
+
 def _user(uid: str, role: str = "user") -> dict:
     return {"_id": uid, "_profile": {"role": role, "name": f"user{uid}",
                                      "display_name": f"User {uid}"}}
@@ -51,7 +61,7 @@ class _EngineCase(unittest.TestCase):
         users.USERS_DATA_DIR = self.tmp
         engines.probe_cache_clear()
         self._probe = patch("core.engines._cli_version_text",
-                            return_value="codex-cli 0.154.0")
+                            side_effect=_cli_version)
         self._probe.start()
         self.addCleanup(self._probe.stop)
 
@@ -124,7 +134,7 @@ class AdminMachinePickerTests(_EngineCase):
         super().setUp()
         self.env = self.tmp / ".env"
         self.env.write_text("# header\nTELEGRAM_BOT_TOKEN=abc\n"
-                            "LLM_PROVIDER=claude\nLLM_MODEL=claude-opus-5\n"
+                            "LLM_PROVIDER=claude\nLLM_MODEL=claude-opus-5-5\n"
                             "LLM_EFFORT=max\nOTHER=keep-me\n", encoding="utf-8")
         self._saved_env = srv.ENV_FILE
         srv.ENV_FILE = self.env
@@ -134,14 +144,14 @@ class AdminMachinePickerTests(_EngineCase):
         payload = srv.get_engine(user=_user("7", "admin"))
         self.assertTrue(payload["admin"])
         self.assertTrue(payload["machine"])
-        self.assertEqual(payload["effective"], "claude-opus-5")
+        self.assertEqual(payload["effective"], "claude-opus-5-5")
         self.assertTrue(payload["note"])
 
     def test_the_admin_sees_more_than_the_curated_pair(self):
         payload = srv.get_engine(user=_user("7", "admin"))
         self.assertGreater(len(payload["engines"]), len(engines.ENGINES))
         self.assertEqual([e["id"] for e in payload["engines"] if e["current"]],
-                         ["claude-opus-5"])
+                         ["claude-opus-5-5"])
 
     def test_an_ordinary_user_still_gets_their_own_two(self):
         payload = srv.get_engine(user=_user("7"))
@@ -191,7 +201,7 @@ class AdminMachinePickerTests(_EngineCase):
             asyncio.run(srv.set_engine(_FakeRequest({"engine": "nope"}),
                                        user=_user("7", "admin")))
         self.assertEqual(caught.exception.status_code, 400)
-        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5-5")
 
     def test_an_engine_this_machine_cannot_run_is_refused_at_the_press(self):
         # Re-probed on the way in, because this write lands on every user
@@ -202,14 +212,14 @@ class AdminMachinePickerTests(_EngineCase):
                                            user=_user("7", "admin")))
         self.assertEqual(caught.exception.status_code, 400)
         self.assertIn("codex", caught.exception.detail)
-        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5-5")
 
     def test_a_non_admin_write_still_never_touches_the_machine(self):
         asyncio.run(srv.set_engine(_FakeRequest({"engine": "astra"}),
                                    user=_user("7")))
         self.assertEqual(engines.user_engine_id(7), "astra")
         self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "claude")
-        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-opus-5-5")
 
 
 class UsageEndpointTests(unittest.TestCase):
