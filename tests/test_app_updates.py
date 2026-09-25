@@ -359,6 +359,141 @@ class NpmCliTests(unittest.TestCase):
         self.assertEqual(au._run(["x"], merge_stderr=False), (0, "out"))
 
 
+class NpmProofTests(unittest.TestCase):
+    """An update npm reports as clean can still leave a skill unable to work.
+
+    Measured on the Mac, 25 Sep 2026, on a scratch copy of the global prefix:
+    with the browser download blocked, the code before this change installed
+    mermaid-cli 11.17.0, called it "updated", and every diagram then failed
+    with "Could not find chrome-headless-shell (ver. 154.0.8037.57)".
+    """
+
+    PKG = "@mermaid-js/mermaid-cli"
+
+    def run_check(self, proof_results, npm_rc=(0, 0)):
+        """check_npm_clis on a safe mermaid-cli bump with the proof faked.
+
+        Returns (statuses, npm commands run, prefixes the proof was given).
+        """
+        commands, prefixes, results, rcs = [], [], list(proof_results), list(npm_rc)
+
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            commands.append(cmd)
+            return rcs.pop(0), "npm said so"
+
+        def proof(prefix):
+            prefixes.append(prefix)
+            if prefix is not None:
+                self.assertTrue(Path(prefix).is_dir(), "the proof ran after the scratch prefix was gone")
+            return results.pop(0)
+
+        with patch("utils.app_updates._npm_outdated_global",
+                   return_value={self.PKG: {"current": "11.16.0", "latest": "11.17.0"}}), \
+                patch("utils.app_updates._run", side_effect=run), \
+                patch.dict(au.NPM_PROOF, {self.PKG: proof}):
+            statuses = au.check_npm_clis(auto_update=True)
+        return statuses, commands, prefixes
+
+    def test_an_update_is_tried_in_a_scratch_prefix_before_it_replaces_the_live_one(self):
+        (s,), commands, prefixes = self.run_check([(True, ""), (True, "")])
+        self.assertEqual(s.state, "updated")
+        self.assertEqual(s.installed, "11.17.0")
+        scratch = prefixes[0]
+        self.assertEqual(commands, [
+            ["npm", "install", "-g", "--prefix", str(scratch), f"{self.PKG}@11.17.0"],
+            ["npm", "install", "-g", f"{self.PKG}@11.17.0"],
+        ])
+        # checked in the scratch prefix, then again where it landed
+        self.assertEqual(prefixes[1:], [None])
+        self.assertIn("app_update_trial_", str(scratch))
+        self.assertFalse(Path(scratch).exists(), "the scratch prefix was left behind")
+
+    def test_a_failed_trial_leaves_the_working_version_in_place(self):
+        why = "the browser download failed: Error: All providers failed for chrome-headless-shell"
+        (s,), commands, _ = self.run_check([(False, why)])
+        self.assertEqual(s.state, "failed")
+        self.assertEqual(s.installed, "11.16.0")
+        self.assertIn("11.16.0 was kept", s.detail)
+        self.assertIn(why, s.detail)
+        self.assertEqual(len(commands), 1, "the live copy was touched after a failed trial")
+        self.assertIn("--prefix", commands[0])
+
+    def test_a_trial_that_npm_refuses_is_a_failure_and_touches_nothing(self):
+        (s,), commands, prefixes = self.run_check([], npm_rc=(1,))
+        self.assertEqual(s.state, "failed")
+        self.assertIn("the trial install failed", s.detail)
+        self.assertEqual(prefixes, [])
+        self.assertEqual(len(commands), 1)
+
+    def test_a_proof_that_fails_where_it_landed_is_not_an_update(self):
+        (s,), _, _ = self.run_check([(True, ""), (False, "a test diagram did not draw: boom")])
+        self.assertEqual(s.state, "failed")
+        self.assertEqual(s.installed, "11.17.0")
+        self.assertIn("passed its trial but not where it was installed", s.detail)
+        self.assertIn("boom", s.detail)
+
+    def test_a_cli_with_no_proof_is_taken_at_npm_word(self):
+        with patch("utils.app_updates._npm_outdated_global",
+                   return_value={"surge": {"current": "0.44.2", "latest": "0.44.3"}}), \
+                patch("utils.app_updates._run", return_value=(0, "")) as run:
+            (s,) = au.check_npm_clis(auto_update=True)
+        self.assertEqual(s.state, "updated")
+        self.assertEqual([c.args[0] for c in run.call_args_list], [["npm", "install", "-g", "surge@0.44.3"]])
+
+
+class DiagramDrawsTests(unittest.TestCase):
+    """The proof for mermaid-cli: its browser, then one real diagram."""
+
+    def draws(self, ensure=(True, ""), rc=0, write=b"\x89PNG\r\n\x1a\n rest", prefix=None):
+        seen = {}
+
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            seen["cmd"], seen["env"] = cmd, env
+            if write is not None:
+                Path(cmd[cmd.index("-o") + 1]).write_bytes(write)
+            return rc, "Error: Could not find chrome-headless-shell" if rc else ""
+
+        with patch.object(au.puppeteer_browsers, "npm_global_root", return_value=Path("/nm")) as root, \
+                patch.object(au.puppeteer_browsers, "ensure_browsers", return_value=ensure) as ens, \
+                patch("utils.app_updates._run", side_effect=run):
+            result = au._diagram_draws(prefix)
+        seen["root_prefix"] = root.call_args.args[0] if root.call_args.args else None
+        seen["ensure"] = ens.call_args
+        return result, seen
+
+    def test_a_png_drawn_by_the_skill_script_is_proof(self):
+        (ok, why), seen = self.draws()
+        self.assertTrue(ok, why)
+        self.assertEqual(Path(seen["cmd"][1]), ROOT / "skills" / "diagram" / "scripts" / "diagram.py")
+        self.assertTrue(seen["cmd"][-1].endswith(".png"))
+        self.assertIsNone(seen["env"])
+        self.assertEqual(seen["ensure"].args, ("@mermaid-js/mermaid-cli",))
+        self.assertEqual(seen["ensure"].kwargs, {"root": Path("/nm")})
+
+    def test_a_trial_copy_is_the_one_drawn_with(self):
+        (ok, _), seen = self.draws(prefix=Path("/tmp/trial"))
+        self.assertTrue(ok)
+        self.assertEqual(seen["root_prefix"], Path("/tmp/trial"))
+        self.assertTrue(seen["env"]["PATH"].startswith(str(Path("/tmp/trial") / "bin")))
+
+    def test_no_browser_means_no_drawing_is_attempted(self):
+        (ok, why), seen = self.draws(ensure=(False, "the browser download failed: EACCES"))
+        self.assertFalse(ok)
+        self.assertEqual(why, "the browser download failed: EACCES")
+        self.assertNotIn("cmd", seen)
+
+    def test_a_failed_render_is_the_reason(self):
+        (ok, why), _ = self.draws(rc=1, write=None)
+        self.assertFalse(ok)
+        self.assertIn("Could not find chrome-headless-shell", why)
+
+    def test_exit_zero_without_a_png_is_not_a_drawing(self):
+        for write in (None, b"<svg/>"):
+            with self.subTest(write=write):
+                (ok, _), _ = self.draws(write=write)
+                self.assertFalse(ok)
+
+
 class FlatpakTests(unittest.TestCase):
     @patch("utils.app_updates.platform.system", return_value="Darwin")
     def test_skipped_off_linux(self, _plat):
@@ -541,6 +676,11 @@ class RegistryTests(unittest.TestCase):
 
     def test_no_skill_cli_is_also_on_the_never_touch_list(self):
         self.assertEqual(set(au.NPM_SKILL_CLIS) & au.NPM_NEVER_TOUCH, set())
+
+    def test_every_proof_belongs_to_a_cli_that_may_be_installed(self):
+        # a proof keyed on a name the updater never installs would never run
+        self.assertTrue(au.NPM_PROOF)
+        self.assertEqual(set(au.NPM_PROOF) - set(au.NPM_SKILL_CLIS), set())
 
 
 class FetchTests(unittest.TestCase):

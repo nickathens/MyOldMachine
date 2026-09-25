@@ -437,6 +437,16 @@ def install_missing(skill_path: Path, notify_fn=None,
             result = _run(f"npm install -g {pkgs}")
         if result.returncode == 0:
             installed.extend(npm_missing)
+            # A package that drives a browser through Puppeteer (mermaid-cli)
+            # fetched it from an install script, which on Linux ran as root
+            # under sudo, and which exits 0 even when the download fails. Fetch
+            # it again as the bot's own user; a no-op when it is already cached.
+            from utils.puppeteer_browsers import ensure_browsers
+            for pkg in npm_missing:
+                ok, why = ensure_browsers(pkg)
+                if not ok:
+                    logger.error(f"Browser for {pkg} not installed: {why[:200]}")
+                    failed.append(f"npm:{pkg} browser")
         else:
             logger.error(f"Failed to install npm packages: {result.stderr[:200]}")
             failed.extend(npm_missing)

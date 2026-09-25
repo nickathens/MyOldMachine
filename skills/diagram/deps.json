@@ -9,5 +9,5 @@
   "weight": "medium",
   "min_ram_gb": 1,
   "min_disk_gb": 1,
-  "install_note": "Installs @mermaid-js/mermaid-cli (mmdc) globally via npm. Pulls a Puppeteer-managed Chromium (~150 MB) on first run. The archify HTML maps need only Node 18+ (no npm packages) and reuse that Chromium for their PNG preview."
+  "install_note": "Installs @mermaid-js/mermaid-cli (mmdc) globally via npm. Its install fetches a Puppeteer-managed Chrome and headless shell (about 570 MB unpacked on a Mac) into the bot user's own cache, fetched again as that user after npm (utils/puppeteer_browsers.py). The archify HTML maps need only Node 18+ (no npm packages) and reuse that Chromium for their PNG preview."
 }

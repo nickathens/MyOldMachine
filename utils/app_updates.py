@@ -28,15 +28,26 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 import plistlib
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable, NamedTuple
+
+ROOT = Path(__file__).resolve().parent.parent
+# `python utils/app_updates.py` puts utils/ on sys.path rather than the repo
+# root, so the sibling import below needs the root added first.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from utils import puppeteer_browsers  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +128,8 @@ class AppStatus(NamedTuple):
         return self.state in ("outdated", "updated", "failed")
 
 
-def _run(cmd: list[str], timeout: int = 60, merge_stderr: bool = True) -> tuple[int, str]:
+def _run(cmd: list[str], timeout: int = 60, merge_stderr: bool = True,
+         env: dict | None = None) -> tuple[int, str]:
     """Run a command with no shell. Returns (returncode, stdout+stderr).
 
     merge_stderr=False returns stdout alone. Callers that *parse* the output
@@ -125,7 +137,7 @@ def _run(cmd: list[str], timeout: int = 60, merge_stderr: bool = True) -> tuple[
     its own JSON, and the parse failure reads as "nothing to report".
     """
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         out = (r.stdout + r.stderr) if merge_stderr else r.stdout
         return r.returncode, out.strip()
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -385,6 +397,58 @@ def _npm_outdated_global() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _diagram_draws(prefix: Path | None = None) -> tuple[bool, str]:
+    """mermaid-cli works: its browser is fetched as this user, and one diagram
+    draws through the diagram skill's own script, the path every render takes.
+    With a prefix, the copy trial-installed there is the one checked."""
+    root = puppeteer_browsers.npm_global_root(prefix)
+    ok, why = puppeteer_browsers.ensure_browsers("@mermaid-js/mermaid-cli", root=root)
+    if not ok:
+        return False, why
+    env = None
+    if prefix is not None:
+        env = dict(os.environ, PATH=f"{prefix / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}")
+    script = ROOT / "skills" / "diagram" / "scripts" / "diagram.py"
+    with tempfile.TemporaryDirectory(prefix="app_update_check_") as tmp:
+        source, out = Path(tmp) / "check.mmd", Path(tmp) / "check.png"
+        source.write_text("graph TD\n  A --> B\n", encoding="utf-8")
+        rc, text = _run([sys.executable, str(script), str(source), "-o", str(out)], timeout=180, env=env)
+        if rc == 0 and out.is_file() and out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n":
+            return True, ""
+    return False, f"a test diagram did not draw: {text[-300:] or f'rc={rc}'}"
+
+
+# npm's exit code is not proof that these work. Puppeteer inside mermaid-cli
+# swallows a failed browser download and exits 0 (utils/puppeteer_browsers.py),
+# and every diagram then fails the next morning. An update of one of these is
+# tried in a scratch prefix first and installed only if its check passes
+# there, then checked again where it lands. A CLI with no entry is taken at
+# npm's word.
+NPM_PROOF: dict[str, Callable[[Path | None], tuple[bool, str]]] = {
+    "@mermaid-js/mermaid-cli": _diagram_draws,
+}
+
+
+def _trial_install(pkg: str, version: str,
+                   proof: Callable[[Path | None], tuple[bool, str]]) -> tuple[bool, str]:
+    """Install pkg@version into a scratch prefix and run its proof there.
+
+    The live copy stays as it is unless this passes. Putting the old version
+    back after a failed update would be no remedy: mermaid-cli takes Puppeteer
+    as a peer dependency and npm resolves the newest match on every install,
+    a rollback included. Measured: 11.16.0 with Puppeteer 25.3.0, updated to
+    11.17.0 and then put back, kept 25.12.0 and the newer Chrome it pins.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="app_update_trial_"))
+    try:
+        rc, out = _run(["npm", "install", "-g", "--prefix", str(scratch), f"{pkg}@{version}"], timeout=600)
+        if rc != 0:
+            return False, f"the trial install failed: {out[-200:] if out else f'rc={rc}'}"
+        return proof(scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def check_npm_clis(auto_update: bool = False) -> list[AppStatus]:
     """Version state of the global npm CLIs the skills in this repo install."""
     results: list[AppStatus] = []
@@ -407,16 +471,29 @@ def check_npm_clis(auto_update: bool = False) -> list[AppStatus]:
                 pkg, "npm", current, latest, "outdated",
                 f"{detail}, major version so it needs a look before installing"))
             continue
+        proof = NPM_PROOF.get(pkg)
+        if proof:
+            works, why = _trial_install(pkg, latest, proof)
+            if not works:
+                results.append(AppStatus(pkg, "npm", current, latest, "failed",
+                                         f"{latest} failed a trial install, so {current} was kept: {why}"))
+                continue
         # An exact version is pinned rather than @latest so the return code is
         # a usable signal: npm either installed that version or failed. (The
         # Claude check cannot rely on rc alone — `claude update` exits 0 having
         # done nothing — so it re-reads the version instead.)
         rc, out = _run(["npm", "install", "-g", f"{pkg}@{latest}"], timeout=600)
-        if rc == 0:
-            results.append(AppStatus(pkg, "npm", latest, latest, "updated", detail))
-        else:
+        if rc != 0:
             results.append(AppStatus(pkg, "npm", current, latest, "failed",
                                      out[-200:] if out else f"rc={rc}"))
+            continue
+        if proof:
+            works, why = proof(None)
+            if not works:
+                results.append(AppStatus(pkg, "npm", latest, latest, "failed",
+                                         f"{latest} passed its trial but not where it was installed: {why}"))
+                continue
+        results.append(AppStatus(pkg, "npm", latest, latest, "updated", detail))
     return results
 
 
