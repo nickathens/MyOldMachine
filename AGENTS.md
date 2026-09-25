@@ -102,13 +102,19 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-09-25] mac: a new rive skill (skills/rive: Rive CLI authoring,
-  rendering to video with alpha, versions from a table, SVG, font and audio
-  helpers, web pages, six tested templates; README counts 85 skills and 31
-  hooks; tests/test_rive_skill.py). No shared code outside README and this
-  file (PR #182).
+- [2026-09-25] mac: rive skill follow-ups from #182's review (a failed
+  alpha check stops the render, --controls colours and enums start from the
+  file, the doctor reads flags from the definition column). skills/rive and
+  tests/test_rive_skill.py only (PR #183).
+- [2026-09-25] mac: a mermaid-cli update is tried in a scratch prefix and
+  draws once before it replaces the live copy, and its Puppeteer browser is
+  fetched as the bot's own user after npm, not by root under sudo
+  (utils/puppeteer_browsers.py, utils/app_updates.py, core/self_install.py).
+  Its line rides in #183 so the two cannot conflict (PR #184).
 
-(Entries removed above: #181 merged 2026-09-25, its line cleared inside the
+(Entries removed above: #182 merged 2026-09-25, its line cleared inside
+#183's own edit, the same call as #181 inside #182.
+#181 merged 2026-09-25, its line cleared inside the
 rive skill PR's own edit, the same call as #179 inside #181.
 #179 merged 2026-09-22, its line cleared inside
 #181's own edit because the two share lines, the same call as #165, #127 and #161.
