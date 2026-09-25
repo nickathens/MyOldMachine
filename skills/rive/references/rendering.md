@@ -142,5 +142,7 @@ The Linux CLI build (linux-x64 only; arm64 hosts need emulation) ships only an O
 - Workaround: bryanpinheiro/rive-mesa-glsl-fix (MIT), an `LD_PRELOAD` shim that rewrites `)ident` to `) ident` in every shader source. Tested by its author on Debian 13, Mesa 25.0.7, CLI 1.1.1.
 - Headless software rendering with no display (from the George-RD/tools wrapper): `EGL_PLATFORM=surfaceless GALLIUM_DRIVER=llvmpipe MESA_LOADER_DRIVER_OVERRIDE=swrast`.
 - The previewer window only opens on a real TTY.
-- Neither was run here (this is the Mac side). Run `rive_doctor.py` there: its pixel check fails on a blank capture, and every render refuses all-flat frames with this reason attached.
-- The web engine needs no GPU and should behave the same on Linux (SwiftShader), but has not been run there either.
+- Neither was run on a Mesa GPU yet. `rive_doctor.py` shows it: its pixel check fails on a blank capture, and every render refuses all-flat frames with this reason attached.
+- Measured on NVIDIA's own driver (Ubuntu 24.04, GTX 970, driver 580, CLI 1.1.1, 25 Sep 2026): captures draw through EGL on the NVIDIA device, `rive_doctor.py --web` passes, the web engine included (SwiftShader), and the live tests pass apart from the crash below.
+- CLI 1.1.1 on Linux segfaults (exit -11) under `--data-dump-every` once a key press is in the run: a key the scene handles (the button template's Enter, Rive's own keyboard_menu sample), or any key followed by a drag. Without a key, and with the same arguments under `--screenshot` or an end-only `--data-dump`, it runs clean. No script here dumps per frame with keys; the live timing test skips its key-bearing times on Linux, and a crashed capture reports "the CLI crashed (SIGSEGV)".
+- `rive_doctor.py --install` lays the CLI out as Rive's install.sh does. With the docs and samples anywhere but beside `versions/<version>/rive`, `rive docs` and `rive samples` fail ("not found beside the binary") and so does the doctor.

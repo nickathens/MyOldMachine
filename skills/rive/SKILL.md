@@ -30,11 +30,11 @@ python3 skills/rive/scripts/rive_doctor.py --web      # also the web engine (hea
 python3 skills/rive/scripts/rive_doctor.py --install  # install the CLI the supported way, then check
 ```
 
-On this Mac: Rive CLI 1.1.1 (`brew install --cask rive-app/tap/rive-cli`, update with `brew upgrade --cask rive-cli`; `rive update` does not work on a brew install) and the Rive editor 0.8.5940 (`brew install --cask rive`, self-updating, needs a Rive account signed in at the screen). On Linux x64, `--install` downloads the official build to `~/.rive/bin` and checks its SHA-256 against Rive's release manifest.
+On this Mac: Rive CLI 1.1.1 (`brew install --cask rive-app/tap/rive-cli`, update with `brew upgrade --cask rive-cli`; `rive update` does not work on a brew install) and the Rive editor 0.8.5940 (`brew install --cask rive`, self-updating, needs a Rive account signed in at the screen). On Linux x64, `--install` downloads the official build, checks its SHA-256 against Rive's release manifest, and lays it out as Rive's own install.sh does: `~/.rive/versions/<version>/` with the docs and samples beside the binary (the only place `rive docs` and `rive samples` look) and `~/.rive/bin/rive` for PATH.
 
 **Run the doctor after every CLI update.** The CLI is a technical preview (launched 11 Sep 2026, twelve releases in its first 19 days, one flag already renamed), so a new version is not trusted until the doctor passes: it re-checks every flag these scripts pass, builds and renders a bundled sample, and re-measures the gesture timing the renderer depends on. The versions these scripts were measured against are in `scripts/rivelib.py` (`TESTED_CLI_VERSIONS`).
 
-**Linux, before you trust a picture:** on Mesa drivers (AMD, Intel, llvmpipe) the CLI's captures come back as one flat colour: its shaders fail to compile on Mesa (open upstream bug rive-app/rive-runtime#92). Every script here refuses a render whose frames are all one colour and says so. The fix and the software-rendering setup are in `references/rendering.md`, Linux.
+**Linux, before you trust a picture:** on Mesa drivers (AMD, Intel, llvmpipe) the CLI's captures come back as one flat colour: its shaders fail to compile on Mesa (open upstream bug rive-app/rive-runtime#92). Every script here refuses a render whose frames are all one colour and says so. The fix and the software-rendering setup are in `references/rendering.md`, Linux. On NVIDIA's own driver it renders: measured on Ubuntu 24.04 with a GTX 970 (driver 580), where the doctor passes, the web engine included, and so do the live tests, apart from one upstream crash noted there.
 
 ## What needs an account (and whose)
 
@@ -111,7 +111,7 @@ Outputs by extension: `.png` (one frame), a `%05d` pattern or a folder (PNG sequ
 
 | | cli (a project folder) | web (a `.riv` file) |
 |---|---|---|
-| Renderer | Rive's own, Metal, the same as the previewer | Rive's web runtime (@rive-app/webgl2 2.43.1) on SwiftShader |
+| Renderer | Rive's own (Metal on a Mac, OpenGL through EGL on Linux), the same as the previewer | Rive's web runtime (@rive-app/webgl2 2.43.1) on SwiftShader |
 | Speed, 1080p | 58-64 frames a second with 8-12 workers | about 12 fps including start-up |
 | Transparency | solved from a black and a white pass | real, one pass |
 | Scripts (Luau) | run, unsigned | rejected unless signed with `--publish` |
@@ -153,7 +153,7 @@ python3 skills/rive/scripts/rive_svg.py logo.svg --project ~/work/sting --size 1
 
 ## Fonts
 
-Rive ships no fonts and has no fallback: a text style without a font file renders nothing, and building a `.riv` embeds the font, which redistributes it. Never copy one out of the system font folders (`rive_check.py` fails the build on that).
+Rive ships no fonts and has no fallback: a text style without a font file renders nothing, and building a `.riv` embeds the font, which redistributes it. Never use one from the system font folders: `rive_check.py` fails a project whose font file is in one, but it cannot recognise a copy, so a copied system font is on you.
 
 ```bash
 python3 skills/rive/scripts/rive_fonts.py add "Space Grotesk" --project ~/work/intro --weight 700
@@ -186,7 +186,7 @@ $W page file.riv -o site/ --title "Intro" --state-machine Main [--controls] [--s
 $W verify site/index.html --click 560,560          # loads it like a visitor, clicks, reports
 ```
 
-Pages use @rive-app/webgl2 (the Rive Renderer; vector feathering only renders there, not in the canvas package), pinned in `scripts/web_runtime.json` and fetched with an integrity check into a user cache, never into the repo. `--controls` adds a live panel for the view model, the quickest way to show what the data does; `--single-file` inlines everything (about 3.6 MB). **Web runtimes reject unsigned scripts**, and nothing local warns you: a file with Luau that goes on the web must be built with `rive <dir> --publish` (login). Files without scripts are fine unsigned. The web runtime cannot see which state machine is the default, so pass `--state-machine` when there is more than one.
+Pages use @rive-app/webgl2 (the Rive Renderer; vector feathering only renders there, not in the canvas package), pinned in `scripts/web_runtime.json` and fetched with an integrity check into a user cache, never into the repo. `--controls` adds a live panel for the view model, the quickest way to show what the data does; `--single-file` inlines everything (about 3.6 MB). **Web runtimes reject unsigned scripts**, and nothing local warns you: a file with Luau that goes on the web must be built with `rive <dir> --publish` (login). Files without scripts are fine unsigned. The web runtime cannot see which state machine is the default, and with none named it plays the first timeline, so listeners and binds do nothing. A page therefore plays the artboard's first state machine unless `--state-machine` names another, and says so in the console when there are several.
 
 ## Handing work to the editor
 
@@ -208,7 +208,7 @@ Every one of these builds clean. The full list, with how to detect each, is in `
 
 ## Rules on this machine
 
-- Scripts never touch a project in place: renders and checks work on a private copy (`rive_skill_*` folders from `mkdtemp`), removed by exact path when done. Nothing here kills processes by name, and there is no stop hook.
+- Renders and captures run on a private copy (`rive_skill_*` folders from `mkdtemp`), removed by exact path when done. A project is only read, except that `rive_check.py` writes its pictures to `<project>/build/check` unless `--out` says where. Nothing here kills processes by name, and there is no stop hook.
 - Analytics are off per call (`RIVE_ANALYTICS=off`); consent was never given, so the stored setting is left alone.
 - The repo is public: templates and examples use neutral names and colours. Client work lives in the client's project folder, not here.
 - `rive <dir>` with no flags opens the live previewer window, which only helps someone at the Mac's screen; start it in the background once if someone is watching the screen, never from a headless session.

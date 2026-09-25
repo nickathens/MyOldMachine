@@ -69,14 +69,40 @@ PAGE = """<!doctype html>
 <script>
 "use strict";
 const CONFIG = {config};
+// Read the file before the player starts. Named no state machine, rive.js
+// 2.43.1 plays the first timeline, so listeners and binds are dead; it cannot
+// see the artboard's default one, so the first is used, with a note when
+// there are several. Bind only a file that has a view model: autoBind on one
+// without logs a console error.
+async function boot(source) {{
+  try {{
+    const file = new rive.RiveFile(source);
+    await file.init();
+    const f = file.getInstance();
+    let sm = CONFIG.stateMachine;
+    const board = CONFIG.artboard ? f.artboardByName(CONFIG.artboard) : f.defaultArtboard();
+    if (board) {{
+      const names = [];
+      for (let i = 0; i < board.stateMachineCount(); i++) names.push(board.stateMachineByIndex(i).name);
+      if (!sm && names.length) {{
+        sm = names[0];
+        if (names.length > 1) console.warn("rive: " + names.length + " state machines, playing " + sm +
+                                           "; choose one with --state-machine");
+      }}
+      if (board.delete) board.delete();
+    }}
+    start({{ riveFile: file, stateMachine: sm || undefined, autoBind: f.viewModelCount() > 0 }});
+  }} catch (e) {{
+    window.__rive = {{ loaded: false, error: String(e && e.message || e) }};
+  }}
+}}
 {loader}
 function start(options) {{
   const canvas = document.getElementById("stage");
   const layout = new rive.Layout({{ fit: rive.Fit[CONFIG.fit], alignment: rive.Alignment.Center }});
   const r = new rive.Rive(Object.assign({{
-    canvas, layout, autoplay: true, autoBind: true,
+    canvas, layout, autoplay: true,
     artboard: CONFIG.artboard || undefined,
-    stateMachines: CONFIG.stateMachine || undefined,
     onLoad: () => {{
       r.resizeDrawingSurfaceToCanvas();
       const vmi = r.viewModelInstance;
@@ -137,12 +163,12 @@ function buildControls(r) {{
 
 FOLDER_LOADER = """rive.RuntimeLoader.setWasmUrl("rive.wasm");
 if (rive.RuntimeLoader.setWasmFallbackUrl) rive.RuntimeLoader.setWasmFallbackUrl(null);
-start({ src: CONFIG.src });"""
+boot({ src: CONFIG.src });"""
 
 INLINE_LOADER = """function b64(s) { const b = atob(s), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u.buffer; }
 rive.RuntimeLoader.setWasmBinary(b64(document.getElementById("wasm").textContent.trim()));
 if (rive.RuntimeLoader.setWasmFallbackUrl) rive.RuntimeLoader.setWasmFallbackUrl(null);
-start({ buffer: b64(document.getElementById("riv").textContent.trim()) });"""
+boot({ buffer: b64(document.getElementById("riv").textContent.trim()) });"""
 
 
 def build_page(riv: Path, out: Path, *, title: str, artboard=None, state_machine=None, fit="contain",
@@ -232,6 +258,13 @@ def verify_page(page: Path, *, click=None, wait: float = 1.5, width: int = 1280,
             report["screenshot"] = str(before)
             report["blank"] = L.blank_reason(before)
             if click:
+                # The real clock runs between screenshots, so a page that moves
+                # by itself would credit any click (measured: Rive's spinning
+                # rml_triangle, clicked on an empty corner). Look twice first.
+                time.sleep(wait)
+                idle = shots / "page_idle.png"
+                pg.screenshot(path=str(idle))
+                moving = L.sha256_file(before) != L.sha256_file(idle)
                 box = pg.evaluate("(()=>{const r=document.getElementById('stage').getBoundingClientRect();"
                                   "return [r.left,r.top,r.width,r.height];})()")
                 # map artboard coordinates through the page's centred contain fit
@@ -249,7 +282,13 @@ def verify_page(page: Path, *, click=None, wait: float = 1.5, width: int = 1280,
                 after = shots / "page_clicked.png"
                 pg.screenshot(path=str(after))
                 report["clicked_screenshot"] = str(after)
-                report["click_changed_picture"] = L.sha256_file(before) != L.sha256_file(after)
+                if moving:
+                    report["click_changed_picture"] = None
+                    report["click_note"] = ("the page changes on its own between two screenshots, so before and "
+                                            "after cannot show what the click did; check the control on the "
+                                            "project with rive_check.py --interaction")
+                else:
+                    report["click_changed_picture"] = L.sha256_file(idle) != L.sha256_file(after)
             browser.close()
     finally:
         server.shutdown()

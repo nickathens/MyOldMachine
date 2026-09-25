@@ -441,6 +441,9 @@ class Converter:
             if local(el.tag) == "style" and el.text:
                 self.rules += parse_css(el.text)
         self.count = 0
+        # elements on the current walk, <use> targets included: a <use> that
+        # points at one of them is a cycle (an error in SVG), cut with a warning
+        self._active: list[ET.Element] = []
 
     def style_of(self, el: ET.Element, inherited: dict) -> dict:
         style = {k: v for k, v in inherited.items() if k in INHERITED}
@@ -604,6 +607,13 @@ class Converter:
                                      if numbers(style.get("stroke-dashoffset", "0")) else 0) * s}
 
     def walk(self, el: ET.Element, ctm: Matrix, inherited: dict, depth: int = 0) -> list[Item]:
+        self._active.append(el)
+        try:
+            return self._walk(el, ctm, inherited, depth)
+        finally:
+            self._active.pop()
+
+    def _walk(self, el: ET.Element, ctm: Matrix, inherited: dict, depth: int = 0) -> list[Item]:
         tag = local(el.tag)
         if tag in ("defs", "style", "title", "desc", "metadata", "clipPath", "mask", "symbol",
                    "linearGradient", "radialGradient", "pattern", "filter", "marker"):
@@ -631,14 +641,21 @@ class Converter:
             if target is None:
                 self.warnings.append(f"<use href={href!r}> points at nothing")
                 return []
+            if any(target is a for a in self._active):
+                self.warnings.append(f"<use href={href!r}> refers back to an element that contains it; skipped")
+                return []
             num = lambda k: numbers(el.get(k) or "0")[0] if numbers(el.get(k) or "0") else 0.0  # noqa: E731
             m2 = mul(m, (1, 0, 0, 1, num("x"), num("y")))
-            if local(target.tag) == "symbol":
-                kids = []
-                for child in target:
-                    kids += self.walk(child, m2, style, depth + 1)
-                return [Item("group", name, opacity=opacity, children=kids)] if kids else []
-            return self.walk(target, m2, style, depth + 1)
+            self._active.append(target)
+            try:
+                if local(target.tag) == "symbol":
+                    kids = []
+                    for child in target:
+                        kids += self.walk(child, m2, style, depth + 1)
+                    return [Item("group", name, opacity=opacity, children=kids)] if kids else []
+                return self.walk(target, m2, style, depth + 1)
+            finally:
+                self._active.pop()
         if tag in ("text", "tspan"):
             self.warnings.append("text is not converted: outline it in the design tool, or rebuild it as Rive Text")
             return []

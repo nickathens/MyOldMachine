@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -169,6 +170,12 @@ def version_note(version: str | None) -> str | None:
 
 
 def explain_exit(code: int) -> str:
+    if code < 0:
+        # subprocess reports a death by signal as a negative code
+        try:
+            return f"the CLI crashed ({signal.Signals(-code).name})"
+        except ValueError:
+            return f"the CLI crashed (signal {-code})"
     return EXIT_MEANINGS.get(code, f"exit code {code}")
 
 

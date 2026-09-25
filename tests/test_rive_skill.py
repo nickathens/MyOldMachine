@@ -63,6 +63,7 @@ N = load("rive_new")
 V = load("rive_versions")
 W = load("riveweb")
 WEB = load("rive_web")
+D = load("rive_doctor")
 
 RIVE = shutil.which("rive")
 FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
@@ -103,6 +104,8 @@ def scene_time(args: list[str]) -> float:
         if a.startswith("--advance="):
             v = a.split("=", 1)[1]
             total += float(v[:-2]) / 1000 if v.endswith("ms") else int(v) / 60
+        elif a.startswith("--pointer=click@"):
+            total += 3 / 60
         elif a.startswith("--pointer=") or a.startswith("--key=") or a.startswith("--gamepad="):
             total += 1 / 60
         elif a.startswith("--semantic-action="):
@@ -278,6 +281,13 @@ class LibTests(TempDir):
         self.assertIsNone(L.version_note(L.TESTED_CLI_VERSIONS[0]))
         self.assertIn("not a version", L.version_note("9.9.9"))
         self.assertIsNotNone(L.version_note(None))
+
+    def test_a_crash_is_named_as_a_crash(self):
+        # subprocess reports a signal as a negative code; CLI 1.1.1 on Linux
+        # segfaults in one known case (references/rendering.md, Linux)
+        self.assertIn("SIGSEGV", L.explain_exit(-11))
+        self.assertIn("crashed", L.explain_exit(-11))
+        self.assertEqual(L.explain_exit(6), L.EXIT_MEANINGS[6])
 
     def make_project(self, rml: str, yaml: str = "name: p\n") -> Path:
         proj = self.tmp / "proj"
@@ -666,6 +676,35 @@ class SvgConvertTests(unittest.TestCase):
 # ==========================================================================
 
 
+class SvgUseCycleTests(unittest.TestCase):
+    """A <use> that points back into its own ancestry is an error in SVG; it
+    used to recurse until Python's stack ran out (RecursionError)."""
+
+    CYCLES = {
+        "ancestor": '<g id="a"><rect width="4" height="4"/><use href="#a" x="1"/></g>',
+        "mutual": '<g id="a"><rect width="4" height="4"/><use href="#b"/></g>'
+                  '<g id="b"><circle r="2"/><use href="#a"/></g>',
+        "symbol": '<defs><symbol id="s"><rect width="3" height="3"/><use href="#s"/></symbol></defs>'
+                  '<use href="#s"/>',
+    }
+
+    def test_a_cycle_is_cut_with_a_warning_and_the_rest_still_converts(self):
+        for name, body in self.CYCLES.items():
+            with self.subTest(name):
+                svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">{body}</svg>'
+                rml, info = S.convert(svg)
+                self.assertTrue(any("refers back" in w for w in info["warnings"]), info["warnings"])
+                self.assertGreaterEqual(info["shapes"], 1)
+                ET.fromstring(f"<r>{rml}</r>")
+
+    def test_a_plain_use_is_still_expanded(self):
+        # the fixture's <use href="#second"> draws the circle a second time
+        rml, info = S.convert(SvgConvertTests.SVG)
+        self.assertFalse(any("refers back" in w for w in info["warnings"]))
+        self.assertEqual(rml.count('name="second"'), 2)
+        self.assertEqual(info["shapes"], 5)
+
+
 class LintTests(TempDir):
     def project(self, rml: str, luau: str | None = None) -> Path:
         proj = self.tmp / "p"
@@ -701,6 +740,15 @@ class LintTests(TempDir):
                   "nested-animation-paused", "abstract-comparator", "script-input-unmatched",
                   "comment-double-dash"):
             self.assertIn(k, kinds)
+
+    def test_system_fonts_are_matched_by_folder_not_by_prefix(self):
+        # ~/.local/share/fonts is where a Linux desktop installs a user's fonts
+        user_linux = Path.home() / ".local" / "share" / "fonts" / "Brand.ttf"
+        for ref, flagged in ((str(user_linux), True), ("/usr/share/fonts/truetype/x.ttf", True),
+                             ("/usr/share/fontsnot/x.ttf", False), ("fonts/Inter.ttf", False)):
+            with self.subTest(ref):
+                kinds = self.kinds(f'<Rive version="1" kind="fragment"><FontAsset file="{ref}" name="F"/></Rive>')
+                self.assertEqual("system-font-embedded" in kinds, flagged)
 
     def test_clean_markup_is_quiet(self):
         rml = """<Rive version="1" kind="fragment">
@@ -797,6 +845,32 @@ class CheckTestRunnerTests(TempDir):
 # ==========================================================================
 # fonts, audio, recipes, versions, templates' starter
 # ==========================================================================
+
+
+class InteractionAndProbeArgsTests(unittest.TestCase):
+    def test_the_pointer_leaves_after_every_click(self):
+        # left over the control, a hover style reads as the click working:
+        # measured on the button template with its click listener removed
+        shots = C.interaction_shots(1.0, "210", "70", 0.5)
+        for name in ("on", "off"):
+            args = shots[name]
+            clicks = [i for i, a in enumerate(args) if a.startswith("--pointer=click@")]
+            self.assertTrue(clicks, name)
+            for i in clicks:
+                self.assertEqual(args[i + 1], C.AWAY, (name, args))
+
+    def test_each_capture_is_compared_with_rest_at_the_same_scene_time(self):
+        for at, settle in ((1.0, 0.5), (0.0, 0.5), (2.0, 0.25), (1.03, 0.4)):
+            with self.subTest(at=at, settle=settle):
+                shots = C.interaction_shots(at, "1", "2", settle)
+                self.assertAlmostEqual(scene_time(shots["on"]), scene_time(shots["rest_on"]), places=6)
+                self.assertAlmostEqual(scene_time(shots["off"]), scene_time(shots["rest_off"]), places=6)
+
+    def test_a_probe_keeps_the_users_data_and_sets_its_own_value_last(self):
+        # the CLI keeps the last --data for a path (measured), so the probe wins
+        # for its own property while everything else stays as the user set it
+        args = C.probe_args(["--artboard=A"], ["--data=name=Grace"], "unused", "PROBE", "--advance=60")
+        self.assertEqual(args, ["--artboard=A", "--data=name=Grace", "--data=unused=PROBE", "--advance=60"])
 
 
 class FontTests(unittest.TestCase):
@@ -989,6 +1063,33 @@ class WebOfflineTests(TempDir):
             for good in ("transparent", "#fff", "#112233", "#11223344"):
                 self.assertTrue(WEB.build_page(riv, self.tmp / "ok", title="T", background=good).is_file())
 
+    def test_a_page_plays_a_state_machine_even_when_none_is_named(self):
+        # with no name, rive.js 2.43.1 plays the first TIMELINE: listeners and
+        # binds are dead (measured: the button page ignored a click). The page
+        # reads the artboard's state machines first and names one itself, with
+        # the singular `stateMachine` option (the plural one is deprecated).
+        riv = self.tmp / "a.riv"
+        riv.write_bytes(b"RIVE")
+        with mock.patch.object(WEB.W, "ensure_runtime", lambda flavour=None: self.fake_runtime()):
+            for single in (False, True):
+                with self.subTest(single=single):
+                    out = self.tmp / ("one.html" if single else "site")
+                    page = WEB.build_page(riv, out, title="T", single=single).read_text()
+                    self.assertIn("new rive.RiveFile(", page)
+                    self.assertIn("stateMachineByIndex(", page)
+                    self.assertIn("stateMachine: sm", page)
+                    self.assertNotIn("stateMachines: CONFIG", page)
+
+    def test_a_page_binds_only_a_file_that_has_a_view_model(self):
+        # autoBind on a file with no view model logs a console error, which
+        # made verify fail a page that plays fine (Rive's own rml_triangle)
+        riv = self.tmp / "a.riv"
+        riv.write_bytes(b"RIVE")
+        with mock.patch.object(WEB.W, "ensure_runtime", lambda flavour=None: self.fake_runtime()):
+            page = WEB.build_page(riv, self.tmp / "site", title="T").read_text()
+        self.assertNotIn("autoBind: true", page)
+        self.assertIn("autoBind: f.viewModelCount() > 0", page)
+
     def test_a_failed_session_start_stops_what_it_started(self):
         import types
         riv = self.tmp / "a.riv"
@@ -1030,6 +1131,65 @@ class WebOfflineTests(TempDir):
         self.assertIsNone(session._server)
 
 
+@NEEDS_FFMPEG
+class WebVerifyClickTests(TempDir):
+    """verify --click compares screenshots taken with the real clock, so a page
+    that moves by itself (Rive's spinning rml_triangle) read as a click that
+    worked, even on an empty corner (measured). It now looks twice first."""
+
+    def verify(self, colours: list) -> dict:
+        import types
+        page_file = self.tmp / "index.html"
+        page_file.write_text("<html></html>")
+        shots = iter(colours)
+
+        class Page:
+            mouse = types.SimpleNamespace(click=lambda x, y: None)
+
+            def on(self, *a):
+                pass
+
+            def goto(self, url):
+                pass
+
+            def evaluate(self, script):
+                if "getBoundingClientRect" in script:
+                    return [0, 0, 100, 100]
+                return {"loaded": True, "artboard": {"width": 100, "height": 100}, "stateMachines": ["SM"]}
+
+            def screenshot(self, path):
+                colour = next(shots)
+                write_png(Path(path), 4, 4, lambda x, y: (*colour, 255) if (x, y) != (0, 0) else (9, 9, 9, 255))
+
+        class Browser:
+            def new_context(self, **kw):
+                return types.SimpleNamespace(new_page=lambda: Page())
+
+            def close(self):
+                pass
+
+        @contextlib.contextmanager
+        def sync_playwright():
+            yield types.SimpleNamespace(chromium=types.SimpleNamespace(launch=lambda args: Browser()))
+
+        fake = types.ModuleType("playwright.sync_api")
+        fake.sync_playwright = sync_playwright
+        with mock.patch.dict(sys.modules, {"playwright": types.ModuleType("playwright"),
+                                           "playwright.sync_api": fake}):
+            return WEB.verify_page(page_file, click=(5, 5), wait=0, shots=self.tmp / "shots")
+
+    def test_a_page_that_moves_by_itself_cannot_credit_the_click(self):
+        report = self.verify([(200, 0, 0), (0, 200, 0), (0, 0, 200)])
+        self.assertIsNone(report["click_changed_picture"])
+        self.assertIn("changes on its own", report["click_note"])
+
+    def test_a_still_page_credits_a_click_that_changes_it(self):
+        self.assertTrue(self.verify([(200, 0, 0), (200, 0, 0), (0, 200, 0)])["click_changed_picture"])
+
+    def test_a_still_page_reports_a_dead_click(self):
+        self.assertFalse(self.verify([(200, 0, 0)] * 3)["click_changed_picture"])
+
+
 # ==========================================================================
 # templates, manifests and docs
 # ==========================================================================
@@ -1067,6 +1227,101 @@ class TemplateStaticTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual([f for f in C.lint_markup(folder) if f["severity"] == "error"], [])
                 self.assertFalse([f for f in C.lint_markup(folder) if f["kind"] == "text-style-unlabelled"])
+
+
+class DoctorInstallTests(TempDir):
+    """The Linux install, laid out the way Rive's own install.sh lays it out.
+
+    Measured on CLI 1.1.1, Linux x64: `rive docs` and `rive samples --path`
+    look beside versions/<version>/rive only. With docs/ and samples/ in
+    ~/.rive/ both commands fail ("not found beside the binary") and the
+    doctor reports NOT READY straight after a clean install.
+    """
+
+    def tarball(self) -> bytes:
+        import tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            def add(name, data=None, kind=tarfile.REGTYPE, mode=0o644, link=""):
+                info = tarfile.TarInfo(name)
+                info.type, info.mode, info.linkname = kind, mode, link
+                if data is not None:
+                    info.size = len(data)
+                tar.addfile(info, io.BytesIO(data) if data is not None else None)
+            add("rive", b"#!/bin/sh\necho rive\n", mode=0o755)
+            add("docs", kind=tarfile.DIRTYPE, mode=0o755)
+            add("docs/README.md", b"# docs\n")
+            add("docs/escape", kind=tarfile.SYMTYPE, link="/etc/passwd")
+            add("samples", kind=tarfile.DIRTYPE, mode=0o755)
+            add("samples/rml_triangle", kind=tarfile.DIRTYPE, mode=0o755)
+            add("samples/rml_triangle/rive.yaml", b"name: triangle\n")
+        return buf.getvalue()
+
+    def install(self, manifest: dict, blob: bytes) -> tuple[int, Path]:
+        import hashlib
+        home = Path(tempfile.mkdtemp(prefix="home_", dir=self.tmp))
+        for art in manifest.get("artifacts", {}).values():
+            art.setdefault("sha256", hashlib.sha256(blob).hexdigest())
+
+        def urlopen(url, timeout=None):
+            return io.BytesIO(json.dumps(manifest).encode() if url.endswith("manifest.json") else blob)
+
+        with mock.patch.object(D.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(D.platform, "system", lambda: "Linux"), \
+                mock.patch.object(D.platform, "machine", lambda: "x86_64"), \
+                mock.patch.object(D.Path, "home", classmethod(lambda cls: home)), quiet():
+            code = D.install()
+        return code, home / ".rive"
+
+    def test_docs_and_samples_sit_beside_the_versioned_binary(self):
+        manifest = {"version": "1.1.1", "artifacts": {"linux-x64": {"path": "v1.1.1/rive-linux-x64.tar.gz"}}}
+        code, rive_home = self.install(manifest, self.tarball())
+        self.assertEqual(code, 0)
+        payload = rive_home / "versions" / "1.1.1"
+        self.assertTrue(os.access(payload / "rive", os.X_OK))
+        self.assertTrue((payload / "docs" / "README.md").is_file())
+        self.assertTrue((payload / "samples" / "rml_triangle" / "rive.yaml").is_file())
+        self.assertFalse((rive_home / "docs").exists())
+        self.assertFalse((rive_home / "samples").exists())
+        self.assertFalse(os.path.lexists(payload / "docs" / "escape"), "a symlink in the archive never lands")
+        self.assertEqual((rive_home / "bin" / "rive").read_bytes(), (payload / "rive").read_bytes())
+        self.assertTrue(os.access(rive_home / "bin" / "rive", os.X_OK))
+        self.assertEqual((rive_home / "current").read_text(), "1.1.1\n")
+        self.assertEqual((rive_home / "default").read_text(), "1.1.1\n")
+
+    def test_a_manifest_that_would_climb_out_installs_nothing(self):
+        for version, path in (("../../x", "v../../x/rive.tar.gz"), ("1.1.1", "v1.1.1/../../rive.tar.gz"),
+                              ("1.1.1", "elsewhere/rive.tar.gz")):
+            with self.subTest(version=version, path=path):
+                manifest = {"version": version, "artifacts": {"linux-x64": {"path": path}}}
+                code, rive_home = self.install(manifest, self.tarball())
+                self.assertEqual(code, 1)
+                self.assertFalse(rive_home.exists())
+
+
+class DoctorFlagTests(unittest.TestCase):
+    def help_text(self, drop: str | None) -> str:
+        lines = [f"  {f.split('=')[0]}=<x>   a flag" for f in D.FLAGS_USED if f != drop]
+        lines += ["  --data-dump-every=<N>   per frame; combines with --data, --once and --pointer"]
+        lines += [f"  {c}   a command" for c in D.SUBCOMMANDS_USED]
+        return "\n".join(lines) + "\n"
+
+    def flags(self, text: str) -> dict:
+        results: list = []
+        with mock.patch.object(D.L, "run_rive", lambda *a, **k: subprocess.CompletedProcess(a, 0, text, "")):
+            D.flags(results)
+        return {r["check"]: r for r in results}
+
+    def test_every_flag_in_use_is_found_in_a_full_help(self):
+        self.assertTrue(self.flags(self.help_text(drop=None))["flags"]["ok"])
+
+    def test_a_flag_counts_only_where_help_defines_it(self):
+        # --data survives as a substring of --data-dump and in other flags' prose
+        for gone in ("--data", "--once"):
+            with self.subTest(gone):
+                check = self.flags(self.help_text(drop=gone))["flags"]
+                self.assertFalse(check["ok"])
+                self.assertIn(f"{gone} --", check["detail"])
 
 
 class ManifestTests(unittest.TestCase):
@@ -1169,6 +1424,46 @@ class LiveTemplateTests(unittest.TestCase):
             code = C.main([str(TEMPLATES / "button"), "--interaction", "click@210,70", "--out", tmp, "--json"])
         self.assertEqual(code, 0)
 
+    def test_a_click_that_only_hovers_fails_the_gate(self):
+        # the button with its click listener removed still scales on hover; with
+        # the pointer left over it after the click, the gate passed this dead
+        # toggle exactly as it passes the real one (measured on CLI 1.1.1)
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = N.create("button", Path(tmp) / "dead", [])
+            scene = proj / "scene.rml"
+            text, removed = re.subn(r'\s*<StateMachineListenerSingle[^>]*listenerTypeValue="click"[^>]*>.*?'
+                                    r'</StateMachineListenerSingle>', "", scene.read_text(), flags=re.S)
+            self.assertEqual(removed, 1)
+            scene.write_text(text)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = C.main([str(proj), "--interaction", "click@210,70", "--out", str(Path(tmp) / "o"), "--json"])
+            report = json.loads(buf.getvalue())
+            self.assertEqual(code, 1, report["errors"])
+            self.assertFalse(report["interaction"]["responds"])
+
+    def test_probing_with_data_set_keeps_an_unbound_property_inert(self):
+        # the probes dropped the user's --data, so with --data set every
+        # property, even one bound to nothing, read "drives the picture"
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = N.create("lower_third", Path(tmp) / "p", [])
+            scene = proj / "scene.rml"
+            text = scene.read_text()
+            prop = '<ViewModelPropertyColor name="ink" id="0:66"/>'
+            value = '<ViewModelInstanceColor propertyValue="FFFFFFFF" viewModelPropertyId="0:66"/>'
+            self.assertIn(prop, text)
+            self.assertIn(value, text)
+            text = text.replace(prop, prop + '<ViewModelPropertyString name="unused" id="0:900"/>')
+            text = text.replace(value, value + '<ViewModelInstanceString propertyValue="x" viewModelPropertyId="0:900"/>')
+            scene.write_text(text)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                C.main([str(proj), "--at", "2", "--probe-binds", "--data", "name=Grace Hopper",
+                        "--out", str(Path(tmp) / "o"), "--json"])
+            binds = json.loads(buf.getvalue())["binds"]
+            self.assertTrue(binds["unused"].startswith("no visible effect"), binds)
+            self.assertTrue(binds["title"].startswith("drives"), binds)
+
     def test_every_bound_property_in_the_lower_third_drives_the_picture(self):
         buf = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(buf):
@@ -1191,9 +1486,18 @@ class LiveTimingTests(unittest.TestCase):
     def test_the_compiled_timeline_lands_exactly_on_each_frame_time(self):
         tl = T.build_timeline([{"at": 0.2, "click": [210, 70]}, {"at": 0.5, "key": "enter"},
                                {"at": 0.7, "drag": [10, 10, 100, 100], "steps": 4}])
+        # CLI 1.1.1 on Linux segfaults writing --data-dump-every once a key is in
+        # the run (a handled key, or any key before a drag; also on Rive's own
+        # keyboard_menu sample). The same arguments with --screenshot render
+        # fine, and no script dumps per frame with keys, so only this
+        # measurement is out of reach there (references/rendering.md, Linux).
+        linux_dump_crash = sys.platform.startswith("linux") and L.cli_version() == "1.1.1"
         for t in (0.1, 0.25, 0.6, 1.0):
+            args = tl.frame_args(t).args
             with self.subTest(t=t):
-                frame, time_ = self.dump_last_frame(tl.frame_args(t).args)
+                if linux_dump_crash and any(a.startswith("--key=") for a in args):
+                    self.skipTest("Rive CLI 1.1.1 on Linux crashes in --data-dump-every with a key in the run")
+                frame, time_ = self.dump_last_frame(args)
                 self.assertAlmostEqual(time_, t, places=3)
                 self.assertEqual(frame, round(t * 60))
 
@@ -1273,6 +1577,23 @@ class LiveRenderTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("every sampled frame is empty", self.stderr.getvalue())
             self.assertIn("nothing was drawn", self.stderr.getvalue())
+
+
+@unittest.skipUnless(RIVE and FFMPEG and importlib.util.find_spec("playwright"),
+                     "needs the Rive CLI, ffmpeg and Playwright with Chromium")
+class LiveWebTests(unittest.TestCase):
+    def test_a_page_built_without_a_state_machine_name_answers_a_click(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = N.create("button", Path(tmp) / "b", [])
+            self.assertEqual(L.run_rive([str(proj), "--once", "--quiet"], timeout=120).returncode, 0)
+            riv = next((proj / "build").glob("*.riv"))
+            with quiet():
+                page = WEB.build_page(riv, Path(tmp) / "site", title="Button", size=(420, 140))
+            report = WEB.verify_page(page, click=(210, 70), shots=Path(tmp) / "shots")
+            self.assertTrue(report["ok"], report)
+            self.assertTrue(report["click_changed_picture"], report)
+            self.assertFalse([m for m in report["console"] if "deprecat" in m or "default-state-machine" in m],
+                             report["console"])
 
 
 @LIVE

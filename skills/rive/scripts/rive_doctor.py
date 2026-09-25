@@ -24,8 +24,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -79,14 +81,24 @@ def tools(results: list) -> None:
                   fatal=False)
 
 
+def defines(help_text: str, flag: str) -> bool:
+    """Does --help define this flag on a line of its own?
+
+    A plain substring test passes a flag that is gone: --data lives on inside
+    --data-dump, and most flags are named again in other flags' descriptions.
+    """
+    name = re.escape(flag.split("=")[0])
+    return re.search(rf"(?m)^[ \t]+{name}(?=[=\[ \t]|$)", help_text) is not None
+
+
 def flags(results: list) -> None:
     helped = L.run_rive(["--help"], timeout=30)
     help_text = helped.stdout + helped.stderr
-    missing = [f for f in FLAGS_USED if f.split("=")[0] not in help_text]
+    missing = [f for f in FLAGS_USED if not defines(help_text, f)]
     check(results, "flags", not missing,
           "all present" if not missing else f"no longer in --help: {', '.join(missing)} -- read the release "
           "notes and fix the scripts before rendering")
-    missing_cmds = [c for c in SUBCOMMANDS_USED if f"  {c}" not in help_text]
+    missing_cmds = [c for c in SUBCOMMANDS_USED if not re.search(rf"(?m)^  {re.escape(c)}(?=\s|$)", help_text)]
     check(results, "subcommands", not missing_cmds,
           "all present" if not missing_cmds else f"missing: {', '.join(missing_cmds)}")
 
@@ -199,6 +211,76 @@ def safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
         tar.extract(member, dest, set_attrs=False)
 
 
+def _safe_segment(value) -> bool:
+    return isinstance(value, str) and ".." not in value and re.fullmatch(r"[0-9A-Za-z._-]{1,64}", value) is not None
+
+
+def manifest_artifact(manifest: dict, key: str = "linux-x64") -> tuple[str, str, str]:
+    """(version, path, sha256) from Rive's release manifest.
+
+    The same shape checks Rive's install.sh makes: the version becomes a
+    folder name here and the path a URL, so neither may climb out.
+    """
+    version = manifest.get("version")
+    art = (manifest.get("artifacts") or {}).get(key) or {}
+    path, sha = art.get("path"), str(art.get("sha256") or "").lower()
+    if not _safe_segment(version):
+        raise ValueError("the release manifest names an unsafe version")
+    prefix = f"v{version}/"
+    if not (isinstance(path, str) and path.startswith(prefix) and _safe_segment(path[len(prefix):])):
+        raise ValueError("the release manifest names an unsafe download path")
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise ValueError("the release manifest has no SHA-256 for this build")
+    return version, path, sha
+
+
+def lay_out(blob: bytes, version: str, home: Path) -> Path:
+    """Install a verified tarball the way Rive's install.sh lays it out.
+
+    The binary goes to <home>/versions/<version>/rive with docs/ and samples/
+    beside it, which is where `rive docs` and `rive samples` look (measured,
+    CLI 1.1.1 on Linux: from anywhere else both fail with "not found beside
+    the binary"). <home>/bin/rive is a hard link to it, or a copy where the
+    filesystem cannot link, and `current` and `default` name the version.
+    """
+    payload_dir = home / "versions" / version
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "x"
+        out.mkdir()
+        tar_path = Path(tmp) / "rive.tgz"
+        tar_path.write_bytes(blob)
+        with tarfile.open(tar_path) as tar:
+            safe_extract(tar, out)
+        binary = out / "rive"
+        if binary.is_symlink() or not binary.is_file():
+            raise RuntimeError("the archive held no rive binary")
+        payload_dir.mkdir(parents=True, exist_ok=True)
+        payload = payload_dir / "rive"
+        staged = payload_dir / "rive.new"
+        shutil.copy2(binary, staged)
+        staged.chmod(0o755)
+        os.replace(staged, payload)
+        for extra in ("docs", "samples"):
+            if (out / extra).is_dir():
+                shutil.rmtree(payload_dir / extra, ignore_errors=True)
+                shutil.copytree(out / extra, payload_dir / extra)
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    muxer, staged = bin_dir / "rive", bin_dir / "rive.new"
+    staged.unlink(missing_ok=True)
+    try:
+        os.link(payload, staged)
+    except OSError:
+        shutil.copy2(payload, staged)
+        staged.chmod(0o755)
+    os.replace(staged, muxer)
+    for name in ("current", "default"):
+        pointer = home / f"{name}.new"
+        pointer.write_text(version + "\n", encoding="utf-8")
+        os.replace(pointer, home / name)
+    return muxer
+
+
 def install() -> int:
     system, machine = platform.system(), platform.machine()
     if system == "Darwin":
@@ -217,32 +299,22 @@ def install() -> int:
     if system == "Linux" and machine in ("x86_64", "amd64"):
         with urllib.request.urlopen(f"{RELEASES}/latest/manifest.json", timeout=60) as resp:
             manifest = json.loads(resp.read())
-        art = manifest["artifacts"]["linux-x64"]
-        with urllib.request.urlopen(f"{RELEASES}/{art['path']}", timeout=300) as resp:
+        try:
+            version, path, sha = manifest_artifact(manifest)
+        except ValueError as exc:
+            print(f"{exc}; nothing installed")
+            return 1
+        with urllib.request.urlopen(f"{RELEASES}/{path}", timeout=300) as resp:
             blob = resp.read()
-        if hashlib.sha256(blob).hexdigest() != art["sha256"]:
+        if hashlib.sha256(blob).hexdigest() != sha:
             print("the download failed its SHA-256 check; nothing installed")
             return 1
-        dest = Path.home() / ".rive" / "bin"
-        dest.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory() as tmp:
-            tar_path = Path(tmp) / "rive.tgz"
-            tar_path.write_bytes(blob)
-            with tarfile.open(tar_path) as tar:
-                safe_extract(tar, Path(tmp))
-            found = list(Path(tmp).rglob("rive"))
-            binary = next((p for p in found if p.is_file()), None)
-            if not binary:
-                print("the archive held no rive binary")
-                return 1
-            shutil.copy2(binary, dest / "rive")
-            (dest / "rive").chmod(0o755)
-            for extra in ("docs", "samples"):
-                src = next((p for p in Path(tmp).rglob(extra) if p.is_dir()), None)
-                if src:
-                    shutil.rmtree(dest.parent / extra, ignore_errors=True)
-                    shutil.copytree(src, dest.parent / extra)
-        print(f"Installed Rive CLI {manifest['version']} to {dest / 'rive'} (verified SHA-256). "
+        try:
+            muxer = lay_out(blob, version, Path.home() / ".rive")
+        except RuntimeError as exc:
+            print(f"{exc}; nothing installed")
+            return 1
+        print(f"Installed Rive CLI {version} to {muxer} (verified SHA-256, laid out as Rive's install.sh does). "
               "Add ~/.rive/bin to PATH. On Mesa GPUs captures come out blank until "
               "rive-app/rive-runtime#92 is fixed: see references/rendering.md, Linux.")
         return 0

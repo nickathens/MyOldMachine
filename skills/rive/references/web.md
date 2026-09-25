@@ -37,9 +37,9 @@ python3 skills/rive/scripts/rive_web.py page build/intro.riv -o site/ --title "I
 python3 skills/rive/scripts/rive_web.py page build/card.riv -o card.html --single-file --controls --data title=Hello
 ```
 
-Folder mode writes `index.html`, `rive.js`, `rive.wasm` and the `.riv` (cacheable, best for a site or a surge deploy). `--single-file` inlines all three into one HTML file (about 3.6 MB with a font; good as an attachment). `--controls` builds a small panel from the view model at runtime: text fields for strings, sliders for numbers (0..100), checkboxes, colour pickers, trigger buttons, enum menus, kept in sync when the file changes a value itself. `--fit` is `contain` by default; `layout` makes a responsive artboard reflow to the window. The page sets `autoBind: true` and calls `resizeDrawingSurfaceToCanvas()` on load and resize, so it is sharp on a Retina screen.
+Folder mode writes `index.html`, `rive.js`, `rive.wasm` and the `.riv` (cacheable, best for a site or a surge deploy). `--single-file` inlines all three into one HTML file (about 3.6 MB with a font; good as an attachment). `--controls` builds a small panel from the view model at runtime: text fields for strings, sliders for numbers (0..100), checkboxes, colour pickers, trigger buttons, enum menus, kept in sync when the file changes a value itself. `--fit` is `contain` by default; `layout` makes a responsive artboard reflow to the window. The page binds the file's default view model instance when the file has one (`autoBind`; on a file without one it would log a console error) and calls `resizeDrawingSurfaceToCanvas()` on load and resize, so it is sharp on a Retina screen.
 
-**Always name the state machine** (`--state-machine`). The runtime cannot see the artboard's default one: with none named it plays the first timeline and warns that the next major version will change this (read in rive.js 2.43.1).
+**Name the state machine when the artboard has more than one** (`--state-machine`). The runtime cannot see the artboard's default one, and with none named it plays the first timeline and warns that the next major version will change this (read in rive.js 2.43.1): listeners and binds are then dead, and the button template's page ignored a click (measured). So the page reads the file first and plays the artboard's first state machine unless one is named, with a console note when there are several. It passes the name with the singular `stateMachine` option; the plural `stateMachines` is deprecated in 2.43.1.
 
 ## Signing: the one that bites
 
@@ -51,7 +51,7 @@ Web runtimes and Rive's CDN reject unsigned scripts, and nothing local warns you
 python3 skills/rive/scripts/rive_web.py verify site/index.html --click 560,560 --shots checks/
 ```
 
-Loads the page in headless Chromium with the real clock, waits, screenshots, fails on a load error, a console error or a blank picture, and with `--click` (artboard coordinates, mapped through the page's contain fit) clicks and reports whether the picture changed. Run it before sending a link.
+Loads the page in headless Chromium with the real clock, waits, screenshots, fails on a load error, a console error or a blank picture, and with `--click` (artboard coordinates, mapped through the page's contain fit) clicks and reports whether the picture changed. It looks twice before clicking: a page that changes on its own (a spinning logo) cannot show what a click did, so the answer is then `null` with a note; `rive_check.py --interaction` on the project compares at exact scene times instead. Run it before sending a link.
 
 ## Talking to the file from JavaScript
 

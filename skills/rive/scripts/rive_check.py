@@ -49,7 +49,14 @@ SIDES = {"padding": ["Left", "Right", "Top", "Bottom"], "margin": ["Left", "Righ
          "gap": ["Horizontal", "Vertical"]}
 
 SYSTEM_FONT_DIRS = ("/Library/Fonts", "/System/Library/Fonts", str(Path.home() / "Library" / "Fonts"),
-                    "/usr/share/fonts", "/usr/local/share/fonts", str(Path.home() / ".fonts"))
+                    "/usr/share/fonts", "/usr/local/share/fonts", str(Path.home() / ".fonts"),
+                    str(Path.home() / ".local" / "share" / "fonts"))
+
+
+def in_system_fonts(ref: str) -> bool:
+    """Is this font path inside a system or user font folder (by folder, not by name prefix)?"""
+    path = Path(ref)
+    return any(Path(d) == path or Path(d) in path.parents for d in SYSTEM_FONT_DIRS)
 
 
 def walk(node):
@@ -105,7 +112,7 @@ def lint_markup(project: Path) -> list[dict]:
                     add("warning", "font-without-file", rml, line,
                         f"FontAsset {names.get('name', '')!r} has no file=, so text using it renders as "
                         "nothing here (the host is meant to supply it)")
-                elif any(str(Path(ref)).startswith(d) for d in SYSTEM_FONT_DIRS):
+                elif in_system_fonts(ref):
                     add("error", "system-font-embedded", rml, line,
                         f"{ref} is a system font; building the .riv redistributes it. Use a font licensed "
                         "for embedding (OFL from Google Fonts: rive_fonts.py add)")
@@ -265,6 +272,37 @@ def same_picture(a: Path, b: Path) -> bool:
     return L.sha256_file(a) == L.sha256_file(b)
 
 
+AWAY = "--pointer=move@-1000,-1000"
+
+
+def interaction_shots(at: float, x: str, y: str, settle: float) -> dict[str, list[str]]:
+    """The four captures --interaction compares, in pairs at the same scene time.
+
+    Each capture is compared with a rest capture at the SAME scene time, so an
+    idle animation cannot read as a response: a click costs 3 frames and a
+    move 1 (measured on CLI 1.1.1). The pointer leaves the artboard after
+    every click, or a hover style would read as the click working (measured:
+    the button template with its click listener removed passed, on its hover
+    scale alone, while the pointer stayed over it).
+    """
+    base = max(at, L.FIRST_FRAME_EPSILON)
+    start, wait, click = L.advance_arg(base), L.advance_arg(settle), f"--pointer=click@{x},{y}"
+    return {
+        "rest_on": [L.advance_arg(base + 4 * L.FRAME + settle)],
+        "on": [start, click, AWAY, wait],
+        "rest_off": [L.advance_arg(base + 8 * L.FRAME + 2 * settle)],
+        "off": [start, click, AWAY, wait, click, AWAY, wait],
+    }
+
+
+def probe_args(base_args: list[str], data_args: list[str], prop: str, value: str, at: str) -> list[str]:
+    """One --probe-binds capture: the user's --data as for the main capture, then
+    the probe's own value, which wins because the CLI keeps the last --data for
+    a path (measured). Without the user's values every probe differed from the
+    main capture, and an unbound property read as driving the picture."""
+    return [*base_args, *data_args, f"--data={prop}={value}", at]
+
+
 def contact_sheet(images: list[Path], out: Path, height: int = 360) -> Path | None:
     images = [p for p in images if p.is_file()]
     if not images:
@@ -361,20 +399,7 @@ def run(args) -> dict:
             m = re.fullmatch(r"click@(-?[\d.]+),(-?[\d.]+)", gesture)
             if not m:
                 raise L.RiveError("--interaction takes click@X,Y in artboard coordinates")
-            x, y = m.group(1), m.group(2)
-            settle = L.advance_arg(args.settle)
-            away = "--pointer=move@-1000,-1000"
-            # Each capture is compared with a rest capture at the SAME scene
-            # time, so an idle animation cannot read as a response: a click
-            # costs 3 frames and a move 1 (measured on CLI 1.1.1).
-            t_on = args.at + 3 * L.FRAME + args.settle
-            t_off = args.at + 8 * L.FRAME + 2 * args.settle
-            shots = {
-                "rest_on": [L.advance_arg(t_on)],
-                "on": [at, f"--pointer=click@{x},{y}", settle],
-                "rest_off": [L.advance_arg(t_off)],
-                "off": [at, f"--pointer=click@{x},{y}", away, settle, f"--pointer=click@{x},{y}", away, settle],
-            }
+            shots = interaction_shots(args.at, m.group(1), m.group(2), args.settle)
             paths = {}
             for name, extra in shots.items():
                 png = out_dir / f"interaction_{name}.png"
@@ -404,7 +429,7 @@ def run(args) -> dict:
                 if value is None:
                     continue
                 png = out_dir / f"probe_{prop}.png"
-                ok, err = capture(snap, png, base_args + [f"--data={prop}={value}", at])
+                ok, err = capture(snap, png, probe_args(base_args, data_args, prop, value, at))
                 if not ok:
                     probes[prop] = f"error: {err}"
                     continue
