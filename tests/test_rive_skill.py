@@ -568,6 +568,17 @@ class AlphaCheckTests(TempDir):
                               str(caught.exception))
                 self.assertIn("--allow-bad-alpha", caught.exception.hint)
 
+    def test_a_frame_that_cannot_be_compared_stops_the_render_too(self):
+        # without numpy the comparison is ffmpeg's; a solved frame that is
+        # missing or does not decode gives it no number (RecompositeFallbackTests)
+        gone = {"error": "Error opening input: No such file or directory", "method": "ffmpeg-psnr"}
+        with self.assertRaises(L.RiveError) as caught:
+            self.check([self.CLEAN, gone, self.CLEAN])
+        self.assertIn("the alpha recomposite check could not run", str(caught.exception))
+        self.assertIn("frame 1 could not be compared (Error opening input: No such file or directory)",
+                      str(caught.exception))
+        self.assertIn("--allow-bad-alpha", caught.exception.hint)
+
     def test_allow_bad_alpha_writes_it_with_the_numbers_in_a_warning(self):
         report = self.check([{"max": 143.3, "mean": 14.6}] + [self.CLEAN] * 2, allow_bad=True)
         self.assertEqual(len(report["warnings"]), 1)
@@ -622,6 +633,63 @@ class AlphaCheckTests(TempDir):
         self.assertTrue(out.is_file())
         report = json.loads(Path(str(out) + ".render.json").read_text())
         self.assertTrue(any("--allow-bad-alpha" in w for w in report["warnings"]), report["warnings"])
+
+
+class RecompositeFallbackTests(TempDir):
+    """recomposite_error without numpy, which a fresh MOM install does not have:
+    the comparison is then ffmpeg's psnr filter. A run that printed no number
+    used to come back as inf, a perfect match, so a solved frame that was
+    missing or did not decode passed the alpha check (measured on both)."""
+
+    def frames(self) -> tuple[Path, Path]:
+        solved, ref = self.tmp / "solved.png", self.tmp / "ref.png"
+        for path in (solved, ref):
+            write_png(path, 4, 4, lambda x, y: (200, 0, 0, 255))
+        return solved, ref
+
+    def fallback(self, solved: Path, ref: Path, ran: subprocess.CompletedProcess | None = None) -> dict:
+        with mock.patch.dict(sys.modules, {"numpy": None}):
+            if ran is None:
+                return R.recomposite_error(solved, ref)
+            # png_rgba reads the size with ffprobe, through the same subprocess.run;
+            # and CI has no ffmpeg, so its path is faked too
+            with mock.patch.object(R.L, "png_rgba", return_value=(4, 4, b"")), \
+                    mock.patch.object(R.L, "ffmpeg_bin", return_value="ffmpeg"), \
+                    mock.patch.object(R.subprocess, "run", return_value=ran):
+                return R.recomposite_error(solved, ref)
+
+    def test_no_psnr_from_ffmpeg_is_an_error_not_a_match(self):
+        solved, ref = self.frames()
+        missing = ("[in#0 @ 0x5] Error opening input: No such file or directory\n"
+                   "Error opening input files: No such file or directory\n")
+        # a run that failed after printing a number is not trusted either
+        failed_late = "[Parsed_psnr_5 @ 0x5] PSNR r:45.00 g:45.00 b:45.00 average:45.00\nConversion failed!\n"
+        for rc, stderr, error in ((254, missing, "Error opening input: No such file or directory"),
+                                  (0, "frame=    0 fps=0.0 q=0.0\n", "ffmpeg exited 0 with no usable PSNR"),
+                                  (1, failed_late, "ffmpeg exited 1 with no usable PSNR")):
+            with self.subTest(rc=rc):
+                got = self.fallback(solved, ref, subprocess.CompletedProcess([], rc, "", stderr))
+                self.assertEqual(got, {"error": error, "method": "ffmpeg-psnr"})
+
+    def test_a_psnr_that_was_measured_still_reads_as_one(self):
+        solved, ref = self.frames()
+        for average, want in (("inf", math.inf), ("31.24", 31.24)):
+            with self.subTest(average):
+                stderr = f"[Parsed_psnr_5 @ 0x5] PSNR r:{average} g:{average} b:{average} average:{average}\n"
+                got = self.fallback(solved, ref, subprocess.CompletedProcess([], 0, "", stderr))
+                self.assertEqual(got["psnr_db"], want)
+
+    @NEEDS_FFMPEG
+    def test_real_ffmpeg_on_a_missing_and_a_broken_frame(self):
+        solved, ref = self.frames()
+        self.assertEqual(self.fallback(solved, ref)["psnr_db"], math.inf)  # the same pixels: a real match
+        broken = self.tmp / "broken.png"
+        broken.write_bytes(b"not a png")
+        for frame in (self.tmp / "missing.png", broken):
+            with self.subTest(frame.name):
+                got = self.fallback(frame, ref)
+                self.assertNotIn("psnr_db", got)
+                self.assertIn("rror", got["error"])
 
 
 # ==========================================================================
@@ -1616,24 +1684,27 @@ class LiveTimingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             snap = L.snapshot_project(TEMPLATES / "button", tmp)
             dump = Path(tmp) / "d.jsonl"
-            L.run_rive([str(snap), "--quiet", f"--data-dump={dump}", "--data-dump-every=1", *args], timeout=120)
+            ran = L.run_rive([str(snap), "--quiet", f"--data-dump={dump}", "--data-dump-every=1", *args],
+                             timeout=120)
+            # CLI 1.1.1 and 1.2.0 on Linux segfault writing --data-dump-every
+            # once a key is in the run (a handled key, or any key before a drag;
+            # also on Rive's own keyboard_menu sample). The same arguments with
+            # --screenshot render fine, and no script dumps per frame with keys,
+            # so only this measurement is out of reach there (references/
+            # rendering.md, Linux). The crash itself decides, not a version
+            # number, so a CLI that fixes it measures these times again.
+            if ran.returncode < 0 and sys.platform.startswith("linux") and any(a.startswith("--key=") for a in args):
+                self.skipTest(f"Rive CLI {L.cli_version()} on Linux crashes in --data-dump-every with a key in the run")
+            self.assertEqual(ran.returncode, 0, ran.stderr[-300:])
             lines = [json.loads(x) for x in dump.read_text().splitlines() if x.strip()]
             return lines[-1]["frame"], lines[-1]["time"]
 
     def test_the_compiled_timeline_lands_exactly_on_each_frame_time(self):
         tl = T.build_timeline([{"at": 0.2, "click": [210, 70]}, {"at": 0.5, "key": "enter"},
                                {"at": 0.7, "drag": [10, 10, 100, 100], "steps": 4}])
-        # CLI 1.1.1 on Linux segfaults writing --data-dump-every once a key is in
-        # the run (a handled key, or any key before a drag; also on Rive's own
-        # keyboard_menu sample). The same arguments with --screenshot render
-        # fine, and no script dumps per frame with keys, so only this
-        # measurement is out of reach there (references/rendering.md, Linux).
-        linux_dump_crash = sys.platform.startswith("linux") and L.cli_version() == "1.1.1"
         for t in (0.1, 0.25, 0.6, 1.0):
             args = tl.frame_args(t).args
             with self.subTest(t=t):
-                if linux_dump_crash and any(a.startswith("--key=") for a in args):
-                    self.skipTest("Rive CLI 1.1.1 on Linux crashes in --data-dump-every with a key in the run")
                 frame, time_ = self.dump_last_frame(args)
                 self.assertAlmostEqual(time_, t, places=3)
                 self.assertEqual(frame, round(t * 60))

@@ -367,7 +367,14 @@ def recomposite_error(rgba_png: Path, reference_png: Path, backdrop=L.CLEAR_RGB)
            "-f", "null", "-"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     m = re.search(r"average:([0-9.inf]+)", result.stderr)
-    return {"psnr_db": float(m.group(1)) if m and m.group(1) != "inf" else math.inf, "method": "ffmpeg-psnr"}
+    if result.returncode != 0 or not m:
+        # No number is not a match. A solved frame that is missing or does not
+        # decode left ffmpeg nothing to compare, and reading that as inf let
+        # the check pass it (measured on both, without numpy).
+        errors = [re.sub(r"^\[[^]]*\]\s*", "", s) for s in result.stderr.splitlines() if "rror" in s]
+        return {"error": (errors[0] if errors else f"ffmpeg exited {result.returncode} with no usable PSNR")[:200],
+                "method": "ffmpeg-psnr"}
+    return {"psnr_db": float(m.group(1)) if m.group(1) != "inf" else math.inf, "method": "ffmpeg-psnr"}
 
 
 # --------------------------------------------------------------------------
@@ -634,14 +641,24 @@ def check_alpha(engine: CliEngine, timeline, times, rgba: Path, work: Path, pad:
         err["frame"] = k
         results.append(err)
     report["alpha_check"] = results
-    bad = [r for r in results if r.get("max", 0) > 8 or r.get("psnr_db", math.inf) < 40]
+    bad = [r for r in results if "error" in r or r.get("max", 0) > 8 or r.get("psnr_db", math.inf) < 40]
     if not bad:
         return
-    worst = ", ".join(f"frame {r['frame']} off by up to {r['max']:.0f} codes" if "max" in r
-                      else f"frame {r['frame']} at {r['psnr_db']:.1f} dB" for r in bad)
-    problem = ("the solved alpha does not recomposite onto the single-pass render (" + worst +
-               "; the limit is 8 codes, or 40 dB): something in the scene is not plain src-over "
-               "(a blend mode over transparency?)")
+
+    def said(r: dict) -> str:
+        if "error" in r:
+            return f"frame {r['frame']} could not be compared ({r['error']})"
+        if "max" in r:
+            return f"frame {r['frame']} off by up to {r['max']:.0f} codes"
+        return f"frame {r['frame']} at {r['psnr_db']:.1f} dB"
+
+    worst = ", ".join(said(r) for r in bad)
+    if all("error" in r for r in bad):
+        problem = "the alpha recomposite check could not run (" + worst + ")"
+    else:
+        problem = ("the solved alpha does not recomposite onto the single-pass render (" + worst +
+                   "; the limit is 8 codes, or 40 dB): something in the scene is not plain src-over "
+                   "(a blend mode over transparency?)")
     if not allow_bad:
         raise L.RiveError(problem, "render it opaque (drop --alpha, or put the blend on an opaque plate), "
                                    "or pass --allow-bad-alpha to write it anyway and check the frames by eye")
