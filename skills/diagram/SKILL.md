@@ -29,6 +29,12 @@ $D src.mmd -o /tmp/light.png --theme default --background white
 
 Defaults: `--theme dark`, `--background transparent`, `--width 1600`, format inferred from output extension.
 
+With Mermaid CLI 12 or later `--width` sets the **longest side** of a PNG, so a small
+diagram comes out 1600 px on its long side and a very tall one is scaled down to fit
+1600 px of height (a 30 step single column chain measured 103x1600). For those, raise
+`--width` or send SVG. Mermaid CLI 11 and older treat it as the page width instead;
+the script reads the installed version and passes the flag that version understands.
+
 ## Common diagram types
 
 ### Flowchart (most common)
@@ -197,6 +203,11 @@ Rules that matter:
 ## Notes
 
 - Uses `@mermaid-js/mermaid-cli` (`mmdc`) under the hood with Puppeteer.
+- Mermaid CLI 12 draws the same source differently: every element uses Mermaid's `neo`
+  look (a soft shadow on boxes) where 11 mixed in `classic`, flowchart arrows turn at
+  right angles instead of curving, sequence boxes are rounder, and a PDF is sized to
+  the diagram instead of a Letter page. A diagram re-rendered after the update will
+  not match one rendered before it.
 - The `--no-sandbox` flag is preconfigured in `scripts/puppeteer.json` because Chromium runs without a user-namespace sandbox.
 - Renders are deterministic for the same source -- safe to cache by hash if a diagram is requested repeatedly.
 - First-time install pulls a Puppeteer-managed Chromium (~150MB). Subsequent runs use the cached binary.
