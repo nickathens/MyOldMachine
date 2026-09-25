@@ -600,8 +600,10 @@ class AlphaCheckTests(TempDir):
                 shutil.copy2(p, out_dir / p.name)
 
         err = io.StringIO()
+        # the blank check reads frames with ffprobe, which CI does not have
         with mock.patch.object(R, "CliEngine", Engine), mock.patch.object(R, "solve_alpha", solve), \
                 mock.patch.object(R, "recomposite_error", lambda rgba, ref: {"max": 143.0, "mean": 14.0}), \
+                mock.patch.object(R, "check_blank", lambda *a: None), \
                 mock.patch.object(R.L, "snapshot_project", return_value=proj), \
                 contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             code = R.main([str(proj), "-o", str(out), "--alpha", "--work-dir", str(self.tmp), *extra])
