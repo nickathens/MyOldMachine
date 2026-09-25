@@ -548,7 +548,7 @@ def render(args) -> dict:
                 folders["rgba"].mkdir()
                 solve_alpha(folders["black"], folders["white"], folders["rgba"], args.fps, pad)
                 final = folders["rgba"]
-                check_alpha(engine, timeline, times, final, work, pad, report)
+                check_alpha(engine, timeline, times, final, work, pad, report, allow_bad=args.allow_bad_alpha)
             else:
                 final = folders["main"]
             report["sample_args"] = {str(k): timeline.frame_args(times[k]).args
@@ -614,8 +614,15 @@ def flatten(folder: Path, background: str, pad: int, fps: float, report: dict) -
     report["background"] = "#" + background.upper()
 
 
-def check_alpha(engine: CliEngine, timeline, times, rgba: Path, work: Path, pad: int, report: dict) -> None:
-    """Re-render a few frames single-pass and compare the solved alpha against them."""
+def check_alpha(engine: CliEngine, timeline, times, rgba: Path, work: Path, pad: int, report: dict,
+                allow_bad: bool = False) -> None:
+    """Re-render a few frames single-pass and compare the solved alpha against them.
+
+    A failure stops the render, like a blank one: a mis-solved frame looks
+    finished, so a warning alone lets it go out. Measured on a difference
+    blend over a 50% fill: 143 codes off, and a warning-only check still
+    wrote the file and exited 0.
+    """
     ref_snap = L.snapshot_project(engine.source, engine.workdir)
     engine.passes["reference"] = ref_snap
     samples = sorted({0, len(times) // 2, len(times) - 1})
@@ -628,11 +635,17 @@ def check_alpha(engine: CliEngine, timeline, times, rgba: Path, work: Path, pad:
         results.append(err)
     report["alpha_check"] = results
     bad = [r for r in results if r.get("max", 0) > 8 or r.get("psnr_db", math.inf) < 40]
-    if bad:
-        report["warnings"].append(
-            "the solved alpha does not recomposite onto the single-pass render (max error over 8 codes): "
-            "something in the scene is not plain src-over (a blend mode over transparency?). Check the "
-            "frames before delivering, or render the element opaque.")
+    if not bad:
+        return
+    worst = ", ".join(f"frame {r['frame']} off by up to {r['max']:.0f} codes" if "max" in r
+                      else f"frame {r['frame']} at {r['psnr_db']:.1f} dB" for r in bad)
+    problem = ("the solved alpha does not recomposite onto the single-pass render (" + worst +
+               "; the limit is 8 codes, or 40 dB): something in the scene is not plain src-over "
+               "(a blend mode over transparency?)")
+    if not allow_bad:
+        raise L.RiveError(problem, "render it opaque (drop --alpha, or put the blend on an opaque plate), "
+                                   "or pass --allow-bad-alpha to write it anyway and check the frames by eye")
+    report["warnings"].append(problem + "; written anyway because of --allow-bad-alpha")
 
 
 def check_blank(folder: Path, n: int, pad: int, report: dict, args) -> None:
@@ -718,6 +731,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--web-runtime", choices=["webgl2", "canvas"], default=None)
     ap.add_argument("--keep-frames", help="also copy the PNG frames here")
     ap.add_argument("--allow-blank", action="store_true")
+    ap.add_argument("--allow-bad-alpha", action="store_true",
+                    help="write an --alpha render even when its recomposite check fails")
     ap.add_argument("--work-dir", help="parent for scratch folders (default: system temp)")
     ap.add_argument("--report", help="where to write the JSON report (default: next to the output)")
     ap.add_argument("--dry-run", action="store_true", help="print the per-frame CLI arguments and stop")

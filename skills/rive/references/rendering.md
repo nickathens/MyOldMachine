@@ -97,7 +97,7 @@ alpha = 255 - (white - black)          colour = black * 255 / alpha
 
 in one ffmpeg graph (`ALPHA_GRAPH` in `rive_render.py`, two `blend` filters, `extractplanes`, `alphamerge`). Measured on a feathered glow, a radial gradient to clear, a 50% fill and text: per-channel alpha estimates agree within 2 codes (plain source-over), and the solved RGBA laid back over `#1D1D1D` matches a normal capture within 2.03 codes (mean 0.10). **ffmpeg's `unpremultiply=inplace=1` after `alphamerge` left the colour premultiplied here (errors up to 65 codes)**; the division is done with `blend` for that reason.
 
-Every alpha render then captures three frames normally and checks that recomposite (`alpha_check` in the report). A scene that is not plain source-over over transparency (a blend mode on semi-transparent content) cannot be solved this way and the check fails with an explanation. Requirements: no opaque artboard background (refused), and no letterbox (refused with `contain`/`fit-width`/`fit-height`/`none`/`scale-down` at another aspect). The alpha is 8-bit, from 8-bit captures.
+Every alpha render then captures three frames normally and checks that recomposite (`alpha_check` in the report). A scene that is not plain source-over over transparency (a blend mode on semi-transparent content) cannot be solved this way: the check fails and the render stops, naming each failing frame and its error (measured: a difference blend over a 50% fill, 143 codes off). The limit is 8 codes, or 40 dB PSNR where numpy is missing. `--allow-bad-alpha` writes the file anyway with the numbers in a warning, for a look by eye. Requirements: no opaque artboard background (refused), and no letterbox (refused with `contain`/`fit-width`/`fit-height`/`none`/`scale-down` at another aspect). The alpha is 8-bit, from 8-bit captures.
 
 The web engine has real alpha in one pass (a transparent canvas read back as PNG).
 
@@ -133,7 +133,7 @@ Audio: `--audio FILE [--audio-offset S]` muxes into `.mp4` (AAC 320k) or `.mov` 
 
 `<output>.render.json` holds: tool, output, engine (CLI version and binary, or web runtime and renderer string), source (path, kind, SHA-256 of the project's files or the `.riv`), artboard (name, size, default state machine, view model), size, fit, fps, frames, the timeline (steps, data, curves used and unused), the exact CLI arguments of the first, middle and last frame, warnings, late frames, blank frames, alpha check, encode command, an ffprobe of the result (codec, profile, pixel format, frame count, colour tags) and the output's SHA-256.
 
-The render stops when: the project does not build or `inspect` reports errors; `--alpha` meets an opaque background or a letterbox; every sampled frame (first, quarter, half, three quarters, last) is one flat colour (pass `--allow-blank` if that is intended); a capture fails (the CLI's own message and exit meaning are shown).
+The render stops when: the project does not build or `inspect` reports errors; `--alpha` meets an opaque background or a letterbox; every sampled frame (first, quarter, half, three quarters, last) is one flat colour (pass `--allow-blank` if that is intended); an `--alpha` solve does not recomposite (pass `--allow-bad-alpha` to write it anyway); a capture fails (the CLI's own message and exit meaning are shown).
 
 ## Linux
 

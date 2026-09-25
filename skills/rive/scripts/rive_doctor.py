@@ -86,9 +86,12 @@ def defines(help_text: str, flag: str) -> bool:
 
     A plain substring test passes a flag that is gone: --data lives on inside
     --data-dump, and most flags are named again in other flags' descriptions.
+    Definitions sit in the left column (2 spaces in 1.1.1) and wrapped
+    descriptions in the right one (28), where two lines begin "--semantics or
+    --data-dump"; so the indent is capped, or --semantics would never go missing.
     """
     name = re.escape(flag.split("=")[0])
-    return re.search(rf"(?m)^[ \t]+{name}(?=[=\[ \t]|$)", help_text) is not None
+    return re.search(rf"(?m)^[ \t]{{1,8}}{name}(?=[=\[ \t]|$)", help_text) is not None
 
 
 def flags(results: list) -> None:
