@@ -8,6 +8,7 @@ well on Telegram's chat surface.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -17,9 +18,23 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PUPPETEER_CONFIG = SCRIPT_DIR / "puppeteer.json"
+# Mermaid 12 changed three defaults that re-draw every existing diagram: the
+# shaded neo look, a 120 px minimum label width for flowchart and state
+# nodes, and the ELK layout for flowchart, state, class, ER and requirement
+# diagrams. This file puts all three back to Mermaid 11's, and 13 of the 16
+# diagram types measured then render pixel identical to 11. The layout is
+# set per diagram type on purpose: a global `layout` outranks each type's
+# own default, and turned the radial mindmap into a flat tree. On 11 the
+# file changes nothing. A diagram's own front matter still wins, so one
+# diagram can ask for `layout: elk` or `look: neo`.
+MERMAID_CONFIG = SCRIPT_DIR / "mermaid.json"
 
 THEMES = ("default", "dark", "forest", "neutral")
 FORMATS = ("png", "svg", "pdf")
+
+# The page height mermaid-cli 11 used when no -H was given. Only the width
+# shapes a render: the PNG is cropped to the diagram either way.
+PAGE_HEIGHT = 600
 
 
 def mmdc_major() -> int:
@@ -35,17 +50,32 @@ def mmdc_major() -> int:
 
 
 def size_args(width: int, major: int) -> list[str]:
-    """The mmdc flag that sets the output size.
+    """The mmdc flag that sets the page width, where the version has one.
 
     Mermaid CLI 12 removed -w/--width and refuses it ("error: unknown option
-    '-w'"), so passing it there fails every render. Its replacement, --size,
-    makes the longest side of a PNG that many pixels: a small diagram comes
-    out larger than it did under -w, a very tall one smaller. 11 and older
-    only know -w, the page width. An unreadable version gets the current flag.
+    '-w'"), so passing it there fails every render. Its --size is not a
+    rename: it scales a PNG until the longest side is that many pixels, so a
+    small diagram is blown up and a tall one squeezed. On 12 the page width
+    travels in the launch config instead (see puppeteer_config). 11 and older
+    take -w, which overrides that config. An unreadable version counts as
+    current: guessing 11 on a 12 install fails every render, guessing 12 on
+    an 11 install only narrows the page to 800 px.
     """
     if 0 < major < 12:
         return ["-w", str(width)]
-    return ["--size", str(width)]
+    return []
+
+
+def puppeteer_config(width: int) -> dict:
+    """The browser launch config: scripts/puppeteer.json plus the page size.
+
+    Puppeteer's defaultViewport does what -w did: the page is `width` px
+    wide, a wider diagram is fitted to it, a narrower one renders at its
+    natural size. Measured on mermaid-cli 12.0.0.
+    """
+    config = json.loads(PUPPETEER_CONFIG.read_text(encoding="utf-8"))
+    config["defaultViewport"] = {"width": width, "height": PAGE_HEIGHT}
+    return config
 
 
 def render(
@@ -68,13 +98,11 @@ def render(
     if fmt not in FORMATS:
         raise ValueError(f"Unsupported format: {fmt}. Choose from {FORMATS}.")
 
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".mmd", delete=False, encoding="utf-8"
-    ) as fh:
-        fh.write(source)
-        input_path = Path(fh.name)
-
-    try:
+    with tempfile.TemporaryDirectory(prefix="diagram-") as tmp:
+        input_path = Path(tmp) / "diagram.mmd"
+        input_path.write_text(source, encoding="utf-8")
+        config_path = Path(tmp) / "puppeteer.json"
+        config_path.write_text(json.dumps(puppeteer_config(width)), encoding="utf-8")
         cmd = [
             "mmdc",
             "-i",
@@ -87,7 +115,9 @@ def render(
             background,
             *size_args(width, mmdc_major()),
             "-p",
-            str(PUPPETEER_CONFIG),
+            str(config_path),
+            "-c",
+            str(MERMAID_CONFIG),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -95,8 +125,6 @@ def render(
                 f"mmdc failed (code {result.returncode}):\n"
                 f"stdout: {result.stdout}\nstderr: {result.stderr}"
             )
-    finally:
-        input_path.unlink(missing_ok=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,9 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1600,
         help=(
-            "Output size in pixels (default: 1600). Mermaid CLI 12 and later "
-            "make this the longest side of a PNG; older versions use it as "
-            "the page width."
+            "Page width in pixels (default: 1600). A wider diagram is fitted "
+            "to it, a narrower one keeps its natural size."
         ),
     )
     p.add_argument(
