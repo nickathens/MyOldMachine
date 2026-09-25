@@ -1,0 +1,8 @@
+{
+  "look": "classic",
+  "flowchart": {"layout": "dagre", "minNodeWidth": 0},
+  "state": {"layout": "dagre", "minNodeWidth": 0},
+  "class": {"layout": "dagre"},
+  "er": {"layout": "dagre"},
+  "requirement": {"layout": "dagre"}
+}

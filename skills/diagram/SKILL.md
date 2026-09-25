@@ -29,11 +29,23 @@ $D src.mmd -o /tmp/light.png --theme default --background white
 
 Defaults: `--theme dark`, `--background transparent`, `--width 1600`, format inferred from output extension.
 
-With Mermaid CLI 12 or later `--width` sets the **longest side** of a PNG, so a small
-diagram comes out 1600 px on its long side and a very tall one is scaled down to fit
-1600 px of height (a 30 step single column chain measured 103x1600). For those, raise
-`--width` or send SVG. Mermaid CLI 11 and older treat it as the page width instead;
-the script reads the installed version and passes the flag that version understands.
+`--width` is the page width: a wider diagram is fitted to it, a narrower one keeps its
+natural size. It means the same on Mermaid CLI 11 and 12; the script reads the installed
+version and passes the width the way that version takes it, because 12 removed `-w`.
+
+The look is Mermaid 11's: flat boxes, labels at their natural width, the dagre layout.
+`scripts/mermaid.json` keeps it on Mermaid 12, so a diagram re-rendered after the update
+matches one rendered before it. A diagram's own front matter always wins, so one diagram
+can still ask for Mermaid 12's ELK layout or its shaded `neo` look:
+
+```
+---
+config:
+  layout: elk
+---
+graph LR
+    A --> B
+```
 
 ## Common diagram types
 
@@ -203,11 +215,8 @@ Rules that matter:
 ## Notes
 
 - Uses `@mermaid-js/mermaid-cli` (`mmdc`) under the hood with Puppeteer.
-- Mermaid CLI 12 draws the same source differently: every element uses Mermaid's `neo`
-  look (a soft shadow on boxes) where 11 mixed in `classic`, flowchart arrows turn at
-  right angles instead of curving, sequence boxes are rounder, and a PDF is sized to
-  the diagram instead of a Letter page. A diagram re-rendered after the update will
-  not match one rendered before it.
+- Two Mermaid CLI 12 changes are not covered by `scripts/mermaid.json`: a PDF is sized
+  to the diagram instead of a Letter page, and mindmap nodes draw slightly larger.
 - The `--no-sandbox` flag is preconfigured in `scripts/puppeteer.json` because Chromium runs without a user-namespace sandbox.
-- Renders are deterministic for the same source -- safe to cache by hash if a diagram is requested repeatedly.
+- Do not cache renders by output hash: class and gitGraph PNGs differ byte for byte on every run of the same source, and PDFs carry a timestamp. Cache by source hash if needed.
 - First-time install pulls a Puppeteer-managed Chromium (~150MB). Subsequent runs use the cached binary.
