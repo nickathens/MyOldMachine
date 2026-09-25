@@ -1,0 +1,4 @@
+name: logo_reveal
+main: Main
+exclude:
+  - mark.svg

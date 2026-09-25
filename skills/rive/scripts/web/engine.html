@@ -1,0 +1,213 @@
+<!doctype html>
+<!--
+  The rive skill's web engine. Loaded by riveweb.py in headless Chromium,
+  never shown to a person. It drives Rive's low-level web runtime by hand:
+  no requestAnimationFrame, no wall clock, so frame k is exactly the scene
+  at its own time on every run. Three jobs: describe a .riv (info), prove it
+  loads and draws (probe), and render frames with real alpha (frame).
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>html,body{margin:0;background:transparent}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="stage" width="16" height="16"></canvas>
+<script src="rive.js"></script>
+<script>
+"use strict";
+const FRAME = 1 / 60;
+const RS = {
+  rc: null, file: null, ab: null, sm: null, anim: null, vmi: null, renderer: null,
+  canvas: document.getElementById("stage"), now: 0, cfg: null, log: [], assets: [],
+};
+window.RS = RS;
+
+function fitOf(name) {
+  const f = RS.rc.Fit;
+  const map = {fill: f.fill, contain: f.contain, cover: f.cover, "fit-width": f.fitWidth,
+               "fit-height": f.fitHeight, none: f.none, "scale-down": f.scaleDown};
+  return map[name] !== undefined ? map[name] : f.contain;
+}
+
+RS.boot = async function (cfg) {
+  try {
+    rive.RuntimeLoader.setWasmUrl(cfg.wasm || "rive.wasm");
+    if (rive.RuntimeLoader.setWasmFallbackUrl) rive.RuntimeLoader.setWasmFallbackUrl(null);
+    RS.rc = await rive.RuntimeLoader.awaitInstance();
+    const bytes = new Uint8Array(await (await fetch(cfg.riv)).arrayBuffer());
+    const loader = new RS.rc.CustomFileAssetLoader({
+      loadContents: (asset, inBandBytes) => {
+        RS.assets.push({name: asset.name, ext: asset.fileExtension, image: !!asset.isImage,
+                        font: !!asset.isFont, cdn: asset.cdnUuid || "",
+                        embedded: !!(inBandBytes && inBandBytes.length)});
+        return false; // let the runtime use the embedded bytes
+      },
+    });
+    RS.file = await RS.rc.load(bytes, loader, false);
+    if (!RS.file) throw new Error("the runtime could not read this file");
+    return {ok: true};
+  } catch (e) {
+    return {ok: false, error: String(e && e.stack || e)};
+  }
+};
+
+RS.info = function () {
+  const f = RS.file, out = {artboards: [], viewModels: [], enums: [], assets: RS.assets};
+  for (let i = 0; i < f.artboardCount(); i++) {
+    const ab = f.artboardByIndex(i);
+    const b = ab.bounds;
+    const entry = {name: ab.name, width: b.maxX - b.minX, height: b.maxY - b.minY,
+                   animations: [], stateMachines: []};
+    for (let a = 0; a < ab.animationCount(); a++) {
+      const anim = ab.animationByIndex(a);
+      entry.animations.push({name: anim.name, duration: anim.duration, fps: anim.fps,
+                             loop: anim.loopValue});
+    }
+    for (let s = 0; s < ab.stateMachineCount(); s++) {
+      const def = ab.stateMachineByIndex(s);
+      const inst = new RS.rc.StateMachineInstance(def, ab);
+      const inputs = [];
+      for (let k = 0; k < inst.inputCount(); k++) {
+        const inp = inst.input(k);
+        inputs.push({name: inp.name, type: ({56: "number", 58: "trigger", 59: "boolean"})[inp.type] || inp.type});
+      }
+      entry.stateMachines.push({name: def.name, legacyInputs: inputs});
+      inst.delete();
+    }
+    out.artboards.push(entry);
+    ab.delete();
+  }
+  const d = f.defaultArtboard();
+  out.defaultArtboard = d ? d.name : null;
+  if (d) d.delete();
+  for (let v = 0; v < f.viewModelCount(); v++) {
+    const vm = f.viewModelByIndex(v);
+    const instances = [];
+    for (let k = 0; k < vm.instanceCount; k++) {
+      try { instances.push(vm.instanceByIndex(k).name || ("#" + k)); } catch (e) { instances.push("#" + k); }
+    }
+    out.viewModels.push({name: vm.name,
+                         properties: vm.getProperties().map(p => ({name: p.name, type: p.type, enumName: p.enumName})),
+                         instances});
+  }
+  try { out.enums = f.enums().map(e => ({name: e.name, values: e.values})); } catch (e) { out.enums = []; }
+  return out;
+};
+
+RS.setup = function (cfg) {
+  RS.cfg = cfg;
+  const rc = RS.rc, c = RS.canvas;
+  c.width = cfg.width; c.height = cfg.height;
+  c.style.width = cfg.width + "px"; c.style.height = cfg.height + "px";
+  RS.renderer = rc.makeRenderer(c, false);
+  RS.ab = cfg.artboard ? RS.file.artboardByName(cfg.artboard) : RS.file.defaultArtboard();
+  if (!RS.ab) return {ok: false, error: "no artboard " + (cfg.artboard || "(default)")};
+  let smName = null;
+  if (cfg.stateMachine) {
+    const def = RS.ab.stateMachineByName(cfg.stateMachine);
+    if (!def) return {ok: false, error: "no state machine " + cfg.stateMachine};
+    RS.sm = new rc.StateMachineInstance(def, RS.ab); smName = def.name;
+  } else if (RS.ab.stateMachineCount() > 0) {
+    const def = RS.ab.stateMachineByIndex(0);
+    RS.sm = new rc.StateMachineInstance(def, RS.ab); smName = def.name;
+  } else if (RS.ab.animationCount() > 0) {
+    RS.anim = new rc.LinearAnimationInstance(RS.ab.animationByIndex(0), RS.ab);
+  }
+  let vmName = null;
+  try {
+    const vm = RS.file.defaultArtboardViewModel(RS.ab);
+    if (vm) {
+      RS.vmi = vm.defaultInstance();
+      vmName = vm.name;
+      if (RS.sm) RS.sm.bindViewModelInstance(RS.vmi);
+      else RS.ab.bindViewModelInstance(RS.vmi);
+    }
+  } catch (e) { RS.log.push("view model: " + e); }
+  const errs = RS.setData(cfg.data || {});
+  if (errs.length) return {ok: false, error: errs.join("; ")};
+  RS.now = 0;
+  RS.step(0);
+  return {ok: true, artboard: RS.ab.name, stateMachine: smName, viewModel: vmName,
+          width: RS.ab.bounds.maxX - RS.ab.bounds.minX, height: RS.ab.bounds.maxY - RS.ab.bounds.minY};
+};
+
+RS.setData = function (data) {
+  const errs = [];
+  for (const [path, raw] of Object.entries(data)) {
+    if (!RS.vmi) { errs.push("no view model is bound to this artboard (" + path + ")"); continue; }
+    let done = false;
+    const tries = [
+      ["number", p => { p.value = Number(raw); }],
+      ["string", p => { p.value = String(raw); }],
+      ["boolean", p => { p.value = (raw === true || raw === "true" || raw === "1" || raw === 1); }],
+      ["color", p => { let h = String(raw).replace(/^#/, ""); if (h.length === 6) h = "FF" + h; p.value = parseInt(h, 16) | 0; }],
+      ["enum", p => { p.value = String(raw); }],
+      ["trigger", p => { p.trigger(); }],
+    ];
+    for (const [kind, apply] of tries) {
+      let prop = null;
+      try { prop = RS.vmi[kind](path); } catch (e) { prop = null; }
+      if (prop) { apply(prop); done = true; break; }
+    }
+    if (!done) errs.push("no property at " + path);
+  }
+  return errs;
+};
+
+RS.step = function (dt) {
+  // Advance in the same 1/60 s frames the CLI uses, then one shorter one.
+  let left = dt;
+  do {
+    const d = Math.min(left, FRAME);
+    if (RS.sm) RS.sm.advanceAndApply(d);
+    else if (RS.anim) { RS.anim.advance(d); RS.anim.apply(1); RS.ab.advance(d); }
+    else RS.ab.advance(d);
+    RS.now += d;
+    left -= d;
+  } while (left > 1e-9);
+};
+
+RS.pointer = function (kind, x, y) {
+  if (!RS.sm) return;
+  if (kind === "down") RS.sm.pointerDown(x, y, 0);
+  else if (kind === "up") RS.sm.pointerUp(x, y, 0);
+  else if (kind === "exit") RS.sm.pointerExit(x, y, 0);
+  else RS.sm.pointerMove(x, y, 0);
+};
+
+RS.draw = function () {
+  const rc = RS.rc, c = RS.canvas, r = RS.renderer;
+  r.clear();
+  r.save();
+  r.align(fitOf(RS.cfg.fit), rc.Alignment.center, {minX: 0, minY: 0, maxX: c.width, maxY: c.height}, RS.ab.bounds);
+  RS.ab.draw(r);
+  r.restore();
+  r.flush();
+  // Read back in the same task: the drawing buffer is not preserved.
+  return c.toDataURL("image/png");
+};
+
+// Bring the scene to time t: replay the steps due before it (each one
+// followed by one frame, as the CLI does), set the data due, then draw.
+RS.frameAt = function (t, steps, data) {
+  if (data) { const errs = RS.setData(data); if (errs.length) return {ok: false, error: errs.join("; ")}; }
+  for (const s of steps || []) {
+    if (s.at > RS.now + 1e-9) RS.step(s.at - RS.now);
+    RS.pointer(s.kind, s.x, s.y);
+    RS.step(FRAME);
+  }
+  if (t > RS.now + 1e-9) RS.step(t - RS.now);
+  if (t === 0 && RS.now === 0) RS.step(1e-5);
+  const events = [];
+  if (RS.sm) {
+    for (let i = 0; i < RS.sm.reportedEventCount(); i++) {
+      const ev = RS.sm.reportedEventAt(i);
+      if (ev) events.push(ev.name);
+    }
+  }
+  return {ok: true, png: RS.draw(), now: RS.now, events};
+};
+</script>
+</body>
+</html>

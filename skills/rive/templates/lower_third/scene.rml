@@ -1,0 +1,181 @@
+<Rive version="1" kind="fragment">
+    <!--
+      A lower third (a "super"): a name and a title on a plate, pinned
+      bottom-left, with an accent bar. Transparent: render it with the alpha option.
+      Everything that changes per person is on the LowerThird view model,
+      so one file makes every version (rive_versions.py with a CSV).
+      Timeline: in 0.0-1.2 s, hold, out 4.2-4.8 s (Super, 5 s at 60 fps).
+    -->
+    <Artboard defaultStateMachineId="0:90" viewModelId="0:60" viewModelInstanceId="0:61" styleId="0:3"
+              width="1920" height="1080" name="LowerThird" id="0:2">
+        <LayoutComponentStyle name="Artboard Style" id="0:3"/>
+
+        <LayoutComponent styleId="0:11" name="Super" id="0:10">
+            <LayoutComponentStyle positionTypeValue="absolute"
+                                  positionLeft="120" positionLeftUnitsValue="points"
+                                  positionBottom="130" positionBottomUnitsValue="points"
+                                  flexDirectionValue="row" layoutWidthScaleType="hug" layoutHeightScaleType="hug"
+                                  name="Super Style" id="0:11"/>
+            <ComponentOrigin originX="0" originY="1" name="Origin"/>
+
+            <LayoutComponent width="10" height="10" styleId="0:13" name="Accent" id="0:12">
+                <LayoutComponentStyle layoutWidthScaleType="fixed" layoutHeightScaleType="fill" name="Accent Style" id="0:13"/>
+                <ComponentOrigin originX="0.5" originY="1" name="Origin"/>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent Color">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </LayoutComponent>
+
+            <LayoutComponent styleId="0:21" name="Plate" id="0:20">
+                <LayoutComponentStyle flexDirectionValue="column" layoutWidthScaleType="hug" layoutHeightScaleType="hug"
+                                      paddingLeft="28" paddingLeftUnitsValue="points"
+                                      paddingRight="40" paddingRightUnitsValue="points"
+                                      paddingTop="16" paddingTopUnitsValue="points"
+                                      paddingBottom="20" paddingBottomUnitsValue="points"
+                                      gapVertical="2" gapVerticalUnitsValue="points"
+                                      name="Plate Style" id="0:21"/>
+                <ComponentOrigin originX="0" originY="0.5" name="Origin"/>
+                <Fill name="Fill">
+                    <SolidColor colorValue="D90A0A0A" name="Plate Color">
+                        <DataBindContext sourcePathIds="0:60-0:65" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+
+                <Text name="Name" id="0:30">
+                    <LayoutParticipant layoutWidthScaleType="hug" layoutHeightScaleType="hug" name="Name Layout"/>
+                    <TextStylePaint fontSize="56" lineHeight="68" fontAssetId="0:50" familyName="Space Grotesk"
+                                    styleName="Bold" name="Name Style" id="0:31">
+                        <Fill name="Fill">
+                            <SolidColor colorValue="FFFFFFFF" name="Ink">
+                                <DataBindContext sourcePathIds="0:60-0:66" propertyKey="37"/>
+                            </SolidColor>
+                        </Fill>
+                        <TextStyleAxis tag="2003265652" axisValue="700" name="Weight"/>
+                    </TextStylePaint>
+                    <TextValueRun styleId="0:31" text="Firstname Lastname" name="Name Run">
+                        <DataBindContext sourcePathIds="0:60-0:62" propertyKey="268"/>
+                    </TextValueRun>
+                    <TextModifierGroup modifyOpacity="true" modifyTranslation="true" invertOpacity="true"
+                                       opacity="0" y="26" name="Name Reveal" id="0:32">
+                        <TextModifierRange modifyFrom="-0.25" modifyTo="1" falloffFrom="0" falloffTo="1"
+                                           name="Name Sweep" id="0:33"/>
+                    </TextModifierGroup>
+                </Text>
+
+                <Text opacity="0.82" name="Title" id="0:40">
+                    <LayoutParticipant layoutWidthScaleType="hug" layoutHeightScaleType="hug" name="Title Layout"/>
+                    <TextStylePaint fontSize="32" lineHeight="42" letterSpacing="0.4" fontAssetId="0:50"
+                                    familyName="Space Grotesk" styleName="Regular" name="Title Style" id="0:41">
+                        <Fill name="Fill">
+                            <SolidColor colorValue="FFFFFFFF" name="Ink">
+                                <DataBindContext sourcePathIds="0:60-0:66" propertyKey="37"/>
+                            </SolidColor>
+                        </Fill>
+                        <TextStyleAxis tag="2003265652" axisValue="400" name="Weight"/>
+                    </TextStylePaint>
+                    <TextValueRun styleId="0:41" text="Role or title" name="Title Run">
+                        <DataBindContext sourcePathIds="0:60-0:63" propertyKey="268"/>
+                    </TextValueRun>
+                    <TextModifierGroup modifyOpacity="true" modifyTranslation="true" invertOpacity="true"
+                                       opacity="0" y="18" name="Title Reveal" id="0:42">
+                        <TextModifierRange modifyFrom="-0.25" modifyTo="1" falloffFrom="0" falloffTo="1"
+                                           name="Title Sweep" id="0:43"/>
+                    </TextModifierGroup>
+                </Text>
+            </LayoutComponent>
+        </LayoutComponent>
+
+        <!-- Super: 300 frames at 60 fps = 5 s. Ease on the START key of each segment. -->
+        <LinearAnimation fps="60" duration="300" name="Super" id="0:80">
+            <KeyedObject objectId="0:12">
+                <KeyedProperty propertyKey="17">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="20" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:20">
+                <KeyedProperty propertyKey="16">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="hold"/>
+                    <KeyFrameDouble value="0" frame="8" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="36" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:33">
+                <KeyedProperty propertyKey="327">
+                    <KeyFrameDouble value="-0.25" frame="16" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.33" y1="0" x2="0.2" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="58" interpolationType="hold"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="317">
+                    <KeyFrameDouble value="0" frame="16" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.33" y1="0" x2="0.2" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1.25" frame="58" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:43">
+                <KeyedProperty propertyKey="327">
+                    <KeyFrameDouble value="-0.25" frame="28" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.33" y1="0" x2="0.2" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="72" interpolationType="hold"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="317">
+                    <KeyFrameDouble value="0" frame="28" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.33" y1="0" x2="0.2" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1.25" frame="72" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:10">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="1" frame="252" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.5" y1="0" x2="0.84" y2="0"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="0" frame="288" interpolationType="hold"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="14">
+                    <KeyFrameDouble value="0" frame="252" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.5" y1="0" x2="0.84" y2="0"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="18" frame="288" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+
+        <StateMachine name="Super Machine" id="0:90">
+            <StateMachineLayer name="Play" id="0:91">
+                <AnyState x="400" y="0"/>
+                <ExitState x="560" y="0"/>
+                <EntryState x="0" y="0">
+                    <StateTransition stateToId="0:92"/>
+                </EntryState>
+                <AnimationState x="200" y="0" animationId="0:80" id="0:92"/>
+            </StateMachineLayer>
+        </StateMachine>
+    </Artboard>
+
+    <ViewModel defaultInstanceId="0:61" name="LowerThird" id="0:60">
+        <ViewModelPropertyString name="name" id="0:62"/>
+        <ViewModelPropertyString name="title" id="0:63"/>
+        <ViewModelPropertyColor name="accent" id="0:64"/>
+        <ViewModelPropertyColor name="plate" id="0:65"/>
+        <ViewModelPropertyColor name="ink" id="0:66"/>
+        <ViewModelInstance exports="true" name="Default" id="0:61">
+            <ViewModelInstanceString propertyValue="Firstname Lastname" viewModelPropertyId="0:62"/>
+            <ViewModelInstanceString propertyValue="Role or title" viewModelPropertyId="0:63"/>
+            <ViewModelInstanceColor propertyValue="FFC9A84C" viewModelPropertyId="0:64"/>
+            <ViewModelInstanceColor propertyValue="D90A0A0A" viewModelPropertyId="0:65"/>
+            <ViewModelInstanceColor propertyValue="FFFFFFFF" viewModelPropertyId="0:66"/>
+        </ViewModelInstance>
+    </ViewModel>
+
+    <FontAsset file="../_fonts/SpaceGrotesk-Variable.ttf" name="Space Grotesk" id="0:50"/>
+</Rive>

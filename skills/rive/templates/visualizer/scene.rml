@@ -1,0 +1,256 @@
+<Rive version="1" kind="fragment">
+    <!--
+      A music visualiser driven by data. Measure a track with rive_audio.py
+      (12 log bands), then render with rive_render.py's curves option, which
+      binds every curve named like a property, and the track as audio (the
+      commands are in SKILL.md).
+      Bars b1..b12 are a 12-band spectrum (0..1 each), the ring breathes with
+      "low" and its glow flashes with "onset". Values are levels: the scene
+      shows whatever the frame is given, so smoothing lives in rive_audio.py.
+    -->
+    <Artboard defaultStateMachineId="0:90" viewModelId="0:60" viewModelInstanceId="0:61" styleId="0:3"
+              width="1920" height="1080" name="Visualizer" id="0:2">
+        <LayoutComponentStyle name="Artboard Style" id="0:3"/>
+        <Fill name="Background"><SolidColor colorValue="FF07080A" name="Color"/></Fill>
+
+        <Text x="960" y="382" sizingValue="autoWidth" originX="0.5" originY="0.5" name="Title" id="0:30">
+            <TextStylePaint fontSize="54" fontAssetId="0:50" familyName="Space Grotesk" styleName="Bold"
+                            name="Title Style" id="0:31">
+                <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                <TextStyleAxis tag="2003265652" axisValue="700" name="Weight"/>
+            </TextStylePaint>
+            <TextValueRun styleId="0:31" text="Track title" name="Title Run">
+                <DataBindContext sourcePathIds="0:60-0:62" propertyKey="268"/>
+            </TextValueRun>
+        </Text>
+        <Text x="960" y="444" sizingValue="autoWidth" originX="0.5" originY="0.5" opacity="0.7" name="Artist" id="0:32">
+            <TextStylePaint fontSize="28" letterSpacing="2" fontAssetId="0:50" familyName="Space Grotesk"
+                            styleName="Regular" name="Artist Style" id="0:33">
+                <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                <TextStyleAxis tag="2003265652" axisValue="400" name="Weight"/>
+            </TextStylePaint>
+            <TextValueRun styleId="0:33" text="Artist" name="Artist Run">
+                <DataBindContext sourcePathIds="0:60-0:63" propertyKey="268"/>
+            </TextValueRun>
+        </Text>
+
+        <Shape x="960" y="400" name="Ring" id="0:20">
+            <DataBindContext sourcePathIds="0:60-0:65" propertyKey="16" converterId="0:71"/>
+            <DataBindContext sourcePathIds="0:60-0:65" propertyKey="17" converterId="0:71"/>
+            <Ellipse width="420" height="420" originX="0.5" originY="0.5" name="Path"/>
+            <Stroke thickness="8" name="Line">
+                <SolidColor colorValue="FFC9A84C" name="Accent">
+                    <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                </SolidColor>
+            </Stroke>
+        </Shape>
+        <Shape x="960" y="400" name="Glow" id="0:21">
+            <DataBindContext sourcePathIds="0:60-0:65" propertyKey="16" converterId="0:71"/>
+            <DataBindContext sourcePathIds="0:60-0:65" propertyKey="17" converterId="0:71"/>
+            <DataBindContext sourcePathIds="0:60-0:66" propertyKey="18"/>
+            <Ellipse width="420" height="420" originX="0.5" originY="0.5" name="Path"/>
+            <Stroke thickness="26" name="Soft">
+                <SolidColor colorValue="FFC9A84C" name="Accent">
+                    <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                </SolidColor>
+                <Feather strength="36" name="Feather"/>
+            </Stroke>
+        </Shape>
+
+        <Node name="Bars" id="0:40">
+            <Shape x="652" y="930" name="Bar 1">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:200" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="708" y="930" name="Bar 2">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:201" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="764" y="930" name="Bar 3">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:202" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="820" y="930" name="Bar 4">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:203" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="876" y="930" name="Bar 5">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:204" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="932" y="930" name="Bar 6">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:205" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="988" y="930" name="Bar 7">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:206" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="1044" y="930" name="Bar 8">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:207" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="1100" y="930" name="Bar 9">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:208" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="1156" y="930" name="Bar 10">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:209" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="1212" y="930" name="Bar 11">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:210" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+            <Shape x="1268" y="930" name="Bar 12">
+                <Rectangle width="36" height="120" originX="0.5" originY="1" cornerRadiusTL="8" name="Path">
+                    <DataBindContext sourcePathIds="0:60-0:211" propertyKey="21" converterId="0:70"/>
+                </Rectangle>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FFC9A84C" name="Accent">
+                        <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </Shape>
+        </Node>
+
+        <!-- declared last, so it paints behind everything: a soft aura that follows the level -->
+        <Shape x="960" y="400" name="Aura" id="0:22">
+            <DataBindContext sourcePathIds="0:60-0:67" propertyKey="18" converterId="0:72"/>
+            <Ellipse width="1100" height="1100" originX="0.5" originY="0.5" name="Path"/>
+            <Fill name="Fill">
+                <RadialGradient startX="0" startY="0" endX="550" endY="0" name="Gradient">
+                    <GradientStop colorValue="FFC9A84C" position="0"/>
+                    <GradientStop colorValue="00C9A84C" position="1"/>
+                </RadialGradient>
+            </Fill>
+        </Shape>
+
+        <LinearAnimation fps="60" duration="1" name="Still" id="0:80"/>
+        <StateMachine name="Visualizer Machine" id="0:90">
+            <StateMachineLayer name="Bind" id="0:91">
+                <AnyState x="400" y="0"/>
+                <ExitState x="560" y="0"/>
+                <EntryState x="0" y="0"><StateTransition stateToId="0:92"/></EntryState>
+                <AnimationState x="200" y="0" animationId="0:80" id="0:92"/>
+            </StateMachineLayer>
+        </StateMachine>
+    </Artboard>
+
+    <!-- 0..1 levels to pixels and to a scale. Clamped, so a value above 1 cannot break the layout. -->
+    <DataConverterRangeMapper minInput="0" maxInput="1" minOutput="10" maxOutput="230"
+                              clampLower="true" clampUpper="true" name="Level to height" id="0:70"/>
+    <DataConverterRangeMapper minInput="0" maxInput="1" minOutput="1" maxOutput="1.22"
+                              clampLower="true" clampUpper="true" name="Level to scale" id="0:71"/>
+    <DataConverterRangeMapper minInput="0" maxInput="1" minOutput="0" maxOutput="0.35"
+                              clampLower="true" clampUpper="true" name="Level to glow" id="0:72"/>
+
+    <ViewModel defaultInstanceId="0:61" name="Visualizer" id="0:60">
+        <ViewModelPropertyString name="title" id="0:62"/>
+        <ViewModelPropertyString name="artist" id="0:63"/>
+        <ViewModelPropertyColor name="accent" id="0:64"/>
+        <ViewModelPropertyNumber name="low" id="0:65"/>
+        <ViewModelPropertyNumber name="onset" id="0:66"/>
+        <ViewModelPropertyNumber name="level" id="0:67"/>
+        <ViewModelPropertyNumber name="b1" id="0:200"/>
+        <ViewModelPropertyNumber name="b2" id="0:201"/>
+        <ViewModelPropertyNumber name="b3" id="0:202"/>
+        <ViewModelPropertyNumber name="b4" id="0:203"/>
+        <ViewModelPropertyNumber name="b5" id="0:204"/>
+        <ViewModelPropertyNumber name="b6" id="0:205"/>
+        <ViewModelPropertyNumber name="b7" id="0:206"/>
+        <ViewModelPropertyNumber name="b8" id="0:207"/>
+        <ViewModelPropertyNumber name="b9" id="0:208"/>
+        <ViewModelPropertyNumber name="b10" id="0:209"/>
+        <ViewModelPropertyNumber name="b11" id="0:210"/>
+        <ViewModelPropertyNumber name="b12" id="0:211"/>
+        <ViewModelInstance exports="true" name="Default" id="0:61">
+            <ViewModelInstanceString propertyValue="Track title" viewModelPropertyId="0:62"/>
+            <ViewModelInstanceString propertyValue="ARTIST" viewModelPropertyId="0:63"/>
+            <ViewModelInstanceColor propertyValue="FFC9A84C" viewModelPropertyId="0:64"/>
+            <ViewModelInstanceNumber propertyValue="0.3" viewModelPropertyId="0:65"/>
+            <ViewModelInstanceNumber propertyValue="0" viewModelPropertyId="0:66"/>
+            <ViewModelInstanceNumber propertyValue="0.4" viewModelPropertyId="0:67"/>
+            <ViewModelInstanceNumber propertyValue="0.15" viewModelPropertyId="0:200"/>
+            <ViewModelInstanceNumber propertyValue="0.50" viewModelPropertyId="0:201"/>
+            <ViewModelInstanceNumber propertyValue="0.22" viewModelPropertyId="0:202"/>
+            <ViewModelInstanceNumber propertyValue="0.57" viewModelPropertyId="0:203"/>
+            <ViewModelInstanceNumber propertyValue="0.29" viewModelPropertyId="0:204"/>
+            <ViewModelInstanceNumber propertyValue="0.64" viewModelPropertyId="0:205"/>
+            <ViewModelInstanceNumber propertyValue="0.36" viewModelPropertyId="0:206"/>
+            <ViewModelInstanceNumber propertyValue="0.71" viewModelPropertyId="0:207"/>
+            <ViewModelInstanceNumber propertyValue="0.43" viewModelPropertyId="0:208"/>
+            <ViewModelInstanceNumber propertyValue="0.15" viewModelPropertyId="0:209"/>
+            <ViewModelInstanceNumber propertyValue="0.50" viewModelPropertyId="0:210"/>
+            <ViewModelInstanceNumber propertyValue="0.22" viewModelPropertyId="0:211"/>
+        </ViewModelInstance>
+    </ViewModel>
+
+    <FontAsset file="../_fonts/SpaceGrotesk-Variable.ttf" name="Space Grotesk" id="0:50"/>
+</Rive>

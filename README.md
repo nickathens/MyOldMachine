@@ -10,7 +10,7 @@ One command installs it. After that you talk to it on your phone, and because it
 
 - **Runs on hardware most software has given up on.** A decade old laptop, a machine with 1GB of RAM paired with a small local model, a Raspberry Pi. If it boots, it can host this.
 - **14 AI providers, including free and fully local ones.** Switch between them from your phone, no reinstall, no SSH.
-- **84 skills**, from image generation and stem separation to Greek legal drafting, market backtesting, image-to-Three.js reconstruction, and DaVinci Resolve. Each installs its own dependencies the first time you use it.
+- **85 skills**, from image generation and stem separation to Greek legal drafting, market backtesting, image-to-Three.js reconstruction, and DaVinci Resolve. Each installs its own dependencies the first time you use it.
 - **A graphical Mini App inside Telegram** for the things a chat box is clumsy at.
 - **It remembers you.** A private memory per user that grows into a real model of how you work.
 - **Serves a whole household.** Many Telegram users on one machine, each with separate memory, data, and reminders.
@@ -283,7 +283,7 @@ If you have seen [OpenClaw](https://github.com/openclaw/openclaw), you might won
 | **AI providers** | 14: Claude CLI, Codex CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, Z.ai, OpenRouter, Ollama, Ollama Cloud, Claude API, FCC | Primarily OpenAI, configurable profiles |
 | **Free or local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier, Gemini free tier, FCC on free backends | No built in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, and more) |
-| **Skills** | 84 skills with auto installing dependencies and resource aware hooks | 100+ AgentSkills |
+| **Skills** | 85 skills with auto installing dependencies and resource aware hooks | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux or macOS, runs on 1GB of RAM with small Ollama models | Modern hardware recommended |
 | **Ownership** | Independent, MIT licensed | OpenAI acquired (March 2026) |
 | **MCP support** | Client, connects to any MCP server for unlimited tool expansion | Native MCP client support |
@@ -421,6 +421,7 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | algorithmic-art | Generative visual art with p5.js, output as a self contained HTML page renderable to PNG or video |
 | logo-animate | Turn a raster logo into a clean SVG, then a choreographed brand animation as standalone HTML, GIF, or MP4 |
 | remotion | Programmatic motion graphics: build videos as React components and render to H.264 MP4 |
+| rive | Rive interactive vector animation: scenes written as text with the Rive CLI, rendered to MP4, ProRes 4444 with alpha, WebM or GIF, versions from a table, SVG logos and music turned into motion, web pages, and tested templates |
 | davinci-resolve | Drive DaVinci Resolve for editorial work: build timelines, hand off rough cuts, queue renders and grades |
 | adobe | Creative Cloud on macOS: what is installed and signed in, headless After Effects renders through aerender, and where the suite's automation stops |
 | colorgrade | Unattended colour grade of a whole video: shot detection, balance, shot matching, one look, a consistency report and a .cube LUT per shot. Plus a DCTL generator for recolouring one object |
@@ -599,7 +600,7 @@ A middleware layer runs before and after every skill invocation. It prevents res
 | Temp file cleanup | stems, video-editing, image-editing, audio-editing, lighthouse |
 | Docker cleanup | docker-services |
 
-Hooks work with all providers, not just Claude. For the Claude CLI they use the native hook system (PreToolUse, PostToolUse, Stop events). For every other provider they are embedded in the tool execution layer. 30 skills carry a per skill `hooks.json`, and the rest are light enough not to need one.
+Hooks work with all providers, not just Claude. For the Claude CLI they use the native hook system (PreToolUse, PostToolUse, Stop events). For every other provider they are embedded in the tool execution layer. 31 skills carry a per skill `hooks.json`, and the rest are light enough not to need one.
 
 ## Health monitoring
 

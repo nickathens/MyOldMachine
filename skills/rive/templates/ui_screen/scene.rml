@@ -1,0 +1,302 @@
+<Rive version="1" kind="fragment">
+    <!--
+      A phone screen for screen comps: a heading, a search field whose text
+      types in, and a list of results that fades up and scrolls. 390x844
+      points (an iPhone's logical size); render it at 3x (1170x2532) for a
+      crisp comp, with a typing timeline from rive_recipes.py typing (the
+      commands are in SKILL.md).
+      Everything on the page is data: the Screen view model holds the heading,
+      the query, the accent colour and the list of results; each result row
+      is the ResultRow component, repeated by an ArtboardComponentList.
+    -->
+    <Artboard defaultStateMachineId="0:90" viewModelId="0:60" viewModelInstanceId="0:61" styleId="0:3"
+              width="390" height="844" name="Screen" id="0:2">
+        <LayoutComponentStyle name="Screen Style" id="0:3"/>
+        <Fill name="Background"><SolidColor colorValue="FF0E0F12" name="Color"/></Fill>
+
+        <LayoutComponent width="390" height="50" styleId="0:13" name="Status Bar" id="0:12">
+            <LayoutComponentStyle positionTypeValue="absolute" positionTop="0" positionTopUnitsValue="points"
+                                  positionLeft="0" positionLeftUnitsValue="points"
+                                  layoutWidthScaleType="fixed" layoutHeightScaleType="fixed"
+                                  flexDirectionValue="row" layoutAlignmentType="spaceBetweenCenter"
+                                  paddingLeft="30" paddingLeftUnitsValue="points"
+                                  paddingRight="26" paddingRightUnitsValue="points"
+                                  name="Status Bar Style" id="0:13"/>
+            <Text name="Clock" id="0:14">
+                <LayoutParticipant layoutWidthScaleType="hug" layoutHeightScaleType="hug" name="Clock Layout"/>
+                <TextStylePaint fontSize="16" fontAssetId="0:50" familyName="Space Grotesk" styleName="Bold"
+                                name="Clock Style" id="0:15">
+                    <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                    <TextStyleAxis tag="2003265652" axisValue="700" name="Weight"/>
+                </TextStylePaint>
+                <TextValueRun styleId="0:15" text="9:41" name="Clock Run"/>
+            </Text>
+            <LayoutComponent width="46" height="14" styleId="0:17" name="Battery Slot" id="0:16">
+                <LayoutComponentStyle layoutWidthScaleType="fixed" layoutHeightScaleType="fixed" name="Battery Slot Style" id="0:17"/>
+                <Node name="Battery">
+                    <Shape x="22" y="7" name="Case">
+                        <Rectangle width="26" height="13" originX="0.5" originY="0.5" cornerRadiusTL="4" name="Path"/>
+                        <Stroke thickness="1.2" name="Stroke"><SolidColor colorValue="99F2F2F2" name="Color"/></Stroke>
+                    </Shape>
+                    <Shape x="21" y="7" name="Charge">
+                        <Rectangle width="20" height="8" originX="0.5" originY="0.5" cornerRadiusTL="2" name="Path"/>
+                        <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                    </Shape>
+                    <Shape x="37" y="7" name="Cap">
+                        <Rectangle width="2" height="5" originX="0.5" originY="0.5" name="Path"/>
+                        <Fill name="Fill"><SolidColor colorValue="99F2F2F2" name="Color"/></Fill>
+                    </Shape>
+                </Node>
+            </LayoutComponent>
+        </LayoutComponent>
+
+        <LayoutComponent width="390" height="844" styleId="0:11" name="Page" id="0:10">
+            <LayoutComponentStyle layoutWidthScaleType="fill" layoutHeightScaleType="fill" flexDirectionValue="column"
+                                  paddingLeft="20" paddingLeftUnitsValue="points"
+                                  paddingRight="20" paddingRightUnitsValue="points"
+                                  paddingTop="70" paddingTopUnitsValue="points"
+                                  gapVertical="18" gapVerticalUnitsValue="points"
+                                  name="Page Style" id="0:11"/>
+
+            <Text name="Heading" id="0:20">
+                <LayoutParticipant layoutWidthScaleType="hug" layoutHeightScaleType="hug" name="Heading Layout"/>
+                <TextStylePaint fontSize="34" fontAssetId="0:50" familyName="Space Grotesk" styleName="Bold"
+                                name="Heading Style" id="0:21">
+                    <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                    <TextStyleAxis tag="2003265652" axisValue="700" name="Weight"/>
+                </TextStylePaint>
+                <TextValueRun styleId="0:21" text="Discover" name="Heading Run">
+                    <DataBindContext sourcePathIds="0:60-0:63" propertyKey="268"/>
+                </TextValueRun>
+            </Text>
+
+            <LayoutComponent height="50" styleId="0:31" name="Search Field" id="0:30">
+                <LayoutComponentStyle layoutWidthScaleType="fill" layoutHeightScaleType="fixed"
+                                      flexDirectionValue="row" layoutAlignmentType="centerLeft"
+                                      paddingLeft="16" paddingLeftUnitsValue="points"
+                                      paddingRight="16" paddingRightUnitsValue="points"
+                                      gapHorizontal="10" gapHorizontalUnitsValue="points"
+                                      cornerRadiusTL="14" cornerRadiusTR="14" cornerRadiusBL="14" cornerRadiusBR="14"
+                                      name="Search Field Style" id="0:31"/>
+                <Fill name="Fill"><SolidColor colorValue="FF1B1D23" name="Color"/></Fill>
+                <LayoutComponent width="18" height="18" styleId="0:33" name="Icon Slot" id="0:32">
+                    <LayoutComponentStyle layoutWidthScaleType="fixed" layoutHeightScaleType="fixed" name="Icon Slot Style" id="0:33"/>
+                    <Node name="Magnifier">
+                        <Shape x="8" y="8" name="Lens">
+                            <Ellipse width="12" height="12" originX="0.5" originY="0.5" name="Path"/>
+                            <Stroke thickness="2" name="Stroke"><SolidColor colorValue="99F2F2F2" name="Color"/></Stroke>
+                        </Shape>
+                        <Shape name="Handle">
+                            <PointsPath name="Path">
+                                <StraightVertex x="12.5" y="12.5"/>
+                                <StraightVertex x="17" y="17"/>
+                            </PointsPath>
+                            <Stroke thickness="2" cap="round" name="Stroke"><SolidColor colorValue="99F2F2F2" name="Color"/></Stroke>
+                        </Shape>
+                    </Node>
+                </LayoutComponent>
+                <Text name="Query" id="0:34">
+                    <LayoutParticipant layoutWidthScaleType="hug" layoutHeightScaleType="hug" name="Query Layout"/>
+                    <TextStylePaint fontSize="17" fontAssetId="0:50" familyName="Space Grotesk" styleName="Regular"
+                                    name="Query Style" id="0:35">
+                        <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                        <TextStyleAxis tag="2003265652" axisValue="400" name="Weight"/>
+                    </TextStylePaint>
+                    <TextValueRun styleId="0:35" text="" name="Query Run">
+                        <DataBindContext sourcePathIds="0:60-0:62" propertyKey="268"/>
+                    </TextValueRun>
+                </Text>
+                <LayoutComponent width="2" height="22" styleId="0:37" name="Caret" id="0:36">
+                    <LayoutComponentStyle layoutWidthScaleType="fixed" layoutHeightScaleType="fixed" name="Caret Style" id="0:37"/>
+                    <Fill name="Fill">
+                        <SolidColor colorValue="FFC9A84C" name="Accent">
+                            <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                        </SolidColor>
+                    </Fill>
+                </LayoutComponent>
+            </LayoutComponent>
+
+            <!-- the list scrolls inside this clipping viewport, under the search field -->
+            <LayoutComponent clip="true" styleId="0:45" name="Scroller" id="0:44">
+                <LayoutComponentStyle layoutWidthScaleType="fill" layoutHeightScaleType="fill"
+                                      flexDirectionValue="column" name="Scroller Style" id="0:45"/>
+                <LayoutComponent styleId="0:41" name="Results" id="0:40">
+                    <LayoutComponentStyle layoutWidthScaleType="fill" layoutHeightScaleType="hug" flexDirectionValue="column"
+                                          gapVertical="12" gapVerticalUnitsValue="points" name="Results Style" id="0:41"/>
+                    <ArtboardComponentList name="Rows" id="0:42">
+                        <DataBindContext sourcePathIds="0:60-0:65" propertyKey="800"/>
+                    </ArtboardComponentList>
+                </LayoutComponent>
+            </LayoutComponent>
+        </LayoutComponent>
+
+        <!-- 6 s at 60 fps: heading and results fade up, the list scrolls 3.0-3.8 s -->
+        <LinearAnimation fps="60" duration="360" name="Screen" id="0:80">
+            <KeyedObject objectId="0:20">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="24" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:40">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="hold"/>
+                    <KeyFrameDouble value="0" frame="12" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="42" interpolationType="hold"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="14">
+                    <KeyFrameDouble value="28" frame="0" interpolationType="hold"/>
+                    <KeyFrameDouble value="28" frame="12" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="0" frame="48" interpolationType="hold"/>
+                    <KeyFrameDouble value="0" frame="180" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.65" y1="0" x2="0.35" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="-150" frame="228" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+
+        <!-- The caret blinks every half second, forever, on its own layer -->
+        <LinearAnimation loopValue="loop" fps="60" duration="60" name="Blink" id="0:81">
+            <KeyedObject objectId="0:36">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="1" frame="0" interpolationType="hold"/>
+                    <KeyFrameDouble value="0" frame="30" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+
+        <StateMachine name="Screen Machine" id="0:90">
+            <StateMachineLayer name="Screen" id="0:91">
+                <AnyState x="400" y="0"/>
+                <ExitState x="560" y="0"/>
+                <EntryState x="0" y="0"><StateTransition stateToId="0:93"/></EntryState>
+                <AnimationState x="200" y="0" animationId="0:80" id="0:93"/>
+            </StateMachineLayer>
+            <StateMachineLayer name="Caret" id="0:92">
+                <AnyState x="400" y="120"/>
+                <ExitState x="560" y="120"/>
+                <EntryState x="0" y="120"><StateTransition stateToId="0:94"/></EntryState>
+                <AnimationState x="200" y="120" animationId="0:81" id="0:94"/>
+            </StateMachineLayer>
+        </StateMachine>
+    </Artboard>
+
+    <!-- One result row, repeated by the list. Fixed on both axes so each row keeps its size. -->
+    <Artboard x="520" y="0" isComponent="true" defaultStateMachineId="0:110" viewModelId="0:70"
+              viewModelInstanceId="0:78" styleId="0:101" width="350" height="76" name="ResultRow" id="0:100">
+        <LayoutComponentStyle layoutWidthScaleType="fixed" layoutHeightScaleType="fixed" name="Row Style" id="0:101"/>
+        <LayoutComponent width="350" height="76" styleId="0:115" name="Card" id="0:114">
+            <LayoutComponentStyle layoutWidthScaleType="fill" layoutHeightScaleType="fill"
+                                  flexDirectionValue="row" layoutAlignmentType="centerLeft"
+                                  paddingLeft="10" paddingLeftUnitsValue="points"
+                                  gapHorizontal="14" gapHorizontalUnitsValue="points"
+                                  cornerRadiusTL="16" cornerRadiusTR="16" cornerRadiusBL="16" cornerRadiusBR="16"
+                                  name="Card Style" id="0:115"/>
+            <Fill name="Surface"><SolidColor colorValue="FF16181D" name="Color"/></Fill>
+            <LayoutComponent width="56" height="56" styleId="0:103" name="Thumb" id="0:102">
+                <LayoutComponentStyle layoutWidthScaleType="fixed" layoutHeightScaleType="fixed"
+                                      cornerRadiusTL="12" cornerRadiusTR="12" cornerRadiusBL="12" cornerRadiusBR="12"
+                                      name="Thumb Style" id="0:103"/>
+                <Fill name="Fill">
+                    <SolidColor colorValue="FF3F7EFF" name="Tint">
+                        <DataBindContext sourcePathIds="0:70-0:73" propertyKey="37"/>
+                    </SolidColor>
+                </Fill>
+            </LayoutComponent>
+            <LayoutComponent styleId="0:105" name="Words" id="0:104">
+                <LayoutComponentStyle layoutWidthScaleType="hug" layoutHeightScaleType="hug" flexDirectionValue="column"
+                                      gapVertical="2" gapVerticalUnitsValue="points" name="Words Style" id="0:105"/>
+                <Text name="Title" id="0:106">
+                    <LayoutParticipant layoutWidthScaleType="hug" layoutHeightScaleType="hug" name="Title Layout"/>
+                    <TextStylePaint fontSize="17" fontAssetId="0:50" familyName="Space Grotesk" styleName="Bold"
+                                    name="Title Style" id="0:107">
+                        <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                        <TextStyleAxis tag="2003265652" axisValue="700" name="Weight"/>
+                    </TextStylePaint>
+                    <TextValueRun styleId="0:107" text="Result" name="Title Run">
+                        <DataBindContext sourcePathIds="0:70-0:71" propertyKey="268"/>
+                    </TextValueRun>
+                </Text>
+                <Text opacity="0.6" name="Subtitle" id="0:108">
+                    <LayoutParticipant layoutWidthScaleType="hug" layoutHeightScaleType="hug" name="Subtitle Layout"/>
+                    <TextStylePaint fontSize="14" fontAssetId="0:50" familyName="Space Grotesk" styleName="Regular"
+                                    name="Subtitle Style" id="0:109">
+                        <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                        <TextStyleAxis tag="2003265652" axisValue="400" name="Weight"/>
+                    </TextStylePaint>
+                    <TextValueRun styleId="0:109" text="Detail" name="Subtitle Run">
+                        <DataBindContext sourcePathIds="0:70-0:72" propertyKey="268"/>
+                    </TextValueRun>
+                </Text>
+            </LayoutComponent>
+        </LayoutComponent>
+        <LinearAnimation fps="60" duration="1" name="Still" id="0:112"/>
+        <StateMachine name="Row Machine" id="0:110">
+            <StateMachineLayer name="Row" id="0:111">
+                <AnyState x="400" y="0"/>
+                <ExitState x="560" y="0"/>
+                <EntryState x="0" y="0"><StateTransition stateToId="0:113"/></EntryState>
+                <AnimationState x="200" y="0" animationId="0:112" id="0:113"/>
+            </StateMachineLayer>
+        </StateMachine>
+    </Artboard>
+    <ComponentAsset artboardId="0:100" name="ResultRow"/>
+
+    <ViewModel defaultInstanceId="0:78" name="Result" id="0:70">
+        <ViewModelPropertyString name="title" id="0:71"/>
+        <ViewModelPropertyString name="subtitle" id="0:72"/>
+        <ViewModelPropertyColor name="tint" id="0:73"/>
+        <ViewModelInstance exports="true" name="Default" id="0:78">
+            <ViewModelInstanceString propertyValue="Result" viewModelPropertyId="0:71"/>
+            <ViewModelInstanceString propertyValue="Detail" viewModelPropertyId="0:72"/>
+            <ViewModelInstanceColor propertyValue="FF3F7EFF" viewModelPropertyId="0:73"/>
+        </ViewModelInstance>
+        <ViewModelInstance exports="true" name="One" id="0:74">
+            <ViewModelInstanceString propertyValue="Harbour at dawn" viewModelPropertyId="0:71"/>
+            <ViewModelInstanceString propertyValue="Film, 2 min 40" viewModelPropertyId="0:72"/>
+            <ViewModelInstanceColor propertyValue="FFC9A84C" viewModelPropertyId="0:73"/>
+        </ViewModelInstance>
+        <ViewModelInstance exports="true" name="Two" id="0:75">
+            <ViewModelInstanceString propertyValue="Night market" viewModelPropertyId="0:71"/>
+            <ViewModelInstanceString propertyValue="Photo series, 24" viewModelPropertyId="0:72"/>
+            <ViewModelInstanceColor propertyValue="FF3F7EFF" viewModelPropertyId="0:73"/>
+        </ViewModelInstance>
+        <ViewModelInstance exports="true" name="Three" id="0:76">
+            <ViewModelInstanceString propertyValue="Mountain score" viewModelPropertyId="0:71"/>
+            <ViewModelInstanceString propertyValue="Music, 6 tracks" viewModelPropertyId="0:72"/>
+            <ViewModelInstanceColor propertyValue="FF2ECC71" viewModelPropertyId="0:73"/>
+        </ViewModelInstance>
+        <ViewModelInstance exports="true" name="Four" id="0:77">
+            <ViewModelInstanceString propertyValue="City in motion" viewModelPropertyId="0:71"/>
+            <ViewModelInstanceString propertyValue="Film, 58 s" viewModelPropertyId="0:72"/>
+            <ViewModelInstanceColor propertyValue="FFE74C3C" viewModelPropertyId="0:73"/>
+        </ViewModelInstance>
+    </ViewModel>
+
+    <ViewModel defaultInstanceId="0:61" name="Screen" id="0:60">
+        <ViewModelPropertyString name="query" id="0:62"/>
+        <ViewModelPropertyString name="heading" id="0:63"/>
+        <ViewModelPropertyColor name="accent" id="0:64"/>
+        <ViewModelPropertyList name="results" id="0:65"/>
+        <ViewModelInstance exports="true" name="Default" id="0:61">
+            <ViewModelInstanceString propertyValue="" viewModelPropertyId="0:62"/>
+            <ViewModelInstanceString propertyValue="Discover" viewModelPropertyId="0:63"/>
+            <ViewModelInstanceColor propertyValue="FFC9A84C" viewModelPropertyId="0:64"/>
+            <ViewModelInstanceList viewModelPropertyId="0:65">
+                <ViewModelInstanceListItem viewModelId="0:70" viewModelInstanceId="0:74"/>
+                <ViewModelInstanceListItem viewModelId="0:70" viewModelInstanceId="0:75"/>
+                <ViewModelInstanceListItem viewModelId="0:70" viewModelInstanceId="0:76"/>
+                <ViewModelInstanceListItem viewModelId="0:70" viewModelInstanceId="0:77"/>
+            </ViewModelInstanceList>
+        </ViewModelInstance>
+    </ViewModel>
+
+    <FontAsset file="../_fonts/SpaceGrotesk-Variable.ttf" name="Space Grotesk" id="0:50"/>
+</Rive>
