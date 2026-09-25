@@ -146,13 +146,19 @@ function buildControls(r) {{
     else if (p.type === "boolean") {{ input = document.createElement("input"); input.type = "checkbox"; input.checked = vmi.boolean(p.name).value;
       input.onchange = () => vmi.boolean(p.name).value = input.checked;
       vmi.boolean(p.name).on(() => input.checked = vmi.boolean(p.name).value); }}
-    else if (p.type === "color") {{ input = document.createElement("input"); input.type = "color";
-      input.oninput = () => vmi.color(p.name).value = parseInt("FF" + input.value.slice(1), 16) | 0; }}
+    // A colour input holds #rrggbb only: it starts from the file's colour, and
+    // a pick sets red, green and blue through rgb(), which keeps the file's
+    // alpha (an 85% plate stays 85%; writing the value made it opaque).
+    else if (p.type === "color") {{ input = document.createElement("input"); input.type = "color"; const c = vmi.color(p.name);
+      const hex = () => "#" + (c.value & 0xFFFFFF).toString(16).padStart(6, "0");
+      input.value = hex(); input.oninput = () => {{ const v = parseInt(input.value.slice(1), 16); c.rgb(v >> 16 & 255, v >> 8 & 255, v & 255); }};
+      c.on(() => input.value = hex()); }}
     else if (p.type === "trigger") {{ input = document.createElement("button"); input.textContent = "fire";
       input.onclick = () => vmi.trigger(p.name).trigger(); }}
     else if (p.type === "enumType") {{ input = document.createElement("select"); const e = vmi.enum(p.name);
       for (const v of e.values) {{ const o = document.createElement("option"); o.textContent = v; input.appendChild(o); }}
-      input.value = e.value; input.onchange = () => e.value = input.value; }}
+      input.value = e.value; input.onchange = () => e.value = input.value;
+      e.on(() => input.value = e.value); }}
     if (input) {{ row.appendChild(input); box.appendChild(row); }}
   }}
 }}

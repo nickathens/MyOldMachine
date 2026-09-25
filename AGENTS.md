@@ -102,13 +102,11 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-09-25] mac: a new rive skill (skills/rive: Rive CLI authoring,
-  rendering to video with alpha, versions from a table, SVG, font and audio
-  helpers, web pages, six tested templates; README counts 85 skills and 31
-  hooks; tests/test_rive_skill.py). No shared code outside README and this
-  file (PR #182).
-
-(Entries removed above: #181 merged 2026-09-25, its line cleared inside the
+(Entries removed above: #183 and #184 cleared in #183's reviewed merge
+revision, #184 merged first, the same call as #177 and #178.
+#182 merged 2026-09-25, its line cleared inside
+#183's own edit, the same call as #181 inside #182.
+#181 merged 2026-09-25, its line cleared inside the
 rive skill PR's own edit, the same call as #179 inside #181.
 #179 merged 2026-09-22, its line cleared inside
 #181's own edit because the two share lines, the same call as #165, #127 and #161.

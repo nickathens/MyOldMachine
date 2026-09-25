@@ -536,6 +536,162 @@ class RenderCleanupTests(TempDir):
         self.assertEqual([p.name for p in self.tmp.iterdir() if p.name.startswith("rive_skill_render_")], [])
 
 
+class AlphaCheckTests(TempDir):
+    """A failed recomposite check used to warn and exit 0 with the file written
+    (measured: a difference blend over a 50% fill, 143 codes off). It stops the
+    render now, like a blank one, unless --allow-bad-alpha says otherwise."""
+
+    CLEAN = {"max": 1.0, "mean": 0.1}
+
+    def check(self, errors: list, allow_bad: bool = False) -> dict:
+        report = {"warnings": []}
+        engine = mock.Mock(source=self.tmp, workdir=self.tmp, passes={})
+        results = iter(errors)
+        with mock.patch.object(R.L, "snapshot_project", return_value=self.tmp), \
+                mock.patch.object(R, "recomposite_error", lambda rgba, ref: dict(next(results))):
+            # the option only when used, so the clean case runs unchanged on the old signature
+            R.check_alpha(engine, T.Timeline(), [0.0, 0.5, 1.0], self.tmp, self.tmp, 5, report,
+                          **({"allow_bad": True} if allow_bad else {}))
+        return report
+
+    def test_a_clean_solve_passes_quietly(self):
+        report = self.check([self.CLEAN] * 3)
+        self.assertEqual(report["warnings"], [])
+        self.assertEqual([r["frame"] for r in report["alpha_check"]], [0, 1, 2])
+
+    def test_a_failed_recomposite_stops_the_render(self):
+        for bad, shown in (({"max": 143.3, "mean": 14.6}, "143 codes"), ({"psnr_db": 31.24}, "31.2 dB")):
+            with self.subTest(shown):
+                with self.assertRaises(L.RiveError) as caught:
+                    self.check([self.CLEAN, bad, self.CLEAN])
+                self.assertIn(f"frame 1 off by up to {shown}" if "codes" in shown else f"frame 1 at {shown}",
+                              str(caught.exception))
+                self.assertIn("--allow-bad-alpha", caught.exception.hint)
+
+    def test_a_frame_that_cannot_be_compared_stops_the_render_too(self):
+        # without numpy the comparison is ffmpeg's; a solved frame that is
+        # missing or does not decode gives it no number (RecompositeFallbackTests)
+        gone = {"error": "Error opening input: No such file or directory", "method": "ffmpeg-psnr"}
+        with self.assertRaises(L.RiveError) as caught:
+            self.check([self.CLEAN, gone, self.CLEAN])
+        self.assertIn("the alpha recomposite check could not run", str(caught.exception))
+        self.assertIn("frame 1 could not be compared (Error opening input: No such file or directory)",
+                      str(caught.exception))
+        self.assertIn("--allow-bad-alpha", caught.exception.hint)
+
+    def test_allow_bad_alpha_writes_it_with_the_numbers_in_a_warning(self):
+        report = self.check([{"max": 143.3, "mean": 14.6}] + [self.CLEAN] * 2, allow_bad=True)
+        self.assertEqual(len(report["warnings"]), 1)
+        self.assertIn("frame 0 off by up to 143 codes", report["warnings"][0])
+        self.assertIn("written anyway because of --allow-bad-alpha", report["warnings"][0])
+
+    def main_with(self, *extra: str) -> tuple[int, str, Path]:
+        """R.main end to end with the CLI, ffmpeg and the recomposite faked:
+        every capture is the same red and clear frame, the solve is 143 codes off."""
+        proj = self.tmp / "proj"
+        proj.mkdir(exist_ok=True)
+        (proj / "rive.yaml").write_text("name: proj\n")
+        out = self.tmp / "still.png"
+
+        class Engine:
+            def __init__(self, project, args, report):
+                self.passes = {"black": None, "white": None}
+                self.board = mock.Mock(view_model_props={})
+                self.source, self.workdir = project, project
+
+            def capture(self, pass_name, t, timeline, out_png):
+                write_png(out_png, 4, 4, lambda x, y: (200, 0, 0, 255) if x < 2 else (0, 0, 0, 0))
+                return T.FrameArgs(args=[], capture_time=t)
+
+            def close(self):
+                pass
+
+        def solve(black, white, out_dir, fps, pad):
+            for p in black.iterdir():
+                shutil.copy2(p, out_dir / p.name)
+
+        err = io.StringIO()
+        # the blank check reads frames with ffprobe, which CI does not have
+        with mock.patch.object(R, "CliEngine", Engine), mock.patch.object(R, "solve_alpha", solve), \
+                mock.patch.object(R, "recomposite_error", lambda rgba, ref: {"max": 143.0, "mean": 14.0}), \
+                mock.patch.object(R, "check_blank", lambda *a: None), \
+                mock.patch.object(R.L, "snapshot_project", return_value=proj), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            code = R.main([str(proj), "-o", str(out), "--alpha", "--work-dir", str(self.tmp), *extra])
+        return code, err.getvalue(), out
+
+    def test_the_refusal_reaches_the_exit_code_and_writes_nothing(self):
+        code, err, out = self.main_with()
+        self.assertEqual(code, 1)
+        self.assertIn("does not recomposite", err)
+        self.assertFalse(out.exists())
+        self.assertFalse(Path(str(out) + ".render.json").exists())
+
+    def test_the_flag_reaches_the_check(self):
+        code, err, out = self.main_with("--allow-bad-alpha")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.is_file())
+        report = json.loads(Path(str(out) + ".render.json").read_text())
+        self.assertTrue(any("--allow-bad-alpha" in w for w in report["warnings"]), report["warnings"])
+
+
+class RecompositeFallbackTests(TempDir):
+    """recomposite_error without numpy, which a fresh MOM install does not have:
+    the comparison is then ffmpeg's psnr filter. A run that printed no number
+    used to come back as inf, a perfect match, so a solved frame that was
+    missing or did not decode passed the alpha check (measured on both)."""
+
+    def frames(self) -> tuple[Path, Path]:
+        solved, ref = self.tmp / "solved.png", self.tmp / "ref.png"
+        for path in (solved, ref):
+            write_png(path, 4, 4, lambda x, y: (200, 0, 0, 255))
+        return solved, ref
+
+    def fallback(self, solved: Path, ref: Path, ran: subprocess.CompletedProcess | None = None) -> dict:
+        with mock.patch.dict(sys.modules, {"numpy": None}):
+            if ran is None:
+                return R.recomposite_error(solved, ref)
+            # png_rgba reads the size with ffprobe, through the same subprocess.run;
+            # and CI has no ffmpeg, so its path is faked too
+            with mock.patch.object(R.L, "png_rgba", return_value=(4, 4, b"")), \
+                    mock.patch.object(R.L, "ffmpeg_bin", return_value="ffmpeg"), \
+                    mock.patch.object(R.subprocess, "run", return_value=ran):
+                return R.recomposite_error(solved, ref)
+
+    def test_no_psnr_from_ffmpeg_is_an_error_not_a_match(self):
+        solved, ref = self.frames()
+        missing = ("[in#0 @ 0x5] Error opening input: No such file or directory\n"
+                   "Error opening input files: No such file or directory\n")
+        # a run that failed after printing a number is not trusted either
+        failed_late = "[Parsed_psnr_5 @ 0x5] PSNR r:45.00 g:45.00 b:45.00 average:45.00\nConversion failed!\n"
+        for rc, stderr, error in ((254, missing, "Error opening input: No such file or directory"),
+                                  (0, "frame=    0 fps=0.0 q=0.0\n", "ffmpeg exited 0 with no usable PSNR"),
+                                  (1, failed_late, "ffmpeg exited 1 with no usable PSNR")):
+            with self.subTest(rc=rc):
+                got = self.fallback(solved, ref, subprocess.CompletedProcess([], rc, "", stderr))
+                self.assertEqual(got, {"error": error, "method": "ffmpeg-psnr"})
+
+    def test_a_psnr_that_was_measured_still_reads_as_one(self):
+        solved, ref = self.frames()
+        for average, want in (("inf", math.inf), ("31.24", 31.24)):
+            with self.subTest(average):
+                stderr = f"[Parsed_psnr_5 @ 0x5] PSNR r:{average} g:{average} b:{average} average:{average}\n"
+                got = self.fallback(solved, ref, subprocess.CompletedProcess([], 0, "", stderr))
+                self.assertEqual(got["psnr_db"], want)
+
+    @NEEDS_FFMPEG
+    def test_real_ffmpeg_on_a_missing_and_a_broken_frame(self):
+        solved, ref = self.frames()
+        self.assertEqual(self.fallback(solved, ref)["psnr_db"], math.inf)  # the same pixels: a real match
+        broken = self.tmp / "broken.png"
+        broken.write_bytes(b"not a png")
+        for frame in (self.tmp / "missing.png", broken):
+            with self.subTest(frame.name):
+                got = self.fallback(frame, ref)
+                self.assertNotIn("psnr_db", got)
+                self.assertIn("rror", got["error"])
+
+
 # ==========================================================================
 # rive_svg
 # ==========================================================================
@@ -1090,6 +1246,21 @@ class WebOfflineTests(TempDir):
         self.assertNotIn("autoBind: true", page)
         self.assertIn("autoBind: f.viewModelCount() > 0", page)
 
+    def test_the_panel_starts_from_the_file_and_follows_it(self):
+        # measured before: every colour input read #000000 whatever the file
+        # held and followed no change, a pick wrote alpha FF over an 85% plate,
+        # and an enum select kept its first value (LiveWebTests has the numbers)
+        riv = self.tmp / "a.riv"
+        riv.write_bytes(b"RIVE")
+        with mock.patch.object(WEB.W, "ensure_runtime", lambda flavour=None: self.fake_runtime()):
+            page = WEB.build_page(riv, self.tmp / "site", title="T", controls=True).read_text()
+        colour = page[page.index('p.type === "color"'):page.index('p.type === "trigger"')]
+        self.assertIn("input.value = hex()", colour)
+        self.assertIn("c.rgb(", colour)
+        self.assertIn("c.on(", colour)
+        self.assertNotIn('"FF" +', colour)
+        self.assertIn("e.on(", page[page.index('p.type === "enumType"'):])
+
     def test_a_failed_session_start_stops_what_it_started(self):
         import types
         riv = self.tmp / "a.riv"
@@ -1323,6 +1494,40 @@ class DoctorFlagTests(unittest.TestCase):
                 self.assertFalse(check["ok"])
                 self.assertIn(f"{gone} --", check["detail"])
 
+    def two_column_help(self, drop: str | None) -> str:
+        """1.1.1's layout: definitions at 2 spaces, wrapped descriptions at 28,
+        and a wrapped line may begin with a flag (two begin "--semantics or")."""
+        lines = []
+        for f in D.FLAGS_USED:
+            name = f.split("=")[0]
+            if f != drop:
+                lines.append(f"  {name + '=<x>':<26}what it does, which wraps")
+            lines.append(" " * 28 + f"{name} or --data-dump")
+        lines += [f"  {c:<26}a command" for c in D.SUBCOMMANDS_USED]
+        return "\n".join(lines) + "\n"
+
+    def test_a_flag_that_begins_a_wrapped_line_is_not_defined_by_it(self):
+        # measured on the real help: any indent read --semantics as present
+        # with its definition removed (18 of 19 caught)
+        self.assertTrue(self.flags(self.two_column_help(drop=None))["flags"]["ok"])
+        for gone in D.FLAGS_USED:
+            with self.subTest(gone):
+                check = self.flags(self.two_column_help(drop=gone))["flags"]
+                self.assertFalse(check["ok"])
+                self.assertIn(f"{gone} --", check["detail"])
+
+    @unittest.skipUnless(RIVE, "needs the Rive CLI")
+    def test_the_real_help_loses_each_flag_with_its_definition(self):
+        helped = L.run_rive(["--help"], timeout=30)
+        text = helped.stdout + helped.stderr
+        self.assertEqual([f for f in D.FLAGS_USED if not D.defines(text, f)], [])
+        for f in D.FLAGS_USED:
+            with self.subTest(f):
+                pattern = re.compile(rf"^  {re.escape(f.split('=')[0])}(?=[=\[ \t]|$)")
+                kept = [line for line in text.splitlines() if not pattern.match(line)]
+                self.assertLess(len(kept), len(text.splitlines()), "no definition line at the 2 space column")
+                self.assertFalse(D.defines("\n".join(kept) + "\n", f))
+
 
 class ManifestTests(unittest.TestCase):
     def test_deps_manifest_is_valid_and_read(self):
@@ -1479,24 +1684,27 @@ class LiveTimingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             snap = L.snapshot_project(TEMPLATES / "button", tmp)
             dump = Path(tmp) / "d.jsonl"
-            L.run_rive([str(snap), "--quiet", f"--data-dump={dump}", "--data-dump-every=1", *args], timeout=120)
+            ran = L.run_rive([str(snap), "--quiet", f"--data-dump={dump}", "--data-dump-every=1", *args],
+                             timeout=120)
+            # CLI 1.1.1 and 1.2.0 on Linux segfault writing --data-dump-every
+            # once a key is in the run (a handled key, or any key before a drag;
+            # also on Rive's own keyboard_menu sample). The same arguments with
+            # --screenshot render fine, and no script dumps per frame with keys,
+            # so only this measurement is out of reach there (references/
+            # rendering.md, Linux). The crash itself decides, not a version
+            # number, so a CLI that fixes it measures these times again.
+            if ran.returncode < 0 and sys.platform.startswith("linux") and any(a.startswith("--key=") for a in args):
+                self.skipTest(f"Rive CLI {L.cli_version()} on Linux crashes in --data-dump-every with a key in the run")
+            self.assertEqual(ran.returncode, 0, ran.stderr[-300:])
             lines = [json.loads(x) for x in dump.read_text().splitlines() if x.strip()]
             return lines[-1]["frame"], lines[-1]["time"]
 
     def test_the_compiled_timeline_lands_exactly_on_each_frame_time(self):
         tl = T.build_timeline([{"at": 0.2, "click": [210, 70]}, {"at": 0.5, "key": "enter"},
                                {"at": 0.7, "drag": [10, 10, 100, 100], "steps": 4}])
-        # CLI 1.1.1 on Linux segfaults writing --data-dump-every once a key is in
-        # the run (a handled key, or any key before a drag; also on Rive's own
-        # keyboard_menu sample). The same arguments with --screenshot render
-        # fine, and no script dumps per frame with keys, so only this
-        # measurement is out of reach there (references/rendering.md, Linux).
-        linux_dump_crash = sys.platform.startswith("linux") and L.cli_version() == "1.1.1"
         for t in (0.1, 0.25, 0.6, 1.0):
             args = tl.frame_args(t).args
             with self.subTest(t=t):
-                if linux_dump_crash and any(a.startswith("--key=") for a in args):
-                    self.skipTest("Rive CLI 1.1.1 on Linux crashes in --data-dump-every with a key in the run")
                 frame, time_ = self.dump_last_frame(args)
                 self.assertAlmostEqual(time_, t, places=3)
                 self.assertEqual(frame, round(t * 60))
@@ -1554,6 +1762,36 @@ class LiveRenderTests(unittest.TestCase):
                 else:
                     self.assertGreater(check["psnr_db"], 40, check)
 
+    def test_an_alpha_solve_that_does_not_recomposite_is_refused(self):
+        # a difference blend over a 50% fill is not plain source-over, so the
+        # black and white passes cannot solve it: measured 143 codes off
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp) / "blend"
+            proj.mkdir()
+            (proj / "rive.yaml").write_text("name: blend\n")
+            (proj / "scene.rml").write_text(
+                '<Rive version="1" kind="fragment"><Artboard defaultStateMachineId="0:7" styleId="0:3" '
+                'width="64" height="64" name="A" id="0:2"><LayoutComponentStyle name="S" id="0:3"/>'
+                '<Shape x="28" y="28" name="Under" id="0:20"><Rectangle width="36" height="36" name="P1"/>'
+                '<Fill name="F1"><SolidColor colorValue="80E04040" name="C1"/></Fill></Shape>'
+                '<Shape x="38" y="38" blendModeValue="difference" name="Over" id="0:21">'
+                '<Ellipse width="36" height="36" name="P2"/>'
+                '<Fill name="F2"><SolidColor colorValue="FF57A5E0" name="C2"/></Fill></Shape>'
+                '<LinearAnimation duration="1" name="X" id="0:6"/><StateMachine name="SM" id="0:7">'
+                '<StateMachineLayer name="L" id="0:8"><AnyState/><ExitState/><EntryState>'
+                '<StateTransition stateToId="0:9"/></EntryState><AnimationState animationId="0:6" id="0:9"/>'
+                '</StateMachineLayer></StateMachine></Artboard></Rive>')
+            out = Path(tmp) / "x.mov"
+            argv = [str(proj), "-o", str(out), "--alpha", "--frames", "2", "--fps", "25", "--workers", "2"]
+            self.assertEqual(self.render(argv), 1)
+            self.assertIn("does not recomposite", self.stderr.getvalue())
+            self.assertIn("--allow-bad-alpha", self.stderr.getvalue())
+            self.assertFalse(out.exists())
+            self.assertEqual(self.render(argv + ["--allow-bad-alpha"]), 0, self.stderr.getvalue())
+            report = json.loads(Path(str(out) + ".render.json").read_text())
+            self.assertEqual(report["probe"]["profile"], "4444")
+            self.assertTrue(any("written anyway" in w for w in report["warnings"]), report["warnings"])
+
     def test_opaque_background_refuses_alpha(self):
         with tempfile.TemporaryDirectory() as tmp:
             code = self.render([str(TEMPLATES / "counter"), "-o", str(Path(tmp) / "x.mov"), "--alpha",
@@ -1594,6 +1832,108 @@ class LiveWebTests(unittest.TestCase):
             self.assertTrue(report["click_changed_picture"], report)
             self.assertFalse([m for m in report["console"] if "deprecat" in m or "default-state-machine" in m],
                              report["console"])
+
+    @contextlib.contextmanager
+    def served(self, page: Path):
+        """The page open in headless Chromium over HTTP, as verify_page opens it."""
+        import http.server
+        import threading
+        import time
+        from playwright.sync_api import sync_playwright
+
+        folder = page.parent
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, directory=str(folder), **kw)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(args=W.CHROMIUM_ARGS)
+                pg = browser.new_page()
+                pg.goto(f"http://127.0.0.1:{server.server_address[1]}/{page.name}")
+                deadline = time.time() + 30
+                while not pg.evaluate("window.__rive || null") and time.time() < deadline:
+                    time.sleep(0.1)
+                self.assertTrue(pg.evaluate("window.__rive && window.__rive.loaded"))
+                yield pg
+                browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    READ_CONTROLS = """() => { const vmi = window.__r.viewModelInstance, out = {controls: {}, colours: {}};
+      for (const label of document.querySelectorAll("#controls label")) {
+        const input = label.parentElement.querySelector("input, select");
+        if (input) out.controls[label.textContent] = input.value; }
+      for (const p of vmi.properties) if (p.type === "color")
+        out.colours[p.name] = (vmi.color(p.name).value >>> 0).toString(16).toUpperCase();
+      return out; }"""
+
+    def settle(self, pg):
+        # property callbacks run on the next advance of the player
+        pg.wait_for_timeout(400)
+        return pg.evaluate(self.READ_CONTROLS)
+
+    def test_the_colour_controls_start_from_the_file_and_keep_its_alpha(self):
+        # measured before the fix: every colour input read #000000, a colour
+        # the scene set was not followed, and a pick on the 85% plate made it
+        # opaque (D90A0A0A to FF112233)
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = N.create("lower_third", Path(tmp) / "lt", [])
+            self.assertEqual(L.run_rive([str(proj), "--once", "--quiet"], timeout=120).returncode, 0)
+            riv = next((proj / "build").glob("*.riv"))
+            with quiet():
+                page = WEB.build_page(riv, Path(tmp) / "site", title="LT", size=(960, 540), controls=True)
+            with self.served(page) as pg:
+                state = self.settle(pg)
+                self.assertEqual(state["colours"], {"accent": "FFC9A84C", "plate": "D90A0A0A", "ink": "FFFFFFFF"})
+                self.assertEqual({k: state["controls"][k] for k in ("accent", "plate", "ink")},
+                                 {"accent": "#c9a84c", "plate": "#0a0a0a", "ink": "#ffffff"})
+                pg.evaluate("() => { window.__r.viewModelInstance.color('accent').value = 0xFF2266AA | 0; }")
+                self.assertEqual(self.settle(pg)["controls"]["accent"], "#2266aa")
+                pg.evaluate("""() => { for (const label of document.querySelectorAll("#controls label"))
+                    if (label.textContent === "plate") { const input = label.parentElement.querySelector("input");
+                      input.value = "#112233"; input.dispatchEvent(new Event("input")); } }""")
+                state = self.settle(pg)
+                self.assertEqual(state["colours"]["plate"], "D9112233")
+                self.assertEqual(state["controls"]["plate"], "#112233")
+
+    def test_an_enum_control_follows_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp) / "mood"
+            proj.mkdir()
+            (proj / "rive.yaml").write_text("name: mood\n")
+            (proj / "scene.rml").write_text(
+                '<Rive version="1" kind="fragment"><DataEnumCustom name="Mood" id="0:70">'
+                '<DataEnumValue key="calm" value="Calm" id="0:71"/><DataEnumValue key="loud" value="Loud" id="0:72"/>'
+                '<DataEnumValue key="dark" value="Dark" id="0:73"/></DataEnumCustom>'
+                '<Artboard defaultStateMachineId="0:7" viewModelId="0:60" viewModelInstanceId="0:61" styleId="0:3" '
+                'width="64" height="64" name="A" id="0:2"><LayoutComponentStyle name="S" id="0:3"/>'
+                '<Shape x="32" y="32" name="Dot" id="0:20"><Ellipse width="40" height="40" name="P"/>'
+                '<Fill name="F"><SolidColor colorValue="FFE04040" name="C"/></Fill></Shape>'
+                '<LinearAnimation duration="1" name="X" id="0:6"/><StateMachine name="SM" id="0:7">'
+                '<StateMachineLayer name="L" id="0:8"><AnyState/><ExitState/><EntryState>'
+                '<StateTransition stateToId="0:9"/></EntryState><AnimationState animationId="0:6" id="0:9"/>'
+                '</StateMachineLayer></StateMachine></Artboard>'
+                '<ViewModel defaultInstanceId="0:61" name="Probe" id="0:60">'
+                '<ViewModelPropertyEnumCustom enumId="0:70" name="mood" id="0:63"/>'
+                '<ViewModelInstance exports="true" name="Default" id="0:61">'
+                '<ViewModelInstanceEnum propertyValue="0:72" viewModelPropertyId="0:63"/>'
+                '</ViewModelInstance></ViewModel></Rive>')
+            self.assertEqual(L.run_rive([str(proj), "--once", "--quiet"], timeout=120).returncode, 0)
+            with quiet():
+                page = WEB.build_page(next((proj / "build").glob("*.riv")), Path(tmp) / "site", title="Mood",
+                                      controls=True)
+            with self.served(page) as pg:
+                self.assertEqual(self.settle(pg)["controls"]["mood"], "loud")
+                pg.evaluate("() => { window.__r.viewModelInstance.enum('mood').value = 'dark'; }")
+                self.assertEqual(self.settle(pg)["controls"]["mood"], "dark")
 
 
 @LIVE
