@@ -106,7 +106,7 @@ provider.
   rendering to video with alpha, versions from a table, SVG, font and audio
   helpers, web pages, six tested templates; README counts 85 skills and 31
   hooks; tests/test_rive_skill.py). No shared code outside README and this
-  file.
+  file (PR #182).
 
 (Entries removed above: #181 merged 2026-09-25, its line cleared inside the
 rive skill PR's own edit, the same call as #179 inside #181.
