@@ -1,0 +1,109 @@
+<Rive version="1" kind="fragment">
+    <!--
+      A number card for social and decks: a count that eases up to its value,
+      a progress ring filled to value / goal, a label. 1080x1080.
+      The file eases CHANGES (DataConverterInterpolator): on a live page a
+      new value counts up from the old one. The first value arrives at once,
+      so a rendered count-up comes from a curve (rive_recipes.py count, then
+      rive_render.py with that timeline).
+    -->
+    <Artboard defaultStateMachineId="0:90" viewModelId="0:60" viewModelInstanceId="0:61" styleId="0:3"
+              width="1080" height="1080" name="Counter" id="0:2">
+        <LayoutComponentStyle name="Artboard Style" id="0:3"/>
+        <Fill name="Background"><SolidColor colorValue="FF0B0C0F" name="Color"/></Fill>
+
+        <!-- a Rive Ellipse path starts at 12 o'clock and runs clockwise, so a trim fills from the top -->
+        <Shape x="540" y="500" name="Progress" id="0:11">
+            <Ellipse width="620" height="620" originX="0.5" originY="0.5" name="Path"/>
+            <Stroke thickness="26" cap="round" name="Stroke">
+                <SolidColor colorValue="FFC9A84C" name="Accent">
+                    <DataBindContext sourcePathIds="0:60-0:64" propertyKey="37"/>
+                </SolidColor>
+                <TrimPath start="0" end="0.62" name="Fill Amount" id="0:12">
+                    <DataBindContext sourcePathIds="0:60-0:62" propertyKey="115" converterId="0:75"/>
+                </TrimPath>
+            </Stroke>
+        </Shape>
+
+        <!-- the grey track is declared AFTER the ring: in Rive the first sibling draws on top -->
+        <Shape x="540" y="500" name="Track" id="0:10">
+            <Ellipse width="620" height="620" originX="0.5" originY="0.5" name="Path"/>
+            <Stroke thickness="26" cap="round" name="Stroke"><SolidColor colorValue="FF1F2128" name="Color"/></Stroke>
+        </Shape>
+        <Text x="540" y="470" sizingValue="autoWidth" originX="0.5" originY="0.5" name="Number" id="0:20">
+            <TextStylePaint fontSize="150" letterSpacing="-2" fontAssetId="0:50" familyName="Space Grotesk"
+                            styleName="Bold" name="Number Style" id="0:21">
+                <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                <TextStyleAxis tag="2003265652" axisValue="700" name="Weight"/>
+                <TextStyleFeature tag="1953396077" featureValue="1" name="tnum"/>
+            </TextStylePaint>
+            <TextValueRun styleId="0:21" text="0" name="Number Run">
+                <DataBindContext sourcePathIds="0:60-0:62" propertyKey="268" converterId="0:74"/>
+            </TextValueRun>
+        </Text>
+        <Text x="540" y="590" sizingValue="autoWidth" originX="0.5" originY="0.5" opacity="0.7" name="Label" id="0:22">
+            <TextStylePaint fontSize="40" letterSpacing="1" fontAssetId="0:50" familyName="Space Grotesk"
+                            styleName="Regular" name="Label Style" id="0:23">
+                <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                <TextStyleAxis tag="2003265652" axisValue="400" name="Weight"/>
+            </TextStylePaint>
+            <TextValueRun styleId="0:23" text="Label" name="Label Run">
+                <DataBindContext sourcePathIds="0:60-0:63" propertyKey="268"/>
+            </TextValueRun>
+        </Text>
+
+        <LinearAnimation fps="60" duration="1" name="Still" id="0:80"/>
+        <StateMachine name="Counter Machine" id="0:90">
+            <StateMachineLayer name="Bind" id="0:91">
+                <AnyState x="400" y="0"/>
+                <ExitState x="560" y="0"/>
+                <EntryState x="0" y="0"><StateTransition stateToId="0:92"/></EntryState>
+                <AnimationState x="200" y="0" animationId="0:80" id="0:92"/>
+            </StateMachineLayer>
+        </StateMachine>
+    </Artboard>
+
+    <!-- number -> eased over 1.6 s -> whole-number text -->
+    <DataConverterInterpolator interpolationType="cubic" duration="1.6" name="Ease 1.6 s" id="0:70">
+        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+    </DataConverterInterpolator>
+    <DataConverterToString decimals="0" round="true" name="Whole number" id="0:71"/>
+    <DataConverterGroup name="Count text" id="0:74">
+        <DataConverterGroupItem converterId="0:70"/>
+        <DataConverterGroupItem converterId="0:71"/>
+    </DataConverterGroup>
+
+    <!-- number / goal, clamped to 0..1, eased the same way -> trim end -->
+    <DataConverterFormula name="Share of goal" id="0:72">
+        <FormulaTokenInput/>
+        <FormulaTokenOperation operationType="3"/>
+        <FormulaTokenValue operationValue="1">
+            <DataBindContext sourcePathIds="0:60-0:65" propertyKey="777"/>
+        </FormulaTokenValue>
+    </DataConverterFormula>
+    <DataConverterRangeMapper minInput="0" maxInput="1" minOutput="0" maxOutput="1"
+                              clampLower="true" clampUpper="true" name="Clamp 0..1" id="0:73"/>
+    <DataConverterGroup name="Ring amount" id="0:75">
+        <DataConverterGroupItem converterId="0:72"/>
+        <DataConverterGroupItem converterId="0:73"/>
+        <DataConverterGroupItem converterId="0:76"/>
+    </DataConverterGroup>
+    <DataConverterInterpolator interpolationType="cubic" duration="1.6" name="Ease ring" id="0:76">
+        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+    </DataConverterInterpolator>
+
+    <ViewModel defaultInstanceId="0:61" name="Counter" id="0:60">
+        <ViewModelPropertyNumber name="value" id="0:62"/>
+        <ViewModelPropertyString name="label" id="0:63"/>
+        <ViewModelPropertyColor name="accent" id="0:64"/>
+        <ViewModelPropertyNumber name="goal" id="0:65"/>
+        <ViewModelInstance exports="true" name="Default" id="0:61">
+            <ViewModelInstanceNumber propertyValue="1250" viewModelPropertyId="0:62"/>
+            <ViewModelInstanceString propertyValue="Label" viewModelPropertyId="0:63"/>
+            <ViewModelInstanceColor propertyValue="FFC9A84C" viewModelPropertyId="0:64"/>
+            <ViewModelInstanceNumber propertyValue="2000" viewModelPropertyId="0:65"/>
+        </ViewModelInstance>
+    </ViewModel>
+
+    <FontAsset file="../_fonts/SpaceGrotesk-Variable.ttf" name="Space Grotesk" id="0:50"/>
+</Rive>

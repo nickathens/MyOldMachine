@@ -1,0 +1,12 @@
+{
+  "check": {
+    "rive-cli": "rive --version",
+    "ffmpeg": "ffmpeg -version"
+  },
+  "brew": ["ffmpeg"],
+  "apt": ["ffmpeg"],
+  "weight": "medium",
+  "min_ram_gb": 2,
+  "min_disk_gb": 1,
+  "install_note": "Needs the Rive CLI (a technical preview, free, no account for building or rendering): run python3 skills/rive/scripts/rive_doctor.py --install, which on macOS runs brew tap rive-app/tap and brew install --cask rive-app/tap/rive-cli (~30 MB; update with brew upgrade --cask rive-cli, not rive update) and on Linux x64 downloads the official build to ~/.rive/bin and checks its SHA-256. Scripts are stdlib Python 3.10+ plus ffmpeg. The optional web engine and page checks use Playwright with Chromium (shared with the browser skill) and fetch the pinned MIT web runtime (@rive-app/webgl2, ~2.7 MB) into a user cache. The Rive editor app (brew install --cask rive, ~210 MB) is optional and needs a Rive account signed in at the screen. On Linux with Mesa drivers captures come out blank until rive-app/rive-runtime#92 is fixed: see references/rendering.md."
+}

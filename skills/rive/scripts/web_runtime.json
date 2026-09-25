@@ -1,0 +1,20 @@
+{
+  "comment": "Pinned Rive web runtimes. MIT licensed (rive-app/rive-wasm). Fetched from the npm registry by riveweb.ensure_runtime() and checked against these integrity hashes before use. Bump both fields together, then run rive_doctor.py --web.",
+  "default": "webgl2",
+  "packages": {
+    "webgl2": {
+      "npm": "@rive-app/webgl2",
+      "version": "2.43.1",
+      "tarball": "https://registry.npmjs.org/@rive-app/webgl2/-/webgl2-2.43.1.tgz",
+      "integrity": "sha512-Er2zB3bH8CIyNoHEMLU5dAtx2Ie1t4wvxOFhTIrOfr8Cya7HE5lFzAYBozSwHtBDnZ7/6NwT4oz6CuPyR06u9g==",
+      "files": ["rive.js", "rive.wasm", "rive_fallback.wasm"]
+    },
+    "canvas": {
+      "npm": "@rive-app/canvas",
+      "version": "2.43.1",
+      "tarball": "https://registry.npmjs.org/@rive-app/canvas/-/canvas-2.43.1.tgz",
+      "integrity": "sha512-GqENtpSOK5KOnF+kmzDQ70tfEQYksSOb39jcPPAV5vj5XDJ3vekPdbqTWuQdEyOFMhJUir4iBo3On9Gy2hghtQ==",
+      "files": ["rive.js", "rive.wasm", "rive_fallback.wasm"]
+    }
+  }
+}

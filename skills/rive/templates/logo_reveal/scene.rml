@@ -1,0 +1,218 @@
+<Rive version="1" kind="fragment">
+    <!--
+      Logo reveal made by rive_svg.py with its reveal option. The drawing appears three
+      times at one centre (Line, Fill, Glow; the first sibling draws on top).
+      The GroupEffect "Draw" trims every Line and Glow stroke together, so
+      keying its TrimPath end (0:82, key 115) draws the whole mark on.
+      Re-time the Reveal keys to taste; the ink colour is on the view model.
+    -->
+    <Artboard defaultStateMachineId="0:7" viewModelId="0:60" viewModelInstanceId="0:61" styleId="0:5"
+              width="1920" height="1080" name="Main" id="0:2">
+        <LayoutComponentStyle name="Artboard Style" id="0:5"/>
+        <GroupEffect name="Draw" id="0:81">
+            <TrimPath start="0" end="0" name="Draw Trim" id="0:82"/>
+        </GroupEffect>
+        <Node x="960" y="540" name="Logo" id="0:20">
+            <Node name="Line" id="0:21">
+                <Shape name="circle" id="0:1002">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicMirroredVertex x="233.28" y="-198.72" rotation="1.5708" distance="19.087"/>
+                        <CubicMirroredVertex x="198.72" y="-164.16" rotation="3.1416" distance="19.087"/>
+                        <CubicMirroredVertex x="164.16" y="-198.72" rotation="-1.5708" distance="19.087"/>
+                        <CubicMirroredVertex x="198.72" y="-233.28" rotation="0" distance="19.087"/>
+                    </PointsPath>
+                    <Stroke thickness="3.888" cap="round" join="round" name="Line">
+                        <SolidColor colorValue="FFF2F2F2" name="Ink">
+                            <DataBindContext sourcePathIds="0:60-0:62" propertyKey="37"/>
+                        </SolidColor>
+                        <TargetEffect targetId="0:81" name="Draw On"/>
+                    </Stroke>
+                </Shape>
+                <Shape name="path" id="0:1003">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicDetachedVertex x="-69.12" y="-133.92" inRotation="1.5708" inDistance="0" outRotation="-1.5708" outDistance="25.92"/>
+                        <CubicDetachedVertex x="-34.56" y="-153.36" inRotation="-2.6292" inDistance="26.4349" outRotation="0.5124" outDistance="0"/>
+                        <CubicDetachedVertex x="164.16" y="-30.24" inRotation="3.7002" inDistance="0" outRotation="0.5586" outDistance="27.1699"/>
+                        <CubicDetachedVertex x="164.16" y="12.96" inRotation="-0.5586" inDistance="27.1699" outRotation="2.583" outDistance="0"/>
+                        <CubicDetachedVertex x="-34.56" y="136.08" inRotation="5.7708" inDistance="0" outRotation="2.6292" outDistance="26.4349"/>
+                        <CubicDetachedVertex x="-69.12" y="116.64" inRotation="1.5708" inDistance="25.92" outRotation="4.7124" outDistance="0"/>
+                    </PointsPath>
+                    <Stroke thickness="3.888" cap="round" join="round" name="Line">
+                        <SolidColor colorValue="FFF2F2F2" name="Ink">
+                            <DataBindContext sourcePathIds="0:60-0:62" propertyKey="37"/>
+                        </SolidColor>
+                        <TargetEffect targetId="0:81" name="Draw On"/>
+                    </Stroke>
+                </Shape>
+                <Shape name="circle" id="0:1004">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicMirroredVertex x="324" y="0" rotation="1.5708" distance="178.9403"/>
+                        <CubicMirroredVertex x="0" y="324" rotation="3.1416" distance="178.9403"/>
+                        <CubicMirroredVertex x="-324" y="0" rotation="-1.5708" distance="178.9403"/>
+                        <CubicMirroredVertex x="0" y="-324" rotation="0" distance="178.9403"/>
+                    </PointsPath>
+                    <Stroke thickness="3.888" cap="round" join="round" name="Line">
+                        <SolidColor colorValue="FFF2F2F2" name="Ink">
+                            <DataBindContext sourcePathIds="0:60-0:62" propertyKey="37"/>
+                        </SolidColor>
+                        <TargetEffect targetId="0:81" name="Draw On"/>
+                    </Stroke>
+                </Shape>
+            </Node>
+            <Node scaleX="0.96" scaleY="0.96" opacity="0" name="Fill" id="0:23">
+                <Shape name="circle" id="0:1010">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicMirroredVertex x="233.28" y="-198.72" rotation="1.5708" distance="19.087"/>
+                        <CubicMirroredVertex x="198.72" y="-164.16" rotation="3.1416" distance="19.087"/>
+                        <CubicMirroredVertex x="164.16" y="-198.72" rotation="-1.5708" distance="19.087"/>
+                        <CubicMirroredVertex x="198.72" y="-233.28" rotation="0" distance="19.087"/>
+                    </PointsPath>
+                    <Fill name="Fill">
+                        <SolidColor colorValue="FFC9A84C" name="Color"/>
+                    </Fill>
+                </Shape>
+                <Shape name="path" id="0:1011">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicDetachedVertex x="-69.12" y="-133.92" inRotation="1.5708" inDistance="0" outRotation="-1.5708" outDistance="25.92"/>
+                        <CubicDetachedVertex x="-34.56" y="-153.36" inRotation="-2.6292" inDistance="26.4349" outRotation="0.5124" outDistance="0"/>
+                        <CubicDetachedVertex x="164.16" y="-30.24" inRotation="3.7002" inDistance="0" outRotation="0.5586" outDistance="27.1699"/>
+                        <CubicDetachedVertex x="164.16" y="12.96" inRotation="-0.5586" inDistance="27.1699" outRotation="2.583" outDistance="0"/>
+                        <CubicDetachedVertex x="-34.56" y="136.08" inRotation="5.7708" inDistance="0" outRotation="2.6292" outDistance="26.4349"/>
+                        <CubicDetachedVertex x="-69.12" y="116.64" inRotation="1.5708" inDistance="25.92" outRotation="4.7124" outDistance="0"/>
+                    </PointsPath>
+                    <Fill name="Fill">
+                        <SolidColor colorValue="FFF2F2F2" name="Color"/>
+                    </Fill>
+                </Shape>
+                <Shape name="circle" id="0:1012">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicMirroredVertex x="324" y="0" rotation="1.5708" distance="178.9403"/>
+                        <CubicMirroredVertex x="0" y="324" rotation="3.1416" distance="178.9403"/>
+                        <CubicMirroredVertex x="-324" y="0" rotation="-1.5708" distance="178.9403"/>
+                        <CubicMirroredVertex x="0" y="-324" rotation="0" distance="178.9403"/>
+                    </PointsPath>
+                    <Stroke thickness="47.52" cap="butt" join="miter" name="Stroke">
+                        <SolidColor colorValue="FFC9A84C" name="Color"/>
+                    </Stroke>
+                </Shape>
+            </Node>
+            <Node opacity="0" name="Glow" id="0:22">
+                <Shape name="circle glow" id="0:1006">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicMirroredVertex x="233.28" y="-198.72" rotation="1.5708" distance="19.087"/>
+                        <CubicMirroredVertex x="198.72" y="-164.16" rotation="3.1416" distance="19.087"/>
+                        <CubicMirroredVertex x="164.16" y="-198.72" rotation="-1.5708" distance="19.087"/>
+                        <CubicMirroredVertex x="198.72" y="-233.28" rotation="0" distance="19.087"/>
+                    </PointsPath>
+                    <Stroke thickness="11.664" cap="round" join="round" name="Glow">
+                        <SolidColor colorValue="FFF2F2F2" name="Ink">
+                            <DataBindContext sourcePathIds="0:60-0:62" propertyKey="37"/>
+                        </SolidColor>
+                        <Feather strength="12.96" name="Soft"/>
+                        <TargetEffect targetId="0:81" name="Draw On"/>
+                    </Stroke>
+                </Shape>
+                <Shape name="path glow" id="0:1007">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicDetachedVertex x="-69.12" y="-133.92" inRotation="1.5708" inDistance="0" outRotation="-1.5708" outDistance="25.92"/>
+                        <CubicDetachedVertex x="-34.56" y="-153.36" inRotation="-2.6292" inDistance="26.4349" outRotation="0.5124" outDistance="0"/>
+                        <CubicDetachedVertex x="164.16" y="-30.24" inRotation="3.7002" inDistance="0" outRotation="0.5586" outDistance="27.1699"/>
+                        <CubicDetachedVertex x="164.16" y="12.96" inRotation="-0.5586" inDistance="27.1699" outRotation="2.583" outDistance="0"/>
+                        <CubicDetachedVertex x="-34.56" y="136.08" inRotation="5.7708" inDistance="0" outRotation="2.6292" outDistance="26.4349"/>
+                        <CubicDetachedVertex x="-69.12" y="116.64" inRotation="1.5708" inDistance="25.92" outRotation="4.7124" outDistance="0"/>
+                    </PointsPath>
+                    <Stroke thickness="11.664" cap="round" join="round" name="Glow">
+                        <SolidColor colorValue="FFF2F2F2" name="Ink">
+                            <DataBindContext sourcePathIds="0:60-0:62" propertyKey="37"/>
+                        </SolidColor>
+                        <Feather strength="12.96" name="Soft"/>
+                        <TargetEffect targetId="0:81" name="Draw On"/>
+                    </Stroke>
+                </Shape>
+                <Shape name="circle glow" id="0:1008">
+                    <PointsPath isClosed="true" name="Path">
+                        <CubicMirroredVertex x="324" y="0" rotation="1.5708" distance="178.9403"/>
+                        <CubicMirroredVertex x="0" y="324" rotation="3.1416" distance="178.9403"/>
+                        <CubicMirroredVertex x="-324" y="0" rotation="-1.5708" distance="178.9403"/>
+                        <CubicMirroredVertex x="0" y="-324" rotation="0" distance="178.9403"/>
+                    </PointsPath>
+                    <Stroke thickness="11.664" cap="round" join="round" name="Glow">
+                        <SolidColor colorValue="FFF2F2F2" name="Ink">
+                            <DataBindContext sourcePathIds="0:60-0:62" propertyKey="37"/>
+                        </SolidColor>
+                        <Feather strength="12.96" name="Soft"/>
+                        <TargetEffect targetId="0:81" name="Draw On"/>
+                    </Stroke>
+                </Shape>
+            </Node>
+        </Node>
+        <LinearAnimation fps="60" duration="180" name="Reveal" id="0:6">
+            <KeyedObject objectId="0:82">
+                <KeyedProperty propertyKey="115">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.65" y1="0" x2="0.35" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="72" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:23">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0" frame="54" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="96" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:23">
+                <KeyedProperty propertyKey="16">
+                    <KeyFrameDouble value="0.96" frame="54" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="108" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:23">
+                <KeyedProperty propertyKey="17">
+                    <KeyFrameDouble value="0.96" frame="54" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.16" y1="1" x2="0.3" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="1" frame="108" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:21">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="1" frame="84" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.65" y1="0" x2="0.35" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="0" frame="120" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:22">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0" frame="60" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.65" y1="0" x2="0.35" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="0.7" frame="84" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.65" y1="0" x2="0.35" y2="1"/>
+                    </KeyFrameDouble>
+                    <KeyFrameDouble value="0" frame="150" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <StateMachine name="Reveal Machine" id="0:7">
+            <StateMachineLayer name="Play" id="0:8">
+                <AnyState x="400" y="0"/>
+                <ExitState x="560" y="0"/>
+                <EntryState x="0" y="0"><StateTransition stateToId="0:9"/></EntryState>
+                <AnimationState x="200" y="0" animationId="0:6" id="0:9"/>
+            </StateMachineLayer>
+        </StateMachine>
+    </Artboard>
+
+    <ViewModel defaultInstanceId="0:61" name="LogoReveal" id="0:60">
+        <ViewModelPropertyColor name="ink" id="0:62"/>
+        <ViewModelInstance exports="true" name="Default" id="0:61">
+            <ViewModelInstanceColor propertyValue="FFF2F2F2" viewModelPropertyId="0:62"/>
+        </ViewModelInstance>
+    </ViewModel>
+</Rive>

@@ -1,0 +1,336 @@
+<Rive version="1" kind="fragment">
+    <!--
+      An interactive toggle button for web pages and prototypes, with every
+      kind of input Rive has: hover (scale), press (nudge down), click or
+      Enter/Space to toggle Play/Pause, a native pointer cursor, keyboard
+      focus that is set when the machine starts, and a screen-reader label.
+      Three layers run at once (Hover, Press, Toggle), each driven by one
+      view model boolean, so the states never have to encode combinations.
+      Prove it both ways with rive_check.py and a click at 210,70.
+    -->
+    <Artboard defaultStateMachineId="0:90" viewModelId="0:60" viewModelInstanceId="0:61" styleId="0:3"
+              width="420" height="140" name="Button" id="0:2">
+        <LayoutComponentStyle layoutAlignmentType="center" name="Artboard Style" id="0:3"/>
+
+            <LayoutComponent width="360" height="96" styleId="0:11" name="Button" id="0:10">
+                <LayoutComponentStyle layoutWidthScaleType="fixed" layoutHeightScaleType="fixed"
+                                      flexDirectionValue="row" layoutAlignmentType="center"
+                                      gapHorizontal="14" gapHorizontalUnitsValue="points"
+                                      cornerRadiusTL="48" cornerRadiusTR="48" cornerRadiusBL="48" cornerRadiusBR="48"
+                                      name="Button Style" id="0:11"/>
+                <ComponentOrigin originX="0.5" originY="0.5" name="Origin"/>
+                <FocusData name="Focus"/>
+                <SemanticData role="switchControl" label="Play" isToggleable="true" name="Semantics"/>
+                <Fill name="Surface"><SolidColor colorValue="FF1C1E24" name="Color"/></Fill>
+
+                <LayoutComponent width="30" height="30" styleId="0:14" name="Icon Slot" id="0:13">
+                    <LayoutComponentStyle layoutWidthScaleType="fixed" layoutHeightScaleType="fixed" name="Icon Slot Style" id="0:14"/>
+                    <Node x="15" y="15" name="Icon" id="0:15">
+                        <Shape x="3" rotation="1.5707964" name="Play Icon" id="0:16">
+                            <Triangle width="30" height="26" originX="0.5" originY="0.5" name="Path"/>
+                            <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Color"/></Fill>
+                        </Shape>
+                        <Shape opacity="0" name="Pause Icon" id="0:17">
+                            <Rectangle x="-7" width="9" height="28" originX="0.5" originY="0.5" cornerRadiusTL="2" name="Left"/>
+                            <Rectangle x="7" width="9" height="28" originX="0.5" originY="0.5" cornerRadiusTL="2" name="Right"/>
+                            <Fill name="Fill"><SolidColor colorValue="FF0B0C0F" name="Color"/></Fill>
+                        </Shape>
+                    </Node>
+                </LayoutComponent>
+
+                <!-- one text run; the Off and On timelines key its string and colour -->
+                <Text name="Label" id="0:40">
+                    <LayoutParticipant layoutWidthScaleType="hug" layoutHeightScaleType="hug" name="Label Layout"/>
+                    <TextStylePaint fontSize="34" fontAssetId="0:50" familyName="Space Grotesk" styleName="Bold"
+                                    name="Label Style" id="0:43">
+                        <Fill name="Fill"><SolidColor colorValue="FFF2F2F2" name="Ink" id="0:45"/></Fill>
+                        <TextStyleAxis tag="2003265652" axisValue="700" name="Weight"/>
+                    </TextStylePaint>
+                    <TextValueRun styleId="0:43" text="Play" name="Label Run" id="0:41"/>
+                </Text>
+
+                <!-- declared last so it sits under the icon and label: the "on" colour -->
+                <LayoutComponent width="360" height="96" opacity="0" styleId="0:31" name="Accent Plate" id="0:30">
+                    <LayoutComponentStyle positionTypeValue="absolute"
+                                          positionLeft="0" positionLeftUnitsValue="points"
+                                          positionRight="0" positionRightUnitsValue="points"
+                                          positionTop="0" positionTopUnitsValue="points"
+                                          positionBottom="0" positionBottomUnitsValue="points"
+                                          cornerRadiusTL="48" cornerRadiusTR="48" cornerRadiusBL="48" cornerRadiusBR="48"
+                                          name="Accent Plate Style" id="0:31"/>
+                    <Fill name="Fill">
+                        <SolidColor colorValue="FFC9A84C" name="Accent">
+                            <DataBindContext sourcePathIds="0:60-0:66" propertyKey="37"/>
+                        </SolidColor>
+                    </Fill>
+                </LayoutComponent>
+            </LayoutComponent>
+
+        <LinearAnimation fps="60" duration="1" name="Rest" id="0:80">
+            <KeyedObject objectId="0:10">
+                <KeyedProperty propertyKey="16">
+                    <KeyFrameDouble value="1" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:10">
+                <KeyedProperty propertyKey="17">
+                    <KeyFrameDouble value="1" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <LinearAnimation fps="60" duration="1" name="Hover" id="0:81">
+            <KeyedObject objectId="0:10">
+                <KeyedProperty propertyKey="16">
+                    <KeyFrameDouble value="1.04" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:10">
+                <KeyedProperty propertyKey="17">
+                    <KeyFrameDouble value="1.04" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <LinearAnimation fps="60" duration="1" name="Up" id="0:82">
+            <KeyedObject objectId="0:10">
+                <KeyedProperty propertyKey="14">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <LinearAnimation fps="60" duration="1" name="Down" id="0:83">
+            <KeyedObject objectId="0:10">
+                <KeyedProperty propertyKey="14">
+                    <KeyFrameDouble value="3" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <LinearAnimation fps="60" duration="1" name="Off" id="0:84">
+            <KeyedObject objectId="0:30">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:16">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="1" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:17">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:41">
+                <KeyedProperty propertyKey="268">
+                    <KeyFrameString value="Play" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:45">
+                <KeyedProperty propertyKey="37">
+                    <KeyFrameColor value="FFF2F2F2" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <LinearAnimation fps="60" duration="1" name="On" id="0:85">
+            <KeyedObject objectId="0:30">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="1" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:16">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:17">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="1" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:41">
+                <KeyedProperty propertyKey="268">
+                    <KeyFrameString value="Pause" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:45">
+                <KeyedProperty propertyKey="37">
+                    <KeyFrameColor value="FF0B0C0F" frame="0" interpolationType="hold"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+
+        <StateMachine name="Button Machine" id="0:90">
+            <StateMachineListenerSingle targetId="0:10" listenerTypeValue="enter" name="Pointer In" id="0:70">
+            <ListenerViewModelChange>
+                <BindablePropertyBoolean propertyValue="true">
+                    <DataBindContext sourcePathIds="0:60-0:63" propertyKey="634" direction="true"/>
+                </BindablePropertyBoolean>
+            </ListenerViewModelChange>
+            <ListenerViewModelChange>
+                <BindablePropertyString propertyValue="pointer">
+                    <DataBindContext sourcePathIds="0:60-0:65" propertyKey="635" direction="true"/>
+                </BindablePropertyString>
+            </ListenerViewModelChange>
+            </StateMachineListenerSingle>
+            <StateMachineListenerSingle targetId="0:10" listenerTypeValue="exit" name="Pointer Out" id="0:71">
+            <ListenerViewModelChange>
+                <BindablePropertyBoolean propertyValue="false">
+                    <DataBindContext sourcePathIds="0:60-0:63" propertyKey="634" direction="true"/>
+                </BindablePropertyBoolean>
+            </ListenerViewModelChange>
+            <ListenerViewModelChange>
+                <BindablePropertyBoolean propertyValue="false">
+                    <DataBindContext sourcePathIds="0:60-0:64" propertyKey="634" direction="true"/>
+                </BindablePropertyBoolean>
+            </ListenerViewModelChange>
+            <ListenerViewModelChange>
+                <BindablePropertyString propertyValue="arrow">
+                    <DataBindContext sourcePathIds="0:60-0:65" propertyKey="635" direction="true"/>
+                </BindablePropertyString>
+            </ListenerViewModelChange>
+            </StateMachineListenerSingle>
+            <StateMachineListenerSingle targetId="0:10" listenerTypeValue="down" name="Press" id="0:72">
+            <ListenerViewModelChange>
+                <BindablePropertyBoolean propertyValue="true">
+                    <DataBindContext sourcePathIds="0:60-0:64" propertyKey="634" direction="true"/>
+                </BindablePropertyBoolean>
+            </ListenerViewModelChange>
+            </StateMachineListenerSingle>
+            <StateMachineListenerSingle targetId="0:10" listenerTypeValue="up" name="Release" id="0:73">
+            <ListenerViewModelChange>
+                <BindablePropertyBoolean propertyValue="false">
+                    <DataBindContext sourcePathIds="0:60-0:64" propertyKey="634" direction="true"/>
+                </BindablePropertyBoolean>
+            </ListenerViewModelChange>
+            </StateMachineListenerSingle>
+            <StateMachineListenerSingle targetId="0:10" listenerTypeValue="click" name="Toggle" id="0:74">
+            <ListenerViewModelChange fromViewModelProperty="true" fromDataBindId="0:99">
+                <BindablePropertyBoolean>
+                    <DataBindContext sourcePathIds="0:60-0:62" propertyKey="634" id="0:99" converterId="0:98"/>
+                    <DataBindContext sourcePathIds="0:60-0:62" propertyKey="634" direction="true"/>
+                </BindablePropertyBoolean>
+            </ListenerViewModelChange>
+            </StateMachineListenerSingle>
+            <StateMachineListener targetId="0:10" name="Toggle Keys" id="0:75">
+                <ListenerInputTypeKeyboard listenerTypeValue="keyboard">
+                    <KeyboardInput keyType="enter" keyPhase="1"/>
+                    <KeyboardInput keyType="space" keyPhase="1"/>
+                </ListenerInputTypeKeyboard>
+            <ListenerViewModelChange fromViewModelProperty="true" fromDataBindId="0:97">
+                <BindablePropertyBoolean>
+                    <DataBindContext sourcePathIds="0:60-0:62" propertyKey="634" id="0:97" converterId="0:98"/>
+                    <DataBindContext sourcePathIds="0:60-0:62" propertyKey="634" direction="true"/>
+                </BindablePropertyBoolean>
+            </ListenerViewModelChange>
+            </StateMachineListener>
+
+            <StateMachineLayer name="Hover" id="0:91">
+                <AnyState x="400" y="0"/>
+                <ExitState x="560" y="0"/>
+                <EntryState x="0" y="0"><StateTransition stateToId="0:100"/></EntryState>
+                <AnimationState x="160" y="0" animationId="0:80" id="0:100">
+                    <FocusActionTarget targetId="0:10"/>
+                    <StateTransition stateToId="0:101" duration="140">
+                <TransitionViewModelCondition>
+                    <TransitionPropertyViewModelComparator>
+                        <BindablePropertyBoolean>
+                            <DataBindContext sourcePathIds="0:60-0:63" propertyKey="634"/>
+                        </BindablePropertyBoolean>
+                    </TransitionPropertyViewModelComparator>
+                    <TransitionValueBooleanComparator value="true"/>
+                </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+                <AnimationState x="280" y="0" animationId="0:81" id="0:101">
+                    <StateTransition stateToId="0:100" duration="140">
+                <TransitionViewModelCondition>
+                    <TransitionPropertyViewModelComparator>
+                        <BindablePropertyBoolean>
+                            <DataBindContext sourcePathIds="0:60-0:63" propertyKey="634"/>
+                        </BindablePropertyBoolean>
+                    </TransitionPropertyViewModelComparator>
+                    <TransitionValueBooleanComparator value="false"/>
+                </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+            </StateMachineLayer>
+            <StateMachineLayer name="Press" id="0:92">
+                <AnyState x="400" y="120"/>
+                <ExitState x="560" y="120"/>
+                <EntryState x="0" y="120"><StateTransition stateToId="0:102"/></EntryState>
+                <AnimationState x="160" y="120" animationId="0:82" id="0:102">
+                    <StateTransition stateToId="0:103" duration="60">
+                <TransitionViewModelCondition>
+                    <TransitionPropertyViewModelComparator>
+                        <BindablePropertyBoolean>
+                            <DataBindContext sourcePathIds="0:60-0:64" propertyKey="634"/>
+                        </BindablePropertyBoolean>
+                    </TransitionPropertyViewModelComparator>
+                    <TransitionValueBooleanComparator value="true"/>
+                </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+                <AnimationState x="280" y="120" animationId="0:83" id="0:103">
+                    <StateTransition stateToId="0:102" duration="120">
+                <TransitionViewModelCondition>
+                    <TransitionPropertyViewModelComparator>
+                        <BindablePropertyBoolean>
+                            <DataBindContext sourcePathIds="0:60-0:64" propertyKey="634"/>
+                        </BindablePropertyBoolean>
+                    </TransitionPropertyViewModelComparator>
+                    <TransitionValueBooleanComparator value="false"/>
+                </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+            </StateMachineLayer>
+            <StateMachineLayer name="Toggle" id="0:93">
+                <AnyState x="400" y="240"/>
+                <ExitState x="560" y="240"/>
+                <EntryState x="0" y="240"><StateTransition stateToId="0:104"/></EntryState>
+                <AnimationState x="160" y="240" animationId="0:84" id="0:104">
+                    <StateTransition stateToId="0:105" duration="180">
+                <TransitionViewModelCondition>
+                    <TransitionPropertyViewModelComparator>
+                        <BindablePropertyBoolean>
+                            <DataBindContext sourcePathIds="0:60-0:62" propertyKey="634"/>
+                        </BindablePropertyBoolean>
+                    </TransitionPropertyViewModelComparator>
+                    <TransitionValueBooleanComparator value="true"/>
+                </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+                <AnimationState x="280" y="240" animationId="0:85" id="0:105">
+                    <StateTransition stateToId="0:104" duration="180">
+                <TransitionViewModelCondition>
+                    <TransitionPropertyViewModelComparator>
+                        <BindablePropertyBoolean>
+                            <DataBindContext sourcePathIds="0:60-0:62" propertyKey="634"/>
+                        </BindablePropertyBoolean>
+                    </TransitionPropertyViewModelComparator>
+                    <TransitionValueBooleanComparator value="false"/>
+                </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+            </StateMachineLayer>
+        </StateMachine>
+    </Artboard>
+
+    <DataConverterBooleanNegate name="Not" id="0:98"/>
+
+    <ViewModel defaultInstanceId="0:61" name="Button" id="0:60">
+        <ViewModelPropertyBoolean name="on" id="0:62"/>
+        <ViewModelPropertyBoolean name="hover" id="0:63"/>
+        <ViewModelPropertyBoolean name="down" id="0:64"/>
+        <ViewModelPropertyString name="cursor" id="0:65"/>
+        <ViewModelPropertyColor name="accent" id="0:66"/>
+        <ViewModelInstance exports="true" name="Default" id="0:61">
+            <ViewModelInstanceBoolean propertyValue="false" viewModelPropertyId="0:62"/>
+            <ViewModelInstanceBoolean propertyValue="false" viewModelPropertyId="0:63"/>
+            <ViewModelInstanceBoolean propertyValue="false" viewModelPropertyId="0:64"/>
+            <ViewModelInstanceString propertyValue="arrow" viewModelPropertyId="0:65"/>
+            <ViewModelInstanceColor propertyValue="FFC9A84C" viewModelPropertyId="0:66"/>
+        </ViewModelInstance>
+    </ViewModel>
+
+    <FontAsset file="../_fonts/SpaceGrotesk-Variable.ttf" name="Space Grotesk" id="0:50"/>
+</Rive>

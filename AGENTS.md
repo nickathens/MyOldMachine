@@ -102,12 +102,15 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-09-25] linux: the diagram skill keeps the page width and the old look
-  on Mermaid CLI 12 (skills/diagram/scripts/diagram.py, a new
-  scripts/mermaid.json, SKILL.md; tests/test_diagram_mermaid.py replaces
-  test_diagram_mmdc_size.py). Follows #180 (PR #181).
+- [2026-09-25] mac: a new rive skill (skills/rive: Rive CLI authoring,
+  rendering to video with alpha, versions from a table, SVG, font and audio
+  helpers, web pages, six tested templates; README counts 85 skills and 31
+  hooks; tests/test_rive_skill.py). No shared code outside README and this
+  file (PR #182).
 
-(Entries removed above: #179 merged 2026-09-22, its line cleared inside
+(Entries removed above: #181 merged 2026-09-25, its line cleared inside the
+rive skill PR's own edit, the same call as #179 inside #181.
+#179 merged 2026-09-22, its line cleared inside
 #181's own edit because the two share lines, the same call as #165, #127 and #161.
 #177 and #178 cleared in #177's reviewed merge revision,
 #178 squashed into #177's branch first; the same call as #176 to #172.

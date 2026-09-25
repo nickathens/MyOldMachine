@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <!-- A neutral sample mark (a ring, a rounded play shape, a dot). Replace it with your own logo. -->
+  <circle cx="200" cy="200" r="150" fill="none" stroke="#C9A84C" stroke-width="22"/>
+  <path d="M168 138 Q168 120 184 129 L276 186 Q292 196 276 206 L184 263 Q168 272 168 254 Z" fill="#F2F2F2"/>
+  <circle cx="292" cy="108" r="16" fill="#C9A84C"/>
+</svg>
