@@ -36,6 +36,21 @@ FORMATS = ("png", "svg", "pdf")
 # shapes a render: the PNG is cropped to the diagram either way.
 PAGE_HEIGHT = 600
 
+# Puppeteer's words when the browser build mmdc pins is not in this user's
+# cache: "Could not find chrome-headless-shell (ver. 154.0.8037.57)".
+MISSING_BROWSER = re.compile(r"Could not find (?:Chrome|chrome-headless-shell) \(ver\. ")
+
+
+def browser_fix() -> str:
+    """The command that fetches mmdc's browser into this user's own cache.
+
+    An install under sudo runs Puppeteer's download as root, so the browser
+    lands in root's cache, where this user's mmdc never looks.
+    """
+    helper = SCRIPT_DIR.parents[2] / "utils" / "puppeteer_browsers.py"
+    shown = str(helper) if helper.is_file() else "utils/puppeteer_browsers.py (in the bot's folder)"
+    return f"python3 {shown} @mermaid-js/mermaid-cli"
+
 
 def mmdc_major() -> int:
     """Leading version number of the mmdc on PATH, or 0 when it cannot be read."""
@@ -89,8 +104,9 @@ def render(
 ) -> None:
     if shutil.which("mmdc") is None:
         raise RuntimeError(
-            "mmdc not found. Install it via: "
-            "sudo npm install -g @mermaid-js/mermaid-cli"
+            "mmdc not found. Install it with `sudo npm install -g @mermaid-js/mermaid-cli` "
+            "on Linux (no sudo on a Mac), then fetch its browser as this user, without "
+            f"sudo: `{browser_fix()}`"
         )
 
     if fmt is None:
@@ -121,10 +137,13 @@ def render(
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(
+            message = (
                 f"mmdc failed (code {result.returncode}):\n"
                 f"stdout: {result.stdout}\nstderr: {result.stderr}"
             )
+            if MISSING_BROWSER.search(result.stderr):
+                message += f"\nIts browser is missing for this user. Fetch it, without sudo: {browser_fix()}"
+            raise RuntimeError(message)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -62,7 +62,7 @@ def load_script():
     return module
 
 
-def fake_mmdc(version_output: str, returncode: int = 0):
+def fake_mmdc(version_output: str, returncode: int = 0, stderr: str = "boom"):
     """A subprocess.run stand-in: answers --version, records every render.
 
     The source and the launch config sit in a temporary directory that is
@@ -78,7 +78,7 @@ def fake_mmdc(version_output: str, returncode: int = 0):
             "source": Path(cmd[cmd.index("-i") + 1]).read_text(encoding="utf-8"),
             "config": json.loads(Path(cmd[cmd.index("-p") + 1]).read_text(encoding="utf-8")),
         })
-        return subprocess.CompletedProcess(cmd, returncode, "", "boom" if returncode else "")
+        return subprocess.CompletedProcess(cmd, returncode, "", stderr if returncode else "")
 
     return run, renders
 
@@ -190,10 +190,45 @@ class CommandTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 self.d.render(SOURCE, Path(tmp) / "never.png")
         self.assertIn("boom", str(caught.exception))
+        self.assertNotIn("puppeteer_browsers.py", str(caught.exception))
         self.assertEqual(renders[0]["source"], SOURCE)
         cmd = renders[0]["cmd"]
         self.assertFalse(Path(cmd[cmd.index("-i") + 1]).exists())
         self.assertFalse(Path(cmd[cmd.index("-p") + 1]).exists())
+
+    def test_the_install_hint_fetches_the_browser_as_this_user(self):
+        # The agent installs mmdc by following this message, and on Linux the
+        # npm step runs under sudo, so Puppeteer's download lands in root's
+        # cache: measured on Ubuntu 24.04, the next render failed with "Could
+        # not find chrome-headless-shell" until the helper ran as the user.
+        with mock.patch.object(self.d.shutil, "which", return_value=None):
+            with self.assertRaises(RuntimeError) as caught:
+                self.d.render(SOURCE, Path(tempfile.gettempdir()) / "never.png")
+        message = str(caught.exception)
+        self.assertIn("sudo npm install -g @mermaid-js/mermaid-cli", message)
+        helper = REPO / "utils" / "puppeteer_browsers.py"
+        self.assertIn(f"without sudo: `python3 {helper} @mermaid-js/mermaid-cli`", message)
+        self.assertTrue(helper.is_file())
+
+    def test_a_missing_browser_names_the_command_that_fetches_it(self):
+        # Puppeteer's own suggestion (npx puppeteer browsers install ...) runs
+        # whatever Puppeteer npx resolves, not the one mmdc pins.
+        for missing in ("chrome-headless-shell (ver. 154.0.8037.57)", "Chrome (ver. 154.0.8037.57)"):
+            stderr = f"\nError: Could not find {missing}. This can occur if either\n 1. you did not"
+            run, _ = fake_mmdc("12.0.0\n", returncode=1, stderr=stderr)
+            with self.subTest(missing), tempfile.TemporaryDirectory() as tmp, \
+                    mock.patch.object(self.d.shutil, "which", return_value="/usr/bin/mmdc"), \
+                    mock.patch.object(self.d.subprocess, "run", side_effect=run):
+                with self.assertRaises(RuntimeError) as caught:
+                    self.d.render(SOURCE, Path(tmp) / "never.png")
+                self.assertIn("Its browser is missing for this user", str(caught.exception))
+                self.assertIn(f"without sudo: {self.d.browser_fix()}", str(caught.exception))
+
+    def test_a_copy_outside_the_bot_folder_still_names_the_helper(self):
+        # a skill forked into a user's own folder is not three levels under utils/
+        with mock.patch.object(self.d, "SCRIPT_DIR", Path(tempfile.gettempdir()) / "a" / "b" / "c"):
+            self.assertEqual(self.d.browser_fix(),
+                             "python3 utils/puppeteer_browsers.py (in the bot's folder) @mermaid-js/mermaid-cli")
 
 
 @unittest.skipUnless(shutil.which("mmdc"), "mmdc is not installed; nothing real to render with")
