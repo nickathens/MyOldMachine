@@ -8,6 +8,7 @@ well on Telegram's chat surface.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,32 @@ PUPPETEER_CONFIG = SCRIPT_DIR / "puppeteer.json"
 
 THEMES = ("default", "dark", "forest", "neutral")
 FORMATS = ("png", "svg", "pdf")
+
+
+def mmdc_major() -> int:
+    """Leading version number of the mmdc on PATH, or 0 when it cannot be read."""
+    try:
+        result = subprocess.run(
+            ["mmdc", "--version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    match = re.match(r"\s*v?(\d+)\.", result.stdout)
+    return int(match.group(1)) if match else 0
+
+
+def size_args(width: int, major: int) -> list[str]:
+    """The mmdc flag that sets the output size.
+
+    Mermaid CLI 12 removed -w/--width and refuses it ("error: unknown option
+    '-w'"), so passing it there fails every render. Its replacement, --size,
+    makes the longest side of a PNG that many pixels: a small diagram comes
+    out larger than it did under -w, a very tall one smaller. 11 and older
+    only know -w, the page width. An unreadable version gets the current flag.
+    """
+    if 0 < major < 12:
+        return ["-w", str(width)]
+    return ["--size", str(width)]
 
 
 def render(
@@ -58,8 +85,7 @@ def render(
             theme,
             "-b",
             background,
-            "-w",
-            str(width),
+            *size_args(width, mmdc_major()),
             "-p",
             str(PUPPETEER_CONFIG),
         ]
@@ -99,7 +125,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--width",
         type=int,
         default=1600,
-        help="Output width in pixels (default: 1600).",
+        help=(
+            "Output size in pixels (default: 1600). Mermaid CLI 12 and later "
+            "make this the longest side of a PNG; older versions use it as "
+            "the page width."
+        ),
     )
     p.add_argument(
         "-f",
