@@ -6,8 +6,9 @@ dependency Puppeteer downloads that browser from an install script during
 `npm install`, into the installing user's cache (~/.cache/puppeteer). Two ways
 that leaves the bot without a browser while npm still exits 0:
 
-  * Linux installs global npm packages with `sudo npm install -g`
-    (core/self_install.py), so the script runs as root and the browser lands
+  * Linux installs global npm packages with `sudo npm install -g` (the
+    skill's own install message, and the nightly update where npm's folder
+    is root's), so the script runs as root and the browser lands
     in /root/.cache/puppeteer. The bot's own mmdc never looks there: "Could
     not find chrome-headless-shell" on every render, hit on the Linux box on
     3 Sep 2026 until Chrome was installed as the bot's user.

@@ -159,7 +159,7 @@ jobs:
   macos-checks:
     name: macOS smoke tests
     runs-on: macos-14
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -237,6 +237,15 @@ jobs:
           from core.health import get_disk_usage, get_memory_usage
           print(f'core imports ok, {len(TOOL_DEFINITIONS)} tools')
           "
+      # The unit tests ran only on Ubuntu, so every macOS branch in the code
+      # (launchd, Homebrew prefixes, BSD tools, /Volumes, the GUI app closer)
+      # was tested only where a test faked platform.system(). Same command as
+      # the Linux job.
+      - name: Run unit tests on macOS (offline, mocks all network)
+        run: |
+          . .venv/bin/activate
+          pip install -q pytest pillow fastapi 'uvicorn[standard]'
+          python -m unittest discover -s tests -v
 
   provider-factory:
     name: Validate provider factory

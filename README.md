@@ -10,7 +10,7 @@ One command installs it. After that you talk to it on your phone, and because it
 
 - **Runs on hardware most software has given up on.** A decade old laptop, a machine with 1GB of RAM paired with a small local model, a Raspberry Pi. If it boots, it can host this.
 - **14 AI providers, including free and fully local ones.** Switch between them from your phone, no reinstall, no SSH.
-- **85 skills**, from image generation and stem separation to Greek legal drafting, market backtesting, image-to-Three.js reconstruction, and DaVinci Resolve. Each installs its own dependencies the first time you use it.
+- **85 skills**, from image generation and stem separation to Greek legal drafting, market backtesting, image-to-Three.js reconstruction, and DaVinci Resolve. Each lists what it needs, and the assistant installs whatever is missing the first time a skill asks for it.
 - **A graphical Mini App inside Telegram** for the things a chat box is clumsy at.
 - **It remembers you.** A private memory per user that grows into a real model of how you work.
 - **Serves a whole household.** Many Telegram users on one machine, each with separate memory, data, and reminders.
@@ -173,7 +173,7 @@ Installs creative and productivity apps alongside the bot: Blender, GIMP, Inksca
 
 ### Minimal
 
-The bot runs as a background service. Your existing apps and settings stay untouched. Skills install their own dependencies the first time you use them. Good if you want to keep the machine as it is and add capabilities gradually.
+The bot runs as a background service. Your existing apps and settings stay untouched. The assistant installs a skill's dependencies the first time the skill needs them. Good if you want to keep the machine as it is and add capabilities gradually.
 
 ### Headless server
 
@@ -428,7 +428,7 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | screenshot-diff | Visual regression testing for websites |
 | media | Screenshots and video recording of web pages |
 
-### Workstation skills (preinstalled in workstation mode, self install in others)
+### Workstation skills (preinstalled in workstation mode, installed on first use in others)
 
 | Skill | What it does |
 |-------|-------------|

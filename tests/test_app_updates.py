@@ -230,7 +230,18 @@ class DaVinciResolveTests(unittest.TestCase):
         self.assertEqual(au._resolve_latest_version(), "")
 
 
-class NpmCliTests(unittest.TestCase):
+class _UserOwnedNpm:
+    """Pins npm's global folder as writable. Without it, on a Linux box whose
+    npm folder belongs to root, these tests would take the sudo path and run
+    the real sudo."""
+
+    def setUp(self):
+        p = patch("utils.app_updates._npm_global_needs_sudo", return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
+
+
+class NpmCliTests(_UserOwnedNpm, unittest.TestCase):
     def _outdated(self, payload: dict):
         return patch("utils.app_updates._npm_outdated_global", return_value=payload)
 
@@ -359,7 +370,7 @@ class NpmCliTests(unittest.TestCase):
         self.assertEqual(au._run(["x"], merge_stderr=False), (0, "out"))
 
 
-class NpmProofTests(unittest.TestCase):
+class NpmProofTests(_UserOwnedNpm, unittest.TestCase):
     """An update npm reports as clean can still leave a skill unable to work.
 
     Measured on the Mac, 25 Sep 2026, on a scratch copy of the global prefix:
@@ -439,6 +450,118 @@ class NpmProofTests(unittest.TestCase):
             (s,) = au.check_npm_clis(auto_update=True)
         self.assertEqual(s.state, "updated")
         self.assertEqual([c.args[0] for c in run.call_args_list], [["npm", "install", "-g", "surge@0.44.3"]])
+
+
+class NpmRootOwnedPrefixTests(unittest.TestCase):
+    """Linux, node from the distro or NodeSource: npm's global folder is
+    /usr/lib/node_modules, owned by root, and the nightly job runs as the bot's
+    user. Before 2026-09-26 every update there failed with EACCES, every night.
+    """
+
+    PKG = "lighthouse"
+
+    def _needs_sudo(self, value: bool):
+        return patch("utils.app_updates._npm_global_needs_sudo", return_value=value)
+
+    def test_darwin_never_asks_for_sudo(self):
+        with patch("utils.app_updates.platform.system", return_value="Darwin"), \
+                patch.object(au.puppeteer_browsers, "npm_global_root") as root:
+            self.assertFalse(au._npm_global_needs_sudo())
+        root.assert_not_called()
+
+    def test_a_folder_this_user_cannot_write_needs_sudo(self):
+        with tempfile.TemporaryDirectory() as d, \
+                patch("utils.app_updates.platform.system", return_value="Linux"), \
+                patch.object(au.puppeteer_browsers, "npm_global_root", return_value=Path(d)), \
+                patch("utils.app_updates.os.access", return_value=False) as access:
+            self.assertTrue(au._npm_global_needs_sudo())
+        self.assertEqual(access.call_args.args[0], Path(d))
+
+    def test_a_user_owned_folder_does_not(self):
+        with tempfile.TemporaryDirectory() as d, \
+                patch("utils.app_updates.platform.system", return_value="Linux"), \
+                patch.object(au.puppeteer_browsers, "npm_global_root", return_value=Path(d)):
+            self.assertFalse(au._npm_global_needs_sudo())
+
+    def test_a_missing_folder_is_judged_by_the_one_npm_would_create_it_in(self):
+        with tempfile.TemporaryDirectory() as d, \
+                patch("utils.app_updates.platform.system", return_value="Linux"), \
+                patch.object(au.puppeteer_browsers, "npm_global_root",
+                             return_value=Path(d) / "lib" / "node_modules"), \
+                patch("utils.app_updates.os.access", return_value=True) as access:
+            self.assertFalse(au._npm_global_needs_sudo())
+        self.assertEqual(access.call_args.args[0], Path(d))
+
+    def test_no_npm_answer_is_not_a_reason_for_sudo(self):
+        with patch("utils.app_updates.platform.system", return_value="Linux"), \
+                patch.object(au.puppeteer_browsers, "npm_global_root", return_value=None):
+            self.assertFalse(au._npm_global_needs_sudo())
+
+    def test_a_writable_folder_installs_without_sudo(self):
+        with self._needs_sudo(False), \
+                patch("utils.app_updates._run", return_value=(0, "")) as run, \
+                patch("utils.app_updates.subprocess.run") as sub:
+            self.assertEqual(au._npm_install_live("lighthouse@13.4.1"), (0, ""))
+        self.assertEqual(run.call_args.args[0], ["npm", "install", "-g", "lighthouse@13.4.1"])
+        sub.assert_not_called()
+
+    def test_root_owned_folder_installs_through_sudo_with_the_stored_password(self):
+        done = subprocess.CompletedProcess([], 0, stdout="added 1 package", stderr="")
+        with self._needs_sudo(True), \
+                patch("install.sudo.get_sudo_password", return_value="pw"), \
+                patch("utils.app_updates.subprocess.run", return_value=done) as sub, \
+                patch("utils.app_updates._run") as run:
+            rc, out = au._npm_install_live("lighthouse@13.4.1")
+        self.assertEqual((rc, out), (0, "added 1 package"))
+        self.assertEqual(sub.call_args.args[0],
+                         ["sudo", "-S", "-p", "", "npm", "install", "-g", "lighthouse@13.4.1"])
+        self.assertEqual(sub.call_args.kwargs["input"], "pw\n")
+        self.assertNotIn("shell", sub.call_args.kwargs)
+        run.assert_not_called()
+
+    def test_without_a_stored_password_sudo_never_waits_for_one(self):
+        refused = subprocess.CompletedProcess([], 1, stdout="",
+                                              stderr="sudo: a password is required")
+        with self._needs_sudo(True), \
+                patch("install.sudo.get_sudo_password", return_value=None), \
+                patch("utils.app_updates.subprocess.run", return_value=refused) as sub:
+            rc, out = au._npm_install_live("lighthouse@13.4.1")
+        self.assertEqual(sub.call_args.args[0][:2], ["sudo", "-n"])
+        self.assertIsNone(sub.call_args.kwargs["input"])
+        self.assertEqual(rc, 1)
+        self.assertIn("no sudo password is stored", out)
+
+    def test_nightly_update_lands_on_a_root_owned_prefix(self):
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("utils.app_updates._npm_outdated_global",
+                   return_value={self.PKG: {"current": "13.3.0", "latest": "13.4.1"}}), \
+                self._needs_sudo(True), \
+                patch("install.sudo.get_sudo_password", return_value="pw"), \
+                patch("utils.app_updates.subprocess.run", return_value=done) as sub:
+            (s,) = au.check_npm_clis(auto_update=True)
+        self.assertEqual(s.state, "updated")
+        self.assertEqual(sub.call_args.args[0][-1], "lighthouse@13.4.1")
+
+    def test_the_trial_install_never_uses_sudo(self):
+        pkg = "@mermaid-js/mermaid-cli"
+        commands = []
+
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            commands.append(cmd)
+            return 0, ""
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("utils.app_updates._npm_outdated_global",
+                   return_value={pkg: {"current": "11.16.0", "latest": "11.17.0"}}), \
+                self._needs_sudo(True), \
+                patch("install.sudo.get_sudo_password", return_value="pw"), \
+                patch("utils.app_updates._run", side_effect=run), \
+                patch("utils.app_updates.subprocess.run", return_value=done) as sub, \
+                patch.dict(au.NPM_PROOF, {pkg: lambda prefix: (True, "")}):
+            (s,) = au.check_npm_clis(auto_update=True)
+        self.assertEqual(s.state, "updated")
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--prefix", commands[0])
+        self.assertEqual(sub.call_args.args[0][:2], ["sudo", "-S"])
 
 
 class DiagramDrawsTests(unittest.TestCase):

@@ -102,6 +102,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-09-26] linux: archive sweep searches only its own drive, nightly npm updates through sudo on a root owned prefix, the unused dependency installer removed, unit tests on the macOS CI job (PR #185)
+
 (Entries removed above: #183 and #184 cleared in #183's reviewed merge
 revision, #184 merged first, the same call as #177 and #178.
 #182 merged 2026-09-25, its line cleared inside

@@ -69,8 +69,8 @@ def get_current_user_dir() -> Optional[Path]:
 # The bot's own directory and venv must be protected from LLM-initiated commands.
 # The LLM can accidentally "rebuild" the Python environment, breaking the running
 # bot process (e.g., deleting .venv causes SSL cert paths to vanish, httpx fails).
-# self_install.py manages the venv internally via Python imports — it does NOT go
-# through the tool execution layer, so these blocks don't affect it.
+# The installer and core/updater.py (pip install -r requirements.txt) change it
+# from outside the tool execution layer, so these blocks don't affect them.
 
 _BOT_DIR = Path(__file__).parent.parent.resolve()
 _BOT_VENV = str(_BOT_DIR / ".venv")
@@ -758,7 +758,8 @@ def _check_bot_self_modification(command: str) -> str | None:
         if re.search(r"\bpip[0-9.]*\s+(install|uninstall)\b", command):
             return (
                 f"Blocked: cannot modify packages in the bot's own virtual environment ({venv_str}). "
-                "Use the bot's self-install system for dependency management."
+                "Tell the user which package is missing and why; the bot's own "
+                "environment is changed by its installer and updater."
             )
 
     # Block writing to bot.py or core/ via shell commands (echo >, cat >, sed -i, etc.)

@@ -1,24 +1,31 @@
 """
-Self-Installing Dependency Manager.
+Skill dependency manifests (deps.json): reading and resource gating.
 
-Checks skill dependencies at runtime and installs missing ones automatically.
-Uses deps.json manifests from each skill directory.
+Each skill's deps.json names what it needs (system packages, pip, npm) and how
+heavy it is (weight, min_ram_gb, min_disk_gb). The skill loader reads the
+resource half through check_resource_requirements and get_skill_resource_info
+to hold back a skill this machine cannot run.
+
+Nothing installs from here. An automatic installer, install_missing() with its
+check_skill_deps(), lived in this module from March 2026 (376c572) and was
+never called outside tests. What really installs a skill's dependencies is
+the agent, acting on the error a skill's script prints (diagram.py: "mmdc not
+found. Install it with ...") or on its SKILL.md. The installer was removed on
+2026-09-26 so that a fix to how something installs lands where it runs, in the
+script's own message, instead of in code that never runs. The module keeps
+its name so imports stay put.
 """
 
 import json
 import logging
-import platform
 import re
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Package names from deps.json end up shell-interpolated into apt-get/brew/etc.
-# install commands that run as root. Skill manifests are checked in to source
+# Package names from deps.json can end up in apt-get/brew/npm install commands
+# that run as root. Skill manifests are checked in to source
 # control and authored by humans, but a typo or malicious skill could embed
 # a shell metacharacter and turn `apt-get install <pkg>` into arbitrary code
 # execution. Enforce conservative allowlists at load time so the entire
@@ -40,10 +47,10 @@ _PKG_KEYS = ("apt", "dnf", "yum", "pacman", "zypper", "apk", "brew")
 def _validate_deps(deps: dict, skill_name: str) -> bool:
     """Reject a deps manifest containing names that could escape the shell.
 
-    Logs the first offender and returns False on failure; check_skill_deps
-    treats False as 'no deps known', so a malformed manifest cannot trigger
-    a privileged install. False positives just mean a skill author needs to
-    rename a package or extend the allowlist.
+    Logs the first offender and returns False on failure; load_deps then
+    treats the manifest as absent, so a name that could escape a shell is never
+    carried as a package name. False positives just mean a skill author needs
+    to rename a package or extend the allowlist.
     """
     if not isinstance(deps, dict):
         logger.error(f"deps.json for {skill_name} is not a JSON object")
@@ -75,159 +82,13 @@ def _validate_deps(deps: dict, skill_name: str) -> bool:
             return False
     return True
 
-# Cache of verified dependencies so we don't check every invocation
-_verified_cache: set[str] = set()
-
-# Resolve venv pip/python once
-_VENV_PIP = Path(sys.executable).parent / "pip"
-_VENV_PYTHON = sys.executable
-
-
-def get_sudo_password() -> Optional[str]:
-    """Read stored sudo password. Delegates to install.sudo."""
-    from install.sudo import get_sudo_password as _shared_get_sudo_password
-    return _shared_get_sudo_password()
-
-
-def _is_linux() -> bool:
-    return platform.system() == "Linux"
-
-
-def _is_macos() -> bool:
-    return platform.system() == "Darwin"
-
-
-def _detect_linux_pkg_manager() -> str:
-    """Detect the Linux package manager at runtime."""
-    for mgr, binary in [
-        ("apt", "apt-get"),
-        ("dnf", "dnf"),
-        ("yum", "yum"),
-        ("pacman", "pacman"),
-        ("zypper", "zypper"),
-        ("apk", "apk"),
-    ]:
-        if shutil.which(binary):
-            return mgr
-    return ""
-
-
-# Lazily cached package manager
-_linux_pkg_manager: Optional[str] = None
-
-
-def _get_linux_pkg_manager() -> str:
-    """Get cached Linux package manager."""
-    global _linux_pkg_manager
-    if _linux_pkg_manager is None:
-        _linux_pkg_manager = _detect_linux_pkg_manager()
-    return _linux_pkg_manager
-
-
-# Maps apt package names to equivalents on other package managers.
-# Only needed for packages where the name differs. If a package has the same
-# name across managers, it doesn't need an entry here.
-_APT_TO_PKG = {
-    "dnf": {
-        "python3-pip": "python3-pip",
-        "ffmpeg": "ffmpeg-free",
-        "openssh-server": "openssh-server",
-        "tesseract-ocr": "tesseract",
-        "poppler-utils": "poppler-utils",
-        "espeak-ng": "espeak-ng",
-    },
-    "yum": {
-        "tesseract-ocr": "tesseract",
-        "poppler-utils": "poppler-utils",
-        "espeak-ng": "espeak-ng",
-    },
-    "pacman": {
-        "python3-pip": "python-pip",
-        "ffmpeg": "ffmpeg",
-        "tesseract-ocr": "tesseract",
-        "poppler-utils": "poppler",
-        "espeak-ng": "espeak-ng",
-        "openssh-server": "openssh",
-    },
-    "zypper": {
-        "tesseract-ocr": "tesseract-ocr",
-        "poppler-utils": "poppler-tools",
-        "espeak-ng": "espeak-ng",
-        "openssh-server": "openssh",
-    },
-    "apk": {
-        "python3-pip": "py3-pip",
-        "ffmpeg": "ffmpeg",
-        "tesseract-ocr": "tesseract-ocr",
-        "poppler-utils": "poppler-utils",
-        "espeak-ng": "espeak-ng",
-        "openssh-server": "openssh",
-    },
-}
-
-
-def _translate_pkg_name(apt_name: str, mgr: str) -> str:
-    """Translate an apt package name to the equivalent for the given manager."""
-    if mgr == "apt":
-        return apt_name
-    mapping = _APT_TO_PKG.get(mgr, {})
-    return mapping.get(apt_name, apt_name)  # Fall back to same name
-
-
-def _run(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
-    """Run a shell command. Returns a result object even on timeout/error."""
-    try:
-        return subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Command timed out after {timeout}s: {cmd}")
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": f"Timed out after {timeout}s"})()
-    except Exception as e:
-        logger.warning(f"Command error: {cmd}: {e}")
-        return type("R", (), {"returncode": 1, "stdout": "", "stderr": str(e)})()
-
-
-
-def _sudo_run(cmd: str, password: Optional[str] = None, timeout: int = 300) -> subprocess.CompletedProcess:
-    """Run a command with sudo. Delegates to install.sudo, adds logging."""
-    from install.sudo import sudo_run as _shared_sudo_run
-    result = _shared_sudo_run(cmd, password=password, timeout=timeout)
-    if result.returncode != 0 and result.stderr.startswith("Timed out"):
-        logger.warning(f"sudo command timed out after {timeout}s: {cmd}")
-    elif result.returncode != 0 and result.stderr and not result.stdout:
-        logger.warning(f"sudo command error: {cmd}: {result.stderr}")
-    return result
-
-
-
-def check_binary(name: str) -> bool:
-    """Check if a binary is available on PATH."""
-    return shutil.which(name) is not None
-
-
-def check_pip_package(package: str) -> bool:
-    """Check if a pip package is installed in the current venv."""
-    name = package.split(">=")[0].split("==")[0].split("<")[0].strip()
-    pip = str(_VENV_PIP) if _VENV_PIP.exists() else f"{_VENV_PYTHON} -m pip"
-    result = _run(f"{pip} show {name} 2>/dev/null")
-    return result.returncode == 0
-
-
-def check_npm_package(package: str) -> bool:
-    """Check if an npm package is installed globally."""
-    result = _run(f"npm list -g {package} 2>/dev/null")
-    return result.returncode == 0
-
 
 def load_deps(skill_path: Path) -> Optional[dict]:
     """Load and validate deps.json for a skill.
 
     Returns None if the file is missing, malformed, or contains any package
-    name that fails the allowlist regex. Refusing to install on validation
-    failure is safer than silently skipping the bad entry: a single typo
-    that smuggles a shell metacharacter would otherwise reach apt-get/brew
-    running as root.
+    name that fails the allowlist regex: a single typo that smuggles a shell
+    metacharacter must never be carried as if it were a package name.
     """
     deps_file = skill_path / "deps.json"
     if not deps_file.exists():
@@ -240,257 +101,6 @@ def load_deps(skill_path: Path) -> Optional[dict]:
     if not _validate_deps(deps, skill_path.name):
         return None
     return deps
-
-
-def check_skill_deps(skill_path: Path) -> list[str]:
-    """
-    Check which dependencies are missing for a skill.
-    Returns list of human-readable missing dep descriptions.
-    """
-    cache_key = skill_path.name
-    if cache_key in _verified_cache:
-        return []
-
-    deps = load_deps(skill_path)
-    if not deps:
-        _verified_cache.add(cache_key)
-        return []
-
-    missing = []
-
-    # Check custom verification commands first.
-    # Prepend the venv's bin dir so "python3" resolves to the venv Python,
-    # ensuring module checks work for packages installed in the venv.
-    venv_bin = str(Path(sys.executable).parent)
-    checks = deps.get("check", {})
-    for name, cmd in checks.items():
-        result = _run(f"PATH={venv_bin}:$PATH {cmd}")
-        if result.returncode != 0:
-            missing.append(f"system:{name}")
-
-    # System packages — only check those not already verified by custom checks.
-    # deps.json can have "apt", "dnf", "pacman", "zypper", "apk", "brew" keys.
-    # Fall back to "apt" key and translate package names if a manager-specific key
-    # isn't present.
-    checked_names = set(checks.keys())
-    if _is_macos():
-        pkg_key = "brew"
-    elif _is_linux():
-        mgr = _get_linux_pkg_manager()
-        # Use manager-specific key if present, otherwise fall back to "apt"
-        pkg_key = mgr if mgr in deps else "apt"
-    else:
-        pkg_key = "apt"
-    for pkg in deps.get(pkg_key, []):
-        if pkg in checked_names or f"system:{pkg}" in missing:
-            continue
-        if _is_macos():
-            result = _run(f"brew list {pkg} 2>/dev/null")
-        elif _is_linux():
-            mgr = _get_linux_pkg_manager()
-            translated = _translate_pkg_name(pkg, mgr)
-            if mgr == "apt":
-                result = _run(f"dpkg -l {translated} 2>/dev/null | grep -q '^ii'")
-            elif mgr in ("dnf", "yum", "zypper"):
-                result = _run(f"rpm -q {translated} 2>/dev/null")
-            elif mgr == "pacman":
-                result = _run(f"pacman -Q {translated} 2>/dev/null")
-            elif mgr == "apk":
-                result = _run(f"apk info -e {translated} 2>/dev/null")
-            else:
-                # No package manager — check if the binary exists directly
-                result = type("R", (), {"returncode": 0 if shutil.which(pkg) else 1})()
-        else:
-            continue
-        if result.returncode != 0:
-            missing.append(f"system:{pkg}")
-
-    # Pip packages
-    for pkg in deps.get("pip", []):
-        if not check_pip_package(pkg):
-            missing.append(f"pip:{pkg}")
-
-    # Npm packages
-    for pkg in deps.get("npm", []):
-        if not check_npm_package(pkg):
-            missing.append(f"npm:{pkg}")
-
-    if not missing:
-        _verified_cache.add(cache_key)
-
-    return missing
-
-
-def install_missing(skill_path: Path, notify_fn=None,
-                    ram_gb: float = 0, disk_free_gb: float = 0) -> tuple[bool, list[str]]:
-    """
-    Install missing dependencies for a skill.
-    Returns (success, list of installed/warning items).
-
-    Args:
-        skill_path: Path to the skill directory.
-        notify_fn: optional async callback to inform user.
-        ram_gb: Total system RAM in GB (for resource gating).
-        disk_free_gb: Free disk space in GB (for resource gating).
-    """
-    deps = load_deps(skill_path)
-    if not deps:
-        return True, []
-
-    missing = check_skill_deps(skill_path)
-    if not missing:
-        return True, []
-
-    # Resource gate — check if machine can handle this skill's deps
-    resource_warning = check_resource_requirements(skill_path, ram_gb, disk_free_gb)
-    if resource_warning:
-        logger.warning(f"Resource check failed for {skill_path.name}: {resource_warning}")
-        return False, [f"BLOCKED: {resource_warning}"]
-
-    password = get_sudo_password()
-    installed = []
-    failed = []
-
-    # System packages
-    system_missing = [m.split(":", 1)[1] for m in missing if m.startswith("system:")]
-    if system_missing:
-        if _is_macos():
-            pkgs = " ".join(system_missing)
-            logger.info(f"Installing via brew: {pkgs}")
-            result = _run(f"brew install {pkgs}")
-        elif _is_linux():
-            mgr = _get_linux_pkg_manager()
-            translated = [_translate_pkg_name(p, mgr) for p in system_missing]
-            pkgs = " ".join(translated)
-            logger.info(f"Installing via {mgr}: {pkgs}")
-            if mgr == "apt":
-                _sudo_run("apt-get update -qq", password)
-                result = _sudo_run(f"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkgs}", password)
-            elif mgr == "dnf":
-                result = _sudo_run(f"dnf install -y {pkgs}", password)
-            elif mgr == "yum":
-                result = _sudo_run(f"yum install -y {pkgs}", password)
-            elif mgr == "pacman":
-                result = _sudo_run(f"pacman -S --noconfirm --needed {pkgs}", password)
-            elif mgr == "zypper":
-                result = _sudo_run(f"zypper install -y {pkgs}", password)
-            elif mgr == "apk":
-                result = _sudo_run(f"apk add {pkgs}", password)
-            else:
-                logger.warning(f"No supported package manager found ({mgr})")
-                result = type("R", (), {"returncode": 1, "stderr": f"Unknown package manager: {mgr}"})()
-        else:
-            result = type("R", (), {"returncode": 1, "stderr": "Unsupported OS"})()
-
-        if result.returncode == 0:
-            installed.extend(system_missing)
-        else:
-            logger.error(f"Failed to install system packages: {result.stderr[:200]}")
-            # Try Flatpak fallback for each failed system package (Linux only)
-            if _is_linux():
-                still_failed = []
-                for pkg in system_missing:
-                    try:
-                        from install.compat import PACKAGES as COMPAT_PKGS, _install_via_flatpak
-                        # Find a compat entry matching this package name or binary
-                        compat_spec = COMPAT_PKGS.get(pkg)
-                        if not compat_spec:
-                            # Try matching by looking at system_packages values
-                            for spec in COMPAT_PKGS.values():
-                                pkg_names = spec.system_packages.values()
-                                if pkg in pkg_names or any(pkg in pn for pn in pkg_names):
-                                    compat_spec = spec
-                                    break
-                        if compat_spec and compat_spec.flatpak_id:
-                            logger.info(f"Trying Flatpak for {pkg}: {compat_spec.flatpak_id}")
-                            if _install_via_flatpak(compat_spec.flatpak_id, password):
-                                installed.append(f"{pkg} (flatpak)")
-                                continue
-                    except ImportError:
-                        pass
-                    still_failed.append(pkg)
-                failed.extend(still_failed)
-            else:
-                failed.extend(system_missing)
-
-    # Pip packages — use venv pip explicitly
-    pip_missing = [m.split(":", 1)[1] for m in missing if m.startswith("pip:")]
-    if pip_missing:
-        pkgs = " ".join(pip_missing)
-        pip = str(_VENV_PIP) if _VENV_PIP.exists() else f"{_VENV_PYTHON} -m pip"
-        logger.info(f"Installing via pip ({pip}): {pkgs}")
-        result = _run(f"{pip} install {pkgs}")
-        if result.returncode == 0:
-            installed.extend(pip_missing)
-        else:
-            logger.error(f"Failed to install pip packages: {result.stderr[:200]}")
-            failed.extend(pip_missing)
-
-    # Npm packages — on Linux, global npm install needs sudo
-    npm_missing = [m.split(":", 1)[1] for m in missing if m.startswith("npm:")]
-    if npm_missing:
-        pkgs = " ".join(npm_missing)
-        logger.info(f"Installing via npm: {pkgs}")
-        if _is_linux():
-            result = _sudo_run(f"npm install -g {pkgs}", password)
-        else:
-            result = _run(f"npm install -g {pkgs}")
-        if result.returncode == 0:
-            installed.extend(npm_missing)
-            # A package that drives a browser through Puppeteer (mermaid-cli)
-            # fetched it from an install script, which on Linux ran as root
-            # under sudo, and which exits 0 even when the download fails. Fetch
-            # it again as the bot's own user; a no-op when it is already cached.
-            from utils.puppeteer_browsers import ensure_browsers
-            for pkg in npm_missing:
-                ok, why = ensure_browsers(pkg)
-                if not ok:
-                    logger.error(f"Browser for {pkg} not installed: {why[:200]}")
-                    failed.append(f"npm:{pkg} browser")
-        else:
-            logger.error(f"Failed to install npm packages: {result.stderr[:200]}")
-            failed.extend(npm_missing)
-
-    # Post-install commands (e.g. "playwright install chromium")
-    post_install = deps.get("post_install")
-    if post_install and not failed:
-        cmds = [post_install] if isinstance(post_install, str) else post_install
-        venv_bin = str(Path(sys.executable).parent)
-        env_prefix = f"PATH={venv_bin}:$PATH"
-        for cmd in cmds:
-            logger.info(f"Running post-install: {cmd}")
-            # install-deps needs sudo on Linux (installs system libraries).
-            # On non-apt Linux, playwright install-deps will fail because it
-            # only supports Ubuntu/Debian. Treat this as a warning, not a failure —
-            # the user can install Chromium deps manually with the bot's help.
-            is_install_deps = "install-deps" in cmd
-            if is_install_deps and _is_linux():
-                result = _sudo_run(f"{env_prefix} {cmd}", password, timeout=300)
-            else:
-                result = _run(f"{env_prefix} {cmd}", timeout=300)
-            if result.returncode != 0:
-                if is_install_deps and _is_linux():
-                    mgr = _get_linux_pkg_manager()
-                    if mgr != "apt":
-                        # Playwright install-deps only works on apt-based distros.
-                        # Log as warning, not failure — Chromium may still work
-                        # if the user has the right system libs already.
-                        logger.warning(
-                            f"Post-install '{cmd}' failed (expected on {mgr}-based systems). "
-                            f"Browser skill may need manual system library installation."
-                        )
-                        installed.append(f"post:{cmd} (skipped — non-apt)")
-                        continue
-                logger.error(f"Post-install failed: {cmd}: {result.stderr[:200]}")
-                failed.append(f"post:{cmd}")
-            else:
-                installed.append(f"post:{cmd}")
-
-    if not failed:
-        _verified_cache.add(skill_path.name)
-
-    success = len(failed) == 0
-    return success, installed
 
 
 def check_resource_requirements(skill_path: Path, ram_gb: float = 0, disk_free_gb: float = 0) -> Optional[str]:
@@ -554,8 +164,3 @@ def get_skill_resource_info(skill_path: Path) -> Optional[dict]:
         "min_disk_gb": deps.get("min_disk_gb", 0),
         "install_note": deps.get("install_note", ""),
     }
-
-
-def clear_cache():
-    """Clear the verified dependencies cache."""
-    _verified_cache.clear()
