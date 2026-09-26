@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import shutil
 import sys
 
@@ -249,6 +250,50 @@ def sweep(keep_ledger, condemned, restore_map=None, execute=False,
     return report
 
 
+def _search_roots(paths, depth=3):
+    """Where to look for other ledgers: each condemned file's folder and up to
+    depth - 1 parents, stopping at the mount point the file sits on and never
+    at the filesystem root. A folder inside another one is walked with it.
+
+    Until 2026-09-26 the climb ran on to "/": a master at the top of a film
+    drive (/Volumes/Film/master.mov) searched every mounted volume, and a test
+    fixture in /tmp read the whole machine, backup drive included.
+    """
+    roots = set()
+    for p in paths:
+        d = os.path.dirname(os.path.abspath(p))
+        for _ in range(depth):
+            if os.path.dirname(d) == d:
+                break
+            roots.add(d)
+            if os.path.ismount(d):
+                break
+            d = os.path.dirname(d)
+    return sorted(r for r in roots
+                  if not any(r.startswith(o + os.sep) for o in roots if o != r))
+
+
+# A ledger is a small text file named like one: SHA256.json, sha256sums.txt,
+# shasums, sha_list.json, x.sha256. "sha" alone also caught shadow_v003.exr and
+# shape_matte.mov, which a film folder is full of, and read them whole as text.
+_LEDGER_NAME = re.compile(r"sha(\d|sum|[-_.])")
+_LEDGER_SUFFIXES = (".sha256", ".sha256.txt", "_sha256.json")
+LEDGER_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _is_ledger_name(name):
+    low = name.lower()
+    return bool(_LEDGER_NAME.match(low)) or low.endswith(_LEDGER_SUFFIXES)
+
+
+def _same_drive(path, root_dev):
+    """False for a folder that is another disk mounted inside the tree."""
+    try:
+        return os.lstat(path).st_dev == root_dev
+    except OSError:
+        return False
+
+
 def _referenced_elsewhere(paths, depth=3):
     """Is any condemned file named as a dependency in another ledger nearby?
 
@@ -258,30 +303,26 @@ def _referenced_elsewhere(paths, depth=3):
     """
     if not paths:
         return []
-    roots = set()
-    for p in paths:
-        d = os.path.dirname(os.path.abspath(p))
-        for _ in range(depth):
-            roots.add(d)
-            d = os.path.dirname(d)
     names = {os.path.basename(p): p for p in paths}
     hits = []
     seen_files = set()
-    for root in sorted(roots):
+    for root in _search_roots(paths, depth):
         if not os.path.isdir(root):
             continue
+        root_dev = os.stat(root).st_dev
         for dirpath, dirs, files in os.walk(root):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            dirs[:] = [d for d in dirs if not d.startswith(".")
+                       and _same_drive(os.path.join(dirpath, d), root_dev)]
             for f in files:
-                if not (f.lower().startswith("sha") or f.lower().endswith(
-                        (".sha256", ".sha256.txt", "_sha256.json"))
-                        or f in ("SHA256.json", "SHA256.txt")):
+                if not _is_ledger_name(f):
                     continue
                 fp = os.path.join(dirpath, f)
                 if fp in seen_files:
                     continue
                 seen_files.add(fp)
                 try:
+                    if os.path.getsize(fp) > LEDGER_MAX_BYTES:
+                        continue
                     with open(fp, encoding="utf-8", errors="replace") as fh:
                         text = fh.read()
                 except OSError:
