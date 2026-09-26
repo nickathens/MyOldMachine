@@ -449,6 +449,54 @@ def _trial_install(pkg: str, version: str,
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _npm_global_needs_sudo() -> bool:
+    """True where npm's global folder is not writable by this user.
+
+    Node from a Linux distro package or NodeSource keeps it under /usr, owned
+    by root, and the nightly job runs as the bot's user: every update there
+    failed with EACCES. Homebrew and nvm prefixes belong to the user. A folder
+    that does not exist yet is judged by the nearest one that does, since npm
+    creates it there.
+    """
+    if platform.system() == "Darwin":
+        return False
+    root = puppeteer_browsers.npm_global_root()
+    if root is None:
+        return False
+    while not root.exists() and root != root.parent:
+        root = root.parent
+    return not os.access(root, os.W_OK)
+
+
+def _npm_install_live(spec: str) -> tuple[int, str]:
+    """npm install -g spec where the live copy is.
+
+    Through sudo when the global folder is root's, with the password the
+    installer stored (the same one the package manager upgrade uses; the first
+    install of these CLIs went through sudo too, in core/self_install.py).
+    Without a stored password, sudo -n: it works under a NOPASSWD rule and
+    fails at once otherwise, rather than waiting on a prompt nobody sees.
+    An argument list, never a shell string: the version comes from the npm
+    registry.
+    """
+    cmd = ["npm", "install", "-g", spec]
+    if not _npm_global_needs_sudo():
+        return _run(cmd, timeout=600)
+    from install.sudo import get_sudo_password
+    password = get_sudo_password()
+    sudo = ["sudo", "-S", "-p", ""] if password else ["sudo", "-n"]
+    try:
+        r = subprocess.run(sudo + cmd, input=(password + "\n") if password else None,
+                           capture_output=True, text=True, timeout=600)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return 1, str(e)
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0 and not password:
+        out = (f"npm's global folder is owned by root and no sudo password is stored, "
+               f"so the update could not be installed: {out[-200:]}")
+    return r.returncode, out
+
+
 def check_npm_clis(auto_update: bool = False) -> list[AppStatus]:
     """Version state of the global npm CLIs the skills in this repo install."""
     results: list[AppStatus] = []
@@ -482,7 +530,7 @@ def check_npm_clis(auto_update: bool = False) -> list[AppStatus]:
         # a usable signal: npm either installed that version or failed. (The
         # Claude check cannot rely on rc alone — `claude update` exits 0 having
         # done nothing — so it re-reads the version instead.)
-        rc, out = _run(["npm", "install", "-g", f"{pkg}@{latest}"], timeout=600)
+        rc, out = _npm_install_live(f"{pkg}@{latest}")
         if rc != 0:
             results.append(AppStatus(pkg, "npm", current, latest, "failed",
                                      out[-200:] if out else f"rc={rc}"))
