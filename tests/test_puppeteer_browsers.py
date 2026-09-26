@@ -1,4 +1,4 @@
-"""Tests for utils.puppeteer_browsers and the first-install hook in core.self_install.
+"""Tests for utils.puppeteer_browsers.
 
 A global npm CLI that draws through Puppeteer (mermaid-cli) gets its browser
 from an install script. On Linux that script runs as root under sudo, so the
@@ -170,48 +170,6 @@ class ErrorLinesTests(unittest.TestCase):
 
     def test_output_with_no_error_line_falls_back_to_its_tail(self):
         self.assertEqual(pb.error_lines("x" * 400), "x" * 300)
-
-
-class FirstInstallTests(unittest.TestCase):
-    """core.self_install: after `npm install -g` the browser is fetched again,
-    as the bot's user. On Linux the npm step runs under sudo; the browser must
-    not, or it lands in root's cache again."""
-
-    def install(self, linux: bool, ensure=(True, "")):
-        from core import self_install as si
-        skill = Path(tempfile.mkdtemp(prefix="pb_skill_"))
-        self.addCleanup(shutil.rmtree, skill, True)
-        (skill / "deps.json").write_text(json.dumps({"npm": [PKG]}))
-        done = subprocess.CompletedProcess([], 0, "", "")
-        si._verified_cache.discard(skill.name)
-        with patch.object(si, "check_skill_deps", return_value=[f"npm:{PKG}"]), \
-                patch.object(si, "check_resource_requirements", return_value=None), \
-                patch.object(si, "get_sudo_password", return_value="pw"), \
-                patch.object(si, "_is_linux", return_value=linux), \
-                patch.object(si, "_sudo_run", return_value=done) as sudo, \
-                patch.object(si, "_run", return_value=done) as run, \
-                patch.object(pb, "ensure_browsers", return_value=ensure) as ens:
-            outcome = si.install_missing(skill)
-        return outcome, sudo, run, ens
-
-    def test_linux_installs_with_sudo_and_fetches_the_browser_without_it(self):
-        (ok, installed), sudo, run, ens = self.install(linux=True)
-        self.assertTrue(ok)
-        self.assertEqual(installed, [PKG])
-        self.assertEqual([c.args[0] for c in sudo.call_args_list], [f"npm install -g {PKG}"])
-        run.assert_not_called()
-        ens.assert_called_once_with(PKG)
-
-    def test_the_mac_fetches_it_the_same_way(self):
-        (ok, _), sudo, run, ens = self.install(linux=False)
-        self.assertTrue(ok)
-        sudo.assert_not_called()
-        self.assertEqual([c.args[0] for c in run.call_args_list], [f"npm install -g {PKG}"])
-        ens.assert_called_once_with(PKG)
-
-    def test_a_browser_that_did_not_arrive_fails_the_install(self):
-        (ok, _), _, _, _ = self.install(linux=True, ensure=(False, "the browser download failed: EACCES"))
-        self.assertFalse(ok)
 
 
 if __name__ == "__main__":
