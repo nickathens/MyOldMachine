@@ -472,8 +472,10 @@ def _npm_install_live(spec: str) -> tuple[int, str]:
     """npm install -g spec where the live copy is.
 
     Through sudo when the global folder is root's, with the password the
-    installer stored (the same one the package manager upgrade uses; the first
-    install of these CLIs went through sudo too, in core/self_install.py).
+    installer stored (the same one the package manager upgrade uses). The
+    first install of these CLIs is a sudo install too: the skills' own
+    messages say so ("Install it with `sudo npm install -g ...`" in
+    skills/diagram/scripts/diagram.py).
     Without a stored password, sudo -n: it works under a NOPASSWD rule and
     fails at once otherwise, rather than waiting on a prompt nobody sees.
     An argument list, never a shell string: the version comes from the npm
