@@ -15,6 +15,7 @@ network, npm, or the Claude CLI.
 from __future__ import annotations
 
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -514,7 +515,8 @@ class NpmRootOwnedPrefixTests(unittest.TestCase):
             rc, out = au._npm_install_live("lighthouse@13.4.1")
         self.assertEqual((rc, out), (0, "added 1 package"))
         self.assertEqual(sub.call_args.args[0],
-                         ["sudo", "-S", "-p", "", "npm", "install", "-g", "lighthouse@13.4.1"])
+                         ["sudo", "-S", "-p", "", "env", "PUPPETEER_SKIP_DOWNLOAD=true",
+                          "npm", "install", "-g", "lighthouse@13.4.1"])
         self.assertEqual(sub.call_args.kwargs["input"], "pw\n")
         self.assertNotIn("shell", sub.call_args.kwargs)
         run.assert_not_called()
@@ -530,6 +532,38 @@ class NpmRootOwnedPrefixTests(unittest.TestCase):
         self.assertIsNone(sub.call_args.kwargs["input"])
         self.assertEqual(rc, 1)
         self.assertIn("no sudo password is stored", out)
+
+    def test_under_sudo_puppeteer_fetches_no_browser_for_root(self):
+        """Puppeteer's install script runs as root under sudo, and the browser
+        it fetches lands in root's cache, which nothing reads: the bot's copy
+        is fetched as its own user straight after (_diagram_draws). The skip
+        rides in the argv through env, because sudo resets the environment,
+        so a variable set on the bot's side never reaches npm. It must stay
+        out of the bot's own environment as well: Puppeteer's browsers
+        command honours it too, so a leak would turn that fetch into a no-op
+        that exits 0."""
+        done = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        spec = "@mermaid-js/mermaid-cli@12.0.1"
+        for password, sudo in (("pw", ["sudo", "-S", "-p", ""]), (None, ["sudo", "-n"])):
+            with self.subTest(password=password):
+                with self._needs_sudo(True), \
+                        patch("install.sudo.get_sudo_password", return_value=password), \
+                        patch("utils.app_updates.subprocess.run", return_value=done) as sub, \
+                        patch.dict(os.environ):
+                    os.environ.pop("PUPPETEER_SKIP_DOWNLOAD", None)
+                    au._npm_install_live(spec)
+                    self.assertNotIn("PUPPETEER_SKIP_DOWNLOAD", os.environ)
+                self.assertEqual(sub.call_args.args[0],
+                                 sudo + ["env", "PUPPETEER_SKIP_DOWNLOAD=true", "npm", "install", "-g", spec])
+
+    def test_a_user_owned_install_keeps_its_browser_download(self):
+        """Without sudo the script runs as the bot's user and fetches into
+        the cache mmdc reads, so nothing is skipped there."""
+        with self._needs_sudo(False), \
+                patch("utils.app_updates._run", return_value=(0, "")) as run:
+            au._npm_install_live("@mermaid-js/mermaid-cli@12.0.1")
+        self.assertEqual(run.call_args.args[0], ["npm", "install", "-g", "@mermaid-js/mermaid-cli@12.0.1"])
+        self.assertIsNone(run.call_args.kwargs.get("env"))
 
     def test_nightly_update_lands_on_a_root_owned_prefix(self):
         done = subprocess.CompletedProcess([], 0, stdout="", stderr="")

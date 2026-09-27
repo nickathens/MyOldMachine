@@ -64,7 +64,7 @@ core/
   session.py        — Conversation session management
   skill_loader.py   — Auto-loads skills from skills/ directory
   updater.py        — Git pull + restart mechanism
-  self_install.py   — Runtime dependency installer
+  self_install.py   — Reads skills' deps.json manifests and resource needs (installs nothing)
   memory.py         — Deep memory system (person models, observations, reflection)
   project_context.py — Bounded per-project summaries for the system prompt
   health.py         — Health check endpoint
@@ -343,7 +343,7 @@ Skills with heavy dependencies now declare minimum resource requirements in `dep
 1. `system_probe.py` detects RAM and free disk space on first boot, saves to `data/system_caps.json`
 2. `skill_loader.py` reads resource requirements from `deps.json` and annotates the skill list with `[HEAVY]`/`[MEDIUM]` tags and warnings when the machine lacks resources
 3. The LLM sees these warnings in its system prompt and asks the user before attempting heavy installs
-4. `self_install.py` has a resource gate in `install_missing()` that blocks installation when resources are insufficient
+4. Nothing installs on its own. The agent installs a skill's dependencies from the message its script prints or from its SKILL.md, so the warning in step 3 is the whole gate
 
 **14 skills annotated** (6 heavy, 8 medium):
 - Heavy: stems (4GB/3GB), voice (4GB/3GB), upscale (4GB/3GB), background-removal (2GB/2GB), blender (2GB/2GB), spreadsheet (1GB/2GB)
