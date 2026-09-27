@@ -480,6 +480,16 @@ def _npm_install_live(spec: str) -> tuple[int, str]:
     fails at once otherwise, rather than waiting on a prompt nobody sees.
     An argument list, never a shell string: the version comes from the npm
     registry.
+
+    Under sudo, Puppeteer's install script runs as root and would fetch its
+    browsers into root's cache, which nothing reads. mermaid-cli is the skill
+    CLI that carries it, and the proof that runs after its install
+    (_diagram_draws) fetches the bot's own copy as its user. So the sudo call
+    skips that download. The variable is set by env inside the sudo call,
+    because sudo resets the environment, and it never enters the bot's own
+    environment, where Puppeteer's browsers command would honour it too and
+    fetch nothing. A sudo rule that allows npm alone, and not env, refuses
+    this call; the stored password covers both.
     """
     cmd = ["npm", "install", "-g", spec]
     if not _npm_global_needs_sudo():
@@ -487,6 +497,7 @@ def _npm_install_live(spec: str) -> tuple[int, str]:
     from install.sudo import get_sudo_password
     password = get_sudo_password()
     sudo = ["sudo", "-S", "-p", ""] if password else ["sudo", "-n"]
+    sudo += ["env", "PUPPETEER_SKIP_DOWNLOAD=true"]
     try:
         r = subprocess.run(sudo + cmd, input=(password + "\n") if password else None,
                            capture_output=True, text=True, timeout=600)

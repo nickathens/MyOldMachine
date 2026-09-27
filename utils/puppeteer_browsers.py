@@ -7,11 +7,13 @@ dependency Puppeteer downloads that browser from an install script during
 that leaves the bot without a browser while npm still exits 0:
 
   * Linux installs global npm packages with `sudo npm install -g` (the
-    skill's own install message, and the nightly update where npm's folder
-    is root's), so the script runs as root and the browser lands
-    in /root/.cache/puppeteer. The bot's own mmdc never looks there: "Could
-    not find chrome-headless-shell" on every render, hit on the Linux box on
-    3 Sep 2026 until Chrome was installed as the bot's user.
+    skill's own install message), so the script runs as root and the browser
+    lands in /root/.cache/puppeteer. The bot's own mmdc never looks there:
+    "Could not find chrome-headless-shell" on every render, hit on the Linux
+    box on 3 Sep 2026 until Chrome was installed as the bot's user. The
+    nightly update installs through sudo too where npm's folder is root's;
+    it tells Puppeteer to skip that download (utils/app_updates.py) and
+    fetches here instead.
   * The script catches its own download failure and exits 0 (Puppeteer's
     install.mjs: `console.warn('Browser download failed', error)`). Measured
     on the Mac, 25 Sep 2026, npm 11.19.1 and Puppeteer 25.12.0, with the
