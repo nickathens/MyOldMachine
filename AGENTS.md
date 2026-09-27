@@ -102,9 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-09-27] linux: follow ups from the #185 review, no browser download into root's cache on a sudo npm update, CONTEXT.md without the removed installer (PR #186)
-
-(Entries removed above: #185 merged 2026-09-26, its line cleared inside
+(Entries removed above: #186 cleared in its reviewed merge revision,
+the same call as #176.
+#185 merged 2026-09-26, its line cleared inside
 #186's own edit, as its merge comment left it for the next PR, the same
 call as #181.
 #183 and #184 cleared in #183's reviewed merge
