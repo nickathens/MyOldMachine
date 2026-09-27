@@ -16,6 +16,32 @@ import sys
 from pathlib import Path
 
 
+KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+# Krumhansl-Kessler probe-tone profiles (Krumhansl 1990), index 0 = tonic.
+MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+
+
+def estimate_key(chroma_mean) -> tuple[str, float]:
+    """Krumhansl-Schmuckler: correlate the mean chroma with all 24 rotated key
+    profiles and keep the best. Returns ("A" or "Am" style name, correlation).
+
+    It replaced "strongest pitch class, then its relative minor if that is
+    within 10 percent": a minor piece whose tonic dominated came out major
+    (A minor read "A"), because only the relative minor of the loudest pitch
+    class was ever considered (Linux bot review 2026-09-27).
+    """
+    import numpy as np
+    chroma = np.asarray(chroma_mean, dtype=float)
+    best = ("C", -2.0)
+    for tonic in range(12):
+        for profile, suffix in ((MAJOR_PROFILE, ""), (MINOR_PROFILE, "m")):
+            r = float(np.corrcoef(chroma, np.roll(profile, tonic))[0, 1])
+            if np.isfinite(r) and r > best[1]:
+                best = (KEY_NAMES[tonic] + suffix, r)
+    return best
+
+
 def analyze_audio(input_path: str, output_dir: str = None) -> dict:
     """Perform full audio analysis."""
     try:
@@ -44,20 +70,9 @@ def analyze_audio(input_path: str, output_dir: str = None) -> dict:
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         bpm = float(tempo) if isinstance(tempo, (int, float, np.floating)) else float(tempo[0])
 
-        # Key detection using chroma features
+        # Key detection: chroma profile against the 24 key profiles
         chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
-        chroma_mean = np.mean(chroma, axis=1)
-
-        # Map to key names
-        key_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-        estimated_key_idx = np.argmax(chroma_mean)
-        estimated_key = key_names[estimated_key_idx]
-
-        # Determine major/minor using simple heuristic
-        # Check relative minor/major strength
-        minor_idx = (estimated_key_idx + 9) % 12
-        if chroma_mean[minor_idx] > chroma_mean[estimated_key_idx] * 0.9:
-            estimated_key = key_names[minor_idx] + "m"
+        estimated_key, key_confidence = estimate_key(np.mean(chroma, axis=1))
 
         # Loudness (RMS)
         rms = librosa.feature.rms(y=y)
@@ -75,12 +90,25 @@ def analyze_audio(input_path: str, output_dir: str = None) -> dict:
             "sample_rate": sr,
             "bpm": round(bpm, 1),
             "key": estimated_key,
+            "key_confidence": round(key_confidence, 3),
             "avg_loudness_rms": round(avg_loudness, 4),
             "brightness_hz": round(avg_brightness, 1),
         }
 
     except Exception as e:
         return {"error": str(e)}
+
+
+def _image_path(input_path: Path, output: str | None, kind: str) -> Path:
+    """<input stem>.<kind>.png, beside the input or inside the --output folder.
+
+    --output is documented as a folder, but it was used as the file name, so
+    asking for both images wrote the spectrogram over the waveform, and an
+    existing folder made savefig fail.
+    """
+    folder = Path(output) if output else input_path.parent
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{input_path.stem}.{kind}.png"
 
 
 def generate_waveform(input_path: str, output_path: str = None) -> dict:
@@ -96,10 +124,7 @@ def generate_waveform(input_path: str, output_path: str = None) -> dict:
     if not input_path.exists():
         return {"error": f"File not found: {input_path}"}
 
-    if output_path:
-        output_path = Path(output_path)
-    else:
-        output_path = input_path.with_suffix('.waveform.png')
+    output_path = _image_path(input_path, output_path, "waveform")
 
     try:
         y, sr = librosa.load(str(input_path), sr=None)
@@ -133,10 +158,7 @@ def generate_spectrum(input_path: str, output_path: str = None) -> dict:
     if not input_path.exists():
         return {"error": f"File not found: {input_path}"}
 
-    if output_path:
-        output_path = Path(output_path)
-    else:
-        output_path = input_path.with_suffix('.spectrum.png')
+    output_path = _image_path(input_path, output_path, "spectrum")
 
     try:
         y, sr = librosa.load(str(input_path), sr=None)

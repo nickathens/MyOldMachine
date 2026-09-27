@@ -1,6 +1,7 @@
 # Lighthouse
 
-Website performance and SEO auditing.
+Website performance, accessibility, best-practice and SEO audits with
+Google Lighthouse.
 
 ## Commands
 
@@ -17,17 +18,17 @@ lighthouse https://example.com --only-categories=performance,accessibility --chr
 # Desktop mode (default is mobile)
 lighthouse https://example.com --preset=desktop --chrome-flags="--headless"
 
-# Quiet mode (just scores)
-lighthouse https://example.com --quiet --chrome-flags="--headless"
 ```
 
 ## Categories
 
-- **Performance**: Loading speed, core web vitals
-- **Accessibility**: A11y issues, WCAG compliance
-- **Best Practices**: Security, modern web standards
-- **SEO**: Search engine optimization
-- **PWA**: Progressive Web App checks
+Lighthouse 13 has performance, accessibility, best-practices, seo and
+agentic-browsing (how well AI agents can browse the page). There is no PWA
+category any more; Lighthouse 12 removed it.
+
+`--quiet` only silences the log; nothing is printed to stdout, so read the
+scores from the JSON report. Do not use `--view`: it opens the report in a
+browser on the desktop. Send the HTML report instead.
 
 ## Examples
 
@@ -40,4 +41,5 @@ lighthouse https://example.com --quiet --chrome-flags="--headless"
 
 - Requires Chrome/Chromium installed
 - Use --headless for server environments
-- First run may take a moment to initialize
+- Scores vary a little between runs (network, CPU load); compare runs made
+  the same way, and run twice before calling a regression.

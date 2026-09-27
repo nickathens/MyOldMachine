@@ -222,32 +222,33 @@ class TestSeedance20GuideCorrections(unittest.TestCase):
 
 
 class TestKeyframeCaveat(unittest.TestCase):
-    """`--cost` silently drops the keyframe flags, so the guides must say so.
+    """`--cost` used to drop the keyframe flags; since 2026-09-27 it forwards them.
 
-    `estimate_cost` builds its own command and never forwards start/end images,
-    which means a keyframed job quotes as a plain t2v roll and the mode rejection
-    only surfaces on the paid call. If the wrapper is ever fixed, this fails and
-    the warning should come out of both guides with it.
+    `estimate_cost` built its own command and never forwarded start/end images
+    or video references, so a keyframed job quoted as a plain t2v roll and a
+    5 s flux-video continuation quoted 27.5 against a real 65. The quote now
+    sends what the create call sends, so the guides say it was fixed instead
+    of warning (the Linux bot's review, 2026-09-27, S214).
     """
 
-    def test_estimate_cost_takes_no_keyframe_arguments(self):
+    def test_estimate_cost_takes_the_media_arguments(self):
         params = inspect.signature(generate.estimate_cost).parameters
-        for name in ("start_image", "end_image", "video_references"):
-            self.assertNotIn(name, params,
-                             msg=f"estimate_cost now takes {name}; update the guide warnings")
+        for name in ("ref_image", "start_image", "end_image", "video_references"):
+            self.assertIn(name, params, msg=f"estimate_cost does not take {name}")
 
     def test_generate_video_does_forward_them(self):
-        # The asymmetry is the whole point: the paid path sends the flags, the
-        # free quote does not, so the quote cannot see the rejection.
+        # Both paths send the same flags now, so the quote can see a rejection.
         params = inspect.signature(generate.generate_video).parameters
         for name in ("start_image", "end_image", "video_references"):
             self.assertIn(name, params)
 
-    def test_both_guides_carry_the_warning(self):
+    def test_both_guides_record_the_fix_not_the_old_warning(self):
         flat = GUIDE_25.read_text(encoding="utf-8").replace("\n", " ")
-        self.assertIn("the wrapper's `--cost` lies about anything with media in it", flat)
-        self.assertIn("never forwards the keyframe flags",
-                      GUIDE_20.read_text(encoding="utf-8"))
+        self.assertNotIn("the wrapper's `--cost` lies about anything with media in it", flat)
+        self.assertIn("Trap one, fixed 2026-09-27", flat)
+        g20 = GUIDE_20.read_text(encoding="utf-8").replace("\n", " ")
+        self.assertNotIn("never forwards the keyframe flags", g20)
+        self.assertIn("forwards them now", g20)
 
 
 class TestTheRetiredPromptCeiling(unittest.TestCase):
@@ -329,7 +330,10 @@ class TestSeedance25PriceModel(unittest.TestCase):
     credit balance, so none of it cost anything.
     """
 
-    RATES = {"480p": 2.5, "720p": 6.5, "1080p": 9.0}
+    # Re-quoted live on 2026-09-27, after ByteDance's 1080p promotion ended on
+    # 17 September (August: 2.5, 6.5, 9.0). video_edit bills its own rate now.
+    RATES = {"480p": 3.0, "720p": 7.0, "1080p": 12.0}
+    EDIT_RATES = {"480p": 3.5, "720p": 7.5, "1080p": 12.0}
     RETIRED_VREF_720, RETIRED_VREF_480 = 4.0, 2.0
 
     @classmethod
@@ -393,7 +397,7 @@ class TestSeedance25PriceModel(unittest.TestCase):
 
     def test_the_billing_examples_are_the_rate_times_the_billed_length(self):
         """The worked figures recomputed, so a transposed digit cannot survive."""
-        rate = self.RATES["720p"]
+        rate = self.EDIT_RATES["720p"]
         floor = generate.VIDEO_DURATIONS["seedance_2_5"]["min"]
         table = re.search(
             r"^\| Source clip \| Requested duration \| Quote at 720p \|\n(?:\|[-| ]+\|\n)((?:\|.*\|\n)+)",
@@ -462,11 +466,11 @@ class TestImplicitModeTrap(unittest.TestCase):
         # A reader who opens only the one-page summary still has to be told.
         self.assertIn("**Always pass `--mode` explicitly.**", self.text)
 
-    def test_the_wrapper_still_cannot_quote_a_video_reference(self):
-        """The guide tells you to skip `generate.py --cost`; that must stay true."""
-        self.assertNotIn("video_references", inspect.signature(generate.estimate_cost).parameters)
+    def test_the_wrapper_quotes_a_video_reference_now(self):
+        """Fixed 2026-09-27: the quote carries the media, and the guide says so."""
+        self.assertIn("video_references", inspect.signature(generate.estimate_cost).parameters)
         flat = self.text.replace("\n", " ")
-        self.assertIn("never forwards `--start-image`, `--end-image` or video references", flat)
+        self.assertIn("It now sends exactly the media the create call sends", flat)
 
     def test_resolution_is_still_dropped_for_video_quotes(self):
         src = inspect.getsource(generate.main)
@@ -536,12 +540,16 @@ class TestTheSelectionSurfacesCarryTheCorrection(unittest.TestCase):
                          self.skill, re.S)
         self.assertIsNotNone(note, "SKILL.md has no seedance correction note under the table")
         body = note.group(0)
-        for res, rate in (("480p", 2.5), ("720p", 6.5), ("1080p", 9.0)):
-            self.assertIn(f"{rate:g}", body, msg=f"the note omits the {res} rate")
+        for res, rate in (("480p", 3.0), ("720p", 7.0), ("1080p", 12.0)):
+            self.assertIn(f"{rate:.1f}", body, msg=f"the note omits the {res} rate")
 
     def test_the_worked_example_is_the_rate_times_the_source(self):
-        """The 8 s / 52 pairing, recomputed so a typo cannot survive."""
-        rate = self.guide_720_rate()
+        """The 8 s / 60 pairing, recomputed so a typo cannot survive.
+
+        A video_edit bills its own rate since September (7.5 at 720p against
+        the 7.0 of every other mode), so the example is priced at that rate.
+        """
+        rate = TestSeedance25PriceModel.EDIT_RATES["720p"]
         m = re.search(r"an (\d+) s clip is ([\d.]+) at 720p", self.skill)
         self.assertIsNotNone(m, "SKILL.md dropped the worked video_edit figure")
         source, quoted = int(m.group(1)), float(m.group(2))

@@ -100,13 +100,25 @@ def check(path, profile, stream="a:0"):
                     "does it, and record which was used."})
     target = loud.get("target_i")
     tol = loud.get("tol_i")
+    # A profile that names no gate is read as the BS.1770 gate this meter
+    # uses. A different gate makes the integrated number incomparable, so the
+    # row cannot be judged either way: never a mismatch, never a pass.
+    comparable = not want_gate or want_gate == got["gate"]
     if target is not None and got["integrated_lufs"] is not None:
         delta = got["integrated_lufs"] - target
         inside = tol is None or abs(delta) <= tol + 1e-9
-        add("integrated loudness", f"{target} LUFS +/-{tol}",
-            f"{got['integrated_lufs']} LUFS", inside and want_gate == got["gate"],
-            note=f"{delta:+.2f} LU from target"
-                 + ("" if want_gate == got["gate"] else ", but see the gate above"))
+        if comparable:
+            add("integrated loudness", f"{target} LUFS +/-{tol}",
+                f"{got['integrated_lufs']} LUFS", inside,
+                note=f"{delta:+.2f} LU from target")
+        else:
+            rows.append({
+                "field": "integrated loudness", "want": f"{target} LUFS +/-{tol} "
+                                                        f"({want_gate} gated)",
+                "got": f"{got['integrated_lufs']} LUFS ({got['gate']} gated)",
+                "verdict": "CANNOT MEASURE",
+                "note": f"{delta:+.2f} LU from the target on the whole signal, for "
+                        "reference only: see the gate above."})
     max_tp = loud.get("max_tp")
     if max_tp is not None and got["true_peak_dbtp"] is not None:
         add("true peak", f"not above {max_tp} dBTP",
@@ -119,11 +131,18 @@ def check(path, profile, stream="a:0"):
         add("loudness range", f"not above {max_lra} LU",
             f"{got['loudness_range_lu']} LU",
             got["loudness_range_lu"] <= max_lra + 1e-9)
-    bad = [r for r in rows if r["verdict"] != "ok"]
+    bad = [r for r in rows if r["verdict"] == "MISMATCH"]
+    unmeasured = [r for r in rows if r["verdict"] == "CANNOT MEASURE"]
+    if bad:
+        verdict = f"{len(bad)} item(s) do not meet the profile"
+    elif unmeasured:
+        verdict = (f"nothing measured is outside the profile, but {len(unmeasured)} "
+                   "item(s) cannot be measured with this meter")
+    else:
+        verdict = "inside the profile"
     return {"file": got["file"], "profile": profile.get("slug"),
             "measurement": got, "rows": rows, "failing": len(bad),
-            "verdict": ("inside the profile" if not bad else
-                        f"{len(bad)} item(s) do not meet the profile")}
+            "unmeasured": len(unmeasured), "verdict": verdict}
 
 
 def normalise(path, profile, out, stream="a:0", linear=True):
@@ -137,6 +156,10 @@ def normalise(path, profile, out, stream="a:0", linear=True):
     Picture is stream copied. Sample rate and channel count are held at the
     source's, because loudnorm resamples internally and a silent rate change is
     a delivery fault.
+
+    Only the measured track is touched. Every other stream, a second language
+    or an M&E included, is stream copied: the gain was measured on one track
+    and is wrong for any other.
     """
     C.need("ffmpeg")
     loud = (profile.get("audio") or {}).get("loudness") or {}
@@ -151,10 +174,19 @@ def normalise(path, profile, out, stream="a:0", linear=True):
             "with a BS.1770 gated meter would land the film in the wrong place. "
             "Do this at the mix stage with a meter that gates on dialogue.")
 
+    m = re.fullmatch(r"a:(\d+)", stream)
+    if not m:
+        raise ValueError(f"Name the track as a:N (a:0 is the first audio track), "
+                         f"not {stream!r}: the output keeps every stream in order, "
+                         "so only that form says which one to move.")
+    track = int(m.group(1))
     import spec as SPEC
     info = SPEC.probe(path)
-    aud = (info.get("audio") or [{}])[0]
-    rate = aud.get("sample_rate") or 48000
+    tracks = info.get("audio") or []
+    if track >= len(tracks):
+        raise ValueError(f"There is no {stream}: this file has {len(tracks)} "
+                         "audio track(s).")
+    rate = tracks[track].get("sample_rate") or 48000
     lra = loud.get("max_lra") or 11.0
 
     first = ["ffmpeg", "-nostdin", "-hide_banner", "-i", str(path),
@@ -177,8 +209,8 @@ def normalise(path, profile, out, stream="a:0", linear=True):
           f":offset={measured['target_offset']}"
           f":linear={'true' if linear else 'false'}:print_format=summary")
     second = ["ffmpeg", "-nostdin", "-hide_banner", "-y", "-i", str(path),
-              "-map", "0", "-c", "copy", "-c:a", "pcm_s24le", "-ar", str(rate),
-              "-af", af, str(out)]
+              "-map", "0", "-c", "copy", f"-c:a:{track}", "pcm_s24le",
+              f"-ar:a:{track}", str(rate), f"-filter:a:{track}", af, str(out)]
     proc2 = subprocess.run(second, capture_output=True, text=True)
     if proc2.returncode != 0:
         raise RuntimeError("The normalising pass failed: "

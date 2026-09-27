@@ -9,25 +9,26 @@ Create sprites and sprite sheets for games.
 - **Resize**: Scale sprites to specific sizes
 - **Pixel art**: Nearest-neighbor scaling
 
-## Script Location
-
-`scripts/sprite.py` - Sprite manipulation tools
-
 ## Commands
 
 ```bash
-# Create sprite sheet from frames
-python sprite.py sheet frame_*.png --cols 4 --output spritesheet.png
+S=skills/sprite-gen/scripts/sprite.py
 
-# Split sprite sheet into frames
-python sprite.py split spritesheet.png --cols 4 --rows 4 --output frames/
+# Frames into a sheet (natural order: frame_2 before frame_10)
+python $S sheet frame_*.png --cols 4 --output spritesheet.png --padding 2
 
-# Resize sprite (pixel-perfect)
-python sprite.py resize sprite.png --scale 2 --output sprite_2x.png
+# Sheet into frames, named by cell (row * cols + col); empty cells are skipped, numbering kept
+python $S split spritesheet.png --cols 4 --rows 4 --padding 2 --output frames/
 
-# Create tileset
-python sprite.py sheet tile_*.png --cols 8 --rows 8 --output tileset.png
+# Pixel-perfect scale, and pixelate
+python $S resize sprite.png --scale 2 --output sprite_2x.png
+python $S pixelate photo.png --pixel-size 8 --output pixel.png
 ```
+
+Frames of different sizes get cells as big as the largest, each frame
+centred (the first frame's size used to be taken for all). Fixed 2026-09-27:
+a text sort put frame_10 between frame_1 and frame_2, and split renumbered
+the frames after an empty cell.
 
 ## Examples
 

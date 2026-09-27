@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """
-Audio editing operations using pydub.
+Audio editing operations using pydub, with loudness work done by ffmpeg.
 """
 
 import argparse
 import json
+import math
+import subprocess
 import sys
 from pathlib import Path
 
 from pydub import AudioSegment
+
+# Lossy exports used ffmpeg's default (128k MP3): a cut of a 320k MP3 came
+# back 128k (Linux bot review 2026-09-27)
+DEFAULT_BITRATE = {'mp3': '320k', 'm4a': '256k', 'aac': '256k', 'mp4': '256k',
+                   'ogg': '256k', 'opus': '192k'}
 
 
 def load_audio(path: str) -> AudioSegment:
@@ -32,17 +39,69 @@ def save_audio(audio: AudioSegment, path: str, bitrate: str = None):
     params = {}
     if codec:
         params['codec'] = codec
-    if bitrate and suffix in ('mp3', 'm4a', 'aac', 'mp4', 'ogg', 'opus'):
-        params['bitrate'] = bitrate
+    if suffix in DEFAULT_BITRATE:
+        params['bitrate'] = bitrate or DEFAULT_BITRATE[suffix]
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     audio.export(path, format=fmt, **params)
     print(f"Saved: {path}")
+
+
+def fail(message):
+    print(f"Error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def ffprobe_stream(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-print_format", "json",
+                          "-show_streams", "-show_format", str(path)], capture_output=True, text=True)
+    if out.returncode != 0:
+        fail(f"cannot read {path}: {out.stderr.strip()[-300:]}")
+    data = json.loads(out.stdout)
+    if not data.get("streams"):
+        fail(f"{path} has no audio stream")
+    return data["streams"][0], data.get("format", {})
+
+
+def measure_loudness(path, extra_filter=""):
+    """EBU R128 figures from ffmpeg's loudnorm analysis pass."""
+    af = (extra_filter + "," if extra_filter else "") + "loudnorm=print_format=json"
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin", "-i", str(path), "-af", af, "-f", "null", "-"],
+                       capture_output=True, text=True)
+    try:
+        return json.loads(r.stderr[r.stderr.rindex("{"):r.stderr.rindex("}") + 1])
+    except ValueError:
+        fail(f"loudness analysis failed: {r.stderr.strip()[-300:]}")
+
+
+def ffmpeg_codec_args(output, stream):
+    """Codec for the output's extension; PCM keeps more than 16 bits when the source had them."""
+    ext = Path(output).suffix.lower().lstrip('.')
+    deep = int(stream.get("bits_per_raw_sample") or stream.get("bits_per_sample") or 16) > 16 \
+        or stream.get("sample_fmt", "").startswith(("s32", "flt", "dbl"))
+    if ext == "wav":
+        return ["-c:a", "pcm_s24le" if deep else "pcm_s16le"]
+    if ext == "flac":
+        return ["-c:a", "flac", "-sample_fmt", "s32" if deep else "s16"]
+    if ext == "mp3":
+        return ["-c:a", "libmp3lame", "-b:a", DEFAULT_BITRATE["mp3"]]
+    if ext in ("m4a", "mp4"):
+        return ["-c:a", "aac", "-b:a", DEFAULT_BITRATE["m4a"]]
+    if ext == "aac":
+        return ["-c:a", "aac", "-b:a", DEFAULT_BITRATE["aac"], "-f", "adts"]
+    if ext == "ogg":
+        return ["-c:a", "libvorbis", "-b:a", DEFAULT_BITRATE["ogg"]]
+    if ext == "opus":
+        return ["-c:a", "libopus", "-b:a", DEFAULT_BITRATE["opus"]]
+    fail(f"unsupported output format .{ext}")
 
 
 def cmd_cut(args):
     """Cut a segment from audio."""
     audio = load_audio(args.input)
     start_ms = int(args.start * 1000)
-    end_ms = int(args.end * 1000) if args.end else len(audio)
+    end_ms = int(args.end * 1000) if args.end is not None else len(audio)
+    if not 0 <= start_ms < min(end_ms, len(audio)):
+        fail(f"--start {args.start} and --end {args.end} do not make a span inside {len(audio) / 1000:.2f} s")
 
     segment = audio[start_ms:end_ms]
     save_audio(segment, args.output)
@@ -82,20 +141,58 @@ def cmd_fade(args):
 
 
 def cmd_volume(args):
-    """Adjust volume by dB."""
+    """Adjust volume by dB, saying so when the gain would clip."""
     audio = load_audio(args.input)
+    peak_after = audio.max_dBFS + args.db
+    if peak_after > 0:
+        print(f"warning: the peak goes to {peak_after:+.1f} dBFS, so {peak_after:.1f} dB of it clips. "
+              f"For a louder file without clipping use: normalize --target LUFS", file=sys.stderr)
     adjusted = audio + args.db
     save_audio(adjusted, args.output)
     print(f"Adjusted volume by {args.db:+.1f} dB")
 
 
 def cmd_normalize(args):
-    """Normalize audio to target dBFS."""
-    audio = load_audio(args.input)
-    change = args.target - audio.dBFS
-    normalized = audio + change
-    save_audio(normalized, args.output)
-    print(f"Normalized: {audio.dBFS:.1f} dBFS -> {args.target} dBFS (change: {change:+.1f} dB)")
+    """Normalize loudness to --target LUFS (EBU R128, two pass), peaks kept under --true-peak.
+
+    It used to add (target - RMS dBFS) to the samples: the result was not
+    LUFS (a "-14" landed at -11.55 LUFS) and on material with transients the
+    gain pushed peaks over full scale (920 clipped samples on a drum loop).
+    """
+    stream, _ = ffprobe_stream(args.input)
+    first = measure_loudness(args.input)
+    if first["input_i"] in ("-inf", "inf") or float(first["input_i"]) < -70:
+        fail("the file is silent; there is no loudness to normalize")
+    gain = args.target - float(first["input_i"])
+    if float(first["input_tp"]) + gain <= args.true_peak:
+        # the peaks allow a plain gain: exact, and nothing else changes
+        af, limited = f"volume={gain:.2f}dB", False
+    else:
+        # the peaks would pass the ceiling, so loudnorm limits them. Its LRA
+        # target follows the source: at the default 11 it would also compress
+        # the dynamics of wide range material (film, classical)
+        lra = min(50.0, max(11.0, float(first["input_lra"]) + 0.1))
+        af = (f"loudnorm=I={args.target}:TP={args.true_peak}:LRA={lra}:"
+              f"measured_I={first['input_i']}:measured_TP={first['input_tp']}:measured_LRA={first['input_lra']}:"
+              f"measured_thresh={first['input_thresh']}:offset={first['target_offset']}:linear=true")
+        limited = True
+    rate = stream.get("sample_rate") or "48000"
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    # loudnorm works at 192 kHz inside and hands that rate on unless told
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-nostdin", "-y", "-i", str(args.input), "-map", "0:a:0",
+                        "-af", af, "-ar", rate, *ffmpeg_codec_args(args.output, stream), str(args.output)],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not Path(args.output).exists():
+        fail(f"ffmpeg failed: {r.stderr.strip()[-500:]}")
+    after = measure_loudness(args.output)
+    print(f"Saved: {args.output}")
+    print(f"Normalized: {float(first['input_i']):.1f} LUFS -> {float(after['input_i']):.1f} LUFS "
+          f"(target {args.target}), true peak {float(after['input_tp']):.1f} dBTP"
+          + (f"; the peaks were limited to stay under {args.true_peak} dBTP" if limited else f"; plain gain {gain:+.1f} dB"))
+    short = args.target - float(after["input_i"])
+    if short > 1:
+        print(f"note: {short:.1f} LU short of the target; getting there would take heavier limiting than "
+              f"loudnorm allows at {args.true_peak} dBTP (raise --true-peak, or accept the level)")
 
 
 def cmd_convert(args):
@@ -105,15 +202,31 @@ def cmd_convert(args):
 
 
 def cmd_info(args):
-    """Get audio file info."""
+    """Get audio file info, with peak and EBU R128 loudness."""
     audio = load_audio(args.input)
+    stream, fmt = ffprobe_stream(args.input)
+    loud = measure_loudness(args.input)
+
+    def number(value):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        return round(v, 2) if math.isfinite(v) else None
+
     info = {
         "duration_seconds": len(audio) / 1000,
         "duration_formatted": f"{len(audio)//60000}:{(len(audio)//1000)%60:02d}",
+        "codec": stream.get("codec_name"),
+        "bit_rate": int(stream.get("bit_rate") or fmt.get("bit_rate") or 0) or None,
         "channels": audio.channels,
         "sample_rate": audio.frame_rate,
         "sample_width_bits": audio.sample_width * 8,
         "dBFS": round(audio.dBFS, 2),
+        "peak_dBFS": round(audio.max_dBFS, 2),
+        "loudness_LUFS": number(loud.get("input_i")),
+        "true_peak_dBTP": number(loud.get("input_tp")),
+        "loudness_range_LU": number(loud.get("input_lra")),
     }
     print(json.dumps(info, indent=2))
 
@@ -153,17 +266,18 @@ def main():
     p.set_defaults(func=cmd_volume)
 
     # Normalize
-    p = subparsers.add_parser("normalize", help="Normalize loudness")
+    p = subparsers.add_parser("normalize", help="Normalize loudness (EBU R128)")
     p.add_argument("input", help="Input file")
     p.add_argument("output", help="Output file")
-    p.add_argument("--target", type=float, default=-14, help="Target dBFS")
+    p.add_argument("--target", type=float, default=-14, help="Integrated loudness in LUFS (default -14)")
+    p.add_argument("--true-peak", type=float, default=-1.0, help="True peak ceiling in dBTP (default -1)")
     p.set_defaults(func=cmd_normalize)
 
     # Convert
     p = subparsers.add_parser("convert", help="Convert format")
     p.add_argument("input", help="Input file")
     p.add_argument("output", help="Output file")
-    p.add_argument("--bitrate", default="192k", help="Bitrate for mp3")
+    p.add_argument("--bitrate", help="Bitrate for lossy formats (default 320k mp3, 256k aac/ogg, 192k opus)")
     p.set_defaults(func=cmd_convert)
 
     # Info

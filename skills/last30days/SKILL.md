@@ -98,11 +98,13 @@ python3 skills/last30days/scripts/last30days.py --diagnose
 
 - **Free, no keys:** Reddit, Hacker News, Polymarket, plus YouTube (needs `yt-dlp` on PATH) and GitHub (needs the `gh` CLI, authenticated with `gh auth login`). `deps.json` installs both.
 - **Web:** use your own web search tool.
-- **Key-gated, off by default:** X/Twitter (browser cookies, or `XAI_API_KEY`), TikTok + Instagram + Threads (`SCRAPECREATORS_API_KEY`), Bluesky (free `BSKY_HANDLE` + `BSKY_APP_PASSWORD`). The uniquely valuable social adapters are exactly the paid or fragile ones, which is why they are off by default.
+- **Key-gated, off by default:** X/Twitter (`XAI_API_KEY`, or browser cookies, which the engine reads unless `FROM_BROWSER=off`: see Config), TikTok + Instagram + Threads (`SCRAPECREATORS_API_KEY`), Bluesky (free `BSKY_HANDLE` + `BSKY_APP_PASSWORD`). The uniquely valuable social adapters are exactly the paid or fragile ones, which is why they are off by default.
 
 The config seam is `~/.config/last30days/.env` (chmod 600). Full matrix in `references/CONFIGURATION.md`. Never add a key without the user asking for it.
 
 **Multi-user note:** that config lives in the home directory of the OS account the bot runs as, so under MOM's soft multi-user model every Telegram user on the machine shares one set of keys and one rate-limit budget. Say so before a second user's keys go in.
+
+**Browser cookies: set `FROM_BROWSER=off` in that file unless the user opts X in.** Without the line the engine reads Firefox's and Safari's cookie stores for x.com and truthsocial.com by default and logs in with them, silently (found in the Linux bot's review, 2026-09-27), so the X adapter is not really off until the line is there. `FROM_BROWSER=auto` also tries Chrome.
 
 ## Cost
 

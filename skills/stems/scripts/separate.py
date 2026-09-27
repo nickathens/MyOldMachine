@@ -16,7 +16,46 @@ import sys
 from pathlib import Path
 
 
-def separate_stems(input_path: str, output_dir: str = None, model: str = "htdemucs") -> dict:
+# demucs 4.0.1 writes stems with torchaudio.save, and torchaudio 2.9 and later
+# hand saving to the separate torchcodec package, which is not installed: the
+# separation finished and then died writing vocals.wav (Linux bot review
+# 2026-09-27, torch/torchaudio 2.10). The runner writes through soundfile
+# instead, which is already a dependency (librosa), then runs demucs's own CLI.
+DEMUCS_RUNNER = """
+import sys
+import soundfile
+import torchaudio
+
+def _save(path, wav, sample_rate, encoding="PCM_S", bits_per_sample=16, **_):
+    subtype = "FLOAT" if encoding == "PCM_F" else {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}[bits_per_sample]
+    soundfile.write(str(path), wav.detach().cpu().numpy().T, sample_rate, subtype=subtype)
+
+torchaudio.save = _save
+from demucs.separate import main
+main(sys.argv[1:])
+"""
+
+
+def pick_device(python: str = sys.executable) -> str:
+    """'cuda' only when a CUDA kernel really runs in this interpreter.
+
+    A torch build without kernels for an older card (measured on a GTX 970,
+    compute 5.2) reports cuda.is_available() True and then fails every kernel
+    with "no kernel image is available", so leaving the choice to demucs
+    crashed every separation there (review 2026-09-27). A box whose torch can
+    use its GPU still gets it.
+    """
+    probe = ("import sys, torch; sys.exit(0 if torch.cuda.is_available() and "
+             "(torch.ones(1, device='cuda') * 2).item() == 2 else 1)")
+    try:
+        result = subprocess.run([python, "-c", probe], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return "cpu"
+    return "cuda" if result.returncode == 0 else "cpu"
+
+
+def separate_stems(input_path: str, output_dir: str = None, model: str = "htdemucs",
+                   device: str = "auto") -> dict:
     """Separate audio into stems using Demucs."""
     input_path = Path(input_path)
 
@@ -33,10 +72,13 @@ def separate_stems(input_path: str, output_dir: str = None, model: str = "htdemu
 
     try:
         # Run demucs
+        if device == "auto":
+            device = pick_device()
         cmd = [
-            sys.executable, "-m", "demucs",
+            sys.executable, "-c", DEMUCS_RUNNER,
             "--out", str(output_dir),
             "--name", model,
+            "--device", device,
             str(input_path)
         ]
 
@@ -83,6 +125,9 @@ def main():
     parser.add_argument("--model", "-m", default="htdemucs",
                        choices=["htdemucs", "htdemucs_ft", "mdx_extra", "mdx_extra_q"],
                        help="Model to use (default: htdemucs)")
+    parser.add_argument("--device", "-d", default="auto", choices=["auto", "cpu", "cuda"],
+                        help="auto (default) uses the GPU only when a CUDA kernel "
+                             "actually runs, otherwise the CPU")
     args = parser.parse_args()
 
     print(f"Separating: {args.input}")
@@ -90,7 +135,7 @@ def main():
     print("This will take several minutes (runs on CPU)...")
     print("")
 
-    result = separate_stems(args.input, args.output, args.model)
+    result = separate_stems(args.input, args.output, args.model, args.device)
 
     if "error" in result:
         print(f"Error: {result['error']}")

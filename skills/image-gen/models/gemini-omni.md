@@ -202,8 +202,13 @@ restriction is real and still published; it is evidently not enforced hard enoug
 Asia-exit VPN. Treat the published rule as the *default* and the VPN as the *known working
 exception*, not the reverse.
 
-**Test that settles it, ~24 credits:** upload a ≤8s plate and call `gemini_omni` through Higgsfield
-with the clip in `--video`, prompt = a background-only change with an explicit *keep the person
+**Checked 2026-09-27:** `higgsfield model get gemini_omni` now lists `video_references` (at most 1
+clip, with at most 5 image references beside it), so the route takes a clip; whether it *edits* it is
+still untested.
+
+**Test that settles it, ~24 credits:** take a plate of up to 8 s and call `gemini_omni` through Higgsfield
+with the clip in `--video` (the Higgsfield CLI's short form of `--video-references`; in our
+`generate.py`, `--video` only means "make a video" and the clip goes in `--video-references`), prompt = a background-only change with an explicit *keep the person
 untouched* lock. Three outcomes: it edits the plate (route open), it ignores the clip and
 text-to-videos (medias is images-only), or it errors on region (Higgsfield passes our geo through).
 Cheaper diagnostic first: `higgsfield generate cost gemini_omni --prompt "..." --video plate.mp4` —

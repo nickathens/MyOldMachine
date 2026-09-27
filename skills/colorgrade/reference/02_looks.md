@@ -22,10 +22,12 @@ each operation behaves the way a colourist expects it to.
    `sat_highlight` ramp it away at the ends. Film desaturates its shadows
    strongly, and setting `sat_shadow` around 0.7 is most of what makes a digital
    image stop looking digital.
-5. **Targeted hue work, in Lab.** Each entry in `hue_shifts` is a centre, a
-   width, a rotation in degrees and a chroma multiplier, applied with a raised
-   cosine weight so there are no edges. `protect_skin` scales all of it down
-   inside the skin band.
+5. **Targeted hue work.** Each entry in `hue_shifts` is a centre, a width, a
+   rotation in degrees and a chroma multiplier. The gate that picks the pixels
+   reads the HSV hue by default (`"space": "lab"` gates on the Lab hue angle
+   instead, which is what a centre measured in Lab needs); the rotation itself
+   is always in Lab. The weight is a smoothstep, so there are no edges.
+   `protect_skin` scales all of it down inside the skin band.
 6. **Gamut compression.** See method notes. Off unless the look pushes chroma.
 7. **Display encode**, with `black_offset` lifting the very bottom and
    `highlight_rolloff` softening the very top.
@@ -90,9 +92,13 @@ shadows read as fog rather than ink.
 `vintage_70s` emulates a faded release print, where dye fade lifts the black and
 pulls the neutral axis toward yellow green.
 
-`noir` is near monochrome with the chroma almost out and contrast at 1.55. It is
-the one look that cannot be baked to a 65 cube inside the 1.0 dE budget, and the
-grader says so when it happens.
+`noir` is near monochrome with the chroma almost out and contrast at 1.55.
+
+Which looks need the bigger cube, measured by `selftest.py` on 2026-09-27
+against the grader's 1.0 dE budget: `teal_orange` (2.97 dE at 33, 0.83 at 65)
+and `kodak2383` (1.13 at 33, 0.52 at 65) are baked at 65; every other look fits
+a 33 cube. Re-run the self test after editing a look rather than trusting this
+line.
 
 `sunlit` is a warm gain on the top end with a long shoulder, so skies bloom
 rather than clip.

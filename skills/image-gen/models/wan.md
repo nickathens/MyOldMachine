@@ -13,7 +13,7 @@ Covers: `wan` (Wan 2.7), `wan2.6` (Wan 2.6)
 | Resolution | 720p (default), 1080p | `quality`: 720p (default), 1080p |
 | Start / end image | **yes, both** | no |
 | References | audio only, **1 max** | image, video, audio |
-| Cost | **1.5 credits/s** 720p, 2.5/s 1080p | **2.6 credits/s** 720p, 4.0/s 1080p |
+| Cost | **1.5 credits/s** 720p, 2.5/s 1080p | **1.5 credits/s** 720p, 2.0/s 1080p (re-quoted 2026-09-27; was 2.6 and 4.0) |
 
 **Corrected 2026-08-07:** the wrapper advertised a 3 s floor for `wan`. The validator accepts **2 s**
 (3 credits), so very short cutaways are available and were previously blocked by our own table.
@@ -53,8 +53,10 @@ Direct, literal descriptions. Wan performs best with straightforward scene descr
 
 ## Model Differences
 
-- **wan**: Wan 2.7. Latest version, better motion coherence and detail.
-- **wan2.6**: Wan 2.6. Lower cost, slightly less refined motion.
+- **wan**: Wan 2.7. Latest version, better motion coherence and detail, start and end frames, any length from 2 to 15 s.
+- **wan2.6**: Wan 2.6. The same 1.5 credits/s at 720p and cheaper at 1080p (2.0 against 2.5), but 5, 10 or 15 s only and no keyframes; its other reason to exist is image and video references, which 2.7 lacks.
+
+(Prices re-quoted 2026-09-27: 2.6 no longer costs 2.6 credits/s. Quote before choosing; they move.)
 
 ## Example Refinement
 

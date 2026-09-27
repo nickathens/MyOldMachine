@@ -89,9 +89,13 @@ export const BarChartBuild: React.FC<Props> = ({
           config: { damping: 200, mass: 0.8 },
         });
         const h = interpolate(s, [0, 1], [0, (d.value / max) * chartH]);
-        const val = Math.round(
-          interpolate(s, [0, 1], [0, d.value], { extrapolateRight: "clamp" }),
-        );
+        // Count up with the data's own precision. Math.round showed 42.5 as
+        // 43 and 0.35 as 0 on the final frame: a data chart that misstates
+        // its data.
+        const decimals = Math.min(3, (String(d.value).split(".")[1] || "").length);
+        const val = interpolate(s, [0, 1], [0, d.value], {
+          extrapolateRight: "clamp",
+        }).toFixed(decimals);
         const cx = left + slot * i + slot / 2;
         const labelO = interpolate(s, [0, 0.4], [0, 1], {
           extrapolateRight: "clamp",

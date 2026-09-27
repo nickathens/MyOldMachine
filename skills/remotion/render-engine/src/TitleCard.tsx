@@ -30,7 +30,8 @@ export const TitleCard: React.FC<Props> = ({
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  const words = String(title).split(" ");
+  // Runs of spaces would give empty words, and each one another gap.
+  const words = String(title).split(/\s+/).filter(Boolean);
 
   const subOpacity = interpolate(frame, [40, 70], [0, 1], {
     extrapolateLeft: "clamp",
@@ -66,8 +67,16 @@ export const TitleCard: React.FC<Props> = ({
         }}
       />
       <div style={{ transform: `scale(${groupScale})`, textAlign: "center" }}>
+        {/* The em in the gap resolves against THIS element's font size. It
+            had none, so 0.25em was 4px of the 16px default and a two word
+            title set at 168px read as one word. */}
         <div
-          style={{ display: "flex", gap: "0.25em", justifyContent: "center" }}
+          style={{
+            display: "flex",
+            gap: "0.25em",
+            justifyContent: "center",
+            fontSize: 168,
+          }}
         >
           {words.map((w, i) => {
             const s = spring({

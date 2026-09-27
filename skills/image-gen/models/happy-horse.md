@@ -26,7 +26,7 @@ it is the best value in the mid tier: near flagship quality at 2.5 credits a sec
 37.5 for 15 s. 1080p is 22.5 for 5 s. Linear.
 
 At 2.5 credits a second it sits alongside `seedance-mini` and well under `seedance` (4.5) or
-`seedance2.5` (6.5), while benchmarking above Seedance 2.0. **This is the default choice when you
+`seedance2.5` (7.0 since 2026-09-27), while benchmarking above Seedance 2.0. **This is the default choice when you
 want quality without flagship pricing.**
 
 Verified rejections **[live]**: `--duration 2` gives "Input should be greater than or equal to 3";

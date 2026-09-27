@@ -35,6 +35,10 @@ CHROME_CANDIDATES = [
 ]
 
 
+# Extra window height so the painted viewport covers the whole source.
+HEADROOM = 400
+
+
 def find_chrome() -> str:
     for cand in CHROME_CANDIDATES:
         if not cand:
@@ -82,15 +86,37 @@ def render_svg(svg: Path, width: int, height: int, chrome: str) -> Image.Image:
             f'<body><img src="{svg.resolve().as_uri()}" width="{width}" height="{height}"></body></html>',
             encoding="utf-8",
         )
-        subprocess.run(
-            [
-                chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
-                f"--screenshot={shot}", f"--window-size={width},{height}",
-                "--default-background-color=FFFFFFFF", wrapper.resolve().as_uri(),
-            ],
-            check=True, capture_output=True,
-        )
-        return Image.open(shot).convert("RGB").copy()
+        # --window-size is the WINDOW, and new headless keeps part of it out of
+        # the viewport: at 200x200 only the top 113 rows were painted and the
+        # rest of the screenshot was blank background, so every render lost
+        # the bottom of the logo (Linux bot review 2026-09-27). Ask for a taller
+        # window and crop back to the source size.
+        # --password-store=basic: under a GNOME session (a systemd unit, a
+        # scheduled job, a desktop terminal) Chrome picks the keyring as its
+        # password store and waits on it over the session bus, and the
+        # screenshot never came; the bot's own turns carry no bus, so only
+        # those runs hung (audit, 2026-09-27: 0.6 s with the flag, no end
+        # without it). The timeout keeps any other stall from holding a turn.
+        # --use-mock-keychain is the same wait on macOS, where Chrome asks the
+        # login keychain for its storage key and nobody is there to answer:
+        # on the Mac mini, 2.2 s with the flag and no screenshot in 60 s
+        # without it (review of #187). Playwright passes both flags itself.
+        try:
+            subprocess.run(
+                [
+                    chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+                    "--password-store=basic", "--use-mock-keychain",
+                    f"--screenshot={shot}", f"--window-size={width},{height + HEADROOM}",
+                    "--default-background-color=FFFFFFFF", wrapper.resolve().as_uri(),
+                ],
+                check=True, capture_output=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            raise SystemExit("headless Chrome took longer than 120 s to render the SVG")
+        full = Image.open(shot).convert("RGB")
+        if full.width < width or full.height < height:
+            raise SystemExit(f"browser screenshot {full.size} is smaller than {width}x{height}")
+        return full.crop((0, 0, width, height)).copy()
 
 
 def main() -> int:
@@ -99,7 +125,13 @@ def main() -> int:
     import numpy as np
     from PIL import Image
 
-    src_img = Image.open(args.source).convert("RGB")
+    # Flatten onto white, the colour the render sits on. convert("RGB") alone
+    # drops alpha, and a transparent logo stores its empty pixels as black, so
+    # the whole canvas read as foreground: a perfect fit of a transparent PNG
+    # scored IoU 0.13 (Linux bot review 2026-09-27).
+    src_rgba = Image.open(args.source).convert("RGBA")
+    src_img = Image.alpha_composite(Image.new("RGBA", src_rgba.size, (255, 255, 255, 255)),
+                                    src_rgba).convert("RGB")
     W, H = src_img.size
     render = render_svg(args.svg, W, H, find_chrome())
     if args.render_out:

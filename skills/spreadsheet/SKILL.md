@@ -22,9 +22,10 @@ Run from the MyOldMachine repo root:
 
 # Write a cell value
 /usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py write /path/to/file.xlsx --sheet "Sheet1" --cell A1 --value "text"
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py write /path/to/file.xlsx --sheet "Sheet1" --cell B4 --value "2.500" --decimal comma
 
 # Insert rows from JSON
-/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py add-rows /path/to/file.xlsx --sheet "Sheet1" --after 5 --data /tmp/rows.json
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py add-rows /path/to/file.xlsx --sheet "Sheet1" --after 5 --data /tmp/rows.json --decimal comma
 
 # Set a formula
 /usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py formula /path/to/file.xlsx --sheet "Sheet1" --cell C1 --formula "=SUM(A1:B1)"
@@ -133,6 +134,7 @@ plt.close()
 
 ## Important Notes
 
+- **Numbers in text form must be unambiguous.** `write` and `add-rows` turn a text value into a number only when it can mean one thing. `2.500` is two thousand five hundred in Greek and two and a half in English, so it is refused (nothing is written) until you pass `--decimal comma` (Greek amounts) or `--decimal dot`. IDs with leading zeros (`0012`), `nan`, `1e5`, `12%` and `€1.234,56` stay text. The JSON reply lists every cell stored as text. JSON numbers (`2500`, `2.5`) are always stored as numbers; `--as-text` keeps everything exactly as typed.
 - LibreOffice UNO requires `/usr/bin/python3` (system Python), NOT the venv Python
 - openpyxl, xlsxwriter, pandas, seaborn are all in the bot's venv (installed by `deps.json`)
 - LibreOffice starts/stops automatically per command -- no manual management needed

@@ -201,6 +201,15 @@ PROPRIETARY_FONT_MAP: dict[str, str] = {
     "gt sectra": "Source Serif 4",
     "tiempos headline": "Cormorant Garamond",
     "tiempos text": "Source Serif 4",
+    # Named by the aesthetic references (references/*.md)
+    "suisse int'l": "Inter",
+    "suisse intl": "Inter",
+    "neue haas unica": "Inter",
+    "tt norms": "Inter",
+    "ttnorms": "Inter",
+    "new york": "Source Serif 4",
+    "canela": "Cormorant Garamond",
+    "caslon": "Libre Caslon Text",
     # Pangram Pangram / ABC Dinamo
     "abc diatype": "Inter",
     "abc whyte": "Inter",
@@ -279,8 +288,8 @@ def _resolve_font(name: str) -> str:
     if key in PROPRIETARY_FONT_MAP:
         return PROPRIETARY_FONT_MAP[key]
     # Heuristic for unknown families: anything mentioning "mono" gets the mono
-    # fallback; "serif" gets the serif fallback; otherwise leave as-is and let
-    # build_font_link's pass-through handling carry it.
+    # fallback; otherwise leave as-is and let build_font_link's pass-through
+    # handling carry it.
     lower = key
     if "mono" in lower:
         return "JetBrains Mono"

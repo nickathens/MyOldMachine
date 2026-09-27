@@ -4,8 +4,10 @@ Blender 5.x rendering script - run with:
 blender --background --python render.py -- [args]
 """
 import bpy
+import os
 import sys
 import math
+import traceback
 import argparse
 import mathutils
 import uuid
@@ -263,16 +265,24 @@ def render_image(output_path):
 
 
 def render_animation(output_path, format='FFMPEG'):
-    """Render animation as video"""
+    """Render animation as video (H.264 MP4, no audio track)."""
     scene = bpy.context.scene
     scene.render.filepath = output_path
+    # Write exactly this path: with the extension option on, Blender appends
+    # the frame range to a movie's name.
+    scene.render.use_file_extension = False
 
     if format == 'FFMPEG':
-        scene.render.image_settings.file_format = 'FFMPEG'
+        settings = scene.render.image_settings
+        # Blender 5 only offers FFMPEG once the media type is VIDEO; setting
+        # file_format alone raised TypeError on 5.2 and no animation rendered.
+        if hasattr(settings, 'media_type'):
+            settings.media_type = 'VIDEO'
+        settings.file_format = 'FFMPEG'
         scene.render.ffmpeg.format = 'MPEG4'
         scene.render.ffmpeg.codec = 'H264'
         scene.render.ffmpeg.constant_rate_factor = 'HIGH'
-        scene.render.ffmpeg.audio_codec = 'AAC'
+        scene.render.ffmpeg.audio_codec = 'NONE'
 
     bpy.ops.render.render(animation=True)
     print(f"Rendered animation: {output_path}")
@@ -405,7 +415,7 @@ def scene_product_shot():
     camera.rotation_euler = (math.radians(70), 0, math.radians(45))
 
 
-if __name__ == '__main__':
+def main():
     # Parse args after --
     argv = sys.argv
     if '--' in argv:
@@ -424,6 +434,10 @@ if __name__ == '__main__':
     parser.add_argument('--engine', default='EEVEE', choices=['EEVEE', 'CYCLES'])
     parser.add_argument('--samples', type=int, default=64)
     args = parser.parse_args(argv)
+    if args.animation and not args.output.lower().endswith(('.mp4', '.mov', '.mkv')):
+        # the default output is a .png name; a movie written under it misleads
+        args.output = os.path.splitext(args.output)[0] + '.mp4'
+        print(f"Animation output: {args.output}")
 
     print(f"Blender {'.'.join(map(str, BLENDER_VERSION))}")
     print(f"Scene: {args.scene}, Engine: {args.engine}, Output: {args.output}")
@@ -446,3 +460,18 @@ if __name__ == '__main__':
         render_animation(args.output)
     else:
         render_image(args.output)
+    if not os.path.isfile(args.output) or os.path.getsize(args.output) == 0:
+        raise RuntimeError(f"Blender reported no error but wrote nothing at {args.output}")
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        # Blender exits 0 after an uncaught script error (measured on 5.2),
+        # so a failed render looked like a success to the caller.
+        traceback.print_exc()
+        sys.exit(1)
+    sys.exit(0)

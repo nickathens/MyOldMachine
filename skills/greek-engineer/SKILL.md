@@ -11,6 +11,8 @@ with assumptions tagged, sources dated, and limits stated. It is an aid for
 work done under the responsibility of a licensed engineer. It never replaces
 the μελετητής and it signs nothing.
 
+**Paths:** the commands below use `$SKILL_DIR`, which nothing sets for you. Set it first: `SKILL_DIR=skills/greek-engineer` (without it `python $SKILL_DIR/scripts/...` runs `/scripts/...` and fails).
+
 **Before using:** read `DISCLAIMER.md`. When the matter is substantive, every
 answer ends with the scope notice it defines.
 

@@ -585,9 +585,17 @@ class SessionManager:
             try:
                 from core.config import get_background_model
                 from core.credentials import claude_cli_env
+                # A summary is a pure text call over a conversation that
+                # carries untrusted text (mail, fetched pages, tool output),
+                # and this spawn had the CLI's default toolset, Bash included.
+                # --tools "" gives it no tools, --safe-mode drops CLAUDE.md,
+                # hooks, skills and MCP, --strict-mcp-config attaches no MCP
+                # server, and the prompt goes on stdin, never argv (the Linux
+                # bot's review, 2026-09-27, S001).
                 result = subprocess.run(
-                    ["claude", "-p", "--model", get_background_model(), prompt],
-                    capture_output=True, text=True, timeout=120,
+                    ["claude", "-p", "--model", get_background_model(),
+                     "--tools", "", "--safe-mode", "--strict-mcp-config"],
+                    input=prompt, capture_output=True, text=True, timeout=120,
                     # Without the subscription token this exits 1 with "Not
                     # logged in" and the only trace is a "returned no output"
                     # warning, so compaction died silently for two days.

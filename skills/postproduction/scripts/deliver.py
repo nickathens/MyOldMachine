@@ -249,6 +249,10 @@ def check(kind, have=(), conditions=()):
                          "It never downscales anything."]}
 
 
+# spec.check rows that describe the sound, not the picture.
+_SOUND_FIELDS = {"audio codec", "sample rate", "channels", "channel layout"}
+
+
 def audit(path, profile_slug):
     """Run the machine checks that can be run, and name the ones that cannot."""
     import spec as SPEC
@@ -257,12 +261,15 @@ def audit(path, profile_slug):
 
     picture = SPEC.check(path, profile)
     for r in picture["rows"]:
+        if r["field"] == "loudness" and r["verdict"] == "DEFERRED":
+            continue  # measured below with audio.check
+        area = "sound" if r["field"] in _SOUND_FIELDS else "picture"
         if r["verdict"] in ("MISMATCH", "UNKNOWN"):
-            rows.append({"area": "picture", "item": r["field"],
+            rows.append({"area": area, "item": r["field"],
                          "state": "STRIKE" if r["severity"] == "strike" else "ASK",
                          "detail": f"want {r['want']}, got {r['got']}. {r['note']}"})
         elif r["verdict"] in ("ASK", "DEFERRED"):
-            rows.append({"area": "picture", "item": r["field"], "state": "ASK",
+            rows.append({"area": area, "item": r["field"], "state": "ASK",
                          "detail": r["note"]})
     for flag in picture["flags"]:
         rows.append({"area": "picture", "item": "flag", "state": "ASK",

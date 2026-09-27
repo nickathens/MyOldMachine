@@ -3,6 +3,8 @@
 Image upscaling with Real-ESRGAN, and a measured workflow for choosing HOW to
 upscale, because the tool is the smaller half of the job.
 
+**Paths:** the commands below use `$SKILL_DIR`, which nothing sets for you. Set it first: `SKILL_DIR=skills/upscale` (without it `python $SKILL_DIR/scripts/...` runs `/scripts/...` and fails).
+
 ## Choosing the route, before running anything
 
 "Upscale this" is not one request. Present the routes, measure the file,
@@ -51,6 +53,16 @@ p90, feather sigma 8, about a fifth of a typical frame), hands everything else
 to Lanczos, and pins the low frequencies (gaussian sigma 6) to Lanczos so the
 tone cannot drift.
 
+What the hybrid keeps (each fixed and tested 2026-09-27): EXIF orientation is
+applied before anything (a portrait phone photo used to come back sideways);
+the ICC profile is carried into the output (an Adobe RGB master used to come
+back untagged and show as sRGB); alpha is carried through; a 16-bit master,
+colour or grey, keeps its depth on `--mode lanczos` and is refused by the 8-bit
+neural modes unless `--force-8bit` (Pillow reads a 16-bit RGB PNG or TIFF as
+8-bit RGB, so this used to flatten silently). The output is always a lossless
+PNG, so the name must end in `.png`. `--tile 0` is one tile for the whole
+picture.
+
 `--metrics` prints the three numbers that decide whether an upscale is honest,
 measured on the delivered file:
 
@@ -77,6 +89,10 @@ python $SKILL_DIR/scripts/upscale.py input.jpg output.png --scale 2
 python $SKILL_DIR/scripts/upscale.py input.jpg output.png --scale 4 --face
 python $SKILL_DIR/scripts/upscale.py input.jpg output.png --scale 2 --tile 512
 ```
+
+It also applies EXIF orientation, keeps the ICC profile, keeps 16 bits in a
+PNG output, and exits 1 when the output could not be written (it used to print
+"Saved" for a file that was never written).
 
 ## Examples
 

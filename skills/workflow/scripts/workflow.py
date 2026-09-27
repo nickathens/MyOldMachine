@@ -3,7 +3,7 @@
 Workflow Engine - Run multi-step pipelines from YAML definitions.
 
 Chains shell commands with data piping between steps, conditional execution,
-approval gates, and resume-on-crash support.
+and resume-on-crash support.
 
 Usage:
     python workflow.py run <workflow.yaml> [--var key=value ...]
@@ -17,11 +17,11 @@ YAML Schema:
     description: Download video, extract audio, separate stems
     steps:
       - id: download
-        command: yt-dlp -o /tmp/wf_{{run_id}}/source.mp4 {{url}}
+        command: yt-dlp -o "{{run_dir}}/source.mp4" "{{url}}"
         on_error: abort          # abort (default) | continue | retry
         retries: 0               # retry count (only if on_error: retry)
       - id: extract
-        command: ffmpeg -i /tmp/wf_{{run_id}}/source.mp4 /tmp/wf_{{run_id}}/audio.wav
+        command: ffmpeg -y -i "{{run_dir}}/source.mp4" "{{run_dir}}/audio.wav"
         depends: [download]      # explicit dependency (auto-inferred if not set)
 """
 
@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -262,6 +263,32 @@ class WorkflowRun:
         return resolved not in ("", "0", "false", "False", "none", "None")
 
 
+def _run_step(command: str, timeout: float, cwd: str, env: dict, stdin_data: str | None):
+    """Run one step's shell command; on timeout kill its whole process group.
+
+    subprocess.run(shell=True, timeout=...) kills only the shell, so the real
+    work under it (yt-dlp, demucs, ffmpeg) kept running as an orphan after
+    the step was declared timed out (Linux bot review 2026-09-27).
+    """
+    proc = subprocess.Popen(command, shell=True, cwd=cwd, env=env, text=True,
+                            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            start_new_session=True)
+    try:
+        out, err = proc.communicate(input=stdin_data, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # wait(), not communicate(): a child that left the group (setsid, a
+        # daemon) can hold the pipes open for good, and subprocess.run waits
+        # the same way on POSIX for that reason
+        proc.wait()
+        raise
+    return proc.returncode, out, err
+
+
 class WorkflowEngine:
     """Executes workflow definitions."""
 
@@ -296,14 +323,24 @@ class WorkflowEngine:
             wf = yaml.safe_load(f)
 
         # Validate
-        if not wf.get("steps"):
+        if not isinstance(wf, dict) or not isinstance(wf.get("steps"), list) or not wf["steps"]:
             raise ValueError("Workflow has no steps defined")
 
+        seen: set[str] = set()
         for i, step in enumerate(wf["steps"]):
-            if "id" not in step:
+            if not isinstance(step, dict) or "id" not in step:
                 raise ValueError(f"Step {i} missing 'id'")
             if "command" not in step:
                 raise ValueError(f"Step '{step['id']}' missing 'command'")
+            # Results are keyed by id: a duplicate id overwrote the first
+            # step's result, and a misspelt dependency was silently ignored.
+            if step["id"] in seen:
+                raise ValueError(f"Step id '{step['id']}' is used twice")
+            unknown = [d for d in step.get("depends", []) if d not in seen]
+            if unknown:
+                raise ValueError(f"Step '{step['id']}' depends on {unknown}, which is not an "
+                                 "earlier step")
+            seen.add(step["id"])
 
         return wf
 
@@ -402,22 +439,17 @@ class WorkflowEngine:
                 self.log(f"  [{sid}] running: {command[:120]}{'...' if len(command) > 120 else ''}")
 
                 try:
-                    proc = subprocess.run(
-                        command,
-                        shell=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                        cwd=str(run_dir),
-                        env={**os.environ, "WORKFLOW_RUN_ID": run.run_id, "WORKFLOW_RUN_DIR": str(run_dir)},
-                        input=stdin_data,
+                    returncode, out, err = _run_step(
+                        command, timeout, str(run_dir),
+                        {**os.environ, "WORKFLOW_RUN_ID": run.run_id, "WORKFLOW_RUN_DIR": str(run_dir)},
+                        stdin_data,
                     )
 
-                    result.exit_code = proc.returncode
-                    result.stdout = proc.stdout
-                    result.stderr = proc.stderr
+                    result.exit_code = returncode
+                    result.stdout = out
+                    result.stderr = err
 
-                    if proc.returncode == 0:
+                    if returncode == 0:
                         break  # Success, no need to retry
                     elif attempt < max_retries:
                         time.sleep(2 ** attempt)  # Exponential backoff
@@ -537,7 +569,11 @@ def cmd_run(args):
 
         # Look for incomplete runs
         found = None
-        for state_file in sorted(STATE_DIR.glob("*.json"), reverse=True):
+        # Newest first by modification time: run ids are random hex, so the
+        # old name sort resumed an arbitrary unfinished run, often an older
+        # one with older variables.
+        for state_file in sorted(STATE_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime,
+                                 reverse=True):
             if state_file.name == "history.json":
                 continue
             try:

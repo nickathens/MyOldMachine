@@ -712,6 +712,16 @@ a { color: inherit; text-decoration: none; }
 @media print {
     *, *::before, *::after { animation: none !important; transition: none !important; }
     body * { opacity: 1 !important; transform: none !important; }
+    /* The blur, smooth and clip animation presets start these elements
+       blurred or fully clipped until they scroll into view; print never
+       scrolls, so without this they printed blurred (smooth, blur) or
+       invisible (clip). Only animated elements: a logo_filter or other
+       deliberate filter elsewhere keeps its look. */
+    .note-text p, .concept-desc p, .concept-hero h2, .gap-card, .ref-card, .stat,
+    .spec-item, .col, .beat-label, .beat-title, .beat-text, .beat-dialogue,
+    .beat-action, .why-item, .comp-table tbody tr, .video-container, .video-caption,
+    .closing-name, .closing-links, .closing-brand, .section-title, .big-quote-text,
+    .gap-reveal-text { filter: none !important; clip-path: none !important; }
     .particles, .cover-scroll { display: none !important; }
     .cover { height: auto; min-height: 60vh; page-break-after: always; }
     .section-divider { page-break-before: always; padding: 4rem 0 2rem; }

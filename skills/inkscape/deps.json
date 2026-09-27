@@ -1,4 +1,5 @@
 {
+  "pip": ["pillow"],
   "check": {
     "inkscape": "which inkscape"
   },

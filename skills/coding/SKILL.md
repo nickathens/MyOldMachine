@@ -194,7 +194,7 @@ Rules:
 
 ## Changelog Drafting
 
-When a build ships to a client repo, an external user, or any context where someone other than you needs to know what changed, draft a changelog as part of Phase 6 (Deliver). Not on every commit -- on every release-shaped delivery.
+When a build ships to a client repo, an external user, or any context where someone other than you needs to know what changed, draft a changelog as part of step 6 of the Build Protocol (Deliver). Not on every commit -- on every release-shaped delivery.
 
 ### Source
 

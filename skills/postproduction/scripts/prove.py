@@ -266,11 +266,17 @@ def packets(path, stream="v:0"):
                                  "packet=pts,dts,duration,size,flags"])
     pk = data.get("packets", [])
     stream_info = C.ffprobe_json(path, ["-select_streams", stream,
-                                        "-show_entries", "stream=time_base"])
+                                        "-show_entries",
+                                        "stream=time_base:format=start_time"])
     tb = (stream_info.get("streams") or [{}])[0].get("time_base", "1/1")
     num, den = tb.split("/")
+    start = (stream_info.get("format") or {}).get("start_time")
+    try:
+        start = Fraction(start) if start not in (None, "N/A") else Fraction(0)
+    except (ValueError, ZeroDivisionError):
+        start = Fraction(0)
     return {"file": os.path.abspath(path), "time_base": Fraction(int(num), int(den)),
-            "packets": pk}
+            "start_time": start, "packets": pk}
 
 
 def timeline(path, stream="v:0"):
@@ -508,21 +514,31 @@ FULL_WALK_MAX = 300
 CALIBRATE_DEPTH = 12
 
 
-def _seek_candidates(ptss, frame, modal, tb):
+def _seek_candidates(ptss, frame, modal, tb, start=0):
     """The times worth trying for a frame, in the order measured to work.
 
     The frame's own start is first because that is what lands on this decoder
     today; the old midpoint is kept so a decoder that goes back to the old
     behaviour is still served, and so the result can say which one it was.
+
+    `start` is the file's start time in seconds. ffmpeg reads an input -ss
+    relative to it, not as a raw timestamp (that is -seek_timestamp), so on a
+    file whose timestamps start at 10 s (MXF, TS, a copy made with an offset)
+    every candidate sat 10 s past its frame, none matched, and every seek came
+    back unproven (Linux bot review, 2026-09-27).
     """
     this = ptss[frame]
     nxt = ptss[frame + 1] if frame + 1 < len(ptss) else this + modal
     span = nxt - this
+
+    def rel(ticks):
+        return max(0.0, float(ticks * tb - start))
+
     return [
-        ("frame start", float(this * tb)),
-        ("a quarter frame before the start", float(max(0, this - span / 4) * tb)),
-        ("midpoint of the frame (the pre 2026-08-31 rule)", float((this + nxt) / 2 * tb)),
-        ("midpoint of the frame before", float((ptss[max(0, frame - 1)] + this) / 2 * tb)),
+        ("frame start", rel(this)),
+        ("a quarter frame before the start", rel(max(0, this - span / 4))),
+        ("midpoint of the frame (the pre 2026-08-31 rule)", rel((this + nxt) / 2)),
+        ("midpoint of the frame before", rel((ptss[max(0, frame - 1)] + this) / 2)),
     ]
 
 
@@ -547,7 +563,7 @@ def _pts_at_seek(path, sec, stream="v:0"):
     return int(m[0]) if m else None
 
 
-def _calibrated_seek(path, frame, ptss, modal, tb, stream, probe_w, depth):
+def _calibrated_seek(path, frame, ptss, modal, tb, stream, probe_w, depth, start=0):
     """Prove a deep seek from a shallow walk plus the file's own timestamps.
 
     The fault the walk exists to catch is a property of the DECODER and the
@@ -590,9 +606,9 @@ def _calibrated_seek(path, frame, ptss, modal, tb, stream, probe_w, depth):
                                     "another one, so nothing there can tell a "
                                     "wrong landing from a right one"}
     c = uniq[-1]
-    times = dict(_seek_candidates(ptss, c, modal, tb))
+    times = dict(_seek_candidates(ptss, c, modal, tb, start))
     tried, winner = [], None
-    for name, sec in _seek_candidates(ptss, c, modal, tb):
+    for name, sec in _seek_candidates(ptss, c, modal, tb, start):
         got = _digest_at_seek(path, sec, wh, stream)
         tried.append({"candidate": name, "seek_seconds": sec,
                       "returned_a_frame": got is not None,
@@ -609,7 +625,7 @@ def _calibrated_seek(path, frame, ptss, modal, tb, stream, probe_w, depth):
         return {"ok": False, "why": f"the timestamp read back at frame {c} was "
                                     f"{cal_pts} where the file says {ptss[c]}, so "
                                     "the timestamps cannot carry the proof here"}
-    tsec = dict(_seek_candidates(ptss, frame, modal, tb))[winner]
+    tsec = dict(_seek_candidates(ptss, frame, modal, tb, start))[winner]
     got_pts = _pts_at_seek(path, tsec, stream)
     if got_pts != ptss[frame]:
         at = [i for i, p in enumerate(ptss) if p == got_pts]
@@ -618,7 +634,7 @@ def _calibrated_seek(path, frame, ptss, modal, tb, stream, probe_w, depth):
                                     f"came back carries timestamp {got_pts}"
                                     + (f", which is frame {at[0]}" if at else
                                        ", which is not in this file")}
-    psec = dict(_seek_candidates(ptss, frame - 1, modal, tb))[winner]
+    psec = dict(_seek_candidates(ptss, frame - 1, modal, tb, start))[winner]
     local, _ = _walk_digests(path, 2, probe_w, stream, start_seconds=psec)
     here = _digest_at_seek(path, tsec, wh, stream)
     if len(local) < 2 or here != local[1]:
@@ -691,7 +707,7 @@ def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96,
     modal = max(set(durs), key=durs.count) if durs else 1
     this = ptss[frame]
     nxt = ptss[frame + 1] if frame + 1 < len(ptss) else this + modal
-    cands = _seek_candidates(ptss, frame, modal, tb)
+    cands = _seek_candidates(ptss, frame, modal, tb, info["start_time"])
 
     out = {
         "file": info["file"], "frame": frame,
@@ -725,7 +741,7 @@ def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96,
 
     if mode == "calibrated" or (mode == "auto" and frame > full_walk_max):
         cal = _calibrated_seek(path, frame, ptss, modal, tb, stream, probe_w,
-                               calibrate_depth)
+                               calibrate_depth, info["start_time"])
         if cal["ok"]:
             out.update({
                 "verification": "calibrated",

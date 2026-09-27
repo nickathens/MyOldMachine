@@ -46,7 +46,7 @@ Cinematographer-driven. Think like a DP writing shot notes. Kling responds best 
 - **Camera movement vocabulary.** Be specific: "slow dolly forward", "handheld tracking shot", "locked-off wide angle", "crane rising from street level", "steady push-in on subject's face". Vague "cinematic movement" gets generic results.
 - **Single dominant action.** One clear motion per clip: "she turns to face the camera", "he sets the cup down and stands". Two simultaneous complex actions degrade quality.
 - **@image references.** When using a reference image, prefix with @image and describe what to preserve: "@image maintain the character's face and outfit, place them in a rainy Tokyo street at night."
-- **Motion intensity.** Kling supports a motion control parameter (0.1-1.0). Low values (0.1-0.3) for subtle movement, mid (0.4-0.6) for natural action, high (0.7-1.0) for dynamic scenes.
+- **Motion intensity in words.** Kling's own API has a 0.1 to 1.0 motion control, but Higgsfield does not expose it (the only parameters here are `mode` and `sound` on `kling`, `sound` on `kling2.6`, `resolution` on `kling-turbo`). Say it in the prompt instead: "subtle, barely perceptible movement", "natural pace", "fast, dynamic".
 - **Native audio.** Kling 3.0 generates synchronized audio. Describe sound context: "busy cafe ambient noise", "footsteps on gravel", "wind through trees".
 
 ## What NOT to Do
@@ -58,8 +58,11 @@ Cinematographer-driven. Think like a DP writing shot notes. Kling responds best 
 
 ## Model Differences
 
-- **kling**: Kling 3.0. Best quality, native audio, strongest motion coherence.
-- **kling2.6**: Kling 2.6. Lower cost, no audio, still good for simple scenes.
+- **kling**: Kling 3.0. Best quality, native audio, strongest motion coherence; the only one with an end frame.
+- **kling-turbo**: Kling 3.0 Turbo. The cheapest (1.5 credits/s at 720p), no end frame, no sound switch: block out shots here.
+- **kling2.6**: Kling 2.6. Same 2.0 credits/s as `kling` std and has sound (on by default), but only 5 or 10 s and no end frame; little reason to pick it now.
+
+(Until 2026-09-27 this list called 2.6 "lower cost, no audio", which the specs above contradict.)
 
 ## Example Refinement
 

@@ -68,6 +68,8 @@ def build_case(src, workdir, seg_frames=36, width=960):
     raw = subprocess.run(cmd, capture_output=True).stdout
     fb = width * h * 3
     got = len(raw) // fb
+    if got == 0:
+        raise SystemExit(f"could not decode any frame from {src}")
     if got < n * seg_frames:
         n = max(1, got // seg_frames)
         print(f"source is short, using {n} segments")
@@ -89,11 +91,14 @@ def build_case(src, workdir, seg_frames=36, width=960):
                           dtype=np.uint8).reshape(h, width, 3).astype(np.float32) / 255.0
     base = [still] * seg_frames
 
+    # Every frame of a segment is the same still, so its damaged version is
+    # computed once and repeated: 216 full-frame gradings (about 1.3 GB of
+    # float32 held at once at 960 wide) became six.
     clean_frames, dmg_frames = [], []
     for seg in range(n):
-        for f in base:
-            clean_frames.append(f)
-            dmg_frames.append(C.apply_grade(f, damage_grade(DAMAGE[seg])))
+        damaged = C.apply_grade(still, damage_grade(DAMAGE[seg]))
+        clean_frames.extend(base)
+        dmg_frames.extend([damaged] * seg_frames)
 
     def encode(frames, path):
         p = subprocess.Popen(
@@ -104,7 +109,8 @@ def build_case(src, workdir, seg_frames=36, width=960):
         for f in frames:
             p.stdin.write(np.clip(f * 255 + 0.5, 0, 255).astype(np.uint8).tobytes())
         p.stdin.close()
-        p.wait()
+        if p.wait() != 0:
+            raise SystemExit(f"ffmpeg could not encode {path}")
 
     clean_mp4 = os.path.join(workdir, "clean.mp4")
     dmg_mp4 = os.path.join(workdir, "damaged.mp4")

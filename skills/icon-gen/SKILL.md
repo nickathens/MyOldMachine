@@ -4,30 +4,27 @@ Generate favicons, app icons, and icon sets.
 
 ## Capabilities
 
-- **Favicon**: Generate all favicon sizes (16, 32, 48, 64, 128, 256)
-- **App Icons**: iOS, Android, PWA icons
-- **ICO files**: Multi-resolution .ico files
-- **SVG to PNG**: Convert vector to raster at any size
-
-## Script Location
-
-`scripts/icongen.py` - Icon generation script
+- **Favicon**: 16, 32, 48, 64, 128, 256 px PNGs plus a multi-resolution favicon.ico
+- **App icons**: iOS (opaque, as the App Store requires), Android, PWA
+- **Input**: PNG, JPEG (EXIF rotation applied), or SVG (rendered with Inkscape at 1024 px first)
+- Art that is not square is centred on a transparent square, not stretched
 
 ## Commands
 
 ```bash
-# Generate favicon set from image
-python icongen.py favicon input.png ./icons/
-
-# Generate app icons (iOS + Android)
-python icongen.py appicons input.png ./icons/
-
-# Single icon at specific size
-python icongen.py resize input.png output.png 512
-
-# Create ICO file
-python icongen.py ico input.png favicon.ico
+G=skills/icon-gen/scripts/icongen.py
+python $G favicon logo.png ./icons/            # favicon PNGs + favicon.ico
+python $G ios logo.png ./icons/ios/ --background "#0b0b0b"   # opaque fill (default white)
+python $G android logo.png ./icons/android/
+python $G pwa logo.png ./icons/pwa/
+python $G all logo.svg ./icons/                # favicon, ios, android, pwa subfolders
+python $G resize logo.png icon-512.png 512
+python $G ico logo.png favicon.ico
 ```
+
+There is no `appicons` command (the old doc named one); `all` or the
+per-platform commands do that. Fixed 2026-09-27: wide logos were squashed
+into the square, iOS icons kept an alpha channel, SVG input failed.
 
 ## Output Sizes
 
@@ -36,14 +33,14 @@ python icongen.py ico input.png favicon.ico
 - 64x64, 128x128, 256x256 (high-res)
 - favicon.ico (multi-res)
 
-### iOS
-- 180x180 (iPhone)
-- 167x167 (iPad Pro)
-- 152x152 (iPad)
+### iOS (opaque)
+- 180, 167, 152, 120, 87, 80, 76, 60, 58, 40, 29, 20
 
 ### Android
-- 192x192, 512x512 (PWA)
-- 48, 72, 96, 144, 192 (launcher)
+- 512, 192, 144, 96, 72, 48, 36
+
+### PWA
+- 512, 384, 256, 192, 144, 128, 96, 72, 48
 
 ## Examples
 

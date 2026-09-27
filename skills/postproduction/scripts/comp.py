@@ -50,6 +50,7 @@ Run this file with ~/.venvs/post/bin/python.
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import sys
 
@@ -888,34 +889,54 @@ def cmd_verify(args):
     raise ValueError(f"unknown check {args.check!r}")
 
 
+def _paired_frames(plate, comp, start, count):
+    """Frame i of the plate beside frame i of the comp, one pair at a time.
+
+    Both decodes walk from the same start with the same step, so the pairs
+    line up, and the shorter file ends the walk. The verifiers used to build
+    a dict of every decoded frame of BOTH files first: 1080p costs about
+    25 MB a frame in float32, and inside the bot's memory cgroup an out of
+    memory kill takes the whole bot down.
+    """
+    a = P.read_frames(plate, start=start, count=count)
+    b = P.read_frames(comp, start=start, count=count)
+    try:
+        for (i, fa), (j, fb) in zip(a, b):
+            if i != j:
+                raise RuntimeError(f"the two decodes fell out of step at frames "
+                                   f"{i} and {j}")
+            yield i, fa, fb
+    finally:
+        a.close()
+        b.close()
+
+
 def _verify_ring(args):
     """Did the REAL bezel move? Anchored entirely in the plate."""
     tr = _load_track(args.track)
     quad_ref = tr["corners"]
-    plate_frames = dict(P.read_frames(args.plate, start=args.start,
-                                      count=args.count))
-    comp_frames = dict(P.read_frames(args.comp, start=args.start,
-                                     count=args.count))
-    common = sorted(set(plate_frames) & set(comp_frames))
-    if not common:
-        raise RuntimeError("the plate and the composite share no frames")
 
     rows = []
-    for i in common:
+    shared = 0
+    for i, plate_img, comp_img in _paired_frames(args.plate, args.comp,
+                                                 args.start, args.count):
+        shared += 1
         Wm = tr["warps"].get(i)
         if Wm is None:
             continue
         quad = G.apply_h(Wm, quad_ref)
-        band = _ring_bands(quad, (plate_frames[i].height, plate_frames[i].width),
+        band = _ring_bands(quad, (plate_img.height, plate_img.width),
                            inner=args.inner, outer=args.outer)
         if band.sum() < 200:
             continue
-        lp = P.linear_luma(plate_frames[i].as_linear().rgb)[band]
-        lc = P.linear_luma(comp_frames[i].as_linear().rgb)[band]
+        lp = P.linear_luma(plate_img.as_linear().rgb)[band]
+        lc = P.linear_luma(comp_img.as_linear().rgb)[band]
         d = np.abs(lc - lp)
         rows.append({"frame": i, "band_px": int(band.sum()),
                      "mean_abs": float(d.mean()), "p99": float(np.percentile(d, 99)),
                      "max": float(d.max())})
+    if not shared:
+        raise RuntimeError("the plate and the composite share no frames")
     if not rows:
         raise RuntimeError("no frame produced a usable ring")
 
@@ -974,19 +995,18 @@ def _verify_content(args):
     measurement, it is the same measurement typed twice, and it agrees to zero.
     """
     tr = _load_track(args.track) if args.track else None
-    plate_frames = dict(P.read_frames(args.plate, start=args.start,
-                                      count=args.count))
-    comp_frames = dict(P.read_frames(args.comp, start=args.start,
-                                     count=args.count))
-    common = sorted(set(plate_frames) & set(comp_frames))
-    if not common:
+    pairs = _paired_frames(args.plate, args.comp, args.start, args.count)
+    # The first eight pairs are held: the generation floor is measured on them
+    # before any outline is drawn. Everything after streams one pair at a time.
+    head = list(itertools.islice(pairs, 8))
+    if not head:
         raise RuntimeError("the plate and the composite share no frames")
+    first = head[0][1]
 
     roi = None
     if args.region:
         x, y, w, h = [int(v) for v in parse_region(args.region)]
-        roi = np.zeros((plate_frames[common[0]].height,
-                        plate_frames[common[0]].width), dtype=bool)
+        roi = np.zeros((first.height, first.width), dtype=bool)
         roi[y:y + h, x:x + w] = True
     elif tr is not None:
         # A generous box around wherever the track ever put the region: enough
@@ -996,8 +1016,7 @@ def _verify_content(args):
         pad = 0.25 * max(pts[:, 0].ptp() if hasattr(pts[:, 0], "ptp")
                          else pts[:, 0].max() - pts[:, 0].min(),
                          pts[:, 1].max() - pts[:, 1].min())
-        roi = np.zeros((plate_frames[common[0]].height,
-                        plate_frames[common[0]].width), dtype=bool)
+        roi = np.zeros((first.height, first.width), dtype=bool)
         y0 = max(0, int(pts[:, 1].min() - pad))
         y1 = min(roi.shape[0], int(pts[:, 1].max() + pad))
         x0 = max(0, int(pts[:, 0].min() - pad))
@@ -1013,9 +1032,9 @@ def _verify_content(args):
     floor_note = "given"
     if args.diff_floor is None:
         samples = []
-        for i in common[:8]:
-            d = np.abs(comp_frames[i].as_linear().rgb -
-                       plate_frames[i].as_linear().rgb).max(axis=2)
+        for _, plate_img, comp_img in head:
+            d = np.abs(comp_img.as_linear().rgb -
+                       plate_img.as_linear().rgb).max(axis=2)
             outside = d if roi is None else d[~roi]
             if outside.size:
                 samples.append(float(np.percentile(outside, 99.5)))
@@ -1026,12 +1045,16 @@ def _verify_content(args):
                       f"is 8x that")
 
     rows = []
-    for i in common:
-        plate = plate_frames[i].as_linear()
-        comp = comp_frames[i].as_linear()
+    def drain(held):
+        while held:
+            yield held.pop(0)
+
+    for i, plate_img, comp_img in itertools.chain(drain(head), pairs):
+        plate = plate_img.as_linear()
+        comp = comp_img.as_linear()
 
         # 1. the BACKING, on the plate
-        k = M.key_difference(plate_frames[i], screen=args.screen, roi=roi)
+        k = M.key_difference(plate_img, screen=args.screen, roi=roi)
         backing = (k["alpha"] < 0.5)
         if roi is not None:
             backing &= roi
@@ -1110,7 +1133,7 @@ def _verify_content(args):
 
     # Optional second reading: does the content move with the object's own BODY?
     if args.body or args.body_mask:
-        out["body_check"] = _body_drift(args, tr, plate_frames, common)
+        out["body_check"] = _body_drift(args, tr)
 
     def show(d):
         print("verify content: where did the content actually land?")
@@ -1164,23 +1187,37 @@ def _verify_content(args):
     return emit(out, args.json, show)
 
 
-def _body_drift(args, tr, plate_frames, common):
+def _body_drift(args, tr):
     """Does the content move with the object's own body? A second, weaker read.
 
     Weaker because it needs a track file to have something to compare against,
     and because a body window that happens to be the region the track was solved
     on is not a second measurement at all: it is the same solve run twice, and
     it agrees to zero. That case is detected and refused.
+
+    The plate is decoded again here and walked one frame at a time beside the
+    first frame, rather than held whole (a whole 1080p clip in float32 can
+    take the bot's memory cgroup down).
     """
     if tr is None:
         return {"verdict": "UNPROVEN", "note": "no track file to compare with"}
-    ref = common[0]
+    frames = P.read_frames(args.plate, start=args.start, count=args.count)
+    try:
+        first = next(frames, None)
+        if first is None:
+            return {"verdict": "UNPROVEN", "note": "the plate decoded no frames"}
+        return _body_drift_walk(args, tr, first, frames)
+    finally:
+        frames.close()
+
+
+def _body_drift_walk(args, tr, first, frames):
+    ref_img = first[1]
     if args.body_mask:
         body_mask = load_mask(args.body_mask)
     else:
         x, y, w, h = [int(v) for v in parse_region(args.body)]
-        body_mask = np.zeros((plate_frames[ref].height, plate_frames[ref].width),
-                             np.uint8)
+        body_mask = np.zeros((ref_img.height, ref_img.width), np.uint8)
         body_mask[y:y + h, x:x + w] = 1
 
     same = None
@@ -1197,18 +1234,17 @@ def _body_drift(args, tr, plate_frames, common):
     quad_ref = tr["corners"]
     init = np.eye(3)
     errs = []
-    for i in common:
+    for i, img in itertools.chain([first], frames):
         Wm = tr["warps"].get(i)
         if Wm is None:
             continue
-        r = T.ecc_solve(plate_frames[ref], plate_frames[i],
+        r = T.ecc_solve(ref_img, img,
                         model=args.body_model, mask=body_mask, scale=1.0,
                         gauss=args.gauss, init=init)
         if not r["ok"] or r["cc"] < args.min_cc:
             continue
         plaus = T.warp_plausible(r["warp"], quad_ref,
-                                 (plate_frames[ref].width,
-                                  plate_frames[ref].height))
+                                 (ref_img.width, ref_img.height))
         if not plaus["ok"]:
             continue
         init = r["warp"]

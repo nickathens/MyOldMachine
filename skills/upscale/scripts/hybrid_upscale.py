@@ -43,14 +43,20 @@ CUDA or CPU, in that order of preference; the 2x on a 1.5 MP image is about
 import argparse
 import math
 import os
+import socket
+import sys
 import time
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageOps
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import faithful_io  # noqa: E402
 
 WEIGHTS = {
     2: ("RealESRGAN_x2plus.pth",
@@ -58,6 +64,7 @@ WEIGHTS = {
     4: ("RealESRGAN_x4plus.pth",
         "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth"),
 }
+DOWNLOAD_TIMEOUT = 60  # seconds a stalled download may sit silent before it fails
 
 LOWFREQ_SIGMA = 6.0        # below this lives the tone; it belongs to Lanczos
 MASK_RAMP = (50, 90)       # Sobel percentiles: 0 at p50, 1 at p90
@@ -159,7 +166,18 @@ def load_model(scale, device):
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         print(f"downloading {name}", flush=True)
-        urllib.request.urlretrieve(url, path)
+        # a download cut short used to stay at the final name, and every later
+        # run failed to load it; only a complete file gets that name.
+        # urlretrieve has no timeout of its own, and a server that stopped
+        # answering hung the run for good
+        part = path + ".part"
+        before = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(DOWNLOAD_TIMEOUT)
+        try:
+            urllib.request.urlretrieve(url, part)
+        finally:
+            socket.setdefaulttimeout(before)
+        os.replace(part, path)
     model = RRDBNet(scale=scale)
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
     state = ckpt.get("params_ema", ckpt.get("params", ckpt))
@@ -226,31 +244,48 @@ def hybrid(src_u8, esr, scale):
     return out, lan, mask
 
 
+def lanczos_deep(raw, size):
+    """16-bit Lanczos in cv2 layout (BGR or BGRA); alpha premultiplied like the 8-bit path."""
+    import cv2
+    arr = raw.astype(np.float32) / 65535.0
+    if arr.shape[2] == 4:
+        cover = arr[..., 3:4]
+        colour = cv2.resize(arr[..., :3] * cover, size, interpolation=cv2.INTER_LANCZOS4)
+        alpha = np.clip(cv2.resize(arr[..., 3], size, interpolation=cv2.INTER_LANCZOS4), 0, 1)[..., None]
+        colour = np.where(alpha > 0, colour / np.maximum(alpha, 1.0 / 65535.0), colour)
+        arr = np.concatenate([colour, alpha], axis=2)
+    else:
+        arr = cv2.resize(arr, size, interpolation=cv2.INTER_LANCZOS4)
+    return (np.clip(arr, 0, 1) * 65535 + 0.5).astype(np.uint16)
+
+
 def psnr(a, b):
     mse = float(np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2))
     return 10 * math.log10(1.0 / max(mse, 1e-12))
 
 
 def metrics(src_u8, out, lan, mask, scale):
+    """The three honesty numbers, as printable lines."""
     src = src_u8.astype(np.float32) / 255.0
-    back = np.asarray(Image.fromarray((out * 255 + 0.5).astype(np.uint8))
+    back = np.asarray(Image.fromarray((np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8))
                       .resize((src_u8.shape[1], src_u8.shape[0]), Image.LANCZOS),
                       dtype=np.float32) / 255.0
-    print(f"  structure mask covers {100 * mask.mean():.1f} percent of the frame")
-    print(f"  downscale back PSNR vs source: {psnr(back, src):.2f} dB "
-          f"(higher is truer; plain Lanczos round trips near 44)")
+    lines = [f"  structure mask covers {100 * mask.mean():.1f} percent of the frame",
+             f"  downscale back PSNR vs source: {psnr(back, src):.2f} dB "
+             f"(higher is truer; plain Lanczos round trips near 44)"]
     luma = out.mean(2)
     llan = lan.mean(2)
     fine = luma - gauss(luma, 2.0)
     flan = llan - gauss(llan, 2.0)
     flat = mask < 0.05
     if flat.any():
-        print(f"  fine band std in flat areas: {255 * fine[flat].std():.2f} "
-              f"against Lanczos truth {255 * flan[flat].std():.2f} "
-              f"(just under truth is right; far below is airbrush, above is invention)")
-    print("  colour drift vs Lanczos truth: "
-          + "  ".join(f"{255 * (out[..., c].mean() - lan[..., c].mean()):+.2f}"
-                      for c in range(3)) + "  levels per channel")
+        lines.append(f"  fine band std in flat areas: {255 * fine[flat].std():.2f} "
+                     f"against Lanczos truth {255 * flan[flat].std():.2f} "
+                     f"(just under truth is right; far below is airbrush, above is invention)")
+    lines.append("  colour drift vs Lanczos truth: "
+                 + "  ".join(f"{255 * (out[..., c].mean() - lan[..., c].mean()):+.2f}"
+                             for c in range(3)) + "  levels per channel")
+    return "\n".join(lines)
 
 
 def main():
@@ -266,7 +301,32 @@ def main():
                          "(otherwise a 16-bit input is refused for hybrid/plain).")
     a = ap.parse_args()
 
-    src_img = Image.open(a.input)
+    if Path(a.output).suffix.lower() != ".png":
+        raise SystemExit(f"{a.output}: masters are written as lossless PNG; give the output a .png name")
+    Path(a.output).parent.mkdir(parents=True, exist_ok=True)
+    if a.tile % 2:
+        a.tile += 1     # the x2 head needs even patches; an odd tile made odd ones
+    icc = faithful_io.icc_profile(a.input)
+    orientation = faithful_io.exif_orientation(a.input)
+
+    # Pillow reads a 16-bit RGB PNG or TIFF as 8-bit RGB, so its mode cannot
+    # see a deep colour master; cv2 can
+    raw = faithful_io.read_deep_colour(a.input)
+    if raw is not None:
+        raw = faithful_io.orient(raw, orientation)
+        size = (raw.shape[1] * a.scale, raw.shape[0] * a.scale)
+        if a.mode == "lanczos":
+            t0 = time.time()
+            faithful_io.write_cv2(a.output, lanczos_deep(raw, size), icc)
+            print(f"({raw.shape[1]}, {raw.shape[0]}) -> {size[0]}x{size[1]} (lanczos, 16-bit colour kept) "
+                  f"in {time.time()-t0:.1f}s")
+            return
+        if not a.force_8bit:
+            raise SystemExit(f"Refusing: {a.input} is 16-bit colour and the {a.mode} path is 8-bit. "
+                             f"Use --mode lanczos to keep the depth, or --force-8bit to accept the loss.")
+
+    # EXIF orientation first: the PNG written below has no tag to rotate it later
+    src_img = ImageOps.exif_transpose(Image.open(a.input))
     if src_img.mode == "P":
         src_img = src_img.convert("RGBA" if "transparency" in src_img.info else "RGB")
     src_mode = src_img.mode
@@ -282,7 +342,8 @@ def main():
     if a.mode == "lanczos" and (deep or src_mode in ("L", "LA", "1")):
         # Same-mode resize keeps the depth and the channel layout exact.
         resized = src_img.resize(size, Image.LANCZOS)
-        resized.save(a.output, format="PNG", compress_level=6)
+        resized.save(a.output, format="PNG", compress_level=6,
+                     icc_profile=faithful_io.icc_for(icc, len(resized.getbands())))
         print(f"{src_img.size} -> {size[0]}x{size[1]} (lanczos, mode {resized.mode} kept) "
               f"in {time.time()-t0:.1f}s")
         return
@@ -311,12 +372,18 @@ def main():
     else:
         device = pick_device()
         model = load_model(a.scale, device)
+        # --tile 0 means one tile for the whole picture
+        tile = a.tile if a.tile > 0 else max(src_u8.shape[:2]) + 1
         esr = esrgan_tiled(model, src_u8.astype(np.float32) / 255.0,
-                           device, a.scale, tile=a.tile)
+                           device, a.scale, tile=tile + tile % 2)
         if a.mode == "plain":
             out, lan, mask = esr, None, None
         else:
             out, lan, mask = hybrid(src_u8, esr, a.scale)
+
+    # measured before the alpha is divided back out: source, Lanczos and
+    # output are then all premultiplied alike
+    report = metrics(src_u8, out, lan, mask, a.scale) if a.metrics and mask is not None else None
 
     alpha_up = alpha.resize(size, Image.LANCZOS) if alpha is not None else None
     if alpha_up is not None:
@@ -328,11 +395,12 @@ def main():
     result = Image.fromarray(arr)
     if alpha_up is not None:
         result.putalpha(alpha_up)
-    result.save(a.output, format="PNG", compress_level=6)
+    result.save(a.output, format="PNG", compress_level=6,
+                icc_profile=faithful_io.icc_for(icc, len(result.getbands())))
     print(f"{src_img.size} -> {size[0]}x{size[1]} ({a.mode}"
           f"{', alpha kept' if alpha is not None else ''}) in {time.time()-t0:.1f}s")
-    if a.metrics and mask is not None:
-        metrics(src_u8, out, lan, mask, a.scale)
+    if report:
+        print(report)
 
 
 if __name__ == "__main__":

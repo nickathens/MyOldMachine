@@ -48,9 +48,11 @@ node "$ENGINE/render.mjs" --comp TitleCard \
 node "$ENGINE/render.mjs" --comp BarChartBuild --props ./data.json --out /tmp/chart.mp4
 ```
 
-`render.mjs` flags: `--comp` (required, the composition id), `--props` (inline JSON object or path to a .json file), `--out` (output path, defaults to `render-engine/out/<comp>.mp4`), `--codec` (default `h264`), `--concurrency` (e.g. `50%` or a bare integer; defaults to letting Remotion pick). On success the absolute output path is printed to stdout; progress and logs go to stderr.
+For one frame while iterating, `node $ENGINE/still.mjs --comp TitleCard --frame 120 --out /tmp/f.png` (`--props` takes inline JSON only there).
 
-The default font, Montserrat, is bundled into the render via `@remotion/google-fonts` (see `src/font.ts`), so output is the intended geometric sans on any machine with no system font install. Montserrat covers Latin, Latin-ext, Cyrillic and Vietnamese but has **no Greek glyphs**, so Greek (and any other unsupported script) falls back to the platform sans-serif rather than rendering in Montserrat. To render those cleanly, point `src/font.ts` at a font that covers the script, e.g. swap the import to `@remotion/google-fonts/NotoSans`.
+`render.mjs` flags: `--comp` (required, the composition id), `--props` (inline JSON object or path to a .json file), `--out` (output path, defaults to `render-engine/out/<comp>.mp4`), `--codec` (default `h264`), `--concurrency` (e.g. `50%`; defaults to letting Remotion pick). On success the absolute output path is printed to stdout; progress and logs go to stderr.
+
+Fonts are loaded into the bundle by `src/font.ts`, so a render looks the same on any machine. Montserrat has no Greek at all (none of the installed Montserrat files carries a Greek glyph, and Google's has no Greek subset), so Greek characters are set in Manrope, loaded for its Greek subset as the next family in the stack; Latin stays Montserrat. Manrope stops at weight 800, so a 900 Greek title renders at 800. Before 2026-09-27 Greek fell through to whatever sans the machine had.
 
 ---
 
@@ -62,7 +64,7 @@ Cinematic title: words spring up and fade in with a stagger, a rule draws under 
 
 | prop | default | meaning |
 |------|---------|---------|
-| `title` | `REMOTION` | main line; split on spaces, each word animates separately |
+| `title` | `REMOTION` | main line; split on spaces, each word animates separately, a quarter em apart |
 | `subtitle` | `MOTION GRAPHICS` | letter-spaced uppercase line under the rule |
 | `accent` | `#C9A84C` | rule and subtitle colour |
 | `background` | `#0A0A0A` | near black |
@@ -76,7 +78,7 @@ Animated bar chart: title rises in, bars spring up from a baseline with a stagge
 |------|---------|---------|
 | `title` | `Render time by method` | chart heading |
 | `data` | 3 bars | array of `{ "label": "...", "value": 0 }`; any length |
-| `unit` | `s` | suffix appended to each value label |
+| `unit` | `s` | suffix appended to each value label; labels count up to the value at its own precision (42.5 stays 42.5) |
 | `accent` | `#C9A84C` | bar colour |
 | `background` / `ink` | dark / bone | as above |
 
@@ -130,6 +132,8 @@ Two things the cards are strict about, and they are right:
 
 Only `odometer-digit-roll` is implemented so far, as `MetricStomp`. The rest is a menu to build from, not a library to call.
 
+The vendored documents are verbatim upstream, so they point at things this engine does not have: `template/` (the upstream demo project), `gallery/` (its preview index and `library.json`), `assets/audio/` (its SFX and BGM library) and `npx remotion still|render` (the Remotion CLI is not part of this engine). Translate as you read: `npx remotion still ... <Comp> out.png` is `node render-engine/still.mjs --comp <Comp> --frame N --out out.png`, `npx remotion render` is `render.mjs`, and there is no sound library in this engine, so sound design means sourcing audio and muxing it (video-editing skill).
+
 ---
 
 ## Send the result to the user
@@ -175,6 +179,6 @@ There is no TypeScript compiler in this engine. Remotion's bundler is esbuild ba
 
 - Render time scales with cores and resolution: a 5s to 6s 1080p clip renders in well under a minute on a 4-core machine. The bundle step runs once per invocation; for batch renders of the same project this is the main fixed cost.
 - 1080p30 is the default. For social verticals set `width`/`height` to 1080x1920 on the `<Composition>`. For a quick preview, drop to 1280x720.
-- Always look at a rendered frame before sending. A font must be loaded into the bundle (the built-ins do this in `src/font.ts`), not just named in CSS, or headless Chromium silently substitutes a serif fallback. A new composition that introduces a different typeface must load it the same way.
+- Always look at a rendered frame before sending. A font named only in CSS is NOT loaded: headless Chromium silently substitutes when the machine lacks it. Load any new family inside the bundle through `@remotion/google-fonts`, as `src/font.ts` does, and check it carries the scripts you need (Montserrat has no Greek).
 - `node_modules`, `out/`, and the `.remotion/` browser cache are gitignored. The source (`src/`, `render.mjs`, `still.mjs`, `package.json`, `package-lock.json`) is the skill; reinstall with the setup command after a fresh checkout.
 - Versions are pinned to Remotion 4.0.482 and React 18.3.1. Keep all `remotion` and `@remotion/*` packages on the same version when upgrading.

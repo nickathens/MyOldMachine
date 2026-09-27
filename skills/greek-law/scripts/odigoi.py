@@ -104,12 +104,12 @@ GUIDES = [
         ],
         "escalation": [
             "Αμφισβήτηση της εγκυρότητας της απόλυσης: η προθεσμία είναι σύντομη "
-            "και ανατρεπτική (δες prothesmies.py). Δικηγόρος γρήγορα.",
+            "και ανατρεπτική, και μετριέται σε μήνες, που το prothesmies.py δεν "
+            "υπολογίζει (μετρά μόνο ημέρες). Δικηγόρος γρήγορα.",
             "Διάκριση, εργατικό ατύχημα, ή ηθική παρενόχληση στον χώρο εργασίας.",
         ],
         "tools": ["vasi_agogis.py apozimiosi-apolysis",
-                  "vasi_agogis.py dedoulevmenes-apodoches", "prothesmies.py",
-                  "practice/ergatiko.md"],
+                  "vasi_agogis.py dedoulevmenes-apodoches", "practice/ergatiko.md"],
     },
     {
         "slug": "katanalotis",

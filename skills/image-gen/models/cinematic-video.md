@@ -75,8 +75,13 @@ Film-first direction. These models are tuned for cinematic video output. Write p
 
 ## Model Differences
 
-- **cinematic3**: Cinematic Studio 3.0. Latest, best quality. Use for hero shots.
-- **cinematic-video**: Cinematic Studio Video V2. Good general cinematic quality, slightly lower cost.
+- **cinematic3.5**: Cinematic Studio Video 3.5, the newest: named camera, light and grade axes (above).
+- **cinematic3**: Cinematic Studio 3.0: the only one with 4k. Use for hero shots.
+- **cinematic-v2**: Cinematic Studio Video V2: genres, multi shot, speed ramps, the cheapest per second.
+- **cinematic-video**: Cinematic Studio Video, the original: 5 or 10 s only.
+
+(Until 2026-09-27 this list named `cinematic3` the latest and called `cinematic-video` "V2", which is
+`cinematic-v2`.)
 
 ## Example Refinement
 

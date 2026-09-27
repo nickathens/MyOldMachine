@@ -32,10 +32,12 @@ Works best with:
 ## Notes
 
 - The model ships inside the basic-pitch wheel, in four builds: TensorFlow,
-  ONNX, CoreML and TFLite. The script prefers the ONNX build when onnxruntime
-  is installed, because basic-pitch's own default is the TensorFlow SavedModel
-  and TensorFlow 2.16 dropped the format it was saved in. If neither loads,
-  install onnxruntime: `pip install onnxruntime`
+  ONNX, CoreML and TFLite. Nothing is downloaded on first run. The script asks
+  for the ONNX build when onnxruntime is installed, because basic-pitch's own
+  default is the TensorFlow SavedModel and TensorFlow 2.16 dropped the format
+  it was saved in. If neither loads, install onnxruntime: `pip install onnxruntime`
+- Transcribing the same file again replaces the earlier MIDI. basic-pitch itself refuses to overwrite its own output, which made every rerun fail until 2026-09-27; it now writes into a scratch folder first. An output name without .mid is taken as a folder
+- The result is performance timing, slightly off the grid: the sheet-music skill tidies it before engraving
 - Processing runs on CPU (may take 30-60 seconds per minute of audio)
 - Output MIDI can be imported into any DAW
 - For polyphonic content, some notes may be missed

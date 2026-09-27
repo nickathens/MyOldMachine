@@ -40,7 +40,8 @@ Creates a folder with:
 
 ## Notes
 
-- Processing takes 5-15 minutes per song (CPU)
-- First run downloads model (~1GB)
+- `--device auto` (the default) tries one CUDA operation first and uses the GPU only if it really runs: a torch build without kernels for an older card (a GTX 970) reports CUDA as available and then fails every kernel. Before 2026-09-27 every separation on such a machine crashed on that.
+- Measured on a 4 core i5 (htdemucs, CPU): 5 minutes of stereo audio took 3.5 minutes and peaked at 2.3 GB of RAM. On Linux, run anything longer than a song in a capped scope so it can never take the bot down with it: `systemd-run --user --scope --quiet --collect -p MemoryMax=4G -p MemorySwapMax=0 -- python .../separate.py ...`
+- The first run downloads the model (htdemucs is about 80 MB) into `~/.cache/torch/hub/checkpoints/`
+- Stems are written as 16-bit WAV through soundfile: demucs 4.0.1 saves through torchaudio, and torchaudio 2.9+ needs a torchcodec package that is not installed, so the separation used to finish and then fail writing the files
 - Works best with studio-quality recordings
-- Output is always WAV format (high quality)

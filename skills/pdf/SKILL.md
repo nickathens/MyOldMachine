@@ -51,8 +51,9 @@ ocrmypdf input.pdf output.pdf
 # Force OCR even if text exists
 ocrmypdf --force-ocr input.pdf output.pdf
 
-# Specific language
-ocrmypdf -l eng input.pdf output.pdf
+# Language: the default is English only, which turns a Greek scan into nonsense.
+# Greek and English (needs the tesseract ell pack):
+ocrmypdf -l ell+eng input.pdf output.pdf
 
 # Skip text pages (only OCR image pages)
 ocrmypdf --skip-text input.pdf output.pdf

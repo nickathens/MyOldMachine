@@ -40,6 +40,13 @@ Use `ch` units for character-based measure (`max-width: 65ch`). Line-height scal
 - Instead of Open Sans → **Source Sans 3**, **Nunito Sans**, **DM Sans**
 - For editorial/premium feel → **Fraunces**, **Newsreader**, **Lora**
 
+**Greek changes the list.** Of the twelve fonts above only **Source Sans 3** ships a Greek subset
+on Google Fonts (checked 2026-09-27); the rest fall back mid word on any Greek text, which matters
+for any Greek audience. Greek capable picks, same check: **Commissioner**, **Manrope**, **Inter Tight**,
+**Roboto Flex** (sans); **EB Garamond**, **Literata**, **Noto Serif**, **GFS Didot** (serif). Check any
+other face with `curl 'https://fonts.googleapis.com/css2?family=NAME:wght@400'` (send a browser
+User-Agent) and look for a `/* greek */` block.
+
 **System fonts are underrated**: `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui` looks native, loads instantly, and is highly readable. Consider this for apps where performance > personality.
 
 ### Pairing Principles
@@ -123,7 +130,7 @@ Beyond contrast ratios (which are well-documented), consider:
 
 - **Never disable zoom**: `user-scalable=no` breaks accessibility. If your layout breaks at 200% zoom, fix the layout.
 - **Use rem/em for font sizes**: This respects user browser settings. Never `px` for body text.
-- **Minimum 16px body text**: Smaller than this strains eyes and fails WCAG on mobile.
+- **Minimum 16px body text**: WCAG sets no minimum size, but smaller strains eyes, and iOS Safari zooms into form inputs set below 16px.
 - **Adequate touch targets**: Text links need padding or line-height that creates 44px+ tap targets.
 
 ---

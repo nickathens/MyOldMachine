@@ -65,9 +65,14 @@ The common mistake: using the accent color everywhere because it's "the brand co
 | Content Type | AA Minimum | AAA Target |
 |--------------|------------|------------|
 | Body text | 4.5:1 | 7:1 |
-| Large text (18px+ or 14px bold) | 3:1 | 4.5:1 |
-| UI components, icons | 3:1 | 4.5:1 |
+| Large text (24px+, or 18.66px+ bold) | 3:1 | 4.5:1 |
+| UI components, icons (WCAG 1.4.11) | 3:1 | none: 1.4.11 has no AAA level |
 | Non-essential decorations | None | None |
+
+WCAG defines large text in points: 18pt, or 14pt bold, which is 24px and about 18.66px in CSS
+pixels. This table said "18px+ or 14px bold" until 2026-09-27, which
+let 18px body copy pass at 3:1 when it needs 4.5:1; it also gave UI components a 4.5:1 AAA target
+that WCAG does not define.
 
 **The gotcha**: Placeholder text still needs 4.5:1. That light gray placeholder you see everywhere? Usually fails WCAG.
 

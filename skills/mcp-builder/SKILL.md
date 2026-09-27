@@ -21,7 +21,7 @@ A bot skill (file in `skills/<name>/`) and an MCP server are not the same shape.
 
 ## Choosing language
 
-- **Python** -- preferred for I/O-bound servers, integration with Python data libs, fastest path. SDK: `mcp` (PyPI), maintained by Anthropic.
+- **Python** -- preferred for I/O-bound servers, integration with Python data libs, fastest path. SDK: `mcp` (PyPI), maintained by Anthropic. **Version 2 (2.2.0 on 2026-09-27) renamed `FastMCP` to `MCPServer`**: 1.x code (`from mcp.server.fastmcp import FastMCP`) dies on a fresh install with ModuleNotFoundError, and results use snake_case (`is_error`, not `isError`). Pin `mcp<2` to run old code. The Python examples below are 2.x and were run end to end over stdio with an MCP client on 2026-09-27; the TypeScript one ran on SDK 1.30.1 under Node 24.
 - **TypeScript** -- preferred when targeting Cloudflare Workers / serverless, or when the host is a Node app. SDK: `@modelcontextprotocol/sdk`.
 - **Go / Rust / others** -- viable, fewer first-party tools. Use the protocol directly via JSON-RPC over stdio.
 
@@ -45,9 +45,9 @@ Default to Python unless you have a specific reason.
 
 ```python
 # server.py
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-mcp = FastMCP("my-server")
+mcp = MCPServer("my-server")
 
 @mcp.tool()
 def hello(name: str) -> str:
@@ -62,7 +62,7 @@ if __name__ == "__main__":
     mcp.run(transport="stdio")
 ```
 
-Install: `pip install "mcp[cli]"` -- the `[cli]` extra brings `mcp dev` for inspecting your server with the MCP Inspector UI.
+Install: `pip install "mcp[cli]"` in a venv of its own -- the `[cli]` extra brings `mcp dev`, `mcp run` and `mcp install` (without it the `mcp` command only says "typer is required").
 
 Run locally: `mcp dev server.py` opens an inspector in the browser, lets you call tools, list resources, and watch the JSON-RPC traffic.
 
@@ -90,6 +90,8 @@ Type hints become the JSON Schema. Docstrings become the tool description shown 
 ### 2. Resources -- read-only data the LLM can fetch
 
 ```python
+from pathlib import Path
+
 @mcp.resource("project://state")
 def project_state() -> str:
     """Current project state as JSON."""
@@ -114,16 +116,16 @@ Used by hosts to populate a slash menu of templates. Useful when you have a doma
 ## Streamable-HTTP server
 
 ```python
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-mcp = FastMCP("my-server")
+mcp = MCPServer("my-server")
 # tool / resource / prompt definitions...
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=8765)
+    mcp.run(transport="streamable-http", host="127.0.0.1", port=8765)   # served at /mcp
 ```
 
-Add auth at this layer -- the SDK does not provide it, you do. Pass tokens through host headers; verify in middleware before the JSON-RPC handler runs.
+Anyone who can reach the port can call every tool. Keep `127.0.0.1` (the default) unless remote access is the point, and then add auth: `MCPServer` takes `token_verifier` and `auth_server_provider` for OAuth; the old line here said the SDK had none.
 
 ---
 
@@ -174,18 +176,18 @@ await server.connect(new StdioServerTransport());
 ## Error handling
 
 ```python
-from mcp import McpError
+from mcp.server.mcpserver.exceptions import ToolError
 
 @mcp.tool()
 def get_user(user_id: int) -> dict:
     """Look up a user by ID."""
     user = db.query(...)
     if not user:
-        raise McpError(code=404, message=f"No user with id {user_id}")
+        raise ToolError(f"No user with id {user_id}")
     return user.to_dict()
 ```
 
-`McpError` flows back to the host as a structured error the LLM can reason about. A bare `raise ValueError(...)` works but is shown as "internal error" -- less useful.
+The client gets an error result (`is_error` true) carrying the message: "Error executing tool get_user: No user with id 7". A bare `raise ValueError("bad x")` also comes back as an error, but as "Error executing tool plain" with the message dropped, so the LLM cannot tell what went wrong. (`from mcp import McpError`, the old example, does not exist in 2.x.)
 
 ---
 
@@ -213,9 +215,9 @@ def get_user(user_id: int) -> dict:
 | Audience | Distribute as |
 |---|---|
 | Internal team only | Git repo + run instructions |
-| Wider Python audience | PyPI package + `mcp run my-server` |
+| Wider Python audience | PyPI package; `mcp run server.py` runs a server file |
 | Wider Node audience | npm package |
-| Claude Desktop users | Add to `claude_desktop_config.json` (they edit it manually) |
+| Claude Desktop users | `mcp install server.py`, or add to `claude_desktop_config.json` by hand |
 | Cursor users | Add to `~/.cursor/mcp.json` |
 
 For Claude Desktop config, include a copy-paste block in your README:

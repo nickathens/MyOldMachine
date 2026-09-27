@@ -5,16 +5,23 @@ For simple operations, uses ImageMagick. For complex filters, invokes GIMP.
 
 The GIMP side detects version 2 or 3 before choosing its batch exit flags.
 Scripts still need to use the procedure names of the installed version.
+
+Every ImageMagick call starts with -auto-orient (a phone photo's EXIF
+rotation is applied to the pixels; -thumbnail strips the tag, so thumbnails
+came out sideways) and a JPEG output has its transparency flattened onto
+white (it turned black). Linux bot review 2026-09-27.
 """
-import subprocess
 import argparse
 import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
+JPEG = {".jpg", ".jpeg"}
 
-def _magick(args):
+def _magick_binary():
     """ImageMagick's command line, under whichever name is installed.
 
     ImageMagick 7 renamed `convert` to `magick` and only keeps `convert` as a
@@ -22,50 +29,58 @@ def _magick(args):
     """
     binary = shutil.which("magick") or shutil.which("convert")
     if not binary:
-        raise RuntimeError("ImageMagick is not installed (no magick or convert)")
-    return [binary] + args
+        sys.exit("Error: ImageMagick is not installed (no magick or convert)")
+    return binary
 
 
-def resize_image(input_path, output_path, width, height=None):
-    """Resize image using ImageMagick (faster than GIMP for simple ops)"""
-    size = f"{width}x{height}" if height else f"{width}x{width}"
-    cmd = _magick([input_path, "-resize", size, output_path])
-    subprocess.run(cmd, check=True)
+def _magick(input_path, operations, output_path):
+    flatten = ["-background", "white", "-alpha", "remove", "-alpha", "off"] \
+        if Path(output_path).suffix.lower() in JPEG else []
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run([_magick_binary(), str(input_path), "-auto-orient", *operations, *flatten,
+                        str(output_path)], capture_output=True, text=True)
+    if r.returncode != 0 or not Path(output_path).exists():
+        sys.exit(f"Error: ImageMagick failed on {input_path}: {r.stderr.strip()[-400:]}")
+
+
+def resize_image(input_path, output_path, width=None, height=None):
+    """Resize keeping the aspect ratio: to a width, a height, or inside both.
+
+    A width alone used to become a width x width box, so a 1000x2000
+    portrait asked for 800 wide came back 400x800.
+    """
+    size = f"{width}x{height}" if width and height else (f"{width}" if width else f"x{height}")
+    _magick(input_path, ["-resize", size], output_path)
     print(f"Resized: {output_path}")
 
 
 def convert_format(input_path, output_path, quality=85):
     """Convert image format"""
-    cmd = _magick([input_path, "-quality", str(quality), output_path])
-    subprocess.run(cmd, check=True)
+    _magick(input_path, ["-quality", str(quality)], output_path)
     print(f"Converted: {output_path}")
 
 
 def crop_square(input_path, output_path):
     """Crop image to square (center crop)"""
-    cmd = _magick([input_path, "-gravity", "center", "-extent", "1:1", output_path])
-    subprocess.run(cmd, check=True)
+    _magick(input_path, ["-gravity", "center", "-extent", "1:1"], output_path)
     print(f"Cropped: {output_path}")
 
 
 def apply_blur(input_path, output_path, radius=5):
     """Apply Gaussian blur"""
-    cmd = _magick([input_path, "-blur", f"0x{radius}", output_path])
-    subprocess.run(cmd, check=True)
+    _magick(input_path, ["-blur", f"0x{radius}"], output_path)
     print(f"Blurred: {output_path}")
 
 
 def apply_sharpen(input_path, output_path, amount=1):
     """Apply sharpening"""
-    cmd = _magick([input_path, "-sharpen", f"0x{amount}", output_path])
-    subprocess.run(cmd, check=True)
+    _magick(input_path, ["-sharpen", f"0x{amount}"], output_path)
     print(f"Sharpened: {output_path}")
 
 
 def create_thumbnail(input_path, output_path, size=256):
     """Create thumbnail preserving aspect ratio"""
-    cmd = _magick([input_path, "-thumbnail", f"{size}x{size}", output_path])
-    subprocess.run(cmd, check=True)
+    _magick(input_path, ["-thumbnail", f"{size}x{size}"], output_path)
     print(f"Thumbnail: {output_path}")
 
 
@@ -77,11 +92,18 @@ def batch_process(input_dir, output_dir, operation, **kwargs):
 
     extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.tiff', '.bmp'}
 
-    for img in input_path.iterdir():
+    done = 0
+    for img in sorted(input_path.iterdir()):
         if img.suffix.lower() in extensions:
             out_file = output_path / img.name
+            done += 1
 
-            if operation == 'resize':
+            # convert had no branch here: a batch convert wrote nothing and
+            # said nothing
+            if operation == 'convert':
+                out_file = out_file.with_suffix('.' + kwargs.get('format', 'jpg').lstrip('.'))
+                convert_format(str(img), str(out_file), kwargs.get('quality', 85))
+            elif operation == 'resize':
                 resize_image(str(img), str(out_file),
                            kwargs.get('width', 800), kwargs.get('height'))
             elif operation == 'thumbnail':
@@ -92,6 +114,9 @@ def batch_process(input_dir, output_dir, operation, **kwargs):
                 apply_sharpen(str(img), str(out_file), kwargs.get('amount', 1))
             elif operation == 'square':
                 crop_square(str(img), str(out_file))
+    if not done:
+        sys.exit(f"Error: no images ({', '.join(sorted(extensions))}) in {input_dir}")
+    print(f"{done} image(s) -> {output_dir}")
 
 
 def gimp_binary():
@@ -152,8 +177,9 @@ if __name__ == '__main__':
                                                'blur', 'sharpen', 'square'])
     parser.add_argument('input', help='Input file or directory')
     parser.add_argument('output', help='Output file or directory')
-    parser.add_argument('--width', type=int, default=800)
-    parser.add_argument('--height', type=int)
+    parser.add_argument('--width', type=int, help='resize: target width (keeps the aspect ratio)')
+    parser.add_argument('--height', type=int, help='resize: target height; with --width, fit inside both')
+    parser.add_argument('--format', default='jpg', help='batch convert: output format (default jpg)')
     parser.add_argument('--quality', type=int, default=85)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--radius', type=float, default=5)
@@ -161,10 +187,12 @@ if __name__ == '__main__':
     parser.add_argument('--batch', action='store_true', help='Process directory')
 
     args = parser.parse_args()
+    if args.operation == 'resize' and not (args.width or args.height):
+        parser.error('resize needs --width and/or --height')
 
     if args.batch or os.path.isdir(args.input):
         batch_process(args.input, args.output, args.operation,
-                     width=args.width, height=args.height,
+                     width=args.width, height=args.height, quality=args.quality, format=args.format,
                      size=args.size, radius=args.radius, amount=args.amount)
     else:
         if args.operation == 'resize':

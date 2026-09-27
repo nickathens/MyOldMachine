@@ -54,6 +54,16 @@ SAFE_MODELS = {
 }
 
 
+def whisper_bin() -> str | None:
+    """The whisper CLI: on PATH, or beside this Python (a service's PATH
+    often lacks the venv's bin, notes 2026-09-08)."""
+    found = shutil.which("whisper")
+    if found:
+        return found
+    sibling = Path(sys.executable).parent / "whisper"
+    return str(sibling) if sibling.exists() and os.access(sibling, os.X_OK) else None
+
+
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
     """Return (backend, credential). Prefers Groq → OpenAI → local CLI.
 
@@ -61,7 +71,7 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
     If `preferred` is set, only that backend is considered.
     """
     if preferred == "local":
-        if shutil.which("whisper"):
+        if whisper_bin():
             return "local", ""
         return None, None
 
@@ -107,7 +117,7 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         if value:
             return backend, value
 
-    if preferred is None and shutil.which("whisper"):
+    if preferred is None and whisper_bin():
         return "local", ""
 
     return None, None
@@ -217,7 +227,8 @@ def _transcribe_local(audio_path: Path) -> dict:
     because most machines either lack CUDA or have a GPU too old for current
     PyTorch (e.g. Maxwell-era cards).
     """
-    if shutil.which("whisper") is None:
+    binary = whisper_bin()
+    if binary is None:
         raise SystemExit(
             "local whisper CLI not found on PATH. Install: `pip install openai-whisper` "
             "or set GROQ_API_KEY / OPENAI_API_KEY in ~/.config/watch/.env"
@@ -228,7 +239,7 @@ def _transcribe_local(audio_path: Path) -> dict:
 
     out_dir = audio_path.parent
     cmd = [
-        "whisper",
+        binary,
         str(audio_path),
         "--model", model,
         "--device", device,

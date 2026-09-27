@@ -17,13 +17,18 @@ judgements the calendar cannot make.
 - **Οι ενδιάμεσες αργίες προσμετρώνται.** Weekends and holidays that fall inside the
   period are counted normally. They do not extend it. This is the rule most often
   applied wrongly: only the final day is special.
-- **Η τελευταία ημέρα μετατίθεται αν είναι εξαιρετέα** (ΚΠολΔ 144 παρ. 2). If the last
-  day falls on a Σάββατο, a Κυριακή or an εξαιρετέα ημέρα, the deadline expires at the
-  end of the next εργάσιμη. The roll forward applies to the last day only, and it can
-  cross several consecutive non working days (for instance a deadline ending on
-  Christmas rolls past the 26th and the weekend to the next working day).
+- **Η προθεσμία λήγει στις 7 το βράδυ** (ΚΠολΔ 144 παρ. 1): at 19:00 of the last
+  day, not at midnight.
+- **Η τελευταία ημέρα μετατίθεται αν είναι εξαιρετέα** (ΚΠολΔ 144 παρ. 1; παρ. 3
+  makes the Σάββατο εξαιρετέα). If the last day falls on a Σάββατο, a Κυριακή or an
+  εξαιρετέα ημέρα, the deadline expires at the same hour, 19:00, of the next day that
+  is not εξαιρετέα. The roll forward applies to the last day only, and it can cross
+  several consecutive non working days (for instance a deadline ending on Christmas
+  rolls past the 26th and the weekend to the next working day). ΚΠολΔ 144 παρ. 2 is a
+  different rule: a deadline that starts with a service runs against the party who
+  ordered it too.
 
-The script applies all three rules. State the exact statutory wording from
+The script applies all of these rules and prints the 19:00 with the date. State the exact statutory wording from
 e-nomothesia.gr or the gazette when an argument turns on it, rather than relying on
 this paraphrase, per the citation discipline in SKILL.md.
 
@@ -47,13 +52,16 @@ to see the computed set for a year and check it against the official calendar.
 
 ## Η αναστολή του Αυγούστου (ΚΠολΔ 147)
 
-The time from 1 to 31 August is, for certain procedural deadlines, not counted
-(ΚΠολΔ 147 παρ. 7). This is genuinely consequential: it can move a deadline by a full
-month. It is offered as an opt in, `--anastoli-avgoustou`, and it is flagged
-[επαλήθευσε] for one reason: confirm that the suspension applies to the specific
-deadline before relying on it, because it does not cover every kind, and the rule has
-been amended over time. Do not assume August always suspends. Verify against the
-current ΚΠολΔ 147 and apply the flag only when it is established.
+The time from 1 to 31 August is not counted for the deadlines ΚΠολΔ 147 παρ. 2
+lists, among them 503 (ανακοπή ερημοδικίας), 518 παρ. 1 (έφεση), 545 παρ. 1 and 2 and
+564 παρ. 1 and 2 (αναίρεση). A deadline that is not on the list runs through August.
+This is genuinely consequential: it can move a deadline by a full month. It is offered
+as an opt in, `--anastoli-avgoustou`, and it is flagged [επαλήθευσε] for one reason:
+the list has been amended repeatedly (most recently by Ν.4963/2022 άρθρο 50), so
+confirm the specific deadline is on the current list before relying on it. Do not
+assume August always suspends. (Until 27.9.2026 this module and the script put the
+suspension in paragraph 7 of 147 and the roll forward in paragraph 2 of 144, and gave
+no hour.)
 
 ## Η αφετηρία: the most error prone input
 
@@ -78,6 +86,7 @@ before use, because the residence abroad and no service variants change it entir
 | Remedy | Typical | Article | Trigger |
 |---|---|---|---|
 | Ανακοπή ερημοδικίας | 15 ημέρες | ΚΠολΔ 503 | επίδοση της ερήμην απόφασης |
+| Ανακοπή κατά διαταγής πληρωμής | 15 εργάσιμες (`--ergasimes`) | ΚΠολΔ 632 παρ. 2 | επίδοση της διαταγής πληρωμής |
 | Έφεση | 30 ημέρες | ΚΠολΔ 518 | επίδοση (60 εξωτερικό, 2 έτη χωρίς επίδοση) |
 | Αναίρεση | 30 ημέρες | ΚΠολΔ 564 | επίδοση (60 εξωτερικό, 2 έτη χωρίς επίδοση) |
 | Αίτηση ακυρώσεως | 60 ημέρες | ΠΔ 18/1989 άρθρο 46 | δημοσίευση, κοινοποίηση ή γνώση (90 εξωτερικό) |
@@ -97,8 +106,10 @@ prothesmies.py info efesi
 prothesmies.py argies 2026
 ```
 
-It does: the day count, the αργίες including the movable feasts, the last day roll
-forward, and the optional August suspension. It does not: choose the deadline, decide
+It does: the day count in calendar days, or in working days with `--ergasimes` (the
+15 εργάσιμες of ΚΠολΔ 632 παρ. 2; before 27.9.2026 it could only count calendar days,
+which put that deadline about a week early), the αργίες including the movable feasts, the
+last day roll forward, the 19:00 expiry, and the optional August suspension. It does not: choose the deadline, decide
 the number of days, identify the αφετήριο γεγονός, or know about a local court closure.
 Those stay with the lawyer. A computed λήξη is only as sound as the αφετηρία and the
 number of days fed into it.

@@ -5,10 +5,13 @@ Everything here shells out to ffmpeg/ffprobe. Nothing here knows about colour.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 import numpy as np
@@ -275,20 +278,46 @@ def render(media: Media, shots, lut_paths: dict, out_path, crf=16, preset="mediu
     here, output byte identical. On a machine where the bot runs inside a memory
     capped service that is the difference between a render and a dead bot.
     """
-    graph = build_graph(shots, lut_paths, extra_vf=extra_vf)
+    with _staged_luts(lut_paths) as staged:
+        graph = build_graph(shots, staged, extra_vf=extra_vf)
 
-    cmd = [FFMPEG, "-y", "-v", "error", "-stats", "-i", media.path,
-           "-filter_complex", graph, "-map", "[vout]"]
-    if media.has_audio:
-        cmd += ["-map", "0:a", "-c:a", "copy"]
-    cmd += ["-c:v", codec, "-preset", preset, "-crf", str(crf),
-            "-pix_fmt", "yuv420p",
-            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-            "-movflags", "+faststart", out_path]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+        cmd = [FFMPEG, "-y", "-v", "error", "-stats", "-i", media.path,
+               "-filter_complex", graph, "-map", "[vout]"]
+        if media.has_audio:
+            cmd += ["-map", "0:a", "-c:a", "copy"]
+        cmd += ["-c:v", codec, "-preset", preset, "-crf", str(crf),
+                "-pix_fmt", "yuv420p",
+                "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+                "-movflags", "+faststart", out_path]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg render failed:\n{proc.stderr[-4000:]}")
     return out_path
+
+
+@contextlib.contextmanager
+def _staged_luts(lut_paths: dict):
+    """The LUTs under plain names in a private temporary folder.
+
+    ffmpeg reads a filter argument through two rounds of unescaping (the graph,
+    then the filter's own options), and `_esc` handled one. A LUT folder named
+    after the input file, such as "Director's cut [v2]_grade", made the whole
+    render fail at the very end with "Error parsing global options". The
+    staged names hold only letters, digits and underscores, so no user path
+    ever reaches the filter syntax. Symlinks, so nothing is copied.
+    """
+    tmp = tempfile.mkdtemp(prefix="cg_luts_")
+    try:
+        staged = {}
+        for i, p in lut_paths.items():
+            if not p:
+                continue
+            link = os.path.join(tmp, f"lut_{len(staged):04d}.cube")
+            os.symlink(os.path.abspath(p), link)
+            staged[i] = link
+        yield staged
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _esc(p):
@@ -297,7 +326,8 @@ def _esc(p):
 
 
 def render_still(src_png, lut_path, out_png):
-    cmd = [FFMPEG, "-y", "-v", "error", "-i", src_png,
-           "-vf", f"lut3d=file={_esc(lut_path)}:interp=tetrahedral", out_png]
-    run(cmd)
+    with _staged_luts({0: lut_path}) as staged:
+        cmd = [FFMPEG, "-y", "-v", "error", "-i", src_png,
+               "-vf", f"lut3d=file={_esc(staged[0])}:interp=tetrahedral", out_png]
+        run(cmd)
     return out_png

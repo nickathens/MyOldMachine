@@ -36,6 +36,9 @@ Supported chord formats:
 - Diminished: Cdim, Cdim7
 - Augmented: Caug, C+
 - Suspended: Csus2, Csus4
+- Flat and sharp roots and slash basses as written: Bbmaj7, Ebm7b5, F#m7, C/Bb (music21 itself wants B-; the script converts)
+
+Output spells flats with `b` (Eb, not music21's `E-`). `key` reports both the `relative` (A minor: C major) and the `parallel` (A minor: A major). `transpose-chords` moves only the root and the bass by one diatonic interval and keeps the rest of each symbol as written, so C F G up 3 is Eb Ab Bb (a tritone is spelled as an augmented fourth).
 
 ## Scale Types
 

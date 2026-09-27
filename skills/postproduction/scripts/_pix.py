@@ -445,6 +445,56 @@ def clip_info(path):
                        "range": s.get("color_range")}}
 
 
+def memory_headroom():
+    """Bytes this process can still take before something kills it.
+
+    Inside a memory cgroup (a service unit or systemd-run scope with MemoryMax,
+    where an out of memory kill can take the whole bot down) that is the tightest
+    ancestor's limit minus what it already holds; everywhere it is also capped
+    by the machine's MemAvailable.
+    """
+    avail = None
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    avail = int(line.split()[1]) * 1024
+                    break
+    except OSError:
+        pass
+    best = avail
+    try:
+        with open("/proc/self/cgroup", encoding="ascii") as fh:
+            rel = next((ln.split("::", 1)[1].strip() for ln in fh
+                        if ln.startswith("0::")), None)
+        node = os.path.join("/sys/fs/cgroup", (rel or "").lstrip("/"))
+        while rel is not None and node.startswith("/sys/fs/cgroup"):
+            try:
+                with open(os.path.join(node, "memory.max"), encoding="ascii") as fh:
+                    limit = fh.read().strip()
+                with open(os.path.join(node, "memory.current"), encoding="ascii") as fh:
+                    used = int(fh.read().strip())
+                if limit != "max":
+                    room = max(int(limit) - used, 0)
+                    best = room if best is None else min(best, room)
+            except (OSError, ValueError):
+                pass
+            if node == "/sys/fs/cgroup":
+                break
+            node = os.path.dirname(node)
+    except (OSError, StopIteration):
+        pass
+    return int(best) if best is not None else 1 << 62
+
+
+def decoded_bytes(info, start=0, count=None):
+    """What holding this span decoded costs: float32 RGB, as read_frames yields."""
+    frames = max(int(info.get("frames") or 0) - int(start or 0), 0)
+    if count is not None:
+        frames = min(frames, int(count)) if frames else int(count)
+    return frames * int(info["width"]) * int(info["height"]) * 3 * 4
+
+
 def read_frames(path, start=0, count=None, step=1, scale=None, bits=8):
     """Yield (index, Image) decoded through ONE named path.
 

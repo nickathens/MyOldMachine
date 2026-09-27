@@ -43,25 +43,63 @@ def save_db(data):
     """Save products database"""
     DB_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+# A price token: digits with ',' or '.' marks, or thousands grouped by spaces (12 999,50)
+NUMBER = re.compile(r"\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:[.,]\d{1,2})?|\d[\d.,]*\d|\d")
+CURRENCY = re.compile(r"[€$£]|EUR|USD|GBP|ευρώ", re.IGNORECASE)
+
+
+def _to_number(token):
+    """'1.299,00' 1299.0, '1,299.00' 1299.0, '49,90' 49.9, '1.299' 1299.0, '1,299' 1299.0.
+
+    With both marks the last one is the decimal mark. With one kind, a mark that
+    repeats or has exactly three digits after it groups thousands, which is how
+    prices are written (a price has two decimals, never three).
+    """
+    t = re.sub(r"[ \u00a0\u202f]", "", token)
+    if "." in t and "," in t:
+        decimal = "." if t.rfind(".") > t.rfind(",") else ","
+        t = t.replace("," if decimal == "." else ".", "").replace(decimal, ".")
+    elif "." in t or "," in t:
+        mark = "." if "." in t else ","
+        parts = t.split(mark)
+        t = "".join(parts) if len(parts) > 2 or len(parts[-1]) == 3 else t.replace(mark, ".")
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
 def extract_price(text):
-    """Extract numeric price from text"""
+    """The price in a text: the number beside a currency mark if there is one, else the first.
+
+    Linux bot review 2026-09-27: it took the first run of digits and read any single
+    '.' or ',' as a decimal point, so "1.299 €" and "Από 1.049€" came out as
+    1.299 and 1.049 (a 99.9 percent "drop" and a false threshold alert), and
+    "Τιμή 2 τεμάχια: 49,90 €" came out as 2.
+    """
     if not text:
         return None
-    # Remove currency symbols and normalize
-    text = text.strip()
-    # Find price pattern
-    match = re.search(r'[\d,.\s]+', text.replace(',', '.'))
-    if match:
-        price_str = match.group().replace(' ', '').replace(',', '.')
-        # Handle multiple dots (thousand separators)
-        parts = price_str.split('.')
-        if len(parts) > 2:
-            price_str = ''.join(parts[:-1]) + '.' + parts[-1]
-        try:
-            return float(price_str)
-        except ValueError:
-            pass
-    return None
+    tokens = list(NUMBER.finditer(text))
+    if not tokens:
+        return None
+
+    def beside_currency(m):
+        return bool(CURRENCY.search(text[max(0, m.start() - 4):m.start()])
+                    or CURRENCY.search(text[m.end():m.end() + 4]))
+
+    chosen = next((m for m in tokens if beside_currency(m)), tokens[0])
+    return _to_number(chosen.group())
+
+
+def _price_of(elem):
+    """An element's price: its machine readable attribute (itemprop content) first, then its text."""
+    for attr in ("content", "data-price", "value"):
+        if elem.has_attr(attr):
+            price = extract_price(str(elem[attr]))
+            if price is not None:
+                return price
+    return extract_price(elem.get_text(" "))
+
 
 def get_selectors_for_url(url):
     """Get appropriate CSS selectors for URL"""
@@ -78,25 +116,18 @@ def fetch_price(url, custom_selector=None):
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Try custom selector first
-        if custom_selector:
-            elem = soup.select_one(custom_selector)
-            if elem:
-                price = extract_price(elem.get_text())
-                if price:
-                    return price
-
-        # Try site-specific selectors
-        for selector in get_selectors_for_url(url):
-            elem = soup.select_one(selector)
-            if elem:
-                price = extract_price(elem.get_text())
-                if price:
+        # The custom selector first, then the site's; every match of a selector
+        # is tried in page order (the first match is often a label with no number)
+        selectors = ([custom_selector] if custom_selector else []) + get_selectors_for_url(url)
+        for selector in selectors:
+            for elem in soup.select(selector):
+                price = _price_of(elem)
+                if price is not None:
                     return price
 
         return None
     except Exception as e:
-        print(f"Error fetching {url}: {e}")
+        print(f"Error fetching {url}: {e}", file=sys.stderr)
         return None
 
 def add_product(name, url, selector=None, threshold=None):

@@ -259,9 +259,17 @@ Startup cleanup leaves GIMP jobs alone because it cannot prove who started
 them. The session Stop hook may clean up only its own GIMP descendants.
 
 ```bash
-python skills/gimp/scripts/batch.py resize in.jpg out.jpg --width 1920
+python skills/gimp/scripts/batch.py resize in.jpg out.jpg --width 1920              # keeps the aspect ratio
+python skills/gimp/scripts/batch.py resize in.jpg out.jpg --width 1080 --height 1080  # fit inside the box
 python skills/gimp/scripts/batch.py thumbnail photos/ thumbs/ --size 256
+python skills/gimp/scripts/batch.py convert photos/ jpgs/ --batch --format jpg      # every image in a folder
 ```
+
+Every ImageMagick operation applies the photo's EXIF rotation first and
+flattens transparency onto white for a JPEG output. Before the Linux bot's
+2026-09-27 review `--width` alone boxed the image (a portrait came back half
+as wide), phone thumbnails came out sideways, transparent PNGs went black in
+JPEG, and a batch convert wrote nothing.
 
 ## Examples
 

@@ -191,7 +191,7 @@ $A --manifest treatment.assert.yaml --json    # JSON output for piping
 | `selector_exists` | string | At least one element matches the CSS selector |
 | `selector_count` | [selector, n] | Exactly n elements match the selector |
 | `selector_text_contains` | [selector, text] | First match contains the text substring |
-| `no_text` | string | The string does NOT appear in rendered HTML |
+| `no_text` | string | The string does NOT appear in the visible text (scripts, styles and hidden elements do not count) |
 | `eval_truthy` | JS expression | `Boolean(<expr>)` evaluates to true |
 | `max_load_time_ms` | int | Page load completed within this many ms |
 

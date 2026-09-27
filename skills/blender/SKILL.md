@@ -20,7 +20,16 @@ blender --background --python script.py
 
 ## Script Location
 
-`scripts/render.py` - Main rendering script with scene builder
+`scripts/render.py` - four ready scenes (`glass_sphere`, `spinning_cube`, `abstract`, `product`) plus the building blocks for your own (materials, primitives, 3D text, rotation and camera-orbit animation):
+
+```bash
+R=skills/blender/scripts/render.py
+blender --background --python $R -- --scene product --output /tmp/shot.png --width 1920 --height 1080
+blender --background --python $R -- --scene spinning_cube --animation --frames 120 --output /tmp/spin.mp4
+# --engine EEVEE|CYCLES, --samples N
+```
+
+Exit 0 means the file exists; any error exits 1. (Blender itself exits 0 after an uncaught Python error, which is how `--animation` looked fine while it failed on every call on Blender 5.2: it set the old `file_format='FFMPEG'` without the 5.x `media_type='VIDEO'`. Fixed 2026-09-27.) An animation always writes an .mp4, even if the output name said .png. Model export (GLB, FBX, OBJ) is not in render.py: write a short script with `bpy.ops.export_scene.gltf(...)` and friends.
 
 ## Examples
 

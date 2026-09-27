@@ -15,12 +15,18 @@ Commands:
     read <file> --sheet <name> [--range A1:E10]
         Read cells from a sheet. Outputs JSON.
 
-    write <file> --sheet <name> --cell A1 --value "text"
+    write <file> --sheet <name> --cell A1 --value "text" [--decimal comma|dot] [--as-text]
         Write a value to a cell.
 
-    add-rows <file> --sheet <name> --after <row> --data <json_file>
+    add-rows <file> --sheet <name> --after <row> --data <json_file> [--decimal comma|dot] [--as-text]
         Insert rows from a JSON file after the specified row.
         JSON format: [["val1", "val2", ...], ...]
+
+    Text becomes a number only when the number is unambiguous. '2.500' is
+    two thousand five hundred in Greek and two and a half in English, so it
+    is refused until --decimal says which ('comma' = Greek, 'dot' = English).
+    IDs with leading zeros ('0012'), 'nan', '1e5' and anything with a
+    currency sign or percent stay text.
 
     formula <file> --sheet <name> --cell A1 --formula "=SUM(B1:B10)"
         Set a formula in a cell.
@@ -39,11 +45,12 @@ The script manages the LibreOffice process automatically (starts/stops as needed
 
 import argparse
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 import time
-import re
 
 
 LO_PORT = 2002
@@ -140,6 +147,82 @@ def parse_range(range_str):
     if len(parts) != 2:
         raise ValueError(f"Invalid range: {range_str}")
     return parse_cell_ref(parts[0]), parse_cell_ref(parts[1])
+
+
+class AmbiguousNumber(ValueError):
+    """A value that reads as two different numbers depending on the locale."""
+
+
+# ASCII digits only: Python's \d also matches Arabic-Indic and other digits.
+_INT = re.compile(r"[+-]?[0-9]+")
+_ONE_MARK = re.compile(r"([+-]?)([0-9]+)([.,])([0-9]+)")
+_GROUPED = {
+    # thousands mark, decimal mark: 1.234.567,89 and 1,234,567.89
+    "comma": re.compile(r"([+-]?)([1-9][0-9]{0,2}(?:\.[0-9]{3})+)(?:,([0-9]+))?"),
+    "dot": re.compile(r"([+-]?)([1-9][0-9]{0,2}(?:,[0-9]{3})+)(?:\.([0-9]+))?"),
+}
+_DECIMAL_HINT = (
+    "pass --decimal comma for Greek numbers (2.500 = two thousand five "
+    "hundred), --decimal dot for English ones (2.500 = two and a half), or "
+    "--as-text to keep them exactly as typed"
+)
+
+
+def _number_from(sign, whole, frac):
+    return float(f"{sign}{whole}.{frac}" if frac else f"{sign}{whole}")
+
+
+def parse_number(text, decimal=None):
+    """The number a cell text stands for, or None when it should stay text.
+
+    ``decimal`` is 'comma' (Greek: 1.234,56), 'dot' (English: 1,234.56) or
+    None. With None, a value whose meaning depends on the locale ('2.500',
+    '1,234') raises AmbiguousNumber instead of guessing: the old guess read
+    every Greek thousands amount as a small decimal.
+    """
+    t = text.strip()
+    if not t:
+        return None
+    if _INT.fullmatch(t):
+        digits = t.lstrip("+-")
+        if len(digits) > 1 and digits.startswith("0"):
+            return None  # an ID or invoice number, not a quantity
+        return float(t)
+
+    m = _ONE_MARK.fullmatch(t)
+    if m:
+        sign, whole, mark, frac = m.groups()
+        could_be_thousands = (len(frac) == 3 and len(whole) <= 3
+                              and not whole.startswith("0"))
+        if decimal is None:
+            if could_be_thousands:
+                raise AmbiguousNumber(f"'{t}' could be {whole}{frac} or {whole}.{frac}")
+            return _number_from(sign, whole, frac)
+        decimal_mark = "," if decimal == "comma" else "."
+        if mark == decimal_mark:
+            return _number_from(sign, whole, frac)
+        if could_be_thousands:
+            return _number_from(sign, whole + frac, "")
+        return None
+
+    for style, rx in _GROUPED.items():
+        if decimal is not None and style != decimal:
+            continue
+        g = rx.fullmatch(t)
+        if g:
+            sign, grouped, frac = g.groups()
+            return _number_from(sign, re.sub(r"[.,]", "", grouped), frac or "")
+    return None
+
+
+def _cell_name(col, row):
+    """0-based (col, row) to an A1 name."""
+    letters = ""
+    col += 1
+    while col:
+        col, rem = divmod(col - 1, 26)
+        letters = chr(ord("A") + rem) + letters
+    return f"{letters}{row + 1}"
 
 
 def get_cell_value(cell):
@@ -240,15 +323,24 @@ def cmd_write(args):
         col, row = parse_cell_ref(args.cell)
         cell = sheet.getCellByPosition(col, row)
 
-        # Try to set as number, fall back to string
-        try:
-            val = float(args.value.replace(',', '.'))
-            cell.setValue(val)
-        except ValueError:
+        # Store as text when asked (preserves leading zeros, IDs, invoice
+        # numbers); otherwise a number only when the number is unambiguous.
+        num = None
+        if not getattr(args, "as_text", False):
+            try:
+                num = parse_number(args.value, getattr(args, "decimal", None))
+            except AmbiguousNumber as exc:
+                raise AmbiguousNumber(
+                    f"{args.cell}: {exc}. Nothing was written; {_DECIMAL_HINT}.") from None
+        if num is None:
             cell.setString(args.value)
+        else:
+            cell.setValue(num)
 
         doc.store()
-        print(json.dumps({"status": "ok", "cell": args.cell, "value": args.value}))
+        print(json.dumps({"status": "ok", "cell": args.cell, "value": args.value,
+                          "stored_as": "text" if num is None else "number"},
+                         ensure_ascii=False))
     finally:
         doc.close(True)
 
@@ -267,27 +359,53 @@ def cmd_add_rows(args):
 
         insert_row = args.after  # 1-based row number
         num_rows = len(rows_data)
+        as_text = getattr(args, "as_text", False)
+        decimal = getattr(args, "decimal", None)
+
+        # Decide every cell before touching the sheet, so an ambiguous value
+        # anywhere leaves the file exactly as it was.
+        plan, ambiguous, as_text_cells = [], [], []
+        for i, row_data in enumerate(rows_data):
+            for j, val in enumerate(row_data):
+                if val is None or val == "":
+                    continue
+                name = _cell_name(j, insert_row + i)
+                if isinstance(val, bool) or as_text:
+                    num = None
+                elif isinstance(val, (int, float)):
+                    num = val if math.isfinite(val) else None
+                else:
+                    try:
+                        num = parse_number(str(val), decimal)
+                    except AmbiguousNumber:
+                        ambiguous.append(f"{name} '{val}'")
+                        continue
+                if num is None:
+                    as_text_cells.append(name)
+                plan.append((j, i, num, val))
+        if ambiguous:
+            shown = ", ".join(ambiguous[:10])
+            more = f" and {len(ambiguous) - 10} more" if len(ambiguous) > 10 else ""
+            raise AmbiguousNumber(
+                f"ambiguous numbers at {shown}{more}. Nothing was inserted; {_DECIMAL_HINT}.")
 
         # Insert empty rows
         sheet.getRows().insertByIndex(insert_row, num_rows)
 
         # Fill in data
-        for i, row_data in enumerate(rows_data):
-            for j, val in enumerate(row_data):
-                cell = sheet.getCellByPosition(j, insert_row + i)
-                if val is None or val == "":
-                    continue
-                try:
-                    num_val = float(str(val).replace(',', '.'))
-                    cell.setValue(num_val)
-                except (ValueError, TypeError):
-                    cell.setString(str(val))
+        for j, i, num, val in plan:
+            cell = sheet.getCellByPosition(j, insert_row + i)
+            if num is None:
+                cell.setString(str(val))
+            else:
+                cell.setValue(num)
 
         doc.store()
         print(json.dumps({
             "status": "ok",
             "rows_added": num_rows,
-            "after_row": insert_row
+            "after_row": insert_row,
+            "stored_as_text": as_text_cells,
         }))
     finally:
         doc.close(True)
@@ -420,6 +538,10 @@ def main():
     p.add_argument("--sheet", required=True)
     p.add_argument("--cell", required=True)
     p.add_argument("--value", required=True)
+    p.add_argument("--as-text", action="store_true",
+                   help="Store as text, preserving leading zeros / IDs / invoice numbers")
+    p.add_argument("--decimal", choices=["comma", "dot"], default=None,
+                   help="Decimal mark of the value: comma (Greek, 2.500 = 2500) or dot (English)")
 
     # add-rows
     p = subparsers.add_parser("add-rows")
@@ -427,6 +549,10 @@ def main():
     p.add_argument("--sheet", required=True)
     p.add_argument("--after", type=int, required=True, help="1-based row number")
     p.add_argument("--data", required=True, help="Path to JSON file with row data")
+    p.add_argument("--as-text", action="store_true",
+                   help="Store every value as text, exactly as given")
+    p.add_argument("--decimal", choices=["comma", "dot"], default=None,
+                   help="Decimal mark of text values: comma (Greek) or dot (English)")
 
     # formula
     p = subparsers.add_parser("formula")

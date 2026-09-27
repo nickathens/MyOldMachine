@@ -426,9 +426,16 @@ def _draft_model() -> str:
 def _call_cli(prompt: str, model: str, timeout: int) -> str:
     from shutil import which
     binary = which("claude") or str(Path.home() / ".local" / "bin" / "claude")
+    # Email content is untrusted. The prompt goes on STDIN, never argv (so it
+    # cannot leak through the process list or hit an arg-length limit), and the
+    # model runs with no tools and no customizations, which is what the module
+    # docstring promises: --tools "" disables every built-in tool, --safe-mode
+    # drops CLAUDE.md, skills, hooks, MCP and custom commands. The call used to
+    # carry the default toolset, Bash included (the Linux bot's review,
+    # 2026-09-27, S028).
     proc = subprocess.run(
-        [binary, "-p", prompt, "--model", model],
-        capture_output=True, text=True, timeout=timeout,
+        [binary, "-p", "--model", model, "--tools", "", "--safe-mode"],
+        input=prompt, capture_output=True, text=True, timeout=timeout,
         # Scheduler-spawned, same tokenless environment that killed the nightly
         # reflection and background compaction.
         env=claude_cli_env(),

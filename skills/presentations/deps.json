@@ -1,5 +1,5 @@
 {
-  "pip": ["requests", "python-pptx"],
+  "pip": ["requests", "python-pptx", "numpy"],
   "check": {
     "requests": "python3 -c 'import requests'",
     "python-pptx": "python3 -c 'import pptx'"

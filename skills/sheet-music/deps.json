@@ -1,4 +1,5 @@
 {
+  "pip": ["mido"],
   "apt": ["lilypond"],
   "brew": ["lilypond"],
   "check": {

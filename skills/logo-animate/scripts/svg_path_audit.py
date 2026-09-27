@@ -139,6 +139,11 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
 
         if op == "Z":
             closed = True
+            # Z draws a straight line home when the pen is not already there.
+            # It was never counted, so "M0 0 L10 0 L10 10 Z" audited as two
+            # segments and the corner at the close was never checked.
+            if math.dist(current, subpath_start) > 1e-9:
+                segments.append({"type": "L", "p0": current, "p3": subpath_start, "source": "Z"})
             current = subpath_start
             command = ""
             continue

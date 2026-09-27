@@ -14,6 +14,21 @@ import argparse
 import sys
 
 
+def _goto(page, url):
+    """Open the page, then give late requests a short chance to settle.
+
+    Waiting for "networkidle" alone failed every page that never stops
+    fetching (analytics beacons, a streaming background video): the scrape
+    died at 30 s with nothing. The load event is the real gate; idle is a
+    bounded extra wait whose timeout is not an error.
+    """
+    page.goto(url, wait_until="load", timeout=30000)
+    try:
+        page.wait_for_load_state("networkidle", timeout=5000)
+    except Exception:
+        pass
+
+
 def take_screenshot(url: str, output_path: str, full_page: bool = True) -> dict:
     """Take a screenshot of a webpage."""
     try:
@@ -22,7 +37,7 @@ def take_screenshot(url: str, output_path: str, full_page: bool = True) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1280, "height": 720})
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            _goto(page, url)
             page.screenshot(path=output_path, full_page=full_page)
             browser.close()
 
@@ -39,7 +54,7 @@ def get_content(url: str, selector: str = None) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            _goto(page, url)
 
             if selector:
                 elements = page.query_selector_all(selector)
@@ -72,7 +87,7 @@ def save_pdf(url: str, output_path: str) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            _goto(page, url)
             page.pdf(path=output_path, format="A4", print_background=True)
             browser.close()
 
@@ -90,7 +105,7 @@ def get_links(url: str, external_only: bool = False) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            _goto(page, url)
 
             links = page.evaluate("""
                 Array.from(document.querySelectorAll('a[href]'))
@@ -121,7 +136,7 @@ def get_tables(url: str) -> dict:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            _goto(page, url)
 
             tables = page.evaluate("""
                 Array.from(document.querySelectorAll('table')).map(table => {

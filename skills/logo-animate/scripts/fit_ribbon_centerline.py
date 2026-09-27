@@ -5,7 +5,8 @@ auto-recentering against the raster mask -> width profile -> sub-pixel edge
 snap to the source boundary -> smooth cubic-Bezier outline.
 
 This is the recipe for topologies where two open boundaries don't exist and
-direct per-boundary fitting is impractical (see fitting-playbook §3/§8). The
+direct per-boundary fitting is impractical (see references/ribbon-fitting.md;
+the upstream fitting playbook it cites was not ported). The
 final edge-snap pass against SOURCE pixels is what keeps the centerline
 scaffold honest — without it, smoothing biases high-curvature caps ~1px inward.
 
@@ -68,7 +69,11 @@ SEED = [tuple(pt) for pt in seeds["points"]]
 EXCL = [(np.array([e["cx"], e["cy"]], float), float(e["r"]))
         for e in seeds.get("exclusions", [])]
 
-img = Image.open(args.source).convert("RGB")
+# Flatten onto white first: convert("RGB") alone drops alpha, and a
+# transparent logo stores its empty pixels as black, so the whole canvas
+# became "foreground" (the same defect render_overlay.py had).
+_rgba = Image.open(args.source).convert("RGBA")
+img = Image.alpha_composite(Image.new("RGBA", _rgba.size, (255, 255, 255, 255)), _rgba).convert("RGB")
 a = np.array(img)
 H, W = a.shape[:2]
 lum = a.mean(axis=2)

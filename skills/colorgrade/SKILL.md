@@ -170,7 +170,11 @@ $PY scripts/dctlgen.py FRAME.png --at 0.877,0.745 --hue-shift -25 \
 `--at x,y` is a seed point inside the object, in 0 to 1 from the top left. The
 generator grows the object out from there, measures the hue band and the box
 that contain it, bakes those in as slider defaults, and proves the aim on the
-still before the file goes anywhere.
+still before the file goes anywhere. The proof runs the DCTL's own arithmetic in
+numpy (linear ramps, the same window falloff, the HSV rotation), so the matte
+counts and the preview are what the DCTL computes. A hue band that crosses
+0/360, which every red object has, is read relative to the Hue Low Soft handle
+in both places; before 2026-09-27 such a band selected nothing in the DCTL.
 
 Into Resolve, and this is the only route that works: Effects, then OpenFX, then
 ResolveFX Color, then drag the effect called DCTL onto the node, then pick the
@@ -193,8 +197,10 @@ swiftc -O dctl/dctl_host.swift -o /tmp/dctl_host
 /tmp/dctl_host MyObject.dctl frame.png out.png --set showMatte=1
 ```
 
-It writes the graded frame and the matte, and prints the compile time and the
-frame rate. Read what it proves narrowly: a pass means the code is valid GPU
+It writes the graded frame, and prints the compile time and the frame rate.
+LensIsolate returns RGB only (no alpha, see below), so the `_matte.png` the host
+also writes is just the input's alpha; the matte itself is the graded frame when
+you pass `--set showMatte=1`. Read what it proves narrowly: a pass means the code is valid GPU
 code and the pixels are real GPU output. It does **not** mean Resolve will
 accept the file. Resolve's own translator is stricter than Metal's, and the
 first LensIsolate passed here and was still rejected by Resolve. The rule that

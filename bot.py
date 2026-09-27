@@ -103,6 +103,16 @@ class _TokenRedactFilter(logging.Filter):
                 pass
         if hasattr(record, 'msg') and isinstance(record.msg, str):
             record.msg = self._pattern.sub('[REDACTED]', record.msg)
+        # Tracebacks too: an HTTP error names the URL, and a Bot API URL
+        # carries the token. The formatter prints record.exc_text when it is
+        # set, so the redacted text is what reaches the log (the Linux bot's
+        # review, 2026-09-27, S002).
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text:
+            record.exc_text = self._pattern.sub('[REDACTED]', record.exc_text)
+        if record.stack_info:
+            record.stack_info = self._pattern.sub('[REDACTED]', record.stack_info)
         return True
 
 _log_handlers = [
@@ -127,6 +137,11 @@ logging.basicConfig(
     handlers=_log_handlers,
 )
 logger = logging.getLogger(__name__)
+
+# When this process started. Messages sent while the bot was down are answered
+# after a restart now (drop_pending_updates=False), so a /restart typed while
+# it was down arrives here too, and must not restart the bot it was asking for.
+_PROCESS_STARTED_AT = time.time()
 
 # Per-user locks
 _user_locks: dict[int, asyncio.Lock] = {}
@@ -922,10 +937,19 @@ def _observation_source(user_id: int, message: str) -> str:
     return ""
 
 
-def clear_pending_message(user_id: int):
-    """Remove the marker after response is sent."""
+def clear_pending_message(user_id: int, users_dir: Path | None = None):
+    """Remove the marker after response is sent.
+
+    users_dir: the users root the caller is working in. drain_outbox passes
+    its own, so a drain over a given folder never reaches into the live
+    data/users (get_user_dir creates data/users/<id> for any id it is asked
+    about; the Linux bot's review, 2026-09-27).
+    """
     try:
-        path = _pending_message_path(user_id)
+        if users_dir is None:
+            path = _pending_message_path(user_id)
+        else:
+            path = Path(users_dir) / str(user_id) / "pending_message.json"
         if path.exists():
             path.unlink()
     except Exception as e:
@@ -2470,7 +2494,7 @@ async def drain_outbox(bot, users_dir: Path | None = None) -> int:
         # The answer landed, so the "your message was lost" notice would now
         # contradict it. Safe to drop: this user has no turn in flight (checked
         # above), so any marker left behind is stale.
-        clear_pending_message(user_id)
+        clear_pending_message(user_id, users_dir)
         completed += 1
         logger.info(
             "Redelivered queued reply to user %s (%d chunks)",
@@ -3382,6 +3406,14 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("Admin only.")
+        return
+
+    sent = getattr(update.message, "date", None)
+    if sent is not None and sent.timestamp() < _PROCESS_STARTED_AT:
+        await update.message.reply_text(
+            "That /restart was sent before I came back up, so I'm not restarting "
+            "again. Send /restart now if you still want one."
+        )
         return
 
     forced = command_body(update.message.text).strip().lower() == "force"
@@ -4320,6 +4352,24 @@ async def alias_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Attachment handling ---
 
+def _attachment_filename(prefix: str, original: str) -> str:
+    """prefix + the sender's file name, safe to create on disk.
+
+    A name may not hold a path separator, and the whole name must fit the
+    filesystem's 255 BYTE limit: a long Greek name is two bytes a letter and
+    failed the download, losing the attachment (the Linux bot's review,
+    2026-09-27, S011). The extension is kept; the stem is cut on a character
+    boundary.
+    """
+    name = original.replace("/", "_").replace("\\", "_").replace("\0", "_") or "file"
+    stem, ext = os.path.splitext(name)
+    if len(ext.encode("utf-8")) > 16:
+        stem, ext = name, ""
+    budget = 255 - len(prefix.encode("utf-8")) - len(ext.encode("utf-8"))
+    stem = stem.encode("utf-8")[:max(budget, 1)].decode("utf-8", "ignore") or "file"
+    return prefix + stem + ext
+
+
 async def download_attachments(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                group_index: int = None) -> list[tuple[Path, str]]:
     """Download all attachments and return (path, type) pairs."""
@@ -4332,8 +4382,7 @@ async def download_attachments(update: Update, context: ContextTypes.DEFAULT_TYP
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         idx_suffix = f"_{index}" if index is not None else ""
         if original_name:
-            safe_name = original_name.replace("/", "_").replace("\\", "_").replace("\0", "_")
-            name = f"{ts}{idx_suffix}_{safe_name}"
+            name = _attachment_filename(f"{ts}{idx_suffix}_", original_name)
         else:
             name = f"{ts}{idx_suffix}_{file_type}{ext}"
         path = attachments_dir / name
@@ -6580,7 +6629,14 @@ def main():
     app.post_shutdown = post_shutdown
 
     logger.info(f"Starting {get_bot_name()}...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    # Messages sent while the bot was down (a crash, an update, a /restart)
+    # are answered when it is back; drop_pending_updates=True threw them away
+    # without a word. python-telegram-bot 21 and later confirm a fetched batch
+    # with the next getUpdates and the rest on a clean stop
+    # (Updater._get_updates_cleanup), so nothing is fetched twice, and a
+    # /restart sent during the downtime is refused by restart_command (the
+    # Linux bot's review, 2026-09-27, S012).
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
 
 
 if __name__ == "__main__":

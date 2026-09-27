@@ -2,11 +2,17 @@
 """
 Sound synthesis engine for programmatic sound design
 """
+import argparse
+import os
+import subprocess
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+
 import numpy as np
 from scipy import signal
 from scipy.io import wavfile
-import argparse
-import uuid
 
 SAMPLE_RATE = 44100
 
@@ -23,10 +29,66 @@ def to_int16(audio):
     audio = np.clip(audio, -1, 1)
     return (audio * 32767).astype(np.int16)
 
+ENCODERS = {
+    '.mp3': ['-c:a', 'libmp3lame', '-q:a', '2'],
+    '.flac': ['-c:a', 'flac'],
+    '.ogg': ['-c:a', 'libvorbis', '-q:a', '6'],
+    '.m4a': ['-c:a', 'aac', '-b:a', '256k'],
+    '.opus': ['-c:a', 'libopus', '-b:a', '160k'],
+}
+
+
 def save_wav(audio, path, sample_rate=SAMPLE_RATE):
-    """Save audio as WAV file"""
-    wavfile.write(path, sample_rate, to_int16(audio))
+    """Save audio: WAV directly, other formats encoded from it with ffmpeg.
+
+    Every extension used to get WAV bytes, so out.mp3 was a WAV file with the
+    wrong name (Linux bot review 2026-09-27).
+    """
+    path = Path(path)
+    ext = path.suffix.lower()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if ext in ('', '.wav'):
+        wavfile.write(path, sample_rate, to_int16(audio))
+    elif ext in ENCODERS:
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+            wav = tmp.name
+        try:
+            wavfile.write(wav, sample_rate, to_int16(audio))
+            r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', wav, *ENCODERS[ext], str(path)],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.exit(f"Error: ffmpeg could not write {path}: {r.stderr.strip()[-400:]}")
+        finally:
+            os.unlink(wav)
+    else:
+        sys.exit(f"Error: unsupported format {ext}: use .wav, {', '.join(ENCODERS)}")
     print(f"Saved: {path}")
+
+
+def fade_edges(audio, seconds=0.005):
+    """Short fades so a hard start or stop does not click."""
+    n = min(int(seconds * SAMPLE_RATE), len(audio) // 2)
+    if n:
+        ramp = np.linspace(0, 1, n)
+        audio = audio.copy()
+        audio[:n] *= ramp
+        audio[-n:] *= ramp[::-1]
+    return audio
+
+
+def reverb(audio, seconds=1.5, wet=0.3):
+    """Convolution with a synthetic room: noise decaying 60 dB over `seconds`.
+
+    The output grows by the tail, so the reverb is not cut off.
+    """
+    n = int(seconds * SAMPLE_RATE)
+    t = np.arange(n) / SAMPLE_RATE
+    impulse = np.random.uniform(-1, 1, n) * np.exp(-6.9078 * t / seconds)
+    impulse = lowpass_filter(impulse, 8000)
+    impulse /= np.sqrt(np.sum(impulse ** 2))
+    tail = signal.fftconvolve(audio, impulse)
+    dry = np.pad(audio, (0, len(tail) - len(audio)))
+    return (1 - wet) * dry + wet * tail * (np.max(np.abs(audio)) / max(np.max(np.abs(tail)), 1e-12))
 
 def envelope_adsr(length, attack=0.01, decay=0.1, sustain=0.7, release=0.2):
     """Generate ADSR envelope"""
@@ -82,8 +144,10 @@ def noise(duration, noise_type='white'):
         a = [1, -2.494956002, 2.017265875, -0.522189400]
         return signal.lfilter(b, a, white)
     elif noise_type == 'brown':
+        # A leaky integrator plus a 20 Hz high pass: a plain cumulative sum
+        # wanders off as a random walk and turns into DC
         white = np.random.uniform(-1, 1, samples)
-        return np.cumsum(white) / 100
+        return highpass_filter(signal.lfilter([1.0], [1.0, -0.997], white), 20)
     else:
         return np.random.uniform(-1, 1, samples)
 
@@ -241,37 +305,69 @@ def synth_drone(freq=110, duration=10.0):
 
     return normalize(drone * env)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Sound synthesis')
+def main():
+    parser = argparse.ArgumentParser(description='Sound synthesis (mono, 44.1 kHz)')
     parser.add_argument('sound', choices=['kick', 'snare', 'hihat', 'pad', 'bass',
                                           'sweep', 'drone', 'noise', 'tone'])
-    parser.add_argument('--freq', type=float, default=220, help='Frequency in Hz')
+    parser.add_argument('--freq', type=float, default=220,
+                        help='Frequency in Hz (kick: start pitch above 40 Hz; sweep: the end)')
+    parser.add_argument('--start-freq', type=float, default=100, help='Sweep start in Hz')
+    parser.add_argument('--direction', choices=['up', 'down'], default='up', help='Sweep direction')
     parser.add_argument('--duration', type=float, default=1.0, help='Duration in seconds')
     parser.add_argument('--waveform', default='sine', choices=['sine', 'square', 'saw', 'triangle'])
-    parser.add_argument('--output', '-o', default=f'/tmp/synth_output_{uuid.uuid4().hex[:8]}.wav')
+    parser.add_argument('--noise-type', default='white', choices=['white', 'pink', 'brown'])
+    parser.add_argument('--open', action='store_true', help='Open hi-hat (longer decay)')
+    parser.add_argument('--lowpass', type=float, help='Low pass cutoff in Hz')
+    parser.add_argument('--highpass', type=float, help='High pass cutoff in Hz')
+    parser.add_argument('--distortion', type=float, help='Soft clip drive, 0 to 1')
+    parser.add_argument('--bitcrush', type=int, help='Bit depth to crush to (e.g. 8)')
+    parser.add_argument('--reverb', type=float, help='Reverb decay in seconds (adds that much tail)')
+    parser.add_argument('--wet', type=float, default=0.3, help='Reverb mix, 0 to 1')
+    parser.add_argument('--seed', type=int, help='Random seed for the noise based sounds')
+    parser.add_argument('--output', '-o', default=f'/tmp/synth_output_{uuid.uuid4().hex[:8]}.wav',
+                        help='Output file: .wav, .mp3, .flac, .ogg, .m4a or .opus')
 
     args = parser.parse_args()
+    if args.duration <= 0 or args.freq <= 0 or args.start_freq <= 0:
+        parser.error('--duration, --freq and --start-freq must be above 0')
+    if not 0 <= args.wet <= 1:
+        parser.error('--wet must be between 0 and 1')
+    if args.seed is not None:
+        np.random.seed(args.seed)
 
     if args.sound == 'kick':
-        audio = synth_kick(args.freq, args.duration)
+        audio = synth_kick(args.freq, max(args.duration, 0.02))
     elif args.sound == 'snare':
         audio = synth_snare(args.duration)
     elif args.sound == 'hihat':
-        audio = synth_hihat(args.duration)
+        audio = synth_hihat(args.duration, open_hat=args.open)
     elif args.sound == 'pad':
         audio = synth_pad(args.freq, args.duration)
     elif args.sound == 'bass':
         audio = synth_bass(args.freq, args.duration)
     elif args.sound == 'sweep':
-        audio = synth_sweep(100, args.freq, args.duration)
+        audio = synth_sweep(args.start_freq, args.freq, args.duration, args.direction)
     elif args.sound == 'drone':
         audio = synth_drone(args.freq, args.duration)
     elif args.sound == 'noise':
-        audio = noise(args.duration, 'white')
-        audio = normalize(audio)
-    elif args.sound == 'tone':
+        audio = normalize(fade_edges(noise(args.duration, args.noise_type)))
+    else:
         audio = oscillator(args.freq, args.duration, args.waveform)
         env = envelope_adsr(args.duration)
         audio = normalize(audio * env)
 
-    save_wav(audio, args.output)
+    if args.lowpass:
+        audio = lowpass_filter(audio, args.lowpass)
+    if args.highpass:
+        audio = highpass_filter(audio, args.highpass)
+    if args.distortion:
+        audio = distortion(audio, args.distortion)
+    if args.bitcrush:
+        audio = bitcrush(audio, args.bitcrush)
+    if args.reverb:
+        audio = reverb(audio, args.reverb, args.wet)
+    save_wav(normalize(audio), args.output)
+
+
+if __name__ == '__main__':
+    main()

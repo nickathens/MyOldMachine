@@ -69,13 +69,21 @@ class AssertionRun:
 
             try:
                 try:
-                    response = await page.goto(
-                        url, wait_until="networkidle", timeout=timeout
-                    )
+                    response = await page.goto(url, wait_until="load", timeout=timeout)
                     load_status = response.status if response else 0
                 except Exception as exc:  # noqa: BLE001
                     self.results.append((False, f"navigation failed: {exc}"))
                     return False
+                # Give late requests a chance to settle, but a page that never
+                # stops fetching (a streaming background video, a beacon) is
+                # still checked after its load event instead of failing here.
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=timeout)
+                except Exception:  # noqa: BLE001
+                    self.results.append((
+                        True,
+                        "note: network never went idle; checks ran after the load event",
+                    ))
 
                 for check in checks:
                     try:
@@ -145,8 +153,13 @@ class AssertionRun:
             present = needle in (text or "")
             return present, f"text in {sel!r}: present={present}"
         if name == "no_text":
-            body = await page.content()
-            present = value in body
+            # The text a reader sees: innerText leaves out scripts, styles
+            # and hidden elements, which page.content() (the source) keeps.
+            body = await page.evaluate(
+                "() => document.body ? document.body.innerText"
+                " : (document.documentElement.textContent || '')"
+            )
+            present = value in (body or "")
             return not present, f"no_text {value!r}: present={present}"
         if name == "eval_truthy":
             result = await page.evaluate(f"() => Boolean({value})")
@@ -217,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-text",
         action="append",
-        help="Assert this string does NOT appear in the rendered page.",
+        help="Assert this string does NOT appear in the page's visible text.",
     )
     p.add_argument(
         "--json",

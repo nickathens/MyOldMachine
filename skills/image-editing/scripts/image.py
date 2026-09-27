@@ -10,17 +10,90 @@ from pathlib import Path
 
 from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 
+JPEG_EXTS = ('.jpg', '.jpeg')
+
+
+def _bits_per_channel(path):
+    """8 or 16, read with cv2: Pillow reports a 16-bit RGB PNG or TIFF as plain "RGB"."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    arr = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if arr is None:
+        return None
+    return 16 if arr.dtype == np.uint16 else 8 if arr.dtype == np.uint8 else None
+
+
+def _open(path):
+    """Open an image the way it is meant to be seen.
+
+    exif_transpose applies the camera's Orientation tag to the pixels. Without
+    it a portrait phone photo was edited in sensor orientation and, since the
+    tag was not written back, came out sideways (Linux bot review 2026-09-27)."""
+    img = Image.open(path)
+    if img.mode in ('RGB', 'RGBA') and _bits_per_channel(path) == 16:
+        # Pillow has no 16-bit colour mode: it has already dropped to 8 bits
+        print(f"note: {path} is 16 bits per channel; Pillow edits colour in 8 bits, so the "
+              f"output is 8-bit. Keep the 16-bit master.", file=sys.stderr)
+    upright = ImageOps.exif_transpose(img)
+    if upright is not img:
+        upright.info.update({k: v for k, v in img.info.items() if k in ('icc_profile', 'dpi')})
+    return upright
+
+
+def _save(img, path, source=None, quality=95):
+    """Save keeping what PIL drops by default.
+
+    The colour profile and the dpi of the source travel with the edit (a 300
+    dpi key visual saved without dpi places at 72 dpi, four times too big; an
+    image without its profile shifts colour), JPEG is written at `quality`
+    rather than PIL's 75, and transparency is flattened onto white for JPEG
+    instead of turning black or failing (mode LA)."""
+    src = source if source is not None else img
+    info = src.info
+    ext = Path(path).suffix.lower()
+    kwargs = {}
+    # A profile describes one colour space: an RGB profile inside a greyscale
+    # result (the grayscale filter) is invalid, so it only travels unchanged.
+    if info.get('icc_profile') and _space(img.mode) == _space(src.mode):
+        kwargs['icc_profile'] = info['icc_profile']
+    if info.get('dpi'):
+        kwargs['dpi'] = info['dpi']
+    if ext in JPEG_EXTS:
+        if img.mode in ('RGBA', 'LA', 'P', 'PA') or (img.mode == 'P' and 'transparency' in img.info):
+            rgba = img.convert('RGBA')
+            flat = Image.new('RGBA', rgba.size, (255, 255, 255, 255))
+            img = Image.alpha_composite(flat, rgba).convert('RGB')
+        elif img.mode not in ('RGB', 'L', 'CMYK'):
+            img = img.convert('RGB')
+        kwargs['quality'] = quality
+    elif ext == '.webp':
+        # PIL, not ImageMagick: IM 6.9 ignores -quality for WebP (notes, 2026-08-10)
+        kwargs.update(quality=quality, method=6)
+    img.save(path, **kwargs)
+    return img
+
+
+def _space(mode):
+    return 'gray' if mode in ('1', 'L', 'LA', 'I', 'I;16', 'F') else 'cmyk' if mode == 'CMYK' else 'rgb'
+
 
 def cmd_info(args):
-    """Get image info."""
+    """Get image info (size as displayed, after the EXIF orientation)."""
     img = Image.open(args.input)
 
+    shown = ImageOps.exif_transpose(img).size
     info = {
         "format": img.format,
         "mode": img.mode,
-        "width": img.size[0],
-        "height": img.size[1],
-        "size": list(img.size),
+        "width": shown[0],
+        "height": shown[1],
+        "size": list(shown),
+        "dpi": [round(float(v), 2) for v in img.info["dpi"]] if img.info.get("dpi") else None,
+        "icc_profile": bool(img.info.get("icc_profile")),
+        "bits_per_channel": _bits_per_channel(args.input),
     }
 
     if hasattr(img, 'n_frames'):
@@ -31,7 +104,7 @@ def cmd_info(args):
 
 def cmd_resize(args):
     """Resize image."""
-    img = Image.open(args.input)
+    img = _open(args.input)
 
     if args.width and args.height:
         new_size = (args.width, args.height)
@@ -46,13 +119,13 @@ def cmd_resize(args):
         sys.exit(1)
 
     resized = img.resize(new_size, Image.Resampling.LANCZOS)
-    resized.save(args.output)
+    _save(resized, args.output, img)
     print(f"Resized to {new_size[0]}x{new_size[1]} -> {args.output}")
 
 
 def cmd_crop(args):
     """Crop image."""
-    img = Image.open(args.input)
+    img = _open(args.input)
 
     if args.square:
         # Crop to center square
@@ -67,38 +140,30 @@ def cmd_crop(args):
         sys.exit(1)
 
     cropped = img.crop(box)
-    cropped.save(args.output)
+    _save(cropped, args.output, img)
     print(f"Cropped to {cropped.size[0]}x{cropped.size[1]} -> {args.output}")
 
 
 def cmd_rotate(args):
     """Rotate image."""
-    img = Image.open(args.input)
+    img = _open(args.input)
     rotated = img.rotate(args.angle, expand=True, resample=Image.Resampling.BICUBIC)
-    rotated.save(args.output)
+    _save(rotated, args.output, img)
     print(f"Rotated {args.angle} degrees -> {args.output}")
 
 
 def cmd_convert(args):
     """Convert image format."""
-    img = Image.open(args.input)
+    img = _open(args.input)
 
-    # Handle transparency for formats that don't support it
     output_ext = Path(args.output).suffix.lower()
-    if output_ext in ('.jpg', '.jpeg') and img.mode in ('RGBA', 'P'):
-        img = img.convert('RGB')
-
-    save_args = {}
-    if output_ext in ('.jpg', '.jpeg'):
-        save_args['quality'] = args.quality
-
-    img.save(args.output, **save_args)
+    _save(img, args.output, img, quality=args.quality)
     print(f"Converted to {output_ext} -> {args.output}")
 
 
 def cmd_filter(args):
     """Apply filter to image."""
-    img = Image.open(args.input)
+    img = _open(args.input)
 
     filters = {
         'blur': ImageFilter.BLUR,
@@ -131,13 +196,13 @@ def cmd_filter(args):
         print(f"Available: {', '.join(list(filters.keys()) + ['grayscale', 'sepia', 'invert'])}", file=sys.stderr)
         sys.exit(1)
 
-    result.save(args.output)
+    _save(result, args.output, img)
     print(f"Applied {args.filter} filter -> {args.output}")
 
 
 def cmd_adjust(args):
     """Adjust brightness/contrast."""
-    img = Image.open(args.input)
+    img = source = _open(args.input)
 
     # `is not None`, not truthiness: brightness 0 is a real request (black)
     # and was silently ignored (audit F27, 2026-09-06).
@@ -153,22 +218,23 @@ def cmd_adjust(args):
         enhancer = ImageEnhance.Color(img)
         img = enhancer.enhance(args.saturation)
 
-    img.save(args.output)
+    _save(img, args.output, source)
     print(f"Adjusted (b={args.brightness}, c={args.contrast}, s={args.saturation}) -> {args.output}")
 
 
 def cmd_thumbnail(args):
     """Create thumbnail."""
-    img = Image.open(args.input)
+    img = source = _open(args.input)
     img.thumbnail((args.size, args.size), Image.Resampling.LANCZOS)
-    img.save(args.output)
+    _save(img, args.output, source)
     print(f"Created {img.size[0]}x{img.size[1]} thumbnail -> {args.output}")
 
 
 def cmd_composite(args):
     """Overlay one image on another."""
-    base = Image.open(args.base).convert('RGBA')
-    overlay = Image.open(args.overlay).convert('RGBA')
+    base_src = _open(args.base)
+    base = base_src.convert('RGBA')
+    overlay = _open(args.overlay).convert('RGBA')
 
     position = tuple(args.position) if args.position else (0, 0)
 
@@ -179,16 +245,16 @@ def cmd_composite(args):
     layer.paste(overlay, position)
     result = Image.alpha_composite(base, layer)
 
-    result.save(args.output)
+    _save(result, args.output, base_src)
     print(f"Composited at {position} -> {args.output}")
 
 
 def cmd_border(args):
     """Add border to image."""
-    img = Image.open(args.input)
+    img = _open(args.input)
 
     bordered = ImageOps.expand(img, border=args.width, fill=args.color)
-    bordered.save(args.output)
+    _save(bordered, args.output, img)
     print(f"Added {args.width}px {args.color} border -> {args.output}")
 
 

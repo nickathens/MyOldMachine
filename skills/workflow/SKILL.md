@@ -87,5 +87,7 @@ Already-completed steps are skipped on resume.
 - Each run gets its own temp directory at `/tmp/wf_<run_id>/`
 - State files in `/tmp/workflow_runs/`
 - History capped at 100 entries
-- Default step timeout: 1 hour
+- Default step timeout: 1 hour. A timed out step is killed with everything it started (its whole process group), not just the shell
+- `depends` may only name earlier steps, and step ids must be unique; the file is refused otherwise
+- `--resume` picks the most recently active unfinished run of that workflow
 - Commands run in a shell, so pipes and redirects work

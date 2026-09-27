@@ -1,7 +1,7 @@
 {
   "apt": ["ffmpeg"],
   "brew": ["ffmpeg"],
-  "pip": ["moviepy"],
+  "pip": ["pillow"],
   "check": {
     "ffmpeg": "ffmpeg -version"
   }
