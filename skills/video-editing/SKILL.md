@@ -63,6 +63,7 @@ top, bottom, center, top-left, top-right, bottom-left, bottom-right
 
 - Runs ffmpeg directly. It used moviepy until 2026-09-27, whose RGB pipe regraded every edit: a plain cut measured 25.95 dB against its source with luma 1.36 levels dark (ffmpeg at the same quality: 46 dB, no shift), dropped the colour tags and put MP3 audio in MP4
 - A re-encode is libx264 CRF 18 (10-bit stays 10-bit) carrying the source's colour tags, with AAC audio; `.webm` gets VP9 and Opus. Audio edits and text keep the picture or the sound by stream copy where the container allows
+- Text is ffmpeg's drawtext where the build has it. An ffmpeg without libfreetype has no drawtext (Homebrew's 9.0.2 on the Mac mini), so there Pillow draws the text and overlay lays it on in the source's own format: the picture never goes through RGB and keeps its bit depth, the same one re-encode as drawtext, and the output says `drawn with Pillow`
 - Merge fits every clip to the first one's size (letterboxed, not stretched) and frame rate; a clip without sound gets silence, so later clips stay in step
 - `resize` keeps sizes even (4:2:0 needs it); give one side to keep the aspect ratio
 - `info` reports the displayed size (phone rotation applied), codecs, pixel format and colour tags

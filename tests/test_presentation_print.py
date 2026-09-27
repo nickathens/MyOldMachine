@@ -12,6 +12,7 @@ at opacity 0 and only GSAP (from a CDN) reveals it, so offline the page was
 blank. The menu's click handler used querySelector('#nav-1.1'), which throws.
 """
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -51,7 +52,11 @@ def _scratch(test: unittest.TestCase) -> Path:
     return tmp
 
 
-@unittest.skipUnless(shutil.which("pdftotext"), "pdftotext not installed")
+# The PDF export drives Playwright in the Python that runs the build, which is
+# this one: pdftotext alone let the class run, and fail, on a machine whose
+# test Python has no Playwright (the Mac mini's, review of #187).
+@unittest.skipUnless(shutil.which("pdftotext") and importlib.util.find_spec("playwright"),
+                     "needs pdftotext, and Playwright in this Python for the PDF export")
 class PrintsEveryPreset(unittest.TestCase):
     def test_blurred_and_clipped_presets_print_their_text(self):
         for animation in ("clip", "smooth", "blur"):

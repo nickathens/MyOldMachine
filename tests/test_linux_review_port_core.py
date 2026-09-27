@@ -219,6 +219,13 @@ class SchedulerLateNote(unittest.TestCase):
     def test_the_dead_recovery_pass_is_gone(self):
         self.assertFalse(hasattr(sched.Scheduler, "_recover_missed_jobs"))
 
+    def test_a_time_with_a_zone_is_still_sent(self):
+        # review of #187: /remind stores a typed ISO time with its offset, and
+        # the note subtracted it from a naive now, so the reminder never went
+        zone = timezone(timedelta(hours=3))
+        self.assertIn("delivered late", self._fire(datetime.now(zone) - timedelta(minutes=40)))
+        self.assertNotIn("delivered late", self._fire(datetime.now(zone) - timedelta(seconds=5)))
+
 
 class NoToolsForUntrustedText(unittest.TestCase):
     """S028 and S001: mail and conversation text went to a full-tools CLI."""

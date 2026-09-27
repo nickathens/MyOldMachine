@@ -630,7 +630,10 @@ async def _execute_reminder(job_id: str):
     if not meta.get("repeat") and meta.get("run_at"):
         try:
             due = datetime.fromisoformat(meta["run_at"])
-            if (datetime.now() - due).total_seconds() > LATE_NOTE_SECONDS:
+            # now in due's own zone: /remind takes a typed ISO time with an
+            # offset, and an aware time minus a naive now is a TypeError that
+            # kept the reminder from being sent at all (review of #187)
+            if (datetime.now(due.tzinfo) - due).total_seconds() > LATE_NOTE_SECONDS:
                 late_note = (f" (was scheduled for {due.strftime('%H:%M on %b %d')}, "
                              "delivered late)")
         except ValueError:

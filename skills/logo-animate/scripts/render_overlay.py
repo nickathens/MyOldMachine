@@ -97,11 +97,15 @@ def render_svg(svg: Path, width: int, height: int, chrome: str) -> Image.Image:
         # screenshot never came; the bot's own turns carry no bus, so only
         # those runs hung (audit, 2026-09-27: 0.6 s with the flag, no end
         # without it). The timeout keeps any other stall from holding a turn.
+        # --use-mock-keychain is the same wait on macOS, where Chrome asks the
+        # login keychain for its storage key and nobody is there to answer:
+        # on the Mac mini, 2.2 s with the flag and no screenshot in 60 s
+        # without it (review of #187). Playwright passes both flags itself.
         try:
             subprocess.run(
                 [
                     chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
-                    "--password-store=basic",
+                    "--password-store=basic", "--use-mock-keychain",
                     f"--screenshot={shot}", f"--window-size={width},{height + HEADROOM}",
                     "--default-background-color=FFFFFFFF", wrapper.resolve().as_uri(),
                 ],

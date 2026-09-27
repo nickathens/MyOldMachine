@@ -14,6 +14,7 @@ an error, not a message.
 
 import argparse
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -289,6 +290,18 @@ def _default_font() -> str | None:
     return None
 
 
+def _ffmpeg_has_filter(name: str) -> bool:
+    """Whether this ffmpeg build has the named filter. drawtext needs
+    libfreetype, and Homebrew's ffmpeg 9.0.2 on the Mac mini is built without
+    it: no drawtext at all (measured 2026-09-27, review of #187)."""
+    try:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return any(line.split()[1:2] == [name] for line in out.splitlines())
+
+
 def _drawtext_has_text_align() -> bool:
     """drawtext's text_align (centred lines) arrived in ffmpeg 6.1; older
     builds, such as Ubuntu 22.04's 4.4, refuse the whole filter over it."""
@@ -300,8 +313,66 @@ def _drawtext_has_text_align() -> bool:
     return "text_align" in out
 
 
+def _rgba(colour: str) -> tuple:
+    """An ffmpeg colour (a name, #RRGGBB or 0xRRGGBB, optionally @alpha) as RGBA."""
+    from PIL import ImageColor
+
+    name, _, alpha = colour.partition("@")
+    if name.lower().startswith("0x"):
+        name = "#" + name[2:]
+    try:
+        rgba = ImageColor.getcolor(name, "RGBA")
+        if alpha:
+            rgba = rgba[:3] + (round(255 * min(max(float(alpha), 0.0), 1.0)),)
+    except ValueError:
+        fail(f"not a colour: {colour} (a name, #RRGGBB or 0xRRGGBB, optionally @0.5)")
+    return rgba
+
+
+def _text_png(text, font, size, colour, outline, path):
+    """The text drawn once on transparency, for an ffmpeg without drawtext.
+    Lines are centred as text_align=C centres them, and the outline is
+    drawtext's borderw and bordercolor."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        fail("this ffmpeg has no drawtext filter, and drawing the text without it needs Pillow: "
+             "pip install pillow")
+    face = ImageFont.truetype(str(font), size)
+    stroke = max(1, round(size / 20)) if outline else 0
+    left, top, right, bottom = ImageDraw.Draw(Image.new("RGBA", (1, 1))).multiline_textbbox(
+        (0, 0), text, font=face, align="center", stroke_width=stroke)
+    # Pillow measures in fractions of a pixel; the canvas is whole pixels
+    canvas = (max(math.ceil(right - left), 1), max(math.ceil(bottom - top), 1))
+    image = Image.new("RGBA", canvas, (0, 0, 0, 0))
+    ImageDraw.Draw(image).multiline_text((-left, -top), text, font=face, fill=_rgba(colour),
+                                         align="center", stroke_width=stroke,
+                                         stroke_fill=(0, 0, 0, 178))
+    image.save(path)
+
+
+def _overlay_format(video) -> str:
+    """overlay's working format for this source: its own chroma and bit depth.
+    format=auto is not that: with an RGBA overlay, ffmpeg 9.0.2 negotiated
+    rgba for the MAIN input, the RGB round trip this script exists to avoid,
+    and overlay's default, yuv420, cuts a 10-bit source to 8 bits (both read
+    in ffmpeg -v verbose, 2026-09-27)."""
+    pix = (video or {}).get("pix_fmt", "")
+    chroma = "444" if "444" in pix else "422" if "422" in pix else "420"
+    deep = bool(re.search(r"(?:10|12|14|16)(?:le|be)$", pix))
+    return f"yuv{chroma}" + ("p10" if deep else "")
+
+
+def _overlay_position(expr: str) -> str:
+    """A POSITIONS expression for overlay, where the text's size is the
+    overlay's own w and h and the frame's is W and H."""
+    return re.sub(r"\b(text_)?([wh])\b",
+                  lambda m: m.group(2) if m.group(1) else m.group(2).upper(), expr)
+
+
 def cmd_text(args):
-    """Burn a text overlay in with drawtext."""
+    """Burn a text overlay in with drawtext, or with Pillow and overlay where
+    this ffmpeg has no drawtext."""
     info = probe(args.input)
     # MoviePy-era audit F24 (2026-09-06): no font ships with the tools, so
     # take the first one this OS actually has unless --font names one.
@@ -317,20 +388,35 @@ def cmd_text(args):
     # font and text go in by staged file names: no escaping of colons,
     # quotes or percent signs in either can break the filter
     with tempfile.TemporaryDirectory(prefix="video_text_") as tmp:
-        staged_font = Path(tmp) / f"font{font.suffix.lower()}"
-        staged_font.symlink_to(font.resolve())
-        text_file = Path(tmp) / "text.txt"
-        text_file.write_text(args.text.replace("\\n", "\n"), encoding="utf-8")
-        draw = (f"drawtext=fontfile={staged_font}:textfile={text_file}:expansion=none:"
-                f"fontsize={args.fontsize}:fontcolor={args.color}:x={x}:y={y}")
-        if _drawtext_has_text_align():
-            draw += ":text_align=C"
-        if args.outline:
-            draw += f":borderw={max(1, round(args.fontsize / 20))}:bordercolor=black@0.7"
-        run(["-i", args.input, "-map", "0:v:0", "-map", "0:a:0?", "-vf", draw,
+        text = args.text.replace("\\n", "\n")
+        drawtext = _ffmpeg_has_filter("drawtext")
+        if drawtext:
+            staged_font = Path(tmp) / f"font{font.suffix.lower()}"
+            staged_font.symlink_to(font.resolve())
+            text_file = Path(tmp) / "text.txt"
+            text_file.write_text(text, encoding="utf-8")
+            draw = (f"drawtext=fontfile={staged_font}:textfile={text_file}:expansion=none:"
+                    f"fontsize={args.fontsize}:fontcolor={args.color}:x={x}:y={y}")
+            if _drawtext_has_text_align():
+                draw += ":text_align=C"
+            if args.outline:
+                draw += f":borderw={max(1, round(args.fontsize / 20))}:bordercolor=black@0.7"
+            picture = ["-i", args.input, "-map", "0:v:0", "-vf", draw]
+        else:
+            # Pillow draws the text once and overlay lays it on every frame,
+            # working in the source's own format, so the picture never leaves
+            # YUV or its bit depth and overlay changes only the text's pixels.
+            png = Path(tmp) / "text.png"
+            _text_png(text, font, args.fontsize, args.color, args.outline, png)
+            place = f"x={_overlay_position(x)}:y={_overlay_position(y)}"
+            picture = ["-i", args.input, "-i", png, "-filter_complex",
+                       f"[0:v:0][1:v:0]overlay={place}:format={_overlay_format(info['video'])}[v]",
+                       "-map", "[v]"]
+        run([*picture, "-map", "0:a:0?",
              *video_encode(args.output, info["video"]), *audio_copy_or_encode(args.output, info["audio"])],
             args.output)
-    print(f"Added text '{args.text}' at {args.position} -> {args.output}")
+    how = "" if drawtext else " (drawn with Pillow: this ffmpeg has no drawtext)"
+    print(f"Added text '{args.text}' at {args.position}{how} -> {args.output}")
 
 
 def cmd_resize(args):

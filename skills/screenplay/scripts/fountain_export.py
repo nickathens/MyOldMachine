@@ -216,6 +216,11 @@ def use_unicode_courier(text):
         pdfmetrics.registerFont(ReportlabFont(REPORTLAB_NAMES[style], io.BytesIO(data)))
     if not isinstance(pdfmetrics.getFont("Courier"), ReportlabFont):
         raise RuntimeError("Courier was already in use in this process; cannot swap the face")
+    # registerFont maps a TrueType face's bold and italic to the face itself,
+    # so the Courier family printed **bold** and *italic* as regular (review
+    # of #187, only the regular face was embedded); point them back
+    pdfmetrics.registerFontFamily("Courier", normal="Courier", bold="Courier-Bold",
+                                  italic="Courier-Oblique", boldItalic="Courier-BoldOblique")
 
     fallback = {}
     names = {}
@@ -245,12 +250,23 @@ def _with_fallback(paragraph, fallback):
     return make
 
 
-def write_pdf(play, out, a4=False, fallback=None):
-    """Lay the script out as screenplain does. Returns the page count, title page excluded."""
+def write_pdf(play, out, a4=False, fallback=None, unicode_face=False):
+    """Lay the script out as screenplain does. Returns the page count, title page excluded.
+
+    unicode_face: use_unicode_courier registered a face under reportlab's
+    Courier names. screenplain 0.12 and later lay pages out in their bundled
+    Courier Prime unless the settings ask for the standard Courier, and
+    Courier Prime has no Greek: the Mac mini's 0.12.0 printed a Greek script
+    with every letter missing (review of #187). A screenplain without font
+    settings is on the standard Courier already.
+    """
     from reportlab.lib import pagesizes
     from screenplain.export import pdf
 
-    settings = pdf.Settings(page_size=pagesizes.A4 if a4 else pagesizes.letter)
+    options = {"page_size": pagesizes.A4 if a4 else pagesizes.letter}
+    if unicode_face and hasattr(pdf, "get_standard_font_settings"):
+        options["font_settings"] = pdf.get_standard_font_settings()
+    settings = pdf.Settings(**options)
     docs = []
 
     def template(*args, **kwargs):
@@ -285,7 +301,7 @@ def export(source, output, fmt, a4=False):
             if needs_unicode_font(text):
                 result["family"], result["fallback"], result["missing"] = use_unicode_courier(text)
             with open(tmp, "wb") as out:
-                result["pages"] = write_pdf(play, out, a4, result["fallback"])
+                result["pages"] = write_pdf(play, out, a4, result["fallback"], bool(result["family"]))
         elif fmt == "html":
             from screenplain.export.html import convert
 

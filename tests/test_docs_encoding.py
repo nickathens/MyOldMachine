@@ -50,7 +50,23 @@ class Encoding(unittest.TestCase):
         src.write_bytes("Name,City\nJohn,Athens\nΓιώργος,Θεσσαλονίκη\n".encode("cp1253"))
         self.assertIn("Θεσσαλονίκη", run(src).stdout)
 
+    def test_the_markitdown_route_reads_windows_greek_too(self):
+        # review of #187: without anydoc (the Mac mini has none) every csv goes
+        # to markitdown, which read this as Cyrillic, "Гйюсгпт" for "Γιώργος"
+        src = self.d / "greek.csv"
+        src.write_bytes("Όνομα,Ποσό\nΓιώργος,120\n".encode("cp1253"))
+        r = run(src, "--backend", "markitdown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Γιώργος", r.stdout)
+        fr = self.d / "fr.csv"
+        fr.write_bytes("Café,Prix\nCrème,5\n".encode("cp1252"))
+        self.assertIn("Crème", run(fr, "--backend", "markitdown").stdout)
+
     def test_an_empty_conversion_says_so(self):
+        # markitdown reads a pdf only with its pdf extra installed
+        missing = [m for m in ("pdfminer", "pdfplumber") if _ilu.find_spec(m) is None]
+        if missing:
+            self.skipTest("markitdown's pdf support needs " + ", ".join(missing))
         from PIL import Image
         pdf = self.d / "scan.pdf"
         Image.new("RGB", (300, 400), "white").save(pdf)

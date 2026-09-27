@@ -50,6 +50,7 @@ stderr, so piping stdout stays clean.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 import tempfile
@@ -193,24 +194,38 @@ def _csv_as_utf8(path: Path, forced: str | None = None) -> tuple[Path | None, st
     return Path(tmp), encoding
 
 
+@contextlib.contextmanager
+def _readable(path: Path, encoding: str | None = None):
+    """path, or a UTF-8 copy of it while in use when it is a csv in another encoding."""
+    copy = None
+    if path.suffix.lower() == ".csv":
+        copy, encoding = _csv_as_utf8(path, encoding)
+    if copy is None:
+        yield path
+        return
+    print(f"[docs] {path.name} is {encoding}, read as that", file=sys.stderr)
+    try:
+        yield copy
+    finally:
+        copy.unlink(missing_ok=True)
+
+
 def _via_anydoc(path: Path, encoding: str | None = None) -> str:
     import anydoc
 
-    if path.suffix.lower() == ".csv":
-        copy, encoding = _csv_as_utf8(path, encoding)
-        if copy is not None:
-            print(f"[docs] {path.name} is {encoding}, read as that", file=sys.stderr)
-            try:
-                return anydoc.to_markdown(str(copy))
-            finally:
-                copy.unlink(missing_ok=True)
-    return anydoc.to_markdown(str(path))
+    with _readable(path, encoding) as source:
+        return anydoc.to_markdown(str(source))
 
 
-def _via_markitdown(path: Path) -> str:
+def _via_markitdown(path: Path, encoding: str | None = None) -> str:
     from markitdown import MarkItDown
 
-    return MarkItDown().convert(str(path)).text_content
+    # markitdown guesses a csv's encoding for itself and read Windows Greek
+    # as Cyrillic ("јнпмб" for "Όνομα") and cp1252 as cp1250 ("Crčme"). An
+    # install without anydoc, the Mac mini's for one, sends every csv here,
+    # so it gets the same UTF-8 copy (review of #187).
+    with _readable(path, encoding) as source:
+        return MarkItDown().convert(str(source)).text_content
 
 
 def convert(path: Path, backend: str = "auto", encoding: str | None = None) -> tuple[str, str]:
@@ -223,19 +238,19 @@ def convert(path: Path, backend: str = "auto", encoding: str | None = None) -> t
         raise FileNotFoundError(f"not a file: {path}")
 
     if backend == "markitdown":
-        return _via_markitdown(path), "markitdown"
+        return _via_markitdown(path, encoding), "markitdown"
     if backend == "anydoc":
         return _via_anydoc(path, encoding), "anydoc"
 
     if pick_backend(path) == "markitdown":
-        return _via_markitdown(path), "markitdown"
+        return _via_markitdown(path, encoding), "markitdown"
 
     mod = _anydoc()
     if mod is None:
         # pick_backend already imported it successfully, so reaching here means
         # anydoc died between two calls. Convert the document anyway.
         print("[docs] anydoc became unusable, using markitdown", file=sys.stderr)
-        return _via_markitdown(path), "markitdown (anydoc unusable)"
+        return _via_markitdown(path, encoding), "markitdown (anydoc unusable)"
 
     try:
         return _via_anydoc(path, encoding), "anydoc"
@@ -244,7 +259,7 @@ def convert(path: Path, backend: str = "auto", encoding: str | None = None) -> t
         # several of these. Anything that is not a ConvertError (a missing
         # file, an OS error) is a real fault and is left to propagate.
         print(f"[docs] anydoc declined ({type(exc).__name__}), retrying with markitdown", file=sys.stderr)
-        return _via_markitdown(path), "markitdown (anydoc declined)"
+        return _via_markitdown(path, encoding), "markitdown (anydoc declined)"
 
 
 def main(argv: list[str] | None = None) -> int:

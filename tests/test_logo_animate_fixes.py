@@ -120,10 +120,39 @@ class OverlayOnTransparentLogo(unittest.TestCase):
         run = subprocess.run([sys.executable, str(SCRIPTS / "render_overlay.py"), str(d / "fit.svg"),
                               str(d / "src.png"), "--out", str(d / "o.png"),
                               "--report", str(d / "r.json")], capture_output=True, text=True,
-                             timeout=120)
+                             # past the script's own 120 s, so a hung browser
+                             # is killed by the script rather than orphaned
+                             timeout=180)
         self.assertEqual(run.returncode, 0, run.stderr[-500:])
         report = json.loads((d / "r.json").read_text())
         self.assertGreater(report["iou"], 0.95, report)
+
+
+class ChromeWaitsOnNoKeyring(unittest.TestCase):
+    """Review of #187: on macOS headless Chrome waited on the login keychain
+    and no screenshot came (nothing in 60 s on the Mac mini, 2.2 s with the
+    flag). --use-mock-keychain is the macOS twin of --password-store=basic."""
+
+    def test_both_flags_reach_the_browser(self):
+        from unittest import mock
+
+        from PIL import Image
+        overlay = _load("render_overlay")
+        seen = []
+
+        def browser(argv, **kwargs):
+            seen.append(argv)
+            shot = next(a.split("=", 1)[1] for a in argv if a.startswith("--screenshot="))
+            Image.new("RGB", (200, 600), "white").save(shot)
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        d = _tmp(self)
+        (d / "a.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"/>',
+                                 encoding="utf-8")
+        with mock.patch.object(overlay.subprocess, "run", side_effect=browser):
+            overlay.render_svg(d / "a.svg", 200, 200, "chrome")
+        self.assertIn("--use-mock-keychain", seen[0])
+        self.assertIn("--password-store=basic", seen[0])
 
 
 

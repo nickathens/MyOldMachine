@@ -18,6 +18,7 @@ _NEEDS += [t for t in ('ffmpeg', 'ffprobe') if _shutil.which(t) is None]
 if _NEEDS:
     raise _unittest.SkipTest("needs " + ", ".join(_NEEDS))
 
+import argparse
 import hashlib
 import json
 import shutil
@@ -26,6 +27,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -139,6 +141,97 @@ class VideoEditing(unittest.TestCase):
         out10 = self.d / "deep_text.mp4"
         self.run_video("text", deep, out10, "--text", "hi")
         self.assertEqual(streams(out10)["video"]["pix_fmt"], "yuv420p10le")
+
+
+def _load_video():
+    spec = _ilu.spec_from_file_location("video_editing_script", SCRIPT)
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _planes(buf, fmt, dtype):
+    """Y, U and V of every frame of raw planar video."""
+    rows = H // 2 if fmt.startswith("yuv420") else H
+    luma, chroma = W * H, (W // 2) * rows
+    frames = np.frombuffer(buf, dtype).reshape(-1, luma + 2 * chroma)
+    return (frames[:, :luma].reshape(-1, H, W),
+            frames[:, luma:luma + chroma].reshape(-1, rows, W // 2),
+            frames[:, luma + chroma:].reshape(-1, rows, W // 2))
+
+
+class TextWithoutDrawtext(unittest.TestCase):
+    """drawtext needs libfreetype, and the Mac mini's Homebrew ffmpeg 9.0.2 has
+    none: every text command failed there. The text is drawn with Pillow and
+    laid on by overlay, forced here so a machine that has drawtext tests the
+    same path. overlay's format=auto took the whole frame through RGBA and its
+    default cut 10 bits to 8, so the graph is run to raw frames and compared
+    bit for bit. Review of #187."""
+
+    @classmethod
+    def setUpClass(cls):
+        if _ilu.find_spec("PIL") is None:
+            raise unittest.SkipTest("needs Pillow")
+        cls.d = Path(tempfile.mkdtemp(prefix="vedit-nodt-"))
+        cls.video = _load_video()
+        cls.sources = {}
+        for fmt, codec in (("yuv420p", ["-c:v", "libx264", "-crf", "12"]),
+                           ("yuv420p10le", ["-c:v", "libx264", "-crf", "12"]),
+                           ("yuv422p10le", ["-c:v", "prores_ks", "-profile:v", "3"])):
+            src = cls.d / f"{fmt}.{'mov' if 'prores_ks' in codec else 'mp4'}"
+            ff("-f", "lavfi", "-i", f"testsrc2=size={W}x{H}:rate=25:duration=1", "-pix_fmt", fmt, *codec, src)
+            cls.sources[fmt] = src
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.d, ignore_errors=True)
+
+    def args(self, src, out):
+        return argparse.Namespace(input=str(src), output=str(out), text="Γειά σου\\nCrème",
+                                  position="bottom", fontsize=40, color="white", font=None, outline=True)
+
+    def graph_frames(self, src, fmt):
+        """The graph cmd_text builds, run to raw frames instead of an encode."""
+        got = []
+
+        def run(args, output, single_file=True):
+            args = list(map(str, args))
+            inputs = [part for i, a in enumerate(args) if a == "-i" for part in ("-i", args[i + 1])]
+            graph = args[args.index("-filter_complex") + 1]
+            got.append(subprocess.run(["ffmpeg", "-v", "error", *inputs, "-filter_complex", graph, "-map", "[v]",
+                                       "-f", "rawvideo", "-pix_fmt", fmt, "-"], capture_output=True, check=True).stdout)
+
+        with mock.patch.object(self.video, "_ffmpeg_has_filter", return_value=False), \
+             mock.patch.object(self.video, "run", side_effect=run):
+            self.video.cmd_text(self.args(src, self.d / "unused.mp4"))
+        return got[0]
+
+    def test_only_the_text_changes_and_the_format_is_kept(self):
+        for fmt, src in self.sources.items():
+            with self.subTest(fmt=fmt):
+                dtype = np.uint16 if fmt.endswith("10le") else np.uint8
+                raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-f", "rawvideo", "-pix_fmt", fmt, "-"],
+                                     capture_output=True, check=True).stdout
+                before, after = _planes(raw, fmt, dtype), _planes(self.graph_frames(src, fmt), fmt, dtype)
+                for name, a, b in zip("YUV", before, after):
+                    changed = np.nonzero((a != b).any(axis=(0, 2)))[0]
+                    self.assertTrue(len(changed), f"{name}: no text was drawn")
+                    self.assertGreaterEqual(changed.min(), a.shape[1] // 2,
+                                            f"{name}: rows above the text changed, from row {changed.min()}")
+
+    def test_a_10_bit_clip_comes_out_10_bit(self):
+        out = self.d / "deep_text.mp4"
+        with mock.patch.object(self.video, "_ffmpeg_has_filter", return_value=False):
+            self.video.cmd_text(self.args(self.sources["yuv420p10le"], out))
+        self.assertEqual(streams(out)["video"]["pix_fmt"], "yuv420p10le")
+
+    def test_overlay_names_the_sources_format(self):
+        cases = {"yuv420p": "yuv420", "nv12": "yuv420", "yuv420p10le": "yuv420p10",
+                 "yuv422p10le": "yuv422p10", "yuv444p": "yuv444", "p010le": "yuv420p10"}
+        for pix, want in cases.items():
+            self.assertEqual(self.video._overlay_format({"pix_fmt": pix}), want, pix)
+        self.assertEqual(self.video._overlay_position("(w-text_w)/2"), "(W-w)/2")
+        self.assertEqual(self.video._overlay_position("h-text_h-18"), "H-h-18")
 
 
 class NoRgbPipe(unittest.TestCase):

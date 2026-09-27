@@ -4,6 +4,7 @@ Each test runs the real command line in its own process, the way the skill
 is used, and fails on the code before the fixes.
 """
 
+import importlib.util
 import json
 import os
 import shutil
@@ -85,7 +86,14 @@ def pdf_text(path):
     return "\n".join(page.extract_text() for page in pypdf.PdfReader(str(path)).pages)
 
 
-@unittest.skipUnless(shutil.which("fc-match") and shutil.which("afterwriting"), "needs fontconfig and afterwriting")
+# The command runs in this Python, so its libraries must be here too: the tools
+# alone let the class run, and fail, where the test Python has none of them
+# (the Mac mini's, review of #187).
+_LIBS = [m for m in ("screenplain", "reportlab", "fontTools", "pypdf") if importlib.util.find_spec(m) is None]
+
+
+@unittest.skipUnless(shutil.which("fc-match") and shutil.which("afterwriting") and not _LIBS,
+                     "needs fontconfig, afterwriting, and screenplain, reportlab, fonttools and pypdf in this Python")
 class Screenplay(unittest.TestCase):
     def setUp(self):
         self.d = Path(tempfile.mkdtemp(prefix="sp-test-"))
@@ -116,6 +124,24 @@ class Screenplay(unittest.TestCase):
         text = pdf_text(self.exported(project))
         self.assertIn("Πού ήσουν όλη νύχτα;", text)
         self.assertIn("κόβει ντομάτες", text)
+
+    def test_greek_keeps_its_bold_and_italic(self):
+        # review of #187: the swapped face printed **bold** and *italic* as
+        # regular (registerFont points a TrueType face's styles at itself),
+        # and screenplain 0.12 set the Greek in its own Courier Prime, which
+        # has no Greek at all
+        project = self.project("Έντονα", GREEK + "\nΗ ΕΛΕΝΗ **φωνάζει** και *ψιθυρίζει*.\n")
+        run = self.run_cli("export", project)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        pdf = self.exported(project)
+        self.assertIn("φωνάζει", pdf_text(pdf))
+        import pypdf
+
+        faces = {str(font.get_object()["/BaseFont"])
+                 for page in pypdf.PdfReader(str(pdf)).pages
+                 for font in page["/Resources"]["/Font"].values()}
+        self.assertTrue(any("Bold" in face for face in faces), faces)
+        self.assertTrue(any("Italic" in face or "Oblique" in face for face in faces), faces)
 
     def test_a_word_no_courier_face_has_falls_back(self):
         # afterwriting printed this word as blank space in a delivered script
