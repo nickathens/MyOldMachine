@@ -33,7 +33,10 @@ class VpnBind(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         tmp = tempfile.mkdtemp(prefix="torrent-")
-        with mock.patch.object(dl.subprocess, "run", side_effect=fake_run), \
+        # The Linux gate (nmcli, then bind), whatever the host: macOS takes
+        # its own path, tested below.
+        with mock.patch.object(dl.platform, "system", return_value="Linux"), \
+                mock.patch.object(dl.subprocess, "run", side_effect=fake_run), \
                 mock.patch.object(dl.shutil, "which", return_value="/usr/bin/aria2c"), \
                 mock.patch.object(sys, "argv", ["download.py", "--magnet", MAGNET, "--dir", tmp] + argv), \
                 mock.patch("sys.stderr"), mock.patch("builtins.print"):

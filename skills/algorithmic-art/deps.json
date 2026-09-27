@@ -1,5 +1,5 @@
 {
-  "pip": ["playwright"],
+  "pip": ["playwright", "pillow"],
   "post_install": [
     "playwright install chromium",
     "playwright install-deps chromium"

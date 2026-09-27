@@ -1,4 +1,5 @@
 {
+  "pip": ["numpy", "soundfile"],
   "apt": ["fluidsynth", "fluid-soundfont-gm", "ffmpeg"],
   "brew": ["fluid-synth", "ffmpeg"],
   "check": {

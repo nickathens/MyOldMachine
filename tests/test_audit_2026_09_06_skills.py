@@ -840,7 +840,7 @@ class CompositionClockTests(unittest.TestCase):
                       source)
 
 
-@unittest.skipUnless(have("PIL"), "Pillow not installed")
+@unittest.skipUnless(have("PIL") and have("numpy"), "Pillow and numpy not installed")
 class ScreenshotDiffTests(unittest.TestCase):
     """F20: two absent files compared as a match, because the failed parse
     became -1 and -1 is under any threshold."""
