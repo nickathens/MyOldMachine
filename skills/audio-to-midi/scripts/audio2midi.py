@@ -10,7 +10,9 @@ Supports: mp3, wav, flac, ogg, m4a
 """
 
 import argparse
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -69,45 +71,47 @@ def transcribe_audio(input_path: str, output_path: str = None) -> dict:
 
     # basic-pitch only ever writes <stem>_basic_pitch.mid into a directory, so an
     # output given as a filename has to be honoured by moving the result after.
-    if output_path.is_dir():
-        output_dir, requested_file = output_path, None
-    else:
+    # A name without .mid/.midi is a folder, made if it is missing.
+    if output_path.suffix.lower() in (".mid", ".midi"):
         output_dir, requested_file = output_path.parent, output_path
+    else:
+        output_dir, requested_file = output_path, None
     output_dir.mkdir(parents=True, exist_ok=True)
+    final = requested_file or output_dir / f"{input_path.stem}_basic_pitch.mid"
 
     # model_or_model_path has been required since basic-pitch 0.3.0. Omitting it
     # raises TypeError before a single note is read, which is how this script had
     # been failing on every call.
+    # basic-pitch refuses to overwrite its own earlier output (it raises
+    # "already exists"), which failed every rerun, and the loop below read
+    # that as a model that would not load. It writes into a fresh folder
+    # beside the destination instead, and the result replaces the old file.
     last_error = "no basic-pitch model could be loaded"
     for model_path in _model_candidates():
-        try:
-            predict_and_save(
-                [str(input_path)],
-                str(output_dir),
-                save_midi=True,
-                save_notes=False,
-                save_model_outputs=False,
-                sonify_midi=False,
-                model_or_model_path=model_path,
-            )
-        except Exception as e:
-            last_error = str(e)
-            continue
+        with tempfile.TemporaryDirectory(dir=output_dir, prefix=".basic_pitch_") as scratch:
+            try:
+                predict_and_save(
+                    [str(input_path)],
+                    scratch,
+                    save_midi=True,
+                    save_notes=False,
+                    save_model_outputs=False,
+                    sonify_midi=False,
+                    model_or_model_path=model_path,
+                )
+            except Exception as e:
+                last_error = str(e)
+                continue
 
-        # Find the generated MIDI file
-        midi_file = output_dir / f"{input_path.stem}_basic_pitch.mid"
-
-        if not midi_file.exists():
-            return {"error": "MIDI file was not generated"}
-
-        if requested_file and requested_file != midi_file:
-            midi_file.replace(requested_file)
-            midi_file = requested_file
+            midi_file = Path(scratch) / f"{input_path.stem}_basic_pitch.mid"
+            if not midi_file.exists():
+                return {"error": "MIDI file was not generated"}
+            os.replace(midi_file, final)
         return {
             "success": True,
             "input": str(input_path),
-            "output": str(midi_file),
-            "message": f"Transcribed to {midi_file}"
+            "output": str(final),
+            "message": f"Transcribed to {final}"
         }
 
     return {"error": last_error}

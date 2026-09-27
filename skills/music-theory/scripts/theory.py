@@ -5,7 +5,36 @@ Music theory analysis using music21.
 
 import argparse
 import json
+import re
 import sys
+
+
+def _name(text) -> str:
+    """music21 writes flats as '-' (E-, B-): print them the way people read them."""
+    return str(text).replace("-", "b")
+
+
+# A chord symbol split into root, the text after it, and an optional bass.
+CHORD_RE = re.compile(r"^([A-G](?:##|#|bb|b|--|-)?)(.*?)(?:/([A-G](?:##|#|bb|b|--|-)?))?$")
+
+# The diatonic interval for each semitone count, so a transposition moves
+# every root by the same number of letters (C F G up 3 is Eb Ab Bb).
+SEMITONE_INTERVALS = ["P1", "m2", "M2", "m3", "M3", "P4", "A4", "P5", "m6", "M6", "m7", "M7"]
+
+
+def _m21_note(name: str) -> str:
+    """'Bb' -> 'B-': music21 reads a flat root only as '-'."""
+    return name[0] + name[1:].replace("b", "-")
+
+
+def _m21_chord(symbol: str) -> str:
+    """A chord symbol as music21 parses it: 'Bbmaj7' read as B with a 'bmaj7'
+    quality and failed, so flats in the root and the bass become '-'."""
+    m = CHORD_RE.match(symbol.strip())
+    if not m:
+        return symbol
+    root, rest, bass = m.groups()
+    return _m21_note(root) + rest + (f"/{_m21_note(bass)}" if bass else "")
 
 
 def cmd_analyze(args):
@@ -21,7 +50,7 @@ def cmd_analyze(args):
     notes = list(score.flatten().notes)
 
     result = {
-        "key": str(key),
+        "key": _name(key),
         "mode": key.mode,
         "correlation": round(key.correlationCoefficient, 3),
         "total_notes": len(notes),
@@ -39,11 +68,14 @@ def cmd_key(args):
     key = score.analyze('key')
 
     result = {
-        "key": str(key),
-        "tonic": key.tonic.name,
+        "key": _name(key),
+        "tonic": _name(key.tonic.name),
         "mode": key.mode,
         "confidence": round(key.correlationCoefficient, 3),
-        "relative": str(key.relative) if key.mode == 'major' else str(key.parallel),
+        # key.relative for both modes: for a minor key the old code printed
+        # key.parallel, so A minor's "relative" read A major, not C major.
+        "relative": _name(key.relative),
+        "parallel": _name(key.parallel),
     }
 
     print(json.dumps(result, indent=2))
@@ -59,7 +91,7 @@ def cmd_chords(args):
     chords = list(score.flatten().getElementsByClass(harmony.ChordSymbol))
 
     if chords:
-        progression = [str(c.figure) for c in chords]
+        progression = [_name(c.figure) for c in chords]
     else:
         # Analyze chords at regular intervals
         from music21 import chord as m21chord
@@ -71,7 +103,7 @@ def cmd_chords(args):
                 # Get common name if possible
                 name = c.pitchedCommonName
                 if name and name != 'empty':
-                    progression.append(name)
+                    progression.append(_name(name))
             except Exception:
                 pass
 
@@ -98,8 +130,8 @@ def cmd_interval(args):
     intv = interval.Interval(noteStart=p1, noteEnd=p2)
 
     result = {
-        "from": str(p1),
-        "to": str(p2),
+        "from": _name(p1),
+        "to": _name(p2),
         "name": intv.name,
         "simple_name": intv.simpleName,
         "semitones": intv.semitones,
@@ -114,14 +146,14 @@ def cmd_chord_notes(args):
     from music21 import harmony
 
     try:
-        ch = harmony.ChordSymbol(args.chord)
-        notes = [p.nameWithOctave for p in ch.pitches]
-        simple = [p.name for p in ch.pitches]
+        ch = harmony.ChordSymbol(_m21_chord(args.chord))
+        notes = [_name(p.nameWithOctave) for p in ch.pitches]
+        simple = [_name(p.name) for p in ch.pitches]
 
         result = {
             "chord": args.chord,
-            "root": ch.root().name,
-            "bass": ch.bass().name,
+            "root": _name(ch.root().name),
+            "bass": _name(ch.bass().name),
             "quality": ch.quality,
             "notes": simple,
             "notes_with_octave": notes
@@ -153,11 +185,13 @@ def cmd_scale(args):
         'whole-tone': scale.WholeToneScale,
     }
 
-    # Custom scales defined by intervals from root
+    # Custom scales as intervals from the root, so every note is spelled from
+    # the tonic. They used to be built from MIDI numbers, which spell with
+    # sharps only: E-flat minor pentatonic came out E- F# G# B- C#.
     custom_scales = {
-        'pentatonic-major': [0, 2, 4, 7, 9],      # C D E G A
-        'pentatonic-minor': [0, 3, 5, 7, 10],     # C Eb F G Bb
-        'blues': [0, 3, 5, 6, 7, 10],             # C Eb F F# G Bb
+        'pentatonic-major': ['P1', 'M2', 'M3', 'P5', 'M6'],        # C D E G A
+        'pentatonic-minor': ['P1', 'm3', 'P4', 'P5', 'm7'],        # C Eb F G Bb
+        'blues': ['P1', 'm3', 'P4', 'd5', 'P5', 'm7'],             # C Eb F Gb G Bb
     }
 
     scale_type = args.scale_type.lower()
@@ -165,15 +199,10 @@ def cmd_scale(args):
 
     if scale_type in scale_classes:
         sc = scale_classes[scale_type](tonic)
-        notes = [p.name for p in sc.getPitches(args.root + '3', args.root + '4')]
+        notes = [_name(p.name) for p in sc.getPitches(args.root + '3', args.root + '4')]
     elif scale_type in custom_scales:
-        intervals = custom_scales[scale_type]
-        base_midi = tonic.midi
-        notes = []
-        for i in intervals:
-            p = pitch.Pitch(midi=base_midi + i)
-            notes.append(p.name)
-        notes.append(tonic.name)  # Add octave
+        notes = [_name(tonic.transpose(i).name) for i in custom_scales[scale_type]]
+        notes.append(_name(tonic.name))  # Add octave
     else:
         print(f"Unknown scale type: {scale_type}", file=sys.stderr)
         all_scales = list(scale_classes.keys()) + list(custom_scales.keys())
@@ -189,21 +218,30 @@ def cmd_scale(args):
 
 
 def cmd_transpose_chords(args):
-    """Transpose a chord progression."""
-    from music21 import harmony, interval
+    """Transpose a chord progression.
+
+    Only the root and the bass move, by one diatonic interval, and the rest
+    of each symbol is kept as written. music21's ChordSymbol.transpose respelt
+    roots one by one: C F G up 3 came back Eb G# Bb."""
+    from music21 import pitch
 
     chords = args.progression.split()
     transposed = []
 
-    intv = interval.Interval(args.semitones)
+    semis = args.semitones
+    name = SEMITONE_INTERVALS[abs(semis) % 12]
+    step = name if semis >= 0 else "-" + name
+
+    def move(note_name):
+        return _name(pitch.Pitch(_m21_note(note_name)).transpose(step).name)
 
     for ch_name in chords:
-        try:
-            ch = harmony.ChordSymbol(ch_name)
-            ch.transpose(intv, inPlace=True)
-            transposed.append(ch.figure)
-        except Exception:
+        m = CHORD_RE.match(ch_name)
+        if not m:
             transposed.append(f"[{ch_name}?]")
+            continue
+        root, rest, bass = m.groups()
+        transposed.append(move(root) + rest + (f"/{move(bass)}" if bass else ""))
 
     result = {
         "original": args.progression,

@@ -190,6 +190,7 @@ def read_edl(path, rate=None, drop=None):
         if m:
             events.append({"event": int(m.group("num")), "reel": m.group("reel"),
                            "track": m.group("track"), "kind": m.group("kind"),
+                           "dur": m.group("dur"),
                            "src_in": m.group("src_in"), "src_out": m.group("src_out"),
                            "rec_in": m.group("rec_in"), "rec_out": m.group("rec_out"),
                            "comments": []})
@@ -206,11 +207,38 @@ def read_edl(path, rate=None, drop=None):
                     "and confirm it against the cut."}
 
 
+def _edl_tracks(track):
+    """The tracks a CMX track field puts an event on.
+
+    V is picture, A is audio 1, A2..An are those channels, AA is audio 1 and
+    2, B is picture and audio 1, and AA/V joins fields with a slash.
+    """
+    out = set()
+    for part in track.upper().split("/"):
+        if part == "B":
+            out |= {"V", "A1"}
+        elif part == "AA":
+            out |= {"A1", "A2"}
+        elif part == "A":
+            out.add("A1")
+        else:
+            out.add(part)
+    return out
+
+
 def check_edl(doc, rate, drop):
-    """Is the record timeline contiguous, and does every event have a length?"""
-    rows, prev_out = [], None
+    """Is the record timeline contiguous, and does every event have a length?
+
+    Checked per track. A gap is a fault on picture only (on an audio track it
+    is silence), an overlap is a fault on any one track. The outgoing side of
+    a dissolve, wipe or key is written as a zero length line carrying the
+    same event number as the transition line after it; that is the CMX form,
+    not a fault.
+    """
+    rows, prev_out = [], {}
     total = 0
-    for e in doc["events"]:
+    events = doc["events"]
+    for idx, e in enumerate(events):
         try:
             si = tc_to_frames(e["src_in"], rate, drop)
             so = tc_to_frames(e["src_out"], rate, drop)
@@ -221,6 +249,19 @@ def check_edl(doc, rate, drop):
             continue
         faults = []
         src_len, rec_len = so - si, ro - ri
+        nxt = events[idx + 1] if idx + 1 < len(events) else None
+        outgoing = (src_len == 0 and rec_len == 0 and nxt is not None
+                    and nxt["event"] == e["event"]
+                    and nxt["kind"][:1].upper() in ("D", "W", "K"))
+        tracks = _edl_tracks(e["track"])
+        row = {"event": e["event"], "reel": e["reel"], "kind": e["kind"],
+               "track": e["track"], "src_frames": src_len, "rec_frames": rec_len,
+               "rec_in_frame": ri, "rec_out_frame": ro, "faults": faults}
+        if outgoing:
+            row["note"] = (f"outgoing side of the {nxt['kind']} transition in event "
+                           f"{e['event']}")
+            rows.append(row)
+            continue
         if src_len <= 0:
             faults.append(f"source out is not after source in ({src_len} frames)")
         if rec_len <= 0:
@@ -228,20 +269,20 @@ def check_edl(doc, rate, drop):
         if src_len != rec_len and src_len > 0 and rec_len > 0:
             faults.append(f"source is {src_len} frames and record is {rec_len}: "
                           "a speed change, a fit to fill, or an error")
-        if prev_out is not None:
-            gap = ri - prev_out
-            if gap > 0:
-                faults.append(f"{gap} frame gap in the record timeline before this "
-                              "event: black, or a missing event")
-            elif gap < 0:
-                faults.append(f"overlaps the previous event by {-gap} frames")
-        prev_out = max(prev_out or 0, ro)
+        for trk in sorted(tracks):
+            if trk in prev_out:
+                gap = ri - prev_out[trk]
+                if gap > 0 and trk == "V":
+                    faults.append(f"{gap} frame gap in the record timeline before "
+                                  "this event: black, or a missing event")
+                elif gap < 0:
+                    where = "" if tracks == {"V"} else f" on track {trk}"
+                    faults.append(f"overlaps the previous event{where} by {-gap} frames")
+            prev_out[trk] = max(prev_out.get(trk, ro), ro)
         total = max(total, ro)
-        rows.append({"event": e["event"], "reel": e["reel"], "kind": e["kind"],
-                     "src_frames": src_len, "rec_frames": rec_len,
-                     "rec_in_frame": ri, "rec_out_frame": ro, "faults": faults})
+        rows.append(row)
     bad = [r for r in rows if r["faults"]]
-    first = doc["events"][0]["rec_in"] if doc["events"] else None
+    first = events[0]["rec_in"] if events else None
     return {"file": doc["file"], "events": len(rows),
             "rate": str(C.rate(rate)), "drop_frame": drop,
             "record_start": first,

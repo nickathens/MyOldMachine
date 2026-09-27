@@ -169,30 +169,64 @@ def fill_inside_window(h, s, v, p, hue_tol=32.0):
     return q
 
 
-def _smoothstep(e0, e1, x):
-    t = np.clip((x - e0) / max(e1 - e0, 1e-6), 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
+def _ramp(val, lo, hi):
+    """The DCTL's ramp(): linear from 0 at lo to 1 at hi, a step when equal."""
+    val = np.asarray(val, dtype=np.float32)
+    if hi == lo:
+        return (val >= hi).astype(np.float32)
+    return np.clip((val - lo) / (hi - lo), 0.0, 1.0)
+
+
+def _unwrap(angle, base):
+    """`angle` moved into [base, base + 360), as the DCTL reads every hue."""
+    return base + np.mod(np.asarray(angle, dtype=np.float32) - base + 360.0, 360.0)
 
 
 def matte_from_params(h, s, v, p):
-    """The same gate the DCTL applies, in numpy, so the aim can be scored."""
-    centre = (p["hueLow"] + ((p["hueHigh"] - p["hueLow"] + 540) % 360 - 180) / 2.0) % 360
-    rel = ((h - centre + 180.0) % 360.0) - 180.0
-    rl_s = ((p["hueLowSoft"] - centre + 180.0) % 360.0) - 180.0
-    rl = ((p["hueLow"] - centre + 180.0) % 360.0) - 180.0
-    rh = ((p["hueHigh"] - centre + 180.0) % 360.0) - 180.0
-    rh_s = ((p["hueHighSoft"] - centre + 180.0) % 360.0) - 180.0
-    m = _smoothstep(rl_s, rl, rel) * (1.0 - _smoothstep(rh, rh_s, rel))
-    m = m * _smoothstep(p["satLo"], p["satHi"], s) * _smoothstep(p["valLo"], p["valHi"], v)
+    """The gate LensIsolate.dctl applies, line for line, so the aim is scored
+    on the maths that will actually run.
+
+    It was not the same maths before 2026-09-27: this used smoothstep edges, a
+    window that faded out between 1 - soft and 1 while the DCTL fades between
+    1 - soft and 1 + soft, and it read the hue band relative to its centre, so
+    a band crossing 0/360 (any red) scored a full matte here while the DCTL
+    selected nothing. The DCTL now reads hues relative to Hue Low Soft too.
+    """
+    lo_s = float(p["hueLowSoft"])
+    lo = _unwrap(p["hueLow"], lo_s)
+    hi = _unwrap(p["hueHigh"], lo_s)
+    hi_s = _unwrap(p["hueHighSoft"], lo_s)
+    hh = _unwrap(h, lo_s)
+    m = np.minimum(_ramp(hh, lo_s, float(lo)), 1.0 - _ramp(hh, float(hi), float(hi_s)))
+    m = m * _ramp(s, p["satLo"], p["satHi"]) * _ramp(v, p["valLo"], p["valHi"])
 
     H, W = h.shape
     yy, xx = np.mgrid[0:H, 0:W]
     nx = (xx + 0.5) / W
     ny = (yy + 0.5) / H
-    d = np.hypot((nx - p["winX"]) / max(p["winRX"], 1e-6),
-                 (ny - p["winY"]) / max(p["winRY"], 1e-6))
-    w = 1.0 - _smoothstep(1.0 - np.clip(p["winSoft"], 0.0, 0.999), 1.0, d)
-    return (m * w).astype(np.float32)
+    d = np.hypot((nx - p["winX"]) / max(p["winRX"], 0.0001),
+                 (ny - p["winY"]) / max(p["winRY"], 0.0001))
+    m = m * (1.0 - _ramp(d, 1.0 - p["winSoft"], 1.0 + p["winSoft"]))
+    return m.astype(np.float32)
+
+
+def dctl_apply(rgb, matte, hue_shift=0.0, sat_gain=1.0):
+    """LensIsolate's colour move in numpy: the HSV rotation weighted by the
+    matte, then HSV back to RGB, exactly as the DCTL writes it. The preview
+    used to rotate in Lab instead, so it showed a result the DCTL never makes.
+    """
+    h, s, v = C.rgb_to_hsv(rgb)
+    h2 = np.mod(h + hue_shift * matte + 360.0, 360.0)
+    s2 = np.clip(s * (1.0 + (sat_gain - 1.0) * matte), 0.0, 1.0)
+    c = v * s2
+    x = c * (1.0 - np.abs(np.mod(h2 / 60.0, 2.0) - 1.0))
+    base = v - c
+    z = np.zeros_like(c)
+    sector = np.minimum((h2 // 60.0).astype(np.int32), 5)
+    r = np.choose(sector, [c, x, z, z, x, c])
+    g = np.choose(sector, [x, c, c, x, z, z])
+    b = np.choose(sector, [z, z, x, c, c, x])
+    return np.stack([r + base, g + base, b + base], axis=-1).astype(np.float32)
 
 
 def write_dctl(params, out_path, hue_shift=0.0, sat_gain=1.0, template=TEMPLATE_PATH):
@@ -278,14 +312,7 @@ def main():
 
     if args.preview:
         from PIL import Image
-        graded = rgb.copy()
-        if args.hue_shift or args.sat_gain != 1.0:
-            lab = C.lin_to_lab(C.code_to_lin(rgb))
-            ang = np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) + args.hue_shift * m_win
-            ch = np.hypot(lab[..., 1], lab[..., 2]) * (1.0 + (args.sat_gain - 1.0) * m_win)
-            lab[..., 1] = np.cos(np.radians(ang)) * ch
-            lab[..., 2] = np.sin(np.radians(ang)) * ch
-            graded = np.clip(C.lin_to_code(np.maximum(C.lab_to_lin(lab), 0)), 0, 1)
+        graded = np.clip(dctl_apply(rgb, m_win, args.hue_shift, args.sat_gain), 0, 1)
         strip = np.concatenate([rgb, np.repeat(m_win[..., None], 3, axis=2), graded], axis=1)
         Image.fromarray(np.clip(strip * 255 + 0.5, 0, 255).astype(np.uint8)).save(args.preview)
         print(f"wrote {args.preview}  (source, matte, result)")

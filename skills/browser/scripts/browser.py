@@ -1100,7 +1100,7 @@ def main():
     # extract
     p_ext = subparsers.add_parser("extract", help="Extract page content")
     p_ext.add_argument("url", nargs="?", help="URL (legacy) or omit for daemon")
-    p_ext.add_argument("--format", choices=["text", "markdown", "html"], default="text")
+    p_ext.add_argument("--format", choices=["text", "html"], default="text")
     p_ext.add_argument("--selector", help="CSS selector")
     p_ext.add_argument("--wait", type=int, default=1000)
 

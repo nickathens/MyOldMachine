@@ -749,6 +749,22 @@ def track(clip, region=None, mask=None, ref=0, model="auto", scale=None,
     whether the track is good.
     """
     info = P.clip_info(clip)
+    # Every frame is held at once, as float32, so size the span BEFORE
+    # decoding it. Past about half the headroom, stop and say how to shrink
+    # it: inside the bot an out of memory kill takes the whole bot down.
+    need = P.decoded_bytes(info, start, count)
+    room = P.memory_headroom()
+    if need > room // 2:
+        span = (count if count is not None
+                else max(int(info.get("frames") or 0) - int(start or 0), 0))
+        fits = max(int(room // 2 // max(need // max(span, 1), 1)), 1)
+        raise MemoryError(
+            f"tracking {span} frames of {info['width']}x{info['height']} holds "
+            f"{need / 2**30:.1f} GB decoded, and this process has "
+            f"{room / 2**30:.1f} GB before it is killed. Track a shorter span "
+            f"with --start and --count (about {fits} frames fit here), or run "
+            "the job outside the bot: systemd-run --user --wait --pipe "
+            "-p MemoryMax=12G ~/.venvs/post/bin/python comp.py track ...")
     frames = list(P.read_frames(clip, start=start, count=count))
     if not frames:
         raise RuntimeError(f"no frames decoded from {clip}")

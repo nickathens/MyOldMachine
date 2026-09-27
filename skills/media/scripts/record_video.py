@@ -247,8 +247,11 @@ def _record(display: str, width: int, height: int, output_path: Path,
     os.close(raw_fd)
     _register_tmp_file(raw_video)
 
+    # -nostats and -loglevel error: stderr is a pipe nobody reads until ffmpeg
+    # exits, and its progress lines filled the 64 KB buffer within minutes and
+    # stalled the capture (Linux bot review 2026-09-27)
     grab_cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-nostats", "-loglevel", "error",
         "-f", "x11grab",
         "-framerate", str(fps),
         "-video_size", f"{width}x{height}",
@@ -424,7 +427,7 @@ def main():
             if not display:
                 print("Error: --screen requires DISPLAY to be set in the environment",
                       file=sys.stderr)
-                return
+                sys.exit(1)
             # Read real geometry if xdpyinfo is available, else use args.
             width, height = args.width, args.height
             xdpy = shutil.which("xdpyinfo")
@@ -461,7 +464,7 @@ def main():
             if not _wait_for_xvfb(display, timeout=10.0):
                 print(f"Error: Xvfb on {display} did not become ready within 10s",
                       file=sys.stderr)
-                return
+                sys.exit(1)
 
             chromium = _find_chromium()
             user_data_dir = _register_tmp_dir(
@@ -498,7 +501,7 @@ def main():
             if chromium_proc.poll() is not None:
                 print(f"Error: Chromium exited early (rc={chromium_proc.returncode})",
                       file=sys.stderr)
-                return
+                sys.exit(1)
 
             print(f"Recording {display} for {args.duration}s at {args.fps}fps...")
             success = _record(display, args.width, args.height, output_path,

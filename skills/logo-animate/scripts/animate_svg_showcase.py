@@ -46,16 +46,31 @@ def clean_attrs(attrs: dict[str, str]) -> dict[str, str]:
     return cleaned
 
 
+# Elements whose text is content, so its spaces matter.
+TEXT_CONTENT = {"text", "tspan", "textPath", "title", "desc", "style", "script"}
+
+
 def node_to_data(element: ET.Element) -> dict:
-    node = {
-        "tag": strip_namespace(element.tag),
-        "attrs": clean_attrs(element.attrib),
-        "children": [node_to_data(child) for child in list(element)],
-    }
-    text = (element.text or "").strip()
-    if text:
-        node["text"] = text
-    return node
+    """The element as {tag, attrs, children}; a child is a node or a string.
+
+    Text is kept in document order, including the tail after a nested element
+    and the spaces between words: `<text>Hello <tspan>World</tspan> again</text>`
+    used to rebuild as "HelloWorld" (text stripped, tail dropped). Whitespace
+    that is only indentation between elements is dropped.
+    """
+    tag = strip_namespace(element.tag)
+    keep_space = tag in TEXT_CONTENT
+
+    def text_piece(value: str | None) -> list[str]:
+        if not value:
+            return []
+        return [value] if keep_space or value.strip() else []
+
+    children: list = text_piece(element.text)
+    for child in list(element):
+        children.append(node_to_data(child))
+        children.extend(text_piece(child.tail))
+    return {"tag": tag, "attrs": clean_attrs(element.attrib), "children": children}
 
 
 def max_width_for(svg_data: dict) -> str:
@@ -383,11 +398,10 @@ def html_for(
       for (const [name, value] of Object.entries(node.attrs || {{}})) {{
         element.setAttribute(name, value);
       }}
-      if (node.text) {{
-        element.appendChild(document.createTextNode(node.text));
-      }}
       for (const child of node.children || []) {{
-        element.appendChild(createSvgNode(child));
+        element.appendChild(typeof child === "string"
+          ? document.createTextNode(child)
+          : createSvgNode(child));
       }}
       return element;
     }}

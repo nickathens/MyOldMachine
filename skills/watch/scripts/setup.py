@@ -103,7 +103,8 @@ def _have_api_key() -> tuple[bool, str | None]:
         return True, "groq"
     if _read_env_key("OPENAI_API_KEY"):
         return True, "openai"
-    if _which("whisper"):
+    # Same lookup as whisper.whisper_bin: on PATH, or beside this Python.
+    if _which("whisper") or os.access(Path(sys.executable).parent / "whisper", os.X_OK):
         return True, "local"
     return False, None
 

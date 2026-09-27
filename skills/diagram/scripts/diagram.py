@@ -52,6 +52,10 @@ def browser_fix() -> str:
     return f"python3 {shown} @mermaid-js/mermaid-cli"
 
 
+# A hung headless Chromium used to hold the caller forever.
+RENDER_TIMEOUT = 180
+
+
 def mmdc_major() -> int:
     """Leading version number of the mmdc on PATH, or 0 when it cannot be read."""
     try:
@@ -114,6 +118,8 @@ def render(
     if fmt not in FORMATS:
         raise ValueError(f"Unsupported format: {fmt}. Choose from {FORMATS}.")
 
+    # mmdc refuses an output folder that does not exist yet.
+    output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="diagram-") as tmp:
         input_path = Path(tmp) / "diagram.mmd"
         input_path.write_text(source, encoding="utf-8")
@@ -125,6 +131,10 @@ def render(
             str(input_path),
             "-o",
             str(output),
+            # -f used to be ignored: mmdc picks the format from the extension
+            # unless told, so `-f svg -o x.png` still wrote a PNG.
+            "-e",
+            fmt,
             "-t",
             theme,
             "-b",
@@ -135,7 +145,10 @@ def render(
             "-c",
             str(MERMAID_CONFIG),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=RENDER_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"mmdc did not finish in {RENDER_TIMEOUT}s (headless browser hung)")
         if result.returncode != 0:
             message = (
                 f"mmdc failed (code {result.returncode}):\n"

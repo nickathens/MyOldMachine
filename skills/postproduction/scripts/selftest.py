@@ -258,6 +258,48 @@ def test_edl():
         check("event lengths agree between source and record",
               all(row["src_frames"] == row["rec_frames"] for row in res["rows"]))
 
+        # Linux bot review 2026-09-27 (S057): a CMX dissolve writes its outgoing
+        # clip as a zero length line with the same event number, and an audio
+        # event shares record time with the picture. Both read as faults.
+        legal = ("TITLE: LEGAL\nFCM: NON-DROP FRAME\n"
+                 "001  REEL01   V     C        01:00:00:00 01:00:05:00 "
+                 "01:00:00:00 01:00:05:00\n"
+                 "002  REEL01   V     C        01:00:05:00 01:00:05:00 "
+                 "01:00:05:00 01:00:05:00\n"
+                 "002  REEL02   V     D    025 02:00:10:00 02:00:15:00 "
+                 "01:00:05:00 01:00:10:00\n"
+                 "003  REEL03   A     C        03:00:00:00 03:00:03:00 "
+                 "01:00:02:00 01:00:05:00\n"
+                 "004  REEL04   V     C        04:00:00:00 04:00:02:00 "
+                 "01:00:10:00 01:00:12:00\n")
+        path2 = os.path.join(tmp, "legal.edl")
+        with open(path2, "w", encoding="utf-8") as fh:
+            fh.write(legal)
+        doc2 = CONF.read_edl(path2, "25")
+        rate25, drop25 = CONF.parse_rate("25")
+        res2 = CONF.check_edl(doc2, rate25, drop25)
+        faults2 = [(row["event"], f) for row in res2["rows"] for f in row["faults"]]
+        check("a dissolve pair and an audio event are not faults", not faults2,
+              str(faults2))
+        check("the dissolve's length is read", doc2["events"][2].get("dur") == "025")
+        clash = legal.replace(
+            "003  REEL03   A     C        03:00:00:00 03:00:03:00 01:00:02:00 01:00:05:00",
+            "003  REEL03   V     C        03:00:00:00 03:00:03:00 01:00:02:00 01:00:05:00")
+        path3 = os.path.join(tmp, "clash.edl")
+        with open(path3, "w", encoding="utf-8") as fh:
+            fh.write(clash)
+        res3 = CONF.check_edl(CONF.read_edl(path3, "25"), rate25, drop25)
+        check("two picture events over the same frames still overlap",
+              any("overlaps" in f for row in res3["rows"] for f in row["faults"]))
+        zero = legal.replace("002  REEL02   V     D    025", "005  REEL02   V     C       ")
+        path4 = os.path.join(tmp, "zero.edl")
+        with open(path4, "w", encoding="utf-8") as fh:
+            fh.write(zero)
+        res4 = CONF.check_edl(CONF.read_edl(path4, "25"), rate25, drop25)
+        check("a zero length event that is not the outgoing side of a transition "
+              "is still a fault",
+              any("not after" in f for row in res4["rows"] for f in row["faults"]))
+
 
 # ---------------------------------------------------------------- subtitles
 
@@ -317,6 +359,73 @@ def test_subs():
         kept = SUBS.retime(SUBS.read(p), 25, 24, "keep")
         check("retime by keep moves nothing",
               abs(kept["events"][0]["end"] - 3.0) < 1e-9)
+
+        # Linux bot review 2026-09-27 (S056): formatting tags were counted as
+        # letters, so a 40 character line in italics was struck as 47.
+        forty = "Forty characters of dialogue, give or ta"
+        styled = [{"start": 0.0, "end": 4.0, "index": 1, "style": None,
+                   "lines": ["<i>" + forty + "</i>"]},
+                  {"start": 5.0, "end": 9.0, "index": 2, "style": None,
+                   "lines": ["{\\an8}" + forty]},
+                  {"start": 10.0, "end": 14.0, "index": 3, "style": None,
+                   "lines": ['<font color="#ffff00">' + forty + "</font>"]}]
+        res = SUBS.check({"file": p, "format": "srt", "events": styled},
+                         {"max_chars_per_line": 42})
+        check("italic, position and colour tags are not counted as characters",
+              res["failing"] == 0 and [r["chars"] for r in res["rows"]] == [40] * 3,
+              str([(r["chars"], r["faults"]) for r in res["rows"]]))
+        amp = [{"start": 0.0, "end": 2.0, "index": 1, "style": None,
+                "lines": ["Tom &amp; Jerry"]}]
+        res = SUBS.check({"file": p, "format": "vtt", "events": amp}, {})
+        check("a WebVTT entity counts as the one character it shows",
+              res["rows"][0]["chars"] == len("Tom & Jerry"))
+
+        # Nested TTML spans read back in reading order, not tree order.
+        ttml = ('<tt xmlns="http://www.w3.org/ns/ttml"><body><div>'
+                '<p begin="00:00:01.000" end="00:00:02.000">A<span>B<span>C</span>'
+                'D</span>E<br/>F</p></div></body></tt>')
+        tp = os.path.join(tmp, "n.ttml")
+        with open(tp, "w", encoding="utf-8") as fh:
+            fh.write(ttml)
+        check("nested TTML spans read in order",
+              SUBS.read(tp)["events"][0]["lines"] == ["ABCDE", "F"],
+              str(SUBS.read(tp)["events"][0]["lines"]))
+
+        # iTT and SMPTE timed TTML give clock times with FRAMES.
+        itt = ('<tt xmlns="http://www.w3.org/ns/ttml" '
+               'xmlns:ttp="http://www.w3.org/ns/ttml#parameter" '
+               'ttp:timeBase="smpte" ttp:frameRate="25"><body><div>'
+               '<p begin="00:00:01:12" end="00:00:03:00">Frames</p>'
+               '<p begin="50f" end="100f">Metric</p></div></body></tt>')
+        ip = os.path.join(tmp, "f.itt")
+        with open(ip, "w", encoding="utf-8") as fh:
+            fh.write(itt)
+        try:
+            ev = SUBS.read(ip)["events"]
+            check("iTT frame times are read at the file's own frame rate",
+                  abs(ev[0]["start"] - 1.48) < 1e-9 and abs(ev[0]["end"] - 3.0) < 1e-9
+                  and abs(ev[1]["start"] - 2.0) < 1e-9, str(ev))
+        except ValueError as exc:
+            check("iTT frame times are read at the file's own frame rate", False, str(exc))
+
+        # Converting keeps what the target can show and never prints a tag
+        # as text.
+        src = [{"start": 1.0, "end": 3.0, "index": 1, "style": None,
+                "lines": ["{\\an8}<i>Quiet</i> now", "<b>Loud</b>"]}]
+        tt_out = os.path.join(tmp, "c.ttml")
+        SUBS.write(src, tt_out, "ttml")
+        with open(tt_out, encoding="utf-8") as fh:
+            tt_text = fh.read()
+        check("SRT italics become a TTML italic span, not literal tags",
+              "&lt;" not in tt_text and 'fontStyle="italic"' in tt_text
+              and SUBS.read(tt_out)["events"][0]["lines"] == ["Quiet now", "Loud"],
+              tt_text[-220:])
+        vt_out = os.path.join(tmp, "c.vtt")
+        SUBS.write(src, vt_out, "vtt")
+        with open(vt_out, encoding="utf-8") as fh:
+            vt_text = fh.read()
+        check("a VTT conversion drops SRT override codes and keeps italics",
+              "{\\an8}" not in vt_text and "<i>Quiet</i> now" in vt_text, vt_text)
 
 
 # ---------------------------------------------------------------- supers
@@ -508,6 +617,47 @@ def test_spec():
     check("nothing is claimed by a name that claims nothing",
           SPEC.claims("FILM.mov", fake) == [])
 
+    # Linux bot review 2026-09-27 (S054): truthful names read as CONTRADICTED. The
+    # dot in 23.976 became a space, so the fps rule read a claim of 976; an
+    # HDR claim was compared as the string "none"; avc, h265 and dnxhr had no
+    # synonym for ffprobe's h264, hevc and dnxhd.
+    pq = {"width": 3840, "height": 2160, "bit_depth_declared": 10,
+          "codec": "h264", "fps_avg": "24000/1001",
+          "transfer": "smpte2084", "primaries": "bt2020"}
+    rows = SPEC.claims("CLIENT_FILM_HDR10_23.976fps_AVC.mp4", {"video": pq})
+    wrong = [(r["token"], r["verdict"]) for r in rows if r["verdict"] != "agrees"]
+    check("a truthful HDR10 23.976fps AVC name contradicts nothing", not wrong, str(wrong))
+    check("23.976fps is read as 23.976, not as 976",
+          "23.976" in [r["token"] for r in rows if r["field"] == "fps"])
+    spot = dict(pq, codec="hevc", fps_avg="30000/1001", transfer="bt709",
+                primaries="bt709")
+    rows = SPEC.claims("SPOT_29.97fps_h265.mp4", {"video": spot})
+    wrong = [(r["token"], r["verdict"]) for r in rows if r["verdict"] != "agrees"]
+    check("h265 and 29.97fps agree with hevc at 30000/1001", not wrong and rows,
+          str(wrong))
+    dnx = dict(spot, codec="dnxhd")
+    check("DNxHR agrees with ffprobe's dnxhd",
+          [r["verdict"] for r in SPEC.claims("FILM_DNxHR_HQX.mxf", {"video": dnx})]
+          == ["agrees"])
+    check("a ProRes name on an H.264 file is contradicted",
+          [r["verdict"] for r in SPEC.claims("FILM_ProRes.mov", {"video": pq})]
+          == ["CONTRADICTED"])
+    check("an HDR claim on an SDR file is contradicted",
+          [r["verdict"] for r in SPEC.claims("FILM_HDR.mov", {"video": spot})]
+          == ["CONTRADICTED"])
+    check("an HLG name on a PQ file is contradicted",
+          [r["verdict"] for r in SPEC.claims("FILM_HLG.mov", {"video": pq})]
+          == ["CONTRADICTED"])
+    wide = dict(spot, primaries="bt2020")
+    check("a Rec2020 claim is checked against the primaries, not the transfer",
+          [r["verdict"] for r in SPEC.claims("FILM_Rec2020.mov", {"video": wide})]
+          == ["agrees"]
+          and [r["verdict"] for r in SPEC.claims("FILM_Rec2020.mov", {"video": spot})]
+          == ["CONTRADICTED"])
+    check("a 25fps claim on a 23.976 file is still contradicted",
+          [r["verdict"] for r in SPEC.claims("FILM_25fps.mov", {"video": pq})]
+          == ["CONTRADICTED"])
+
     # The printed line is the read path: reference/07_delivery.md sends the
     # operator to `spec.py depth` on a delivered master, and the default lands
     # on frame 0, which on a real film is a slate or a black frame. An engine
@@ -602,6 +752,58 @@ def test_deliver_and_archive():
         check("an unknown item is refused", False)
     except ValueError:
         check("an unknown item is refused", True)
+
+    # Linux bot review 2026-09-27 (S055): against a dialog gated profile the
+    # integrated row was MISMATCH whatever the level, and the audit struck the
+    # file for a number this tool says it cannot compare. The meter is stubbed
+    # so the rule is tested, not ffmpeg.
+    import audio as AUD
+    import prove as PRV
+    canned = {"file": "/x/FILM.mov", "stream": "a:0", "integrated_lufs": -27.0,
+              "threshold_lufs": -37.0, "loudness_range_lu": 6.0,
+              "lra_low_lufs": -31.0, "lra_high_lufs": -25.0,
+              "true_peak_dbtp": -20.3, "gate": "bs1770",
+              "measured_with": "stub", "note": ""}
+    saved = (AUD.measure, SPEC.check, PRV.tag_walk)
+    try:
+        AUD.measure = lambda path, stream="a:0": dict(canned)
+        dialog = SPEC.load_profile("vod_uhd_dialog_gated")
+        res = AUD.check("/x/FILM.mov", dialog)
+        integ = [r for r in res["rows"] if r["field"] == "integrated loudness"]
+        check("a dialog gated target reads CANNOT MEASURE, not MISMATCH",
+              integ and integ[0]["verdict"] == "CANNOT MEASURE",
+              integ and integ[0]["verdict"])
+        peak = [r for r in res["rows"] if r["field"] == "true peak"]
+        check("the true peak is still judged under a dialog gate",
+              peak and peak[0]["verdict"] == "ok")
+        r128 = AUD.check("/x/FILM.mov", SPEC.load_profile("broadcast_hd_r128"))
+        integ = [r for r in r128["rows"] if r["field"] == "integrated loudness"]
+        check("a BS.1770 target still strikes a level 4 LU off",
+              integ and integ[0]["verdict"] == "MISMATCH")
+        no_gate = {"audio": {"loudness": {"target_i": -27, "tol_i": 2, "max_tp": -2}}}
+        integ = [r for r in AUD.check("/x/FILM.mov", no_gate)["rows"]
+                 if r["field"] == "integrated loudness"]
+        check("a profile that names no gate compares the BS.1770 level",
+              integ and integ[0]["verdict"] == "ok")
+
+        SPEC.check = lambda path, profile: {
+            "rows": [{"field": "channels", "want": 6, "got": 2, "verdict": "MISMATCH",
+                      "severity": "strike", "note": ""},
+                     {"field": "loudness", "want": "x", "got": "not measured here",
+                      "verdict": "DEFERRED", "severity": "query", "note": "later"}],
+            "flags": []}
+        PRV.tag_walk = lambda path: {"uniform": True, "untagged_runs": [],
+                                     "verdict": "uniform"}
+        aud = DEL.audit("/x/FILM.mov", "vod_uhd_dialog_gated")
+        states = {(r["area"], r["item"]): r["state"] for r in aud["rows"]}
+        check("the audit leaves a correct dialog gated level UNPROVEN, never struck",
+              states.get(("sound", "integrated loudness")) == "UNPROVEN", str(states))
+        check("the audit files audio rows under sound, not picture",
+              ("sound", "channels") in states and ("picture", "channels") not in states)
+        check("the audit drops the deferred loudness row it measures itself",
+              not any(r["item"] == "loudness" and r["state"] == "ASK" for r in aud["rows"]))
+    finally:
+        AUD.measure, SPEC.check, PRV.tag_walk = saved
 
     section("Archive gates")
     with tempfile.TemporaryDirectory() as tmp:
@@ -874,6 +1076,8 @@ def test_media():
               s["verified"] and s["frame_start_s"] <= s["seek_seconds"]
               < s["frame_end_s"],
               f"landed on {s['landed_on']}")
+        _media_normalise_one_track(tmp)
+        _media_seek_offset_start(tmp)
         f = PROVE.framemd5(clip, use_cache=False)
         check("per frame hashes come back", f["count"] == 24)
         d = PROVE.diff_frames(clip, clip, use_cache=False)
@@ -1470,6 +1674,87 @@ def _media_length_and_clipping(tmp):
         if want:
             check("and the peak alone would have passed it", r["peak_sample"] <= 1.0,
                   f"{r['peak_sample_dbfs']:+.2f} dBFS is inside any true peak gate")
+
+
+def _media_seek_offset_start(tmp):
+    """Linux bot review 2026-09-27: a file whose timestamps start late.
+
+    ffmpeg reads an input -ss relative to the file's start time, so seek
+    candidates built from raw timestamps sat 10 s past every frame of a file
+    that starts at 10 s (MXF, TS, a copy made with an offset): none matched and
+    the seek came back unproven. Held against a plain sequential decode.
+    """
+    path = os.path.join(tmp, "offset_start.mov")
+    run = subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                          "testsrc2=size=320x180:rate=25:duration=1",
+                          "-c:v", "prores_ks", "-output_ts_offset", "10", path],
+                         capture_output=True)
+    if run.returncode != 0:
+        check("the offset start clip could be built", False, run.stderr.decode()[:200])
+        return
+
+    def hashes(args):
+        out = subprocess.run(["ffmpeg", "-v", "error", *args, "-map", "0:v:0",
+                              "-f", "framemd5", "-"], capture_output=True, text=True)
+        return [ln.rsplit(",", 1)[-1].strip() for ln in out.stdout.splitlines()
+                if ln and not ln.startswith("#")]
+
+    truth = hashes(["-i", path])
+    s = PROVE.seek_for_frame(path, 7)
+    got = (hashes(["-ss", f"{s['seek_seconds']:.9f}", "-i", path, "-frames:v", "1"])
+           if s.get("seek_seconds") is not None else [])
+    check("a file that starts at 10 s still gets a verified seek to its frame",
+          s.get("verified") and got[:1] == truth[7:8],
+          f"verified {s.get('verified')}, seek {s.get('seek_seconds')}")
+
+
+def _media_normalise_one_track(tmp):
+    """Linux bot review 2026-09-27 (S052): normalise moves the measured track only.
+
+    The normalising pass mapped every stream, re-encoded every audio track at
+    the first track's sample rate and ran the loudnorm filter built from the
+    FIRST track's measurement on all of them, so an M&E or a second language
+    came out moved by the wrong gain.
+    """
+    import audio as AUD
+    src = os.path.join(tmp, "two_tracks.mov")
+    run = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+         "testsrc2=size=160x90:rate=25:duration=6",
+         "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=6",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=6",
+         "-filter_complex", "[1:a]volume=-12dB[a0];[2:a]volume=-3dB[a1]",
+         "-map", "0:v", "-map", "[a0]", "-map", "[a1]",
+         "-c:v", "prores_ks", "-c:a", "pcm_s16le", src], capture_output=True)
+    if run.returncode != 0:
+        check("a two track clip could be built", False, run.stderr.decode()[:200])
+        return
+    before = AUD.measure(src, "a:1")
+    out = os.path.join(tmp, "two_tracks_norm.mov")
+    try:
+        res = AUD.normalise(src, SPEC.load_profile("broadcast_hd_r128"), out, "a:0")
+    except (RuntimeError, ValueError) as exc:
+        check("a two track master normalises", False, str(exc))
+        return
+    after = AUD.measure(out, "a:1")
+    streams = SPEC.probe(out)["audio"]
+    check("normalise moves the measured track to the target",
+          abs(res["after"]["integrated_lufs"] - (-23.0)) <= 1.0,
+          str(res["after"]["integrated_lufs"]))
+    check("the other audio track keeps its loudness",
+          before["integrated_lufs"] == after["integrated_lufs"],
+          f"{before['integrated_lufs']} then {after['integrated_lufs']}")
+    check("the other audio track is copied, not re-encoded or resampled",
+          streams[1]["codec"] == "pcm_s16le" and streams[1]["sample_rate"] == 44100,
+          str(streams[1]))
+    check("the measured track keeps its own sample rate",
+          streams[0]["sample_rate"] == 48000 and streams[0]["codec"] == "pcm_s24le",
+          str(streams[0]))
+    try:
+        AUD.normalise(src, SPEC.load_profile("broadcast_hd_r128"), out + ".mov", "0:1")
+        check("a stream that is not named a:N is refused", False)
+    except ValueError:
+        check("a stream that is not named a:N is refused", True)
 
 
 def _media_honest_enlargement(tmp):
@@ -2225,6 +2510,110 @@ def test_comp_track():
           kept < 1.2, f"worst {kept:.2f} against the true settle")
     check("and the residual is reported against the RAW values",
           "residual_vs_raw_px" in sm and sm["note"].startswith("the residual"))
+
+    _comp_memory_checks()
+
+
+def _comp_memory_checks():
+    """Linux bot review 2026-09-27 (S059): whole clips were decoded into memory.
+
+    verify ring and verify content built dict(read_frames(...)) for the plate
+    AND the comp, and track built a list of every frame, all float32. Measured:
+    40 decoded 1080p frames held 1.04 GB, so a five second 1080p verify needs
+    about 6 GB, and inside the bot's 8 GB cgroup an out of memory kill takes the
+    whole bot down. The verifiers must stream; track must refuse a clip that
+    cannot fit, before decoding it.
+    """
+    import argparse
+    import weakref
+    import numpy as np
+    import _pix as P
+    import _track as T
+    import comp as COMP
+
+    head = P.memory_headroom()
+    check("the memory headroom is read", isinstance(head, int) and head > 0, str(head))
+
+    saved = (P.clip_info, P.read_frames, P.memory_headroom)
+    try:
+        P.clip_info = lambda path: {"width": 3840, "height": 2160, "frames": 2400,
+                                    "rate": 24, "rate_str": "24", "path": path}
+        P.memory_headroom = lambda: 8 << 30
+
+        def no_decode(*a, **k):
+            raise AssertionError("decoded before the budget was checked")
+            yield  # pragma: no cover
+
+        P.read_frames = no_decode
+        try:
+            T.track("uhd_long.mov")
+            ok, why = False, "no refusal"
+        except MemoryError as exc:
+            ok, why = "--count" in str(exc) and "systemd-run" in str(exc), str(exc)[:160]
+        except AssertionError as exc:
+            ok, why = False, str(exc)
+        check("track refuses a clip too big to hold, before decoding it", ok, why)
+
+        # The verifiers: count how many decoded frames are alive at once.
+        alive = {"now": 0, "max": 0}
+
+        def gone():
+            alive["now"] -= 1
+
+        def fake_frames(path, start=0, count=None, step=1, scale=None, bits=8):
+            n = 40 if count is None else count
+            for i in range(start, start + n):
+                img = P.Image(np.full((90, 160, 3), 0.25, np.float32), "srgb",
+                              path, "fake", bits=8)
+                alive["now"] += 1
+                alive["max"] = max(alive["max"], alive["now"])
+                # Image has __slots__ and no weakref slot; its pixel array
+                # lives exactly as long as the frame does.
+                weakref.finalize(img.rgb, gone)
+                yield i, img
+
+        P.read_frames = fake_frames
+        P.clip_info = lambda path: {"width": 160, "height": 90, "frames": 40,
+                                    "rate": 24, "rate_str": "24", "path": path}
+        quad = np.array([[40, 20], [120, 20], [120, 70], [40, 70]], float)
+        saved_load = COMP._load_track
+        COMP._load_track = lambda path: {"corners": quad,
+                                         "warps": {i: np.eye(3) for i in range(40)},
+                                         "quads": {i: quad for i in range(40)}}
+        try:
+            args = argparse.Namespace(track="t.json", plate="p.mov", comp="c.mov",
+                                      start=0, count=None, inner=2, outer=12,
+                                      floor=0.01, json=True)
+            try:
+                with open(os.devnull, "w") as sink:
+                    old_out, sys.stdout = sys.stdout, sink
+                    try:
+                        COMP._verify_ring(args)
+                    finally:
+                        sys.stdout = old_out
+            except RuntimeError:
+                pass
+            check("verify ring holds a few frames at a time, not the clip",
+                  0 < alive["max"] <= 4, f"{alive['max']} of 80 frames alive at once")
+            alive["max"] = alive["now"] = 0
+            args = argparse.Namespace(track="t.json", plate="p.mov", comp="c.mov",
+                                      start=0, count=None, region=None, screen="green",
+                                      diff_floor=None, tolerance=2.0, json=True)
+            try:
+                with open(os.devnull, "w") as sink:
+                    old_out, sys.stdout = sys.stdout, sink
+                    try:
+                        COMP._verify_content(args)
+                    finally:
+                        sys.stdout = old_out
+            except RuntimeError:
+                pass
+            check("verify content holds its floor sample and a pair, not the clip",
+                  0 < alive["max"] <= 20, f"{alive['max']} of 80 frames alive at once")
+        finally:
+            COMP._load_track = saved_load
+    finally:
+        P.clip_info, P.read_frames, P.memory_headroom = saved
 
 
 def _which(tool):

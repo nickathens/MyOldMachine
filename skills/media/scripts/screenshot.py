@@ -36,12 +36,16 @@ async def take_screenshot(
         )
         page = await context.new_page()
 
+        # The load event is the gate. Network idle is a bounded extra wait:
+        # a page that keeps fetching (analytics, a looping video) never goes
+        # idle, and the old fallback reloaded it and shot at DOMContentLoaded,
+        # before its images had arrived (Linux bot review 2026-09-27).
+        await page.goto(url, wait_until="load", timeout=60000)
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-        except Exception as e:
-            # Try with domcontentloaded if networkidle times out
-            print(f"Warning: {e}, retrying with domcontentloaded", file=sys.stderr)
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            print("Note: page still busy on the network after 5 s; shooting anyway",
+                  file=sys.stderr)
 
         # Additional wait for any animations/JS
         if wait_ms > 0:

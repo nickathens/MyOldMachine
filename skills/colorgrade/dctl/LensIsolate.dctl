@@ -76,8 +76,14 @@ __DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, float p
     const float s = (mx > 0.000001f) ? (d / mx) : 0.0f;
     const float v = mx;
 
-    // hue: four handle qualifier band
-    float m = _fminf(ramp(h, hueLowSoft, hueLow), 1.0f - ramp(h, hueHigh, hueHighSoft));
+    // hue: four handle qualifier band. Every hue and handle is read relative
+    // to Hue Low Soft, so a band that crosses 0/360 works: a red band from 350
+    // to 10 used to select nothing, because 5 is not between 350 and 355.
+    const float hLo = hueLowSoft + _fmod(hueLow - hueLowSoft + 360.0f, 360.0f);
+    const float hHi = hueLowSoft + _fmod(hueHigh - hueLowSoft + 360.0f, 360.0f);
+    const float hHiSoft = hueLowSoft + _fmod(hueHighSoft - hueLowSoft + 360.0f, 360.0f);
+    const float hRel = hueLowSoft + _fmod(h - hueLowSoft + 360.0f, 360.0f);
+    float m = _fminf(ramp(hRel, hueLowSoft, hLo), 1.0f - ramp(hRel, hHi, hHiSoft));
 
     // saturation and value floors
     m = m * ramp(s, satLo, satHi);

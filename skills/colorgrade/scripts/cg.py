@@ -214,7 +214,9 @@ def cmd_grade(args):
     # truth harness that mistake pushed the spread from 8.9 up to 14.5.
     match_strength = args.match_strength
     grades, notes_all, predicted = None, None, None
-    for attempt in range(args.max_iterations):
+    # At least one pass: --max-iterations 0 left `predicted` unset and the
+    # judge below crashed on None after the whole measurement had run.
+    for attempt in range(max(1, args.max_iterations)):
         grades, notes_all = {}, {}
 
         # pass 1: mechanical balance

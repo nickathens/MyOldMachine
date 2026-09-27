@@ -140,8 +140,11 @@ def main():
     parser.add_argument("--forecast", action="store_true", help="Show 7-day forecast")
     args = parser.parse_args()
 
-    # Determine coordinates
-    if args.lat and args.lon:
+    # Determine coordinates. 0 is a real latitude (the equator) and a real
+    # longitude (Greenwich): test for "given", never for truthiness.
+    if (args.lat is None) != (args.lon is None):
+        parser.error("give both --lat and --lon")
+    if args.lat is not None and args.lon is not None:
         lat, lon = args.lat, args.lon
         city = f"({lat}, {lon})"
     elif args.city != DEFAULT_CITY:

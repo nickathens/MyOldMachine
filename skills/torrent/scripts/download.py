@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Download a torrent (magnet or .torrent URL) via aria2c.
 
-VPN-gated by default: refuses to start unless ProtonVPN is connected.
-Override with --no-vpn for trusted content (Linux ISOs, public domain, own backups).
+VPN-gated by default: refuses to start unless ProtonVPN is connected. On Linux
+it also binds every aria2c socket (peers, DHT, listen port) to the VPN's own
+interface, so if the tunnel drops mid-download the transfer stops instead of
+carrying on over the home line (macOS: check only, see vpn_gate). Override
+with --no-vpn for trusted content (Linux ISOs, public domain, own backups).
 
 No seeding after download (--seed-time=0) to minimize exposure window.
 Lands in ~/Downloads/torrents/.
@@ -19,10 +22,14 @@ from pathlib import Path
 DOWNLOAD_DIR = Path.home() / "Downloads" / "torrents"
 
 
-def _vpn_connected_linux() -> bool:
-    """nmcli check for an active ProtonVPN connection. Mirrors the vpn skill."""
+def _vpn_device_linux():
+    """The network device of the active ProtonVPN connection, or None.
+
+    Read from nmcli's NAME:TYPE:DEVICE line for the connection, the same
+    listing the vpn skill reads, rather than assuming a device name.
+    """
     if shutil.which("nmcli") is None:
-        return False
+        return None
     try:
         result = subprocess.run(
             ["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"],
@@ -31,13 +38,14 @@ def _vpn_connected_linux() -> bool:
             timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
+        return None
     if result.returncode != 0:
-        return False
+        return None
     for line in result.stdout.strip().splitlines():
         if "ProtonVPN" in line:
-            return True
-    return False
+            device = line.rsplit(":", 1)[-1].strip()
+            return device or None
+    return None
 
 
 def _vpn_connected_mac() -> bool:
@@ -64,11 +72,22 @@ def _vpn_connected_mac() -> bool:
     return "VPN server" in result.stdout
 
 
+def vpn_gate():
+    """(connected, device): is a VPN up, and which device to bind aria2c to.
+
+    On Linux the ProtonVPN connection's own device is returned, so every
+    aria2c socket can be bound to it. On macOS the ProtonVPN app has no CLI
+    that names its tunnel, so only the check is made and nothing is bound.
+    """
+    if platform.system() == "Darwin":
+        return _vpn_connected_mac(), None
+    device = _vpn_device_linux()
+    return device is not None, device
+
+
 def vpn_connected() -> bool:
     """Cross-platform ProtonVPN reachability check."""
-    if platform.system() == "Darwin":
-        return _vpn_connected_mac()
-    return _vpn_connected_linux()
+    return vpn_gate()[0]
 
 
 def main():
@@ -109,8 +128,10 @@ def main():
         sys.stderr.write(f"--magnet must be a magnet: URI or http(s):// URL, got: {magnet[:60]}\n")
         sys.exit(2)
 
+    device = None
     if not args.no_vpn:
-        if not vpn_connected():
+        connected, device = vpn_gate()
+        if not connected:
             sys.stderr.write(
                 "ProtonVPN is not connected. Refusing to start download.\n"
                 "Connect first via the vpn skill (vpn.py connect --country NL).\n"
@@ -130,6 +151,12 @@ def main():
         "--file-allocation=falloc",
         magnet,
     ]
+    if device:
+        # aria2c binds every socket it opens, DHT and the listen port
+        # included, to this interface's address (measured with --interface=lo
+        # on aria2 1.37.0: UDP DHT and TCP listen both on 127.0.0.1). When the
+        # tunnel drops, that address is gone and nothing can go out another way.
+        cmd.insert(1, f"--interface={device}")
     if args.quiet:
         cmd.insert(1, "--quiet=true")
 

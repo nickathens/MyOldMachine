@@ -14,6 +14,7 @@ Usage:
 import argparse
 import base64
 import html as html_lib
+import importlib.util
 import json
 import re
 import subprocess
@@ -67,6 +68,7 @@ FONT_CATALOG = {
     "Poppins": "Poppins:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400",
     "Archivo": "Archivo:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400",
     "Noto Serif Display": "Noto+Serif+Display:ital,wght@0,400;0,600;0,700;1,400",
+    "Libre Caslon Text": "Libre+Caslon+Text:ital,wght@0,400;0,700;1,400",
 }
 
 
@@ -331,9 +333,9 @@ def render_cover(data: dict) -> str:
 
 def render_divider(s: dict) -> str:
     number = html_lib.escape(str(s.get("number", "")))
-    title = html_lib.escape(s.get("title", ""))
+    title = html_lib.escape(str(s.get("title", "")))
     raw_num = str(s.get("number", "")).strip().replace(" ", "-").lower()
-    div_id = f' id="nav-{raw_num}"' if raw_num else ""
+    div_id = f' id="nav-{html_lib.escape(raw_num)}"' if raw_num else ""
     parts = [f'<div class="section-divider"{div_id}>', '    <div class="container">']
     if number:
         parts.append(f'        <div class="section-number">{number}</div>')
@@ -637,6 +639,28 @@ def render_packshot(s: dict) -> str:
     return '\n'.join(parts)
 
 
+def _aspect_padding(aspect) -> float | None:
+    """padding-bottom percent for "16:9", "16/9", "1920x1080" or a width/height number.
+
+    A bare number (1.78) used to reach str.split and crash the build (float)
+    or be dropped silently (string); it now means width over height.
+    """
+    if aspect in (None, "") or isinstance(aspect, bool):
+        return None
+    text = str(aspect).strip().lower()
+    try:
+        for sep in (":", "/", "x"):
+            if sep in text:
+                w, h = (float(v) for v in text.split(sep, 1))
+                break
+        else:
+            w, h = float(text), 1.0
+        pct = h / w * 100
+    except (ValueError, ZeroDivisionError):
+        return None
+    return pct if pct > 0 and pct != float("inf") else None
+
+
 def render_video(s: dict) -> str:
     label = html_lib.escape(s.get("label", s.get("title", "")))
     url = s.get("url", "")
@@ -648,15 +672,8 @@ def render_video(s: dict) -> str:
 
     if url:
         is_direct_video = re.search(r'\.(mp4|webm|mov|m4v)(\?|$)', url, re.IGNORECASE) is not None
-        aspect = s.get("aspect_ratio")
-        container_style = ""
-        if aspect:
-            try:
-                w, h = aspect.split(":") if ":" in str(aspect) else aspect.split("/")
-                pct = (float(h) / float(w)) * 100
-                container_style = f' style="padding-bottom: {pct:.4f}%"'
-            except (ValueError, ZeroDivisionError):
-                container_style = ""
+        pct = _aspect_padding(s.get("aspect_ratio"))
+        container_style = f' style="padding-bottom: {pct:.4f}%"' if pct else ""
         parts.append(f'        <div class="video-container"{container_style}>')
         if is_direct_video:
             poster = s.get("poster", "")
@@ -913,6 +930,33 @@ def _companion_fonts_for(subsets: list) -> list:
     return out
 
 
+def _font_substitute(name: str) -> str:
+    """A Google Fonts stand-in for a family Google does not serve, or "".
+
+    The aesthetic references name the real brand typefaces (Neue Haas
+    Grotesk, GT Sectra, Canela ...), which a web page cannot load, so those
+    treatments fell back to the browser's default sans and serif. The
+    stand-in comes second in the CSS stack, after the real name, so a viewer
+    who has the real typeface installed still sees it.
+    """
+    if not name or name in FONT_CATALOG:
+        return ""
+    sub = _design_md()._resolve_font(name)
+    return sub if sub != name and sub in FONT_CATALOG else ""
+
+
+def _design_md():
+    """The sibling design_md module, loaded by path so it does not depend on
+    this directory being on sys.path (it is only when run as a script)."""
+    mod = sys.modules.get("design_md")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location("design_md", SCRIPT_DIR / "design_md.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sys.modules["design_md"] = mod
+    return mod
+
+
 def build_font_link(fonts: dict, subsets: list | None = None) -> str:
     """Build Google Fonts CSS2 link URL. Accepts any Google Font name.
 
@@ -927,9 +971,15 @@ def build_font_link(fonts: dict, subsets: list | None = None) -> str:
             continue
         if name in FONT_CATALOG:
             families.add(FONT_CATALOG[name])
-        else:
-            encoded = name.replace(" ", "+")
-            families.add(f"{encoded}:wght@400;500;600;700")
+            continue
+        # Requested as-is even when a stand-in exists: Google ignores a
+        # family it does not serve and returns the rest, and some names in
+        # the stand-in map (Roboto, Open Sans) are Google fonts themselves.
+        encoded = name.replace(" ", "+")
+        families.add(f"{encoded}:wght@400;500;600;700")
+        substitute = _font_substitute(name)
+        if substitute:
+            families.add(FONT_CATALOG[substitute])
 
     if not families:
         families = {
@@ -949,23 +999,35 @@ def build_font_link(fonts: dict, subsets: list | None = None) -> str:
     )
 
 
+def _css_string(name: str) -> str:
+    """A font name as a quoted CSS string. A bare '...' broke on an apostrophe:
+    the aesop reference's "Suisse Int'l" ended the string early, Chromium
+    dropped the whole --font-body declaration, and the page fell back to the
+    template's default font (audit, 2026-09-27)."""
+    return "'" + str(name).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 def build_font_css(fonts: dict, subsets: list | None = None) -> str:
     """Build CSS font-family overrides. Greek/Cyrillic subsets get companion-font fallbacks."""
     if not fonts:
         return ""
     companions = _companion_fonts_for(subsets or [])
-    sans_companions = ", ".join(f"'{n}'" for n, role in companions if role == "sans")
-    serif_companions = ", ".join(f"'{n}'" for n, role in companions if role in ("sans", "serif"))
+    sans_companions = ", ".join(_css_string(n) for n, role in companions if role == "sans")
+    serif_companions = ", ".join(_css_string(n) for n, role in companions if role in ("sans", "serif"))
     sans_chain = f", {sans_companions}" if sans_companions else ""
     serif_chain = f", {serif_companions}" if serif_companions else ""
 
+    def family(name: str) -> str:
+        substitute = _font_substitute(name)
+        return f"{_css_string(name)}, {_css_string(substitute)}" if substitute else _css_string(name)
+
     lines = []
     if fonts.get("heading"):
-        lines.append(f"    --font-heading: '{fonts['heading']}'{sans_chain}, sans-serif;")
+        lines.append(f"    --font-heading: {family(fonts['heading'])}{sans_chain}, sans-serif;")
     if fonts.get("body"):
-        lines.append(f"    --font-body: '{fonts['body']}'{sans_chain}, sans-serif;")
+        lines.append(f"    --font-body: {family(fonts['body'])}{sans_chain}, sans-serif;")
     if fonts.get("serif"):
-        lines.append(f"    --font-serif: '{fonts['serif']}'{serif_chain}, serif;")
+        lines.append(f"    --font-serif: {family(fonts['serif'])}{serif_chain}, serif;")
     if not lines:
         return ""
     return ":root {\n" + "\n".join(lines) + "\n}"
@@ -1440,10 +1502,12 @@ def build_nav_html(data: dict, nav_type: str) -> str:
     if nav_type == "sidebar":
         links = []
         for i, item in enumerate(items):
-            num = html_lib.escape(item["number"])
-            title = html_lib.escape(item["title"])
+            # str(): a divider number is often a JSON number (1), and
+            # html.escape(1) raised, killing the whole build.
+            num = html_lib.escape(str(item["number"]))
+            title = html_lib.escape(str(item["title"]))
             links.append(
-                f'        <a href="#{item["id"]}" class="sidebar-nav-item" data-nav-index="{i}">'
+                f'        <a href="#{html_lib.escape(item["id"])}" class="sidebar-nav-item" data-nav-index="{i}">'
                 f'<span class="sidebar-nav-num">{num}</span> {title}</a>'
             )
         return (
@@ -1459,7 +1523,7 @@ def build_nav_html(data: dict, nav_type: str) -> str:
         for i, item in enumerate(items):
             label = html_lib.escape(f"{item['number']} {item['title']}")
             links.append(
-                f'    <a href="#{item["id"]}" class="topbar-nav-item" data-nav-index="{i}">{label}</a>'
+                f'    <a href="#{html_lib.escape(item["id"])}" class="topbar-nav-item" data-nav-index="{i}">{label}</a>'
             )
         return (
             '<nav class="topbar-nav" id="topbar-nav">\n'
@@ -1471,9 +1535,9 @@ def build_nav_html(data: dict, nav_type: str) -> str:
     if nav_type == "dots":
         dots = []
         for i, item in enumerate(items):
-            title = html_lib.escape(item["title"])
+            title = html_lib.escape(str(item["title"]))
             dots.append(
-                f'    <a href="#{item["id"]}" class="dots-nav-item" data-nav-index="{i}" title="{title}"></a>'
+                f'    <a href="#{html_lib.escape(item["id"])}" class="dots-nav-item" data-nav-index="{i}" title="{title}"></a>'
             )
         return '<nav class="dots-nav" id="dots-nav">\n' + '\n'.join(dots) + '\n</nav>'
 
@@ -1606,7 +1670,9 @@ def build_nav_js(nav_type: str) -> str:
     navItems.forEach(function(item) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
-            var target = document.querySelector(this.getAttribute('href'));
+            // getElementById: an id such as nav-1.1 is not a valid CSS
+            // selector, and querySelector threw after preventDefault.
+            var target = document.getElementById(this.getAttribute('href').slice(1));
             if (target) gsap.to(window, { scrollTo: { y: target, offsetY: 80 }, duration: 1, ease: 'power2.inOut' });
         });
     });
@@ -1625,6 +1691,22 @@ def build_nav_js(nav_type: str) -> str:
 
     js += "})();\n"
     return js
+
+
+# Every animated element starts hidden (opacity 0) in the theme and is shown
+# only by GSAP. Opened offline, or where cdn.jsdelivr.net is blocked, the page
+# was blank apart from the background. When GSAP is missing the document
+# gets .no-gsap and everything is shown still, as print already does.
+NO_GSAP_JS = """
+if (typeof gsap === 'undefined' || typeof ScrollTrigger === 'undefined') {
+    document.documentElement.classList.add('no-gsap');
+}
+"""
+
+NO_GSAP_CSS = """
+html.no-gsap body * { opacity: 1 !important; transform: none !important; }
+html.no-gsap .particles, html.no-gsap .cover-scroll { display: none !important; }
+"""
 
 
 AUTOPLAY_JS = """
@@ -1730,7 +1812,7 @@ def build_html(data: dict, theme_css: str) -> str:
     scheme_css = build_scheme_css(data.get("scheme", {}))
     font_css = build_font_css(fonts, subsets=subsets if subsets else None)
     nav_css = build_nav_css(nav_type, mode)
-    overrides = "\n".join(filter(None, [mode_css, scheme_css, font_css, nav_css]))
+    overrides = "\n".join(filter(None, [mode_css, scheme_css, font_css, nav_css, NO_GSAP_CSS]))
 
     cover_html = render_cover(data)
     sections_html = "\n\n".join(render_section(s) for s in data.get("sections", []))
@@ -1773,6 +1855,9 @@ def build_html(data: dict, theme_css: str) -> str:
 {sections_html}
 
 <script>
+{NO_GSAP_JS}
+</script>
+<script>
 {animation_js}
 {nav_js}
 {AUTOPLAY_JS}
@@ -1796,11 +1881,18 @@ import asyncio, sys
 from playwright.async_api import async_playwright
 
 async def main():
-    html_path, pdf_path = sys.argv[1], sys.argv[2]
+    html_uri, pdf_path = sys.argv[1], sys.argv[2]
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         page = await browser.new_page(viewport={'width': 1920, 'height': 1080})
-        await page.goto(f'file://{html_path}', wait_until='networkidle')
+        # The load event is the gate; a page that keeps fetching (an
+        # autoplaying video section) never goes network idle, so idle is a
+        # bounded extra wait, not a condition.
+        await page.goto(html_uri, wait_until='load', timeout=120000)
+        try:
+            await page.wait_for_load_state('networkidle', timeout=15000)
+        except Exception:
+            pass
         await page.wait_for_timeout(3000)
         await page.pdf(
             path=pdf_path,
@@ -1816,10 +1908,14 @@ asyncio.run(main())
 """
     try:
         result = subprocess.run(
-            [sys.executable, "-c", script, str(html_abs), str(pdf_abs)],
+            # as_uri() percent-encodes, so a '#' or '?' in a folder name
+            # cannot cut the file URL short.
+            [sys.executable, "-c", script, html_abs.as_uri(), str(pdf_abs)],
             capture_output=True,
             text=True,
-            timeout=30,
+            # A treatment with its images embedded runs to tens of MB, and
+            # 30 s failed the export before the page had finished loading.
+            timeout=240,
         )
         if result.returncode == 0:
             print(result.stdout.strip())
@@ -1828,7 +1924,7 @@ asyncio.run(main())
             print(f"PDF export failed: {result.stderr}", file=sys.stderr)
             return False
     except subprocess.TimeoutExpired:
-        print("PDF export timed out after 30s", file=sys.stderr)
+        print("PDF export timed out after 240s", file=sys.stderr)
         return False
 
 
@@ -1849,7 +1945,8 @@ def main():
     parser.add_argument(
         "--brand-url",
         default=None,
-        help="Scrape this URL via Firecrawl and seed scheme/fonts/logo from the response",
+        help="Scrape this URL via Firecrawl and seed the cover (logo and brand link) "
+             "from it; colors and fonts are not applied (use ingest_brand.py for those)",
     )
     parser.add_argument(
         "--aesthetic",

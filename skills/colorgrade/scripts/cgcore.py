@@ -108,13 +108,21 @@ def rgb_to_hsv(rgb):
     mx = np.max(rgb, axis=-1)
     mn = np.min(rgb, axis=-1)
     d = mx - mn
-    h = np.zeros_like(mx)
     nz = d > EPS
+    # Exactly one sector per pixel, in the order the DCTL uses (red, then
+    # green, then blue). When two channels tie for the maximum, as pure yellow,
+    # cyan and magenta do on every LUT lattice and constantly in 8-bit video,
+    # the old independent masks added two sectors: yellow read 120 (green),
+    # cyan 360 (red), magenta 600.
+    is_r = nz & (mx == r)
+    is_g = nz & (mx == g) & ~is_r
+    is_b = nz & ~is_r & ~is_g
     with np.errstate(invalid="ignore", divide="ignore"):
-        rm = np.where(nz & (mx == r), ((g - b) / np.maximum(d, EPS)) % 6.0, 0.0)
-        gm = np.where(nz & (mx == g), ((b - r) / np.maximum(d, EPS)) + 2.0, 0.0)
-        bm = np.where(nz & (mx == b), ((r - g) / np.maximum(d, EPS)) + 4.0, 0.0)
-    h = (rm + gm + bm) * 60.0
+        dd = np.maximum(d, EPS)
+        h = np.where(is_r, ((g - b) / dd) % 6.0,
+                     np.where(is_g, (b - r) / dd + 2.0,
+                              np.where(is_b, (r - g) / dd + 4.0, 0.0)))
+    h = h * 60.0
     h = np.where(h < 0, h + 360.0, h)
     s = np.where(mx > EPS, d / np.maximum(mx, EPS), 0.0)
     return h.astype(np.float32), s.astype(np.float32), mx.astype(np.float32)
@@ -123,7 +131,8 @@ def rgb_to_hsv(rgb):
 def hue_weight(h, centre, width):
     """Smooth 0..1 weight peaking at hue `centre`, falling to 0 at `width` away.
 
-    Wraps correctly around 360. Raised cosine, so no hard edges anywhere.
+    Wraps correctly around 360. A smoothstep of the distance, so no hard
+    edges anywhere.
     """
     d = np.abs(((h - centre + 180.0) % 360.0) - 180.0)
     t = np.clip(1.0 - d / max(width, EPS), 0.0, 1.0)

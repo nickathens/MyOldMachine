@@ -30,6 +30,7 @@ Usage:
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -46,6 +47,28 @@ DEFAULTS = {"max_lines": 2, "max_chars_per_line": 42, "max_cps": 17,
 
 _SRT_TIME = re.compile(r"(\d+):(\d{2}):(\d{2})[,.](\d{1,3})")
 _ARROW = re.compile(r"-->")
+
+# Formatting a player draws but never shows as letters: SRT and WebVTT tags
+# (<i>, </b>, <font color=...>, <c.yellow>, <v Speaker>), WebVTT karaoke
+# timestamps (<00:00:01.500>) and the ASS override codes many SRT files carry
+# ({\an8}, {\i1}). A literal "<3" or "a < b" is text and stays.
+_TAG = re.compile(r"</?[A-Za-z][^<>]*>|<\d{1,2}(?::\d{2}){1,2}[.,]\d{1,3}>")
+_OVERRIDE = re.compile(r"\{\\[^{}]*\}")
+# The tags each written format can show; anything else is dropped on write.
+_SRT_KEEPS = re.compile(r"</?(?:i|b|u|font)\b[^<>]*>|\{\\[^{}]*\}", re.I)
+_VTT_DROPS = re.compile(r"\{\\[^{}]*\}|</?font\b[^<>]*>", re.I)
+
+TT_NS = "http://www.w3.org/ns/ttml"
+TTP = "{http://www.w3.org/ns/ttml#parameter}"
+_TTS_SPAN = {"i": 'tts:fontStyle="italic"', "b": 'tts:fontWeight="bold"',
+             "u": 'tts:textDecoration="underline"'}
+
+
+def visible(line, fmt="srt"):
+    """The characters a viewer reads: tags and override codes removed, and a
+    WebVTT entity (&amp;) counted as the one character it shows."""
+    text = _OVERRIDE.sub("", _TAG.sub("", line))
+    return html.unescape(text) if fmt == "vtt" else text
 
 
 # ---------------------------------------------------------------- time
@@ -150,34 +173,75 @@ def _read_vtt(text):
     return events
 
 
+def _ttml_clock(root):
+    """A time reader for this document's own time base.
+
+    TTML and iTT write clock times with FRAMES (00:00:01:12) and offset times
+    in frames or ticks (50f, 9000t), both at the rate the root declares. A
+    frame is 1/ttp:frameRate (times the multiplier, "1000 1001" for NTSC); the
+    spec's default rate is 30. A tick is 1/ttp:tickRate, which defaults to the
+    frame rate when one is declared and to 1 otherwise.
+    """
+    declared = root.get(TTP + "frameRate")
+    fps = float(declared or 30)
+    mult = root.get(TTP + "frameRateMultiplier")
+    if mult:
+        num, den = mult.split()
+        fps = fps * int(num) / int(den)
+    tick = float(root.get(TTP + "tickRate") or (fps if declared else 1))
+
+    def clock(value):
+        v = value.strip()
+        m = re.fullmatch(r"(\d+):(\d{2}):(\d{2}):(\d+)(?:\.\d+)?", v)
+        if m:
+            h, mnt, sec, fr = (int(x) for x in m.groups())
+            return h * 3600 + mnt * 60 + sec + fr / fps
+        m = re.fullmatch(r"(\d+(?:\.\d+)?)(h|ms|m|s|f|t)", v)
+        if m:
+            n = float(m.group(1))
+            return {"h": n * 3600, "m": n * 60, "s": n, "ms": n / 1000,
+                    "f": n / fps, "t": n / tick}[m.group(2)]
+        return parse_time(v)
+
+    return clock
+
+
 def _read_ttml(text):
     root = ET.fromstring(text)
-    ns = {"tt": "http://www.w3.org/ns/ttml"}
+    ns = {"tt": TT_NS}
+    clock = _ttml_clock(root)
     events = []
     for p in root.iterfind(".//tt:body//tt:p", ns):
-        begin, end = p.get("begin"), p.get("end")
+        begin, end, dur = p.get("begin"), p.get("end"), p.get("dur")
         if not begin:
             continue
         lines, current = [], []
-        for node in p.iter():
-            tag = node.tag.split("}")[-1]
-            if tag == "br":
+
+        def walk(node):
+            # Depth first, each child's tail after the child: that is reading
+            # order. Iterating p.iter() read a span's tail before the spans
+            # nested inside it ("ABECD" for A<span>B<span>C</span>D</span>E).
+            if node.tag.split("}")[-1] == "br":
                 lines.append("".join(current))
-                current = []
-                if node.tail:
-                    current.append(node.tail)
-                continue
-            if node is p:
-                if node.text:
-                    current.append(node.text)
-                continue
+                current.clear()
+                return
             if node.text:
                 current.append(node.text)
-            if node.tail:
-                current.append(node.tail)
+            for child in node:
+                walk(child)
+                if child.tail:
+                    current.append(child.tail)
+
+        walk(p)
         lines.append("".join(current))
-        events.append({"start": parse_time(begin),
-                       "end": parse_time(end) if end else parse_time(begin) + 2.0,
+        start = clock(begin)
+        if end:
+            stop = clock(end)
+        elif dur:
+            stop = start + clock(dur)
+        else:
+            stop = start + 2.0
+        events.append({"start": start, "end": stop,
                        "lines": [ln.strip() for ln in lines if ln.strip() != ""],
                        "style": p.get("region")})
     return events
@@ -201,11 +265,18 @@ def write(events, path, fmt=None):
     return path
 
 
+def _srt_line(line):
+    """Keep what SRT players show (i, b, u, font, override codes); drop
+    WebVTT-only tags such as <c.yellow>, <v Speaker> and karaoke timestamps."""
+    return _TAG.sub(lambda m: m.group(0) if _SRT_KEEPS.fullmatch(m.group(0)) else "",
+                    line)
+
+
 def _write_srt(events):
     parts = []
     for i, e in enumerate(events, 1):
         parts.append(f"{i}\n{fmt_time(e['start'])} --> {fmt_time(e['end'])}\n"
-                     + "\n".join(e["lines"]) + "\n")
+                     + "\n".join(_srt_line(ln) for ln in e["lines"]) + "\n")
     return "\n".join(parts)
 
 
@@ -215,20 +286,53 @@ def _write_vtt(events):
         head = f"{fmt_time(e['start'], '.')} --> {fmt_time(e['end'], '.')}"
         if e.get("style"):
             head += " " + e["style"]
-        parts.append(head + "\n" + "\n".join(e["lines"]) + "\n")
+        # WebVTT has no font tag and no ASS override codes: a player would
+        # print them as text.
+        parts.append(head + "\n" + "\n".join(_VTT_DROPS.sub("", ln) for ln in e["lines"])
+                     + "\n")
     return "\n".join(parts)
 
 
-def _write_ttml(events):
+def _ttml_body(lines):
+    """One event as TTML: <i>, <b> and <u> become styled spans (balanced, even
+    when the source leaves one open across a line break), every other tag and
+    override code is dropped, and the text is escaped. Escaping the tags as
+    text printed a literal "<i>" on screen."""
     def esc(s):
-        return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+        return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\n", "<br/>"))
+    text = "\n".join(lines)
+    out, stack, pos = [], [], 0
+    for m in re.finditer(_TAG.pattern + "|" + _OVERRIDE.pattern, text):
+        out.append(esc(text[pos:m.start()]))
+        pos = m.end()
+        tag = re.fullmatch(r"<(/?)([ibu])>", m.group(0), re.I)
+        if not tag:
+            continue
+        name = tag.group(2).lower()
+        if tag.group(1):
+            while name in stack:
+                closing = stack.pop()
+                out.append("</span>")
+                if closing == name:
+                    break
+        else:
+            stack.append(name)
+            out.append(f"<span {_TTS_SPAN[name]}>")
+    out.append(esc(text[pos:]))
+    out.extend("</span>" for _ in stack)
+    return "".join(out)
+
+
+def _write_ttml(events):
     rows = []
     for e in events:
-        body = "<br/>".join(esc(ln) for ln in e["lines"])
+        body = _ttml_body(e["lines"])
         rows.append(f'      <p begin="{fmt_time(e["start"], ".")}" '
                     f'end="{fmt_time(e["end"], ".")}">{body}</p>')
     return ('<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<tt xmlns="http://www.w3.org/ns/ttml" xml:lang="">\n'
+            '<tt xmlns="http://www.w3.org/ns/ttml" '
+            'xmlns:tts="http://www.w3.org/ns/ttml#styling" xml:lang="">\n'
             '  <body>\n    <div>\n'
             + "\n".join(rows)
             + '\n    </div>\n  </body>\n</tt>\n')
@@ -246,10 +350,13 @@ def check(doc, rules, fps=None, count_spaces=True):
     """Every event against the rules, and the file against itself."""
     rules = {**DEFAULTS, **{k: v for k, v in (rules or {}).items() if v is not None}}
     events = doc["events"]
+    fmt = doc.get("format", "srt")
     rows = []
     for i, e in enumerate(events):
         dur = e["end"] - e["start"]
-        chars = count_chars(e["lines"], count_spaces)
+        # Count what the viewer reads: <i> and {\an8} are not letters.
+        plain = [visible(ln, fmt) for ln in e["lines"]]
+        chars = count_chars(plain, count_spaces)
         cps = chars / dur if dur > 0 else float("inf")
         faults = []
         if dur <= 0:
@@ -264,7 +371,7 @@ def check(doc, rules, fps=None, count_spaces=True):
             faults.append((f"{len(e['lines'])} lines against a maximum of "
                            f"{rules['max_lines']}", "strike"))
         if rules.get("max_chars_per_line"):
-            for line in e["lines"]:
+            for line in plain:
                 if len(line) > rules["max_chars_per_line"]:
                     faults.append((f"line of {len(line)} characters against "
                                    f"{rules['max_chars_per_line']}: '{line[:24]}...'",
@@ -314,7 +421,8 @@ def check(doc, rules, fps=None, count_spaces=True):
             "out_of_order": disorder,
             "rules": rules, "counting_rule":
                 ("every character counts except the line break"
-                 if count_spaces else "spaces do not count"),
+                 if count_spaces else "spaces do not count")
+                + "; formatting tags and override codes are not characters",
             "fps_checked": str(C.rate(fps)) if fps else None,
             "rows": rows, "failing": len(bad),
             "verdict": ("every event is inside the rules" if not bad

@@ -150,7 +150,9 @@ def subpixel_edge_samples(alpha, p0, p1, n_lines=64, reach=8.0, level=0.5,
     d = p1 - p0
     L = np.linalg.norm(d)
     if L < 4:
-        return np.zeros((0, 2)), np.zeros(0)
+        # Same four-tuple shape as every other return, so callers that unpack
+        # (pts, offs, params, attempted) do not crash on a degenerate edge.
+        return np.zeros((0, 2)), np.zeros(0), np.zeros(0), np.zeros(0)
     t = d / L
     n = np.array([-t[1], t[0]])
 
@@ -521,7 +523,7 @@ def rectangle_aspect(corners, principal_point=None, raster=None, focal_px=None,
     n2 = k2 * m2 - m1     # vanishing point of the width direction
     n3 = k3 * m3 - m1     # vanishing point of the height direction
 
-    diag = float(np.hypot(*(raster if raster else (c[:, 0].ptp(), c[:, 1].ptp()))))
+    diag = float(np.hypot(*(raster if raster else (np.ptp(c[:, 0]), np.ptp(c[:, 1])))))
     # How far away each vanishing point is, in units of the picture. Both
     # infinite means a pure affine view and no perspective information at all.
     def _vp_distance(n):

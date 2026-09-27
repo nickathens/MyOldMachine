@@ -172,10 +172,13 @@ class VideoFontTests(unittest.TestCase):
         self.assertNotIn("args.font or 'DejaVu-Sans'", source)
         self.assertIn("args.font or _default_font()", source)
 
-    def test_resize_uses_the_installed_parameter_name(self):
+    def test_resize_no_longer_goes_through_moviepy(self):
+        # F24 pinned moviepy 2's new_size= keyword. video.py runs ffmpeg
+        # directly since the Linux bot's 2026-09-27 review (moviepy's RGB pipe
+        # regraded every edit), so the resize is an ffmpeg scale filter now.
         source = (SKILLS / "video-editing" / "scripts" / "video.py").read_text()
-        self.assertIn("new_size=", source)
-        self.assertNotIn("newsize=", source)
+        self.assertNotIn("from moviepy", source)
+        self.assertIn("scale=", source)
 
 
 # --- F26: OCR confidence and the Greek language code ------------------------

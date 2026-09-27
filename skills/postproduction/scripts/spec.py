@@ -262,16 +262,33 @@ _CLAIM_PATTERNS = [
     (r"\b(12\s*bit|12bit)\b", "bit_depth", 12),
     (r"\b(8\s*bit|8bit)\b", "bit_depth", 8),
     (r"\b(prores|dnxh[dr]|h ?26[45]|hevc|avc)\b", "codec", None),
-    (r"\b(hdr10?|hlg|pq|rec2020|bt2020)\b", "hdr", None),
+    (r"\b(hdr(?:10)?|hlg|pq|rec2020|bt2020)\b", "hdr", None),
     (r"\b(textless|txtless|clean)\b", "textless", True),
 ]
+
+# What ffprobe calls the codec a filename names. DNxHR is reported as dnxhd.
+_CODEC_NAMES = {"avc": "h264", "h264": "h264", "h265": "hevc", "hevc": "hevc",
+                "prores": "prores", "dnxhd": "dnxhd", "dnxhr": "dnxhd"}
+
+# An HDR token is true of a TRANSFER tag; a gamut token of the PRIMARIES.
+_HDR_TRUTH = {
+    "hdr": ("transfer", {"smpte2084", "arib-std-b67"}),
+    "hdr10": ("transfer", {"smpte2084"}),
+    "pq": ("transfer", {"smpte2084"}),
+    "hlg": ("transfer", {"arib-std-b67"}),
+    "rec2020": ("primaries", {"bt2020"}),
+    "bt2020": ("primaries", {"bt2020"}),
+}
 
 
 def claims(name, measured=None):
     """What the NAME claims, and where the file contradicts it."""
-    # Underscores and dots are word characters to a regex, so a token buried in
-    # CLIENT_FILM_4K_v3.mov never matches a \b boundary. Split on them first.
-    base = re.sub(r"[_\-.]+", " ", os.path.basename(name).lower())
+    # Underscores are word characters to a regex, so a token buried in
+    # CLIENT_FILM_4K_v3.mov never matches a \b boundary. Split on them and on
+    # dots first, but keep a dot between two digits: 23.976fps is a rate, and
+    # splitting it read as a claim of 976 fps.
+    base = re.sub(r"[_\-]+|(?<![0-9])\.|\.(?![0-9])", " ",
+                  os.path.basename(name).lower())
     found = []
     for pattern, field, value in _CLAIM_PATTERNS:
         m = re.search(pattern, base)
@@ -283,6 +300,8 @@ def claims(name, measured=None):
             claimed = token.rstrip("p")
         if field == "codec":
             claimed = token.replace(" ", "")
+        if field == "hdr":
+            claimed = token
         found.append({"token": token, "field": field, "claims": claimed})
 
     rows = []
@@ -290,9 +309,11 @@ def claims(name, measured=None):
         row = dict(f, measured=None, verdict="unchecked")
         if measured and measured.get("video"):
             v = measured["video"]
+            hdr_field, hdr_truth = _HDR_TRUTH.get(f["claims"], ("transfer", set())) \
+                if f["field"] == "hdr" else ("transfer", set())
             got = {"width": v["width"], "height": v["height"],
                    "bit_depth": v["bit_depth_declared"], "codec": v["codec"],
-                   "fps": v["fps_avg"], "hdr": v["transfer"],
+                   "fps": v["fps_avg"], "hdr": v.get(hdr_field),
                    "textless": None}.get(f["field"])
             row["measured"] = got
             if got is None:
@@ -303,8 +324,11 @@ def claims(name, measured=None):
                                       else "CONTRADICTED")
                 except (ValueError, ZeroDivisionError):
                     row["verdict"] = "unparsed"
-            elif f["field"] in ("codec", "hdr"):
-                row["verdict"] = ("agrees" if str(f["claims"]).lower() in str(got).lower()
+            elif f["field"] == "codec":
+                want = _CODEC_NAMES.get(str(f["claims"]).lower(), str(f["claims"]).lower())
+                row["verdict"] = "agrees" if want == str(got).lower() else "CONTRADICTED"
+            elif f["field"] == "hdr":
+                row["verdict"] = ("agrees" if str(got).lower() in hdr_truth
                                   else "CONTRADICTED")
             elif f["field"] == "width" and f["claims"] == 3840:
                 row["verdict"] = "agrees" if got >= 3840 else "CONTRADICTED"

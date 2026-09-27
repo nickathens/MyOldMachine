@@ -2,11 +2,15 @@
 """
 Inkscape vector graphics automation
 """
+import argparse
+import functools
+import os
+import shutil
 import subprocess
 import sys
-import argparse
 import uuid
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 # SVG namespace
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -64,6 +68,64 @@ def add_text(svg, x, y, text, font_size=48, fill='#ffffff',
     elem.text = text
     return elem
 
+@functools.lru_cache(maxsize=None)
+def _font(family, size):
+    """The font file fontconfig (and so Inkscape) uses for family, at size."""
+    from PIL import ImageFont
+    path = None
+    if shutil.which('fc-match'):
+        path = subprocess.run(['fc-match', '-f', '%{file}', family], capture_output=True, text=True).stdout.strip()
+    try:
+        return ImageFont.truetype(path or 'DejaVuSans.ttf', size)
+    except OSError:
+        return None
+
+
+def _width(text, size, family):
+    font = _font(family, int(size))
+    return font.getlength(text) if font else 0.6 * size * len(text)
+
+
+def _wrap(text, size, family, max_width):
+    lines, line = [], ''
+    for word in text.split():
+        trial = f'{line} {word}'.strip()
+        if line and _width(trial, size, family) > max_width:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    return lines + [line] if line else lines
+
+
+def add_text_fit(svg, x, y, text, font_size, max_width, max_lines=3, fill='#ffffff',
+                 font_family='sans-serif', line_height=1.15):
+    """Centred text that stays inside max_width: wrapped, then shrunk if it must be.
+
+    The templates used to set a title at one size on one line, so a long one
+    ran off both edges of the canvas (Linux bot review 2026-09-27). Widths are
+    measured with the font fontconfig resolves, which is the one Inkscape
+    draws with. Returns the height of the block.
+    """
+    size = font_size
+    while True:
+        lines = _wrap(text, size, font_family, max_width)
+        fits = all(_width(line, size, font_family) <= max_width for line in lines)
+        if (fits and len(lines) <= max_lines) or size <= 8:
+            break
+        size = max(8, int(size * 0.92))
+    step = size * line_height
+    top = y - step * (len(lines) - 1) / 2
+    elem = ET.SubElement(svg, 'text', {
+        'x': str(x), 'y': str(round(top, 2)), 'font-size': str(size), 'fill': fill,
+        'font-family': font_family, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+    })
+    for i, line in enumerate(lines):
+        span = ET.SubElement(elem, 'tspan', {'x': str(x), 'dy': '0' if i == 0 else str(round(step, 2))})
+        span.text = line
+    return step * len(lines)
+
+
 def add_line(svg, x1, y1, x2, y2, stroke='#ffffff', stroke_width=2):
     """Add line to SVG"""
     return ET.SubElement(svg, 'line', {
@@ -109,9 +171,34 @@ def save_svg(svg, output_path):
     tree.write(output_path, encoding='unicode', xml_declaration=True)
     print(f"Saved: {output_path}")
 
+def _inkscape(cmd, output):
+    """Export into `output` through a hidden name beside it.
+
+    A stale output from an earlier run never passes for a success, and a failed
+    export leaves the file that was there alone. Deleting the output up front
+    did the first but deleted the input when the two were the same file.
+    """
+    out = Path(output)
+    part = out.with_name(f".{out.stem}.part{out.suffix}")
+    part.unlink(missing_ok=True)
+    try:
+        try:
+            r = subprocess.run(cmd + [f'--export-filename={part}'], capture_output=True, text=True, timeout=600)
+        except FileNotFoundError:
+            sys.exit("Error: inkscape is not installed")
+        except subprocess.TimeoutExpired:
+            sys.exit("Error: inkscape took longer than 10 minutes")
+        if r.returncode != 0 or not part.exists():
+            sys.exit(f"Error: inkscape wrote nothing: {r.stderr.strip()[-600:]}")
+        os.replace(part, out)
+    finally:
+        part.unlink(missing_ok=True)
+    print(f"Converted: {output}")
+
+
 def svg_to_png(input_svg, output_png, dpi=300, width=None, height=None):
     """Convert SVG to PNG using Inkscape"""
-    cmd = ['inkscape', input_svg, f'--export-filename={output_png}']
+    cmd = ['inkscape', str(input_svg), '--export-type=png']
 
     if width:
         cmd.append(f'--export-width={width}')
@@ -119,15 +206,11 @@ def svg_to_png(input_svg, output_png, dpi=300, width=None, height=None):
         cmd.append(f'--export-height={height}')
     else:
         cmd.append(f'--export-dpi={dpi}')
-
-    subprocess.run(cmd, check=True)
-    print(f"Converted: {output_png}")
+    _inkscape(cmd, output_png)
 
 def svg_to_pdf(input_svg, output_pdf):
     """Convert SVG to PDF"""
-    cmd = ['inkscape', input_svg, f'--export-filename={output_pdf}']
-    subprocess.run(cmd, check=True)
-    print(f"Converted: {output_pdf}")
+    _inkscape(['inkscape', str(input_svg), '--export-type=pdf'], output_pdf)
 
 # Template generators
 
@@ -139,11 +222,12 @@ def template_social_media(title, subtitle=None, bg_colors=None, size=1080):
     grad = add_gradient(svg, 'bg', bg_colors)
     add_rect(svg, 0, 0, size, size, fill=grad)
 
-    # Title
-    add_text(svg, size//2, size//2 - 30, title, font_size=72, fill='#ffffff')
+    # Title, wrapped or shrunk to 88 percent of the width; the subtitle sits under it
+    block = add_text_fit(svg, size // 2, size // 2 - 30, title, 72, size * 0.88)
 
     if subtitle:
-        add_text(svg, size//2, size//2 + 50, subtitle, font_size=36, fill='#aaaaaa')
+        add_text_fit(svg, size // 2, size // 2 - 30 + block / 2 + 44, subtitle, 36, size * 0.88,
+                     max_lines=2, fill='#aaaaaa')
 
     return svg
 
@@ -157,16 +241,15 @@ def template_album_cover(title, artist, bg_color='#0f0f0f', accent='#ff6b6b'):
     add_circle(svg, 700, 700, 200, fill='none', stroke=accent, stroke_width=1)
 
     # Title at bottom
-    add_text(svg, 700, 1200, title.upper(), font_size=64, fill='#ffffff')
-    add_text(svg, 700, 1280, artist, font_size=32, fill='#888888')
+    add_text_fit(svg, 700, 1200, title.upper(), 64, 1200, max_lines=1)
+    add_text_fit(svg, 700, 1280, artist, 32, 1200, max_lines=1, fill='#888888')
 
     return svg
 
 def template_logo_minimal(text, bg_color='#000000', text_color='#ffffff'):
     """Create minimal text logo"""
     svg = create_svg(800, 400, bg_color)
-    add_text(svg, 400, 200, text.upper(), font_size=96, fill=text_color,
-             font_family='sans-serif')
+    add_text_fit(svg, 400, 200, text.upper(), 96, 720, max_lines=2, fill=text_color)
     return svg
 
 if __name__ == '__main__':
@@ -175,12 +258,16 @@ if __name__ == '__main__':
     parser.add_argument('--title', default='Title')
     parser.add_argument('--subtitle', default=None)
     parser.add_argument('--artist', default='Artist')
-    parser.add_argument('--output', '-o', default=f'/tmp/vector_output_{uuid.uuid4().hex[:8]}.svg')
+    parser.add_argument('--output', '-o',
+                        help='Output file (default: /tmp/vector_output_*.svg, or the input name with the new format for convert)')
     parser.add_argument('--input', '-i', help='Input file for conversion')
-    parser.add_argument('--format', choices=['png', 'pdf'], default='png')
+    parser.add_argument('--format', choices=['png', 'pdf'],
+                        help='Conversion format; taken from --output when that has .png or .pdf (default png)')
     parser.add_argument('--dpi', type=int, default=300)
 
     args = parser.parse_args()
+    if args.action != 'convert' and not args.output:
+        args.output = f'/tmp/vector_output_{uuid.uuid4().hex[:8]}.svg'
 
     if args.action == 'social':
         svg = template_social_media(args.title, args.subtitle)
@@ -196,9 +283,19 @@ if __name__ == '__main__':
 
     elif args.action == 'convert':
         if not args.input:
-            print("Error: --input required for conversion")
-            sys.exit(1)
-        if args.format == 'png':
-            svg_to_png(args.input, args.output, args.dpi)
+            sys.exit("Error: --input required for conversion")
+        # The output used to default to a .svg name, and Inkscape exports by
+        # extension, so convert --format png wrote an SVG
+        suffix = Path(args.output).suffix.lower().lstrip('.') if args.output else ''
+        if args.format and suffix in ('png', 'pdf') and suffix != args.format:
+            sys.exit(f"Error: --format {args.format} but the output is .{suffix}")
+        fmt = args.format or (suffix if suffix in ('png', 'pdf') else 'png')
+        output = args.output or str(Path(args.input).with_suffix(f'.{fmt}'))
+        if Path(output).suffix.lower() != f'.{fmt}':
+            sys.exit(f"Error: the output {output} does not end in .{fmt}")
+        if Path(output).resolve() == Path(args.input).resolve():
+            sys.exit(f"Error: the output {output} is the input itself; give -o a different name")
+        if fmt == 'png':
+            svg_to_png(args.input, output, args.dpi)
         else:
-            svg_to_pdf(args.input, args.output)
+            svg_to_pdf(args.input, output)

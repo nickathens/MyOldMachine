@@ -356,25 +356,38 @@ def list_voices() -> list[dict]:
 
 def estimate_cost(model: str, prompt: str = "test", aspect_ratio: str | None = None,
                    resolution: str | None = None, duration: int | None = None,
-                   kind: str = "image", extra_params: dict | None = None) -> dict:
+                   kind: str = "image", extra_params: dict | None = None,
+                   ref_image: str | None = None, start_image: str | None = None,
+                   end_image: str | None = None, video_references: str | None = None) -> dict:
+    """Quote a job the way it will be created: same params, same media.
+
+    The media flags matter to the price: a video_references clip takes
+    flux_3_video from 5.5 to 13 credits a second. The quote used to send no
+    media at all, so a 5 s continuation quoted 27.5 credits and charged 65
+    (Linux bot review 2026-09-27).
+    """
     resolved = resolve_model(model, kind)
     cmd = ["higgsfield", "generate", "cost", resolved, "--prompt", prompt, "--json"]
     if aspect_ratio and resolved not in NO_ASPECT_RATIO_MODELS:
         cmd.extend(["--aspect_ratio", aspect_ratio])
     if resolution and resolution != "2k":
         cmd.extend(["--resolution", resolution])
-    if duration is not None and (kind == "video" or resolved == "sonilo_music"):
+    # as create sends it: a video model without a duration param (veo3) takes none
+    if duration is not None and (resolved == "sonilo_music"
+                                 or (kind == "video" and VIDEO_DURATIONS.get(resolved))):
         cmd.extend(["--duration", str(duration)])
     for k, v in REQUIRED_DEFAULTS.get(resolved, {}).items():
         if not (extra_params or {}).get(k):
             cmd.extend([f"--{k}", str(v)])
-    if extra_params:
-        for k, v in extra_params.items():
-            if v is not None and v != "":
-                if isinstance(v, bool):
-                    cmd.extend([f"--{k}", str(v).lower()])
-                else:
-                    cmd.extend([f"--{k}", str(v)])
+    if ref_image:
+        cmd.extend(["--image", ref_image])
+    if start_image:
+        cmd.extend(["--start-image", start_image])
+    if end_image:
+        cmd.extend(["--end-image", end_image])
+    if video_references:
+        cmd.extend(["--video-references", video_references])
+    _append_extra(cmd, extra_params)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         if result.returncode == 0:
@@ -853,7 +866,12 @@ def main():
     parser.add_argument("prompt", nargs="?", default="", help="Text prompt for generation")
     parser.add_argument("-o", "--output", default=None, help="Output file path")
     parser.add_argument("-m", "--model", default=None, help="Model name or alias")
-    parser.add_argument("-a", "--aspect-ratio", default=None, choices=list(ASPECT_RATIOS.keys()), help="Aspect ratio")
+    # 'auto', '1:2' and '2:1' are per model values (gpt_image_2, grok_image,
+    # flux_3_video ...) that the fixed-size table below does not list; the
+    # model's own schema is what refuses a ratio it does not take.
+    parser.add_argument("-a", "--aspect-ratio", default=None,
+                        choices=sorted({*ASPECT_RATIOS, "auto", "1:2", "2:1"}),
+                        help="Aspect ratio (includes per-model values like 'auto' and '2:1')")
     parser.add_argument("-r", "--ref-image", default=None, help="Reference image path for image-to-image or image-to-video")
     parser.add_argument("--resolution", default="2k", choices=["1k", "2k", "4k"], help="Resolution (default: 2k)")
     parser.add_argument("--backend", default="auto", choices=["higgsfield", "pollinations", "auto"], help="Backend (default: auto, tries Higgsfield then Pollinations)")
@@ -1022,6 +1040,9 @@ def main():
             aspect_ratio=args.aspect_ratio if kind in ("image", "video") else None,
             resolution=args.resolution if kind == "image" else None,
             duration=args.duration, kind=kind, extra_params=extra_params or None,
+            # the same media the create call will send
+            ref_image=args.ref_image, start_image=args.start_image,
+            end_image=args.end_image, video_references=args.video_references,
         )
         print(json.dumps(cost, indent=2))
         return

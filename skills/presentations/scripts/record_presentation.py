@@ -2,9 +2,21 @@
 """
 Record a presentation HTML as video using ffmpeg x11grab.
 
-Opens the presentation in headed Chromium on display :0,
-triggers auto-scroll via ?autoplay=1, and captures with
-ffmpeg x11grab (CPU-based H.264 encoding, no GPU involvement).
+Opens the presentation in headed Chromium on display :0, makes the window
+fullscreen at a device scale of 1, triggers auto-scroll via ?autoplay=1, and
+captures the top-left WIDTHxHEIGHT of the screen with ffmpeg x11grab
+(CPU-based H.264 encoding, no GPU involvement).
+
+Why fullscreen at scale 1 (2026-09-27): on a HiDPI desktop (measured on a
+4096x2160 GNOME screen at 200%) a normal window is placed after the dock and
+below the top bar, carries tabs and a URL bar, and renders the page at 2x, so
+a 0,0 capture showed the desktop chrome and a zoomed corner of the page.
+Fullscreen covers the dock and bar, and scale 1 makes one page pixel one
+screen pixel, so the emulated viewport sits exactly at 0,0.
+
+Before recording, a neutral grey page is shown and one frame is checked: a
+notification or dialog over the capture area stops the run with the frame
+saved beside the output, instead of a silently ruined video.
 
 Concurrency safety:
     Shares the advisory file lock at /tmp/claude_video_recording.lock
@@ -34,11 +46,15 @@ XAUTHORITY = "/run/user/1000/gdm/Xauthority"
 MAX_WAIT = 600
 POLL_INTERVAL = 2
 LOCK_PATH = "/tmp/claude_video_recording.lock"
+# Seconds between the page's load event and the start of the capture: the
+# cover's entrance animation (about 3 s) plays out first, as it did before.
+SETTLE_AFTER_LOAD = 2.5
+GATE_GREY = 127
 
 _lock_fd: int | None = None
 _active_procs: list[subprocess.Popen] = []
-_extra_pids: list[int] = []
 _temp_files: list[str] = []
+_banners_to_restore: str | None = None
 _cleanup_done = False
 
 
@@ -82,33 +98,59 @@ def _register_proc(proc: subprocess.Popen) -> subprocess.Popen:
     return proc
 
 
-def _register_pids(pids: list[int]) -> None:
-    for p in pids:
-        if p and p not in _extra_pids:
-            _extra_pids.append(p)
-
-
 def _register_tmp_file(path: str) -> str:
     _temp_files.append(path)
     return path
 
 
-def _snapshot_chromium_pids() -> set[int]:
-    result = subprocess.run(["pgrep", "-x", "chrome"], capture_output=True, text=True)
-    pids: set[int] = set()
-    for line in result.stdout.strip().splitlines():
-        try:
-            pids.add(int(line.strip()))
-        except ValueError:
-            pass
-    return pids
-
-
-def _kill_pid(pid: int, sig: int) -> None:
+def _gsettings(*args: str) -> str | None:
+    """Run gsettings on the desktop session; None when it cannot."""
+    env = dict(os.environ)
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
     try:
-        os.kill(pid, sig)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+        result = subprocess.run(["gsettings", *args], capture_output=True, text=True,
+                                timeout=5, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+# Written while banners are muted, removed when they are restored. A run
+# killed outright (SIGKILL, the OOM killer) never restores them and would
+# leave the desktop's notifications off with no visible cause; the next
+# recording finds the marker and turns them back on (audit, 2026-09-27).
+BANNERS_MARKER = Path.home() / ".cache" / "myoldmachine" / "banners-muted"
+
+
+def _quiet_banners() -> None:
+    """Hide new notification banners for the length of the recording."""
+    global _banners_to_restore
+    key = ("org.gnome.desktop.notifications", "show-banners")
+    if _gsettings("get", *key) == "true" and _gsettings("set", *key, "false") is not None:
+        _banners_to_restore = "true"
+        try:
+            BANNERS_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            BANNERS_MARKER.write_text("true", encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _restore_banners() -> None:
+    global _banners_to_restore
+    if _banners_to_restore:
+        _gsettings("set", "org.gnome.desktop.notifications", "show-banners",
+                   _banners_to_restore)
+        _banners_to_restore = None
+        BANNERS_MARKER.unlink(missing_ok=True)
+
+
+def _restore_after_a_killed_run() -> None:
+    """Banners a previous, killed recording muted and never restored."""
+    if BANNERS_MARKER.exists():
+        _gsettings("set", "org.gnome.desktop.notifications", "show-banners", "true")
+        BANNERS_MARKER.unlink(missing_ok=True)
+        print("Note: a killed recording had left notification banners off; turned them back on",
+              file=sys.stderr)
 
 
 def _cleanup_all() -> None:
@@ -123,8 +165,6 @@ def _cleanup_all() -> None:
                 p.terminate()
         except Exception:
             pass
-    for pid in list(_extra_pids):
-        _kill_pid(pid, signal.SIGTERM)
 
     deadline = time.monotonic() + 5.0
     for p in list(_active_procs):
@@ -141,15 +181,7 @@ def _cleanup_all() -> None:
                 p.wait(timeout=2)
         except Exception:
             pass
-    for pid in list(_extra_pids):
-        try:
-            os.kill(pid, 0)
-            _kill_pid(pid, signal.SIGKILL)
-        except OSError:
-            pass
-
     _active_procs.clear()
-    _extra_pids.clear()
 
     for f in _temp_files:
         try:
@@ -158,6 +190,7 @@ def _cleanup_all() -> None:
             pass
     _temp_files.clear()
 
+    _restore_banners()
     _release_lock()
 
 
@@ -173,26 +206,56 @@ def _install_signal_handlers() -> None:
     atexit.register(_cleanup_all)
 
 
-def _find_chromium() -> str:
-    candidates = sorted(Path.home().glob(
-        ".cache/ms-playwright/chromium-*/chrome-linux*/chrome"
-    ))
-    if candidates:
-        return str(candidates[-1])
-    print("Error: Playwright Chromium not found", file=sys.stderr)
-    sys.exit(1)
+def _go_fullscreen(page) -> dict:
+    """Fullscreen the page's window through CDP; return the window bounds."""
+    cdp = page.context.new_cdp_session(page)
+    window_id = cdp.send("Browser.getWindowForTarget")["windowId"]
+    cdp.send("Browser.setWindowBounds",
+             {"windowId": window_id, "bounds": {"windowState": "fullscreen"}})
+    time.sleep(1.0)
+    return cdp.send("Browser.getWindowBounds", {"windowId": window_id})["bounds"]
 
 
-def _find_window(title_hint: str) -> str | None:
-    for search in (
-        ["xdotool", "search", "--name", title_hint],
-        ["xdotool", "search", "--class", "chromium-browser"],
-    ):
-        result = subprocess.run(search, capture_output=True, text=True, env=os.environ)
-        for wid in result.stdout.strip().splitlines():
-            if wid.strip():
-                return wid.strip()
-    return None
+def _grab_frame(width: int, height: int) -> bytes:
+    """One RGB frame of the capture area, as raw bytes."""
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "x11grab", "-draw_mouse", "0",
+         "-video_size", f"{width}x{height}", "-i", f"{DISPLAY_NUM}+0,0",
+         "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True, timeout=30, env=os.environ,
+    )
+    return result.stdout if result.returncode == 0 else b""
+
+
+def foreign_fraction(frame: bytes, grey: int = GATE_GREY, tolerance: int = 24) -> float:
+    """Share of pixels that are not the neutral grey the gate page paints.
+
+    1.0 when the frame is empty or truncated (nothing was captured)."""
+    import numpy as np
+    if not frame or len(frame) % 3:
+        return 1.0
+    px = np.frombuffer(frame, dtype=np.uint8).reshape(-1, 3).astype(np.int16)
+    off = np.abs(px - grey).max(axis=1) > tolerance
+    return float(off.mean())
+
+
+def _capture_area_is_clear(page, width: int, height: int, out_png: Path) -> bool:
+    """Show a grey page and prove nothing covers the capture area.
+
+    A leftover notification, a crash dialog or a keyring prompt on the
+    desktop would otherwise sit in every frame of the video."""
+    page.set_content(f"<html><body style='margin:0;background:rgb({GATE_GREY},{GATE_GREY},"
+                     f"{GATE_GREY})'></body></html>")
+    frame = b""
+    for _ in range(4):  # the fullscreen hint bubble fades within a second
+        time.sleep(1.0)
+        frame = _grab_frame(width, height)
+        if foreign_fraction(frame) < 0.001:
+            return True
+    if frame and len(frame) == width * height * 3:
+        from PIL import Image
+        Image.frombytes("RGB", (width, height), frame).save(out_png)
+    return False
 
 
 def main():
@@ -206,11 +269,16 @@ def main():
     parser.add_argument("--delay", type=float, default=5.0,
                         help="Seconds to hold on cover before scrolling starts")
     args = parser.parse_args()
+    _restore_after_a_killed_run()
 
     html_path = Path(args.html).resolve()
     if not html_path.exists():
         print(f"Error: HTML file not found: {html_path}", file=sys.stderr)
         sys.exit(1)
+    if args.width <= 0 or args.height <= 0 or args.width % 2 or args.height % 2:
+        parser.error("--width and --height must be positive even numbers (H.264 4:2:0)")
+    if args.fps <= 0:
+        parser.error("--fps must be > 0")
 
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,96 +295,91 @@ def main():
         fd, raw_output = tempfile.mkstemp(suffix=".mp4", prefix="pres_raw_")
         os.close(fd)
         _register_tmp_file(raw_output)
+    fd, ffmpeg_log = tempfile.mkstemp(suffix=".log", prefix="pres_ffmpeg_")
+    os.close(fd)
+    _register_tmp_file(ffmpeg_log)
 
     os.environ["DISPLAY"] = DISPLAY_NUM
     os.environ["XAUTHORITY"] = XAUTHORITY
-
-    chromium = _find_chromium()
 
     success = False
     browser = None
     pw = None
     ffmpeg_proc = None
     try:
-        print(f"[1/5] Launching Chromium on {DISPLAY_NUM} ({args.width}x{args.height})...")
+        print(f"[1/5] Launching Chromium fullscreen on {DISPLAY_NUM} ({args.width}x{args.height})...")
         from playwright.sync_api import sync_playwright
-
-        baseline_pids = _snapshot_chromium_pids()
 
         pw = sync_playwright().start()
         browser = pw.chromium.launch(
-            executable_path=chromium,
             headless=False,
             args=[
                 "--no-sandbox",
                 "--no-first-run",
                 "--disable-extensions",
-                "--disable-infobars",
-                f"--window-size={args.width},{args.height}",
+                # One page pixel per screen pixel, whatever the desktop scale.
+                "--force-device-scale-factor=1",
             ],
         )
-        time.sleep(0.8)
-        after_pids = _snapshot_chromium_pids()
-        _register_pids(list(after_pids - baseline_pids))
-
         page = browser.new_page(viewport={"width": args.width, "height": args.height})
-        url = f"file://{html_path}?autoplay=1&delay={args.delay}"
+        bounds = _go_fullscreen(page)
+        if bounds.get("width", 0) < args.width or bounds.get("height", 0) < args.height:
+            print(f"Error: the screen ({bounds.get('width')}x{bounds.get('height')}) is smaller "
+                  f"than {args.width}x{args.height}", file=sys.stderr)
+            sys.exit(1)
+
+        print("[2/5] Checking the capture area is clear...")
+        _quiet_banners()
+        blocked_png = output_path.with_suffix(".blocked.png")
+        if not _capture_area_is_clear(page, args.width, args.height, blocked_png):
+            print("Error: something on the desktop covers the capture area (a notification "
+                  f"or a dialog). Frame saved to {blocked_png}. Dismiss it on display "
+                  f"{DISPLAY_NUM} and run again.", file=sys.stderr)
+            sys.exit(1)
+
+        # as_uri() percent-encodes the path, so '#', '?' or '%' in a folder
+        # name cannot cut the URL short.
+        url = f"{html_path.as_uri()}?autoplay=1&delay={args.delay}"
         try:
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.goto(url, wait_until="load", timeout=120000)
+        except Exception as e:
+            print(f"Error: failed to load {url}: {e}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            page.evaluate("() => document.fonts.ready.then(() => true)")
         except Exception:
-            try:
-                page.goto(url, wait_until="load", timeout=30000)
-            except Exception as e:
-                print(f"Error: failed to load {url}: {e}", file=sys.stderr)
-                return
-
-        print("[2/5] Positioning window...")
-        time.sleep(2)
-
-        wid = _find_window(html_path.stem)
-        if not wid:
-            wid = _find_window("chromium")
-        if not wid:
-            print("Error: Could not find Chromium window", file=sys.stderr)
-            return
-
-        subprocess.run(
-            [
-                "xdotool",
-                "windowsize", wid, str(args.width), str(args.height),
-                "windowmove", wid, "0", "0",
-                "windowactivate", wid,
-                "windowfocus", wid,
-            ],
-            capture_output=True, env=os.environ,
-        )
-        time.sleep(1)
+            pass
+        time.sleep(SETTLE_AFTER_LOAD)
 
         print(f"[3/5] Starting ffmpeg x11grab ({args.fps}fps, H.264)...")
-        ffmpeg_proc = _register_proc(subprocess.Popen(
-            [
-                "ffmpeg", "-y",
-                "-f", "x11grab",
-                "-framerate", str(args.fps),
-                "-video_size", f"{args.width}x{args.height}",
-                "-i", f"{DISPLAY_NUM}+0,0",
-                "-c:v", "libx264",
-                "-crf", "20",
-                "-preset", "fast",
-                "-pix_fmt", "yuv420p",
-                raw_output,
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=os.environ,
-        ))
+        with open(ffmpeg_log, "wb") as log:
+            # stdout and stderr never go to an unread pipe: ffmpeg's progress
+            # lines filled a 64 KB pipe in a few minutes and stalled capture.
+            ffmpeg_proc = _register_proc(subprocess.Popen(
+                [
+                    "ffmpeg", "-y", "-nostats", "-loglevel", "error",
+                    "-f", "x11grab",
+                    "-draw_mouse", "0",
+                    "-framerate", str(args.fps),
+                    "-video_size", f"{args.width}x{args.height}",
+                    "-i", f"{DISPLAY_NUM}+0,0",
+                    "-c:v", "libx264",
+                    "-crf", "20",
+                    "-preset", "fast",
+                    "-pix_fmt", "yuv420p",
+                    raw_output,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=log,
+                env=os.environ,
+            ))
         time.sleep(1)
 
         if ffmpeg_proc.poll() is not None:
-            err = ffmpeg_proc.stderr.read().decode("utf-8", errors="replace") if ffmpeg_proc.stderr else ""
+            err = Path(ffmpeg_log).read_text(errors="replace")
             print(f"Error: ffmpeg failed to start: {err[-500:]}", file=sys.stderr)
-            return
+            sys.exit(1)
 
         print("[4/5] Waiting for autoplay to complete...")
         elapsed = 0
@@ -374,20 +437,10 @@ def main():
             pass
         pw = None
 
-        for pid in list(_extra_pids):
-            for _ in range(30):
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    break
-                time.sleep(0.1)
-            else:
-                _kill_pid(pid, signal.SIGTERM)
-        _extra_pids.clear()
-
         if not Path(raw_output).exists() or Path(raw_output).stat().st_size == 0:
-            print("Error: Raw video not created!", file=sys.stderr)
-            return
+            err = Path(ffmpeg_log).read_text(errors="replace")
+            print(f"Error: Raw video not created! {err[-500:]}", file=sys.stderr)
+            sys.exit(1)
 
         # Mux audio if provided
         if args.audio:
@@ -410,11 +463,11 @@ def main():
                     result = subprocess.run(cmd, capture_output=True, timeout=300)
                 except subprocess.TimeoutExpired:
                     print("Error: ffmpeg audio mux timed out", file=sys.stderr)
-                    return
+                    sys.exit(1)
                 if result.returncode != 0:
                     print(f"ffmpeg error: {result.stderr.decode(errors='replace')[-500:]}",
                           file=sys.stderr)
-                    return
+                    sys.exit(1)
             else:
                 print(f"Warning: Audio not found: {audio_path}", file=sys.stderr)
                 shutil.move(raw_output, str(output_path))

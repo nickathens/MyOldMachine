@@ -38,6 +38,16 @@ PROGRESSIONS = {
 }
 
 NOTE_TO_MIDI = {'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11}
+CHORD_TYPES = ('major', 'minor', 'major7', 'minor7', 'dim')
+DRUM_STYLES = ('basic', 'rock', 'electronic', 'jazz')
+
+
+def root_note(text):
+    """argparse type for a root: a letter with an optional # or b."""
+    if len(text) in (1, 2) and text[0].upper() in NOTE_TO_MIDI and text[1:] in ('', '#', 'b'):
+        return text[0].upper() + text[1:]
+    raise argparse.ArgumentTypeError(f"not a note name: {text!r} (C, F#, Bb ...)")
+
 
 def note_to_midi_number(note_name, octave=4):
     """Convert note name to MIDI number"""
@@ -105,15 +115,23 @@ def generate_melody(root='C', scale_type='major', bars=8, octave=4,
     return midi
 
 def generate_chord_progression(root='C', prog_type='pop', bars=4, octave=3, tempo=120):
-    """Generate a chord progression"""
-    progression = PROGRESSIONS.get(prog_type, PROGRESSIONS['pop'])
+    """Generate a chord progression, one chord per bar, the progression repeating.
+
+    A minor key progression (tonic written i) takes its roots from the natural
+    minor scale: reading them off the major scale made "sad" in C come out
+    Cm, A, E, B instead of Cm, Ab, Eb, Bb. Spreading the progression over the
+    bars instead of one chord a bar put a ii V I over 8 bars on beats 0,
+    10.67 and 21.33, off every bar line (Linux bot review 2026-09-27).
+    """
+    progression = PROGRESSIONS[prog_type]
 
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
     instrument = pretty_midi.Instrument(program=0)  # Piano
     spb = 60.0 / tempo
 
     root_midi = note_to_midi_number(root, octave)
-    major_scale = [0, 2, 4, 5, 7, 9, 11]
+    minor_key = progression[0].startswith('i')
+    major_scale = SCALE_PATTERNS['minor'] if minor_key else SCALE_PATTERNS['major']
 
     # Map roman numerals to scale degrees and chord types
     numeral_to_degree = {
@@ -122,9 +140,10 @@ def generate_chord_progression(root='C', prog_type='pop', bars=4, octave=3, temp
     }
 
     current_beat = 0.0
-    beats_per_chord = (bars * 4) / len(progression)
+    beats_per_chord = 4
 
-    for numeral in progression:
+    for bar in range(bars):
+        numeral = progression[bar % len(progression)]
         degree = numeral_to_degree.get(numeral.replace('7', ''), 0)
         chord_root = root_midi + major_scale[degree % 7]
 
@@ -283,16 +302,28 @@ def combine_midi(midis, output_path, tempo=120):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Algorithmic composition')
     parser.add_argument('action', choices=['melody', 'chords', 'arpeggio', 'drums', 'full'])
-    parser.add_argument('--root', default='C', help='Root note')
-    parser.add_argument('--scale', default='major', help='Scale type')
-    parser.add_argument('--chord', default='major', help='Chord type for arpeggio')
-    parser.add_argument('--progression', default='pop', help='Chord progression type')
-    parser.add_argument('--style', default='basic', help='Drum style')
+    # Unknown names used to fall back silently: --progression jazz made the
+    # pop progression and said nothing
+    parser.add_argument('--root', default='C', type=root_note, help='Root note (C, F#, Bb ...)')
+    parser.add_argument('--scale', default='major', choices=sorted(SCALE_PATTERNS), help='Scale for the melody')
+    parser.add_argument('--chord', default='major', choices=CHORD_TYPES, help='Chord type for arpeggio')
+    parser.add_argument('--pattern', default='up', choices=('up', 'down', 'updown'), help='Arpeggio direction')
+    parser.add_argument('--progression', default='pop', choices=sorted(PROGRESSIONS),
+                        help='Chord progression, one chord per bar, repeating')
+    parser.add_argument('--style', default='basic', choices=DRUM_STYLES, help='Drum style')
     parser.add_argument('--bars', type=int, default=8)
     parser.add_argument('--tempo', type=int, default=120)
+    parser.add_argument('--seed', type=int, help='Random seed, for a result you can reproduce')
     parser.add_argument('--output', '-o', default=f'/tmp/composition_{uuid.uuid4().hex[:8]}.mid')
 
     args = parser.parse_args()
+    if args.bars < 1 or args.tempo < 1:
+        parser.error('--bars and --tempo must be at least 1')
+    if args.seed is not None:
+        random.seed(args.seed)
+    if args.action in ('chords', 'full') and args.bars % len(PROGRESSIONS[args.progression]):
+        print(f"note: {args.bars} bars do not complete the {len(PROGRESSIONS[args.progression])} chord "
+              f"'{args.progression}' progression; it stops part way through")
 
     if args.action == 'melody':
         midi = generate_melody(args.root, args.scale, args.bars, tempo=args.tempo)
@@ -303,7 +334,7 @@ if __name__ == '__main__':
         midi.write(args.output)
 
     elif args.action == 'arpeggio':
-        midi = generate_arpeggio(args.root, args.chord, args.bars, tempo=args.tempo)
+        midi = generate_arpeggio(args.root, args.chord, args.bars, pattern=args.pattern, tempo=args.tempo)
         midi.write(args.output)
 
     elif args.action == 'drums':
@@ -314,7 +345,10 @@ if __name__ == '__main__':
         # Generate a full arrangement
         chord_midi = generate_chord_progression(args.root, args.progression, args.bars, tempo=args.tempo)
         melody = generate_melody(args.root, args.scale, args.bars, octave=5, tempo=args.tempo)
-        drums = generate_drums(args.bars, 'basic', args.tempo)
+        drums = generate_drums(args.bars, args.style, args.tempo)
+        # Stamp the file with the tempo the parts were written at. Without it
+        # a `--tempo 90 full` laid its notes out at 90 and told the DAW 120,
+        # so nothing landed on a bar line (found porting F22 to MOM #156).
         combine_midi([chord_midi, melody, drums], args.output, tempo=args.tempo)
 
     print(f"Generated: {args.output}")

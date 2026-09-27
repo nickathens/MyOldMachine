@@ -1,5 +1,5 @@
 {
-  "pip": ["screenplain"],
+  "pip": ["screenplain", "reportlab", "fonttools"],
   "npm": ["afterwriting"],
   "check": {
     "screenplain": "screenplain --help",

@@ -3,6 +3,6 @@
     "min_disk_mb": 1024
   },
   "stop": {
-    "clean_patterns": ["/tmp/moviepy_*"]
+    "clean_patterns": ["/tmp/video_text_*"]
   }
 }

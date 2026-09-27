@@ -2,14 +2,18 @@
 """Screenplay skill: create, version, export, and analyze Fountain screenplays."""
 
 import argparse
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fountain_export  # noqa: E402
 
 # Use project's safe_json for atomic writes if available
 UTILS_DIR = Path(__file__).resolve().parent.parent.parent / "utils"
@@ -45,6 +49,25 @@ Dialogue goes here.
 """
 
 
+def slugify(text: str, sep: str = "-") -> str:
+    """Letters and digits (any script) joined by sep: "Love/Hate: A Test" gives love-hate-a-test."""
+    text = re.sub(r"['\"\u2018\u2019]", "", text.lower())
+    return re.sub(r"[\W_]+", sep, text).strip(sep) or "untitled"
+
+
+def version_arg(text: str) -> int:
+    """A version number as typed: 3 or v3."""
+    match = re.fullmatch(r"[vV]?(\d+)", text.strip())
+    if not match:
+        raise argparse.ArgumentTypeError(f"not a version number: {text!r} (use 3 or v3)")
+    return int(match.group(1))
+
+
+def fail(message: str):
+    print(f"Error: {message}")
+    sys.exit(1)
+
+
 def load_metadata(project_dir: Path) -> dict:
     meta_path = project_dir / "metadata.json"
     if USE_SAFE_JSON:
@@ -78,11 +101,7 @@ def cmd_create(args):
     if args.dir:
         project_dir = Path(args.dir)
     else:
-        slug = title.lower().replace(" ", "-").replace("'", "").replace('"', "")
-        slug = "".join(c for c in slug if c.isalnum() or c == "-")
-        if not slug:
-            slug = "untitled"
-        project_dir = Path.cwd() / slug
+        project_dir = Path.cwd() / slugify(title)
 
     if project_dir.exists() and (project_dir / "metadata.json").exists():
         print(f"Error: Project already exists at {project_dir}")
@@ -93,15 +112,19 @@ def cmd_create(args):
     (project_dir / "versions").mkdir(exist_ok=True)
     (project_dir / "exports").mkdir(exist_ok=True)
 
-    # Write starter draft
+    # Write starter draft, unless the folder already holds one: that is the
+    # writer's script, adopted as it is
     date_str = datetime.now().strftime("%Y-%m-%d")
-    draft_content = STARTER_TEMPLATE.format(
-        title=title,
-        author=author,
-        date=date_str,
-        script_type=SCRIPT_TYPES[script_type]["label"],
-    )
-    (project_dir / "draft.fountain").write_text(draft_content, encoding="utf-8")
+    draft_path = project_dir / "draft.fountain"
+    adopted = draft_path.exists()
+    if not adopted:
+        draft_content = STARTER_TEMPLATE.format(
+            title=title,
+            author=author,
+            date=date_str,
+            script_type=SCRIPT_TYPES[script_type]["label"],
+        )
+        draft_path.write_text(draft_content, encoding="utf-8")
 
     # Write metadata
     meta = {
@@ -118,7 +141,7 @@ def cmd_create(args):
     print(f"Created screenplay project: {title}")
     print(f"  Type: {type_info['label']} (target: {type_info['target_pages']} pages)")
     print(f"  Location: {project_dir}")
-    print(f"  Draft: {project_dir / 'draft.fountain'}")
+    print(f"  Draft: {draft_path}" + (" (existing script kept)" if adopted else ""))
 
 
 def cmd_save(args):
@@ -191,16 +214,40 @@ def cmd_export(args):
 
     fmt = args.format or "pdf"
     engine = args.engine or "screenplain"
+    try:
+        text = fountain_export.read_text(source_path)
+    except RuntimeError as exc:
+        fail(str(exc))
+    needs_afterwriting = [flag for flag, value in (
+        ("--scene-numbers", args.scene_numbers),
+        ("--watermark", args.watermark),
+        ("--no-title-page", args.no_title_page),
+    ) if value]
+    if engine == "afterwriting" and fmt != "pdf":
+        fail("afterwriting writes PDF only; export html and fdx with the default engine")
+    if needs_afterwriting and engine != "afterwriting":
+        verb = "needs" if len(needs_afterwriting) == 1 else "need"
+        fail(f"{', '.join(needs_afterwriting)} {verb} --engine afterwriting")
+    if engine == "afterwriting" and fountain_export.needs_unicode_font(text):
+        fail("this script has letters (Greek, for one) that afterwriting's fonts do not have; "
+             "they would print as blank space. Export with the default engine (add --a4 for A4); "
+             "scene numbers and watermarks are not available there")
+
     exports_dir = project_dir / "exports"
     exports_dir.mkdir(exist_ok=True)
 
-    raw_slug = meta.get("title", "script").lower().replace(" ", "_")
-    slug = "".join(c for c in raw_slug if c.isalnum() or c in "_-") or "script"
+    slug = slugify(meta.get("title", "script"), "_")
     output_filename = f"{slug}_{version_label}.{fmt}"
     output_path = exports_dir / output_filename
 
-    if engine == "afterwriting" and fmt == "pdf":
-        cmd = ["afterwriting", "--source", str(source_path), "--pdf", str(output_path), "--overwrite"]
+    done = {}
+    if engine == "afterwriting":
+        # afterwriting exits 0 when it cannot read the script and writes nothing,
+        # so it writes to a fresh name first: an earlier export at this path can
+        # neither pass for a fresh one nor be lost to a failed run
+        part = output_path.with_name(f".{output_path.stem}.part.pdf")
+        part.unlink(missing_ok=True)
+        cmd = ["afterwriting", "--source", str(source_path), "--pdf", str(part), "--overwrite"]
 
         if args.scene_numbers:
             cmd.extend(["--setting", f"scenes_numbers={args.scene_numbers}"])
@@ -212,35 +259,41 @@ def cmd_export(args):
             cmd.extend(["--setting", "print_profile=a4"])
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            print("Error: afterwriting timed out after 120s")
-            sys.exit(1)
-        if result.returncode != 0:
-            print(f"Error from afterwriting: {result.stderr}")
-            sys.exit(1)
-    elif engine == "screenplain" or fmt in ("html", "fdx"):
-        cmd = ["screenplain", str(source_path), str(output_path)]
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        except subprocess.TimeoutExpired:
-            print("Error: screenplain timed out after 60s")
-            sys.exit(1)
-        if result.returncode != 0:
-            print(f"Error from screenplain: {result.stderr}")
-            sys.exit(1)
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            except FileNotFoundError:
+                fail("afterwriting is not installed (npm install -g afterwriting)")
+            except subprocess.TimeoutExpired:
+                fail("afterwriting ran past 300 s")
+            if result.returncode != 0 or not part.exists():
+                fail(f"afterwriting wrote no PDF:\n{(result.stdout + result.stderr).strip()[-1500:]}")
+            os.replace(part, output_path)
+        finally:
+            part.unlink(missing_ok=True)
     else:
-        print(f"Error: Unsupported format/engine combination: {fmt}/{engine}")
-        sys.exit(1)
+        try:
+            done = fountain_export.export(source_path, output_path, fmt, a4=args.a4)
+        except ImportError as exc:
+            fail(f"{exc}. The screenplay skill needs screenplain, reportlab and fonttools in this Python: pip install screenplain reportlab fonttools")
+        except RuntimeError as exc:
+            fail(str(exc))
 
     print(f"Exported: {output_path}")
     print(f"  Format: {fmt.upper()}")
     print(f"  Engine: {engine}")
+    if done.get("pages") is not None:
+        print(f"  Pages: {done['pages']} (title page not counted)")
+    if done.get("family"):
+        print(f"  Font: {done['family']} (the script has letters the standard Courier lacks)")
+    if done.get("fallback"):
+        print(f"  Set in a fallback font: {''.join(sorted(done['fallback']))}")
+    if done.get("missing"):
+        print(f"  Warning: no installed font has {''.join(done['missing'])}; they print as boxes")
     print(f"  Size: {output_path.stat().st_size:,} bytes")
 
 
 def cmd_analyze(args):
-    """Analyze the script using afterwriting stats."""
+    """Scene, character, dialogue and page counts, read with screenplain's Fountain parser."""
     project_dir = Path(args.project_dir)
     meta = load_metadata(project_dir)
     if not meta:
@@ -252,133 +305,42 @@ def cmd_analyze(args):
         print("Error: No draft.fountain found")
         sys.exit(1)
 
-    # afterwriting generates a PDF and we can count pages
-    # For detailed stats, we parse the fountain file directly
-    content = source_path.read_text(encoding="utf-8")
-    lines = content.split("\n")
+    try:
+        text = fountain_export.read_text(source_path)
+        play = fountain_export.parse_text(text)
+    except RuntimeError as exc:
+        fail(str(exc))
+    except ImportError as exc:
+        fail(f"{exc}. The screenplay skill needs screenplain, reportlab and fonttools in this Python: pip install screenplain reportlab fonttools")
+    counts = fountain_export.stats(play)
 
-    # Basic stats from parsing
-    scene_count = 0
-    dialogue_blocks = 0
-    characters = set()
-    locations = set()
-    in_title_page = True
-    seen_title_key = False
+    # The page count is the default PDF export's own layout (US Letter, 55
+    # lines; A4 gives the same count), rendered in memory
+    pages, page_note = None, ""
+    try:
+        fallback = {}
+        if fountain_export.needs_unicode_font(text):
+            _, fallback, _ = fountain_export.use_unicode_courier(text)
+        pages = fountain_export.write_pdf(play, io.BytesIO(), fallback=fallback)
+    except RuntimeError as exc:
+        page_note = str(exc)
 
-    for line in lines:
-        stripped = line.strip()
-
-        # Skip title page (key:value pairs at the start, ended by first blank line AFTER keys)
-        if in_title_page:
-            if ":" in stripped and stripped.split(":")[0].strip() in (
-                "Title", "Credit", "Author", "Authors", "Source",
-                "Draft date", "Contact", "Type"
-            ):
-                seen_title_key = True
-                continue
-            if stripped == "" and seen_title_key:
-                in_title_page = False
-                continue
-            if stripped == "" and not seen_title_key:
-                continue
-            in_title_page = False
-
-        # Scene headings
-        if stripped.upper().startswith(("INT.", "EXT.", "INT/EXT.", "INT./EXT.", "I/E.", "EST.")) or stripped.startswith("."):
-            scene_count += 1
-            # Extract full location (everything except time of day)
-            parts = stripped.split(" - ")
-            if len(parts) >= 2:
-                # Last part is usually time of day (DAY, NIGHT, etc.)
-                time_words = {"DAY", "NIGHT", "DAWN", "DUSK", "CONTINUOUS", "LATER", "MOMENTS LATER", "SAME"}
-                if parts[-1].strip().upper() in time_words:
-                    loc = " - ".join(parts[:-1])
-                else:
-                    loc = stripped
-            else:
-                loc = stripped
-            loc = loc.lstrip(".")
-            locations.add(loc.strip())
-            continue
-
-        # Character (uppercase line, not a scene heading, not empty)
-        if stripped and stripped == stripped.upper() and stripped[0].isalpha() and not stripped.endswith(":"):
-            # Filter out transitions and Fountain directives
-            if not stripped.endswith("TO:") and not stripped.startswith(">"):
-                # Filter out FADE OUT, FADE IN, THE END, and section headers
-                base = stripped.split("(")[0].strip().rstrip(".")
-                if base not in ("FADE OUT", "FADE IN", "THE END", "BLACKOUT", "CUT TO"):
-                    # Could be a character
-                    char_name = stripped.split("(")[0].strip()
-                    if char_name and len(char_name) < 40:
-                        characters.add(char_name)
-                        dialogue_blocks += 1
-                    continue
-
-
-    # Estimate page count: ~56 lines per page including blank lines for spacing
-    # Count all lines after title page (blank lines between elements matter for pacing)
-    body_lines = 0
-    past_title = False
-    for line in lines:
-        s = line.strip()
-        if not past_title:
-            if s and ":" in s and s.split(":")[0].strip() in (
-                "Title", "Credit", "Author", "Authors", "Source",
-                "Draft date", "Contact", "Type"
-            ):
-                continue
-            if s == "":
-                continue
-            past_title = True
-        body_lines += 1
-    estimated_pages = max(1, body_lines // 56)
-
-    # Estimated runtime (1 page ~ 1 minute)
-    est_minutes = estimated_pages
-
+    speeches, words = counts["speeches"], counts["words"]
     print(f"Script Analysis: {meta.get('title', 'Unknown')}")
     print(f"  Type: {SCRIPT_TYPES.get(meta.get('type', 'short'), {}).get('label', 'Unknown')}")
-    print(f"  Estimated pages: ~{estimated_pages}")
-    print(f"  Estimated runtime: ~{est_minutes} minutes")
-    print(f"  Scenes: {scene_count}")
-    print(f"  Dialogue blocks: {dialogue_blocks}")
-    print(f"  Characters: {len(characters)}")
-    if characters:
-        for c in sorted(characters):
-            print(f"    - {c}")
-    print(f"  Locations: {len(locations)}")
-    if locations:
-        for loc in sorted(locations):
-            print(f"    - {loc}")
-
-    # Also try afterwriting PDF for accurate page count
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp_path = tmp.name
-        result = subprocess.run(
-            ["afterwriting", "--source", str(source_path), "--pdf", tmp_path, "--overwrite"],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0 and os.path.exists(tmp_path):
-            try:
-                import PyPDF2
-                with open(tmp_path, "rb") as f:
-                    reader = PyPDF2.PdfReader(f)
-                    real_pages = len(reader.pages)
-                print(f"  Actual PDF pages: {real_pages} (via afterwriting)")
-            except ImportError:
-                file_size = os.path.getsize(tmp_path)
-                print(f"  PDF generated: {file_size:,} bytes")
-    except Exception:
-        pass
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    if pages is not None:
+        print(f"  Pages: {pages} (as the PDF export lays them out, title page not counted)")
+        print(f"  Runtime: about {pages} minute{'s' if pages != 1 else ''} (a page a minute)")
+    else:
+        print(f"  Pages: not counted ({page_note})")
+    print(f"  Scenes: {counts['scenes']}")
+    print(f"  Dialogue blocks: {sum(speeches.values())}")
+    print(f"  Characters: {len(speeches)} (speeches, words spoken)")
+    for name, n in sorted(speeches.items(), key=lambda item: (-item[1], item[0])):
+        print(f"    - {name}: {n}, {words[name]} words")
+    print(f"  Locations: {len(counts['locations'])}")
+    for loc in sorted(counts["locations"]):
+        print(f"    - {loc}")
 
 
 def cmd_versions(args):
@@ -437,6 +399,14 @@ def cmd_restore(args):
             print(f"Draft is already at v{version_num}. No changes needed.")
             return
 
+        latest = meta["versions"][-1] if meta["versions"] else None
+        latest_path = project_dir / "versions" / latest["filename"] if latest else None
+        if latest_path and latest_path.exists() and latest_path.read_text(encoding="utf-8") == current_content:
+            print(f"Current draft is already saved as v{latest['version']}")
+            shutil.copy2(version_path, draft_path)
+            print(f"Restored v{version_num} as current draft")
+            return
+
         # Save current as a version first
         backup_version = meta["current_version"] + 1
         date_str = datetime.now().strftime("%Y-%m-%d")
@@ -492,12 +462,14 @@ def cmd_diff(args):
     result = subprocess.run(
         ["diff", "-u", "--label", v1_label, "--label", v2_label,
          str(v1_path), str(v2_path)],
-        capture_output=True, text=True
+        capture_output=True, text=True, timeout=60
     )
     if result.returncode == 0:
         print(f"No differences between {v1_label} and {v2_label}")
-    else:
+    elif result.returncode == 1:
         print(result.stdout)
+    else:
+        fail(f"diff failed: {result.stderr.strip()}")
 
 
 def main():
@@ -524,15 +496,16 @@ def main():
                           help="Output format (default: pdf)")
     p_export.add_argument("--engine", "-e", choices=["screenplain", "afterwriting"],
                           default="screenplain", help="PDF engine (default: screenplain)")
-    p_export.add_argument("--version", "-v", type=int, help="Export specific version (default: current draft)")
+    p_export.add_argument("--version", "-v", type=version_arg,
+                          help="Export a saved version, 3 or v3 (default: current draft)")
     p_export.add_argument("--scene-numbers", choices=["none", "left", "right", "both"],
                           help="Scene numbers (afterwriting only)")
     p_export.add_argument("--watermark", help="Watermark text (afterwriting only)")
     p_export.add_argument("--no-title-page", action="store_true", help="Skip title page (afterwriting only)")
-    p_export.add_argument("--a4", action="store_true", help="Use A4 paper (afterwriting only)")
+    p_export.add_argument("--a4", action="store_true", help="Use A4 paper (default: US Letter)")
 
     # analyze
-    p_analyze = subparsers.add_parser("analyze", help="Analyze script stats")
+    p_analyze = subparsers.add_parser("analyze", help="Pages, scenes, characters, dialogue, locations")
     p_analyze.add_argument("project_dir", help="Path to screenplay project")
 
     # versions
@@ -542,13 +515,14 @@ def main():
     # restore
     p_restore = subparsers.add_parser("restore", help="Restore a previous version")
     p_restore.add_argument("project_dir", help="Path to screenplay project")
-    p_restore.add_argument("--version", "-v", type=int, required=True, help="Version number to restore")
+    p_restore.add_argument("--version", "-v", type=version_arg, required=True,
+                           help="Version to restore, 3 or v3")
 
     # diff
     p_diff = subparsers.add_parser("diff", help="Compare two versions")
     p_diff.add_argument("project_dir", help="Path to screenplay project")
-    p_diff.add_argument("--v1", type=int, required=True, help="First version (0 = current draft)")
-    p_diff.add_argument("--v2", type=int, required=True, help="Second version (0 = current draft)")
+    p_diff.add_argument("--v1", type=version_arg, required=True, help="First version, 3 or v3 (0 = current draft)")
+    p_diff.add_argument("--v2", type=version_arg, required=True, help="Second version, 3 or v3 (0 = current draft)")
 
     args = parser.parse_args()
     if not args.command:

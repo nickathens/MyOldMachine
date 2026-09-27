@@ -122,6 +122,16 @@ def send_email(to: str, subject: str, body: str) -> dict:
     return {"id": result['id'], "status": "sent", "to": to, "subject": subject}
 
 
+def _header_map(headers) -> dict:
+    """Header name to value, keyed in lower case.
+
+    Header names are case insensitive, and MIMEText (this script's own
+    drafts) writes 'to' and 'subject' in lower case, so a draft listed with
+    an exact 'To' lookup came back with no recipient and no subject.
+    """
+    return {h['name'].lower(): h['value'] for h in headers}
+
+
 def get_inbox(limit: int = 10) -> list:
     """Get recent inbox messages."""
     service = get_gmail_service()
@@ -143,12 +153,12 @@ def get_inbox(limit: int = 10) -> list:
             metadataHeaders=['From', 'Subject', 'Date']
         ).execute()
 
-        headers = {h['name']: h['value'] for h in msg_data['payload']['headers']}
+        headers = _header_map(msg_data['payload']['headers'])
         emails.append({
             "id": msg['id'],
-            "from": headers.get('From', 'Unknown'),
-            "subject": headers.get('Subject', '(no subject)'),
-            "date": headers.get('Date', ''),
+            "from": headers.get('from', 'Unknown'),
+            "subject": headers.get('subject', '(no subject)'),
+            "date": headers.get('date', ''),
             "snippet": msg_data.get('snippet', '')[:100]
         })
 
@@ -208,15 +218,15 @@ def read_email(message_id: str) -> dict:
         format='full'
     ).execute()
 
-    headers = {h['name']: h['value'] for h in msg_data['payload']['headers']}
+    headers = _header_map(msg_data['payload']['headers'])
     body = _extract_body(msg_data['payload'])
 
     return {
         "id": full_id,
-        "from": headers.get('From', 'Unknown'),
-        "to": headers.get('To', ''),
-        "subject": headers.get('Subject', '(no subject)'),
-        "date": headers.get('Date', ''),
+        "from": headers.get('from', 'Unknown'),
+        "to": headers.get('to', ''),
+        "subject": headers.get('subject', '(no subject)'),
+        "date": headers.get('date', ''),
         "body": body[:5000]
     }
 
@@ -242,12 +252,12 @@ def get_sent(limit: int = 10) -> list:
             metadataHeaders=['From', 'To', 'Subject', 'Date']
         ).execute()
 
-        headers = {h['name']: h['value'] for h in msg_data['payload']['headers']}
+        headers = _header_map(msg_data['payload']['headers'])
         emails.append({
             "id": msg['id'],
-            "to": headers.get('To', ''),
-            "subject": headers.get('Subject', '(no subject)'),
-            "date": headers.get('Date', ''),
+            "to": headers.get('to', ''),
+            "subject": headers.get('subject', '(no subject)'),
+            "date": headers.get('date', ''),
             "snippet": msg_data.get('snippet', '')[:100]
         })
 
@@ -283,12 +293,12 @@ def list_drafts(limit: int = 10) -> list:
         draft_data = service.users().drafts().get(userId='me', id=d['id'], format='metadata').execute()
         msg = draft_data.get('message', {})
         payload = msg.get('payload') or {}
-        headers = {h['name']: h['value'] for h in payload.get('headers', [])}
+        headers = _header_map(payload.get('headers', []))
         items.append({
             "id": d['id'],
-            "to": headers.get('To', ''),
-            "subject": headers.get('Subject', '(no subject)'),
-            "date": headers.get('Date', ''),
+            "to": headers.get('to', ''),
+            "subject": headers.get('subject', '(no subject)'),
+            "date": headers.get('date', ''),
             "snippet": msg.get('snippet', '')[:100]
         })
 
@@ -316,12 +326,12 @@ def search_emails(query: str, limit: int = 10) -> list:
             metadataHeaders=['From', 'Subject', 'Date']
         ).execute()
 
-        headers = {h['name']: h['value'] for h in msg_data['payload']['headers']}
+        headers = _header_map(msg_data['payload']['headers'])
         emails.append({
             "id": msg['id'],
-            "from": headers.get('From', 'Unknown'),
-            "subject": headers.get('Subject', '(no subject)'),
-            "date": headers.get('Date', ''),
+            "from": headers.get('from', 'Unknown'),
+            "subject": headers.get('subject', '(no subject)'),
+            "date": headers.get('date', ''),
         })
 
     return emails

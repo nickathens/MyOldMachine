@@ -61,6 +61,13 @@ def main():
                                     dtype=np.float32))
     check("hue of red, green and blue", np.allclose(h, [0, 120, 240, 0], atol=1e-3), f"{h}")
     check("grey has no saturation", abs(float(s[3])) < 1e-5)
+    # Two channels tied for the maximum: every LUT lattice has them, and so
+    # does 8-bit video. The old sector masks summed two sectors, so yellow
+    # read 120, cyan 360 and magenta 600, and the checks above never saw it.
+    h, _, _ = C.rgb_to_hsv(np.array([[1, 1, 0], [0, 1, 1], [1, 0, 1], [.8, .8, .2],
+                                     [.2, .6, .6], [.6, .1, .6]], dtype=np.float32))
+    check("hue of colours where two channels tie for the maximum",
+          np.allclose(h, [60, 180, 300, 60, 180, 300], atol=1e-3), f"{h}")
 
     # a neutral ramp must stay exactly neutral through the whole chain
     ramp = np.repeat(np.linspace(0, 1, 256, dtype=np.float32)[:, None], 3, axis=1)
@@ -229,10 +236,9 @@ def main():
     # Error is in dE2000 because the raw code level error piles up in the
     # deepest shadows, where it is not visible. See lut_bake_error in cg.py.
     # 1.5 is the ceiling, not the goal. A just noticeable difference on a flat
-    # patch is about 1.0 dE, and the worst of sixty thousand random colours
-    # sitting at 1.2 is the price of a very hard contrast curve. noir, at
-    # contrast 1.55, is the one look that cannot do better than that through
-    # any cube, and the grader reports its residual rather than hiding it.
+    # patch is about 1.0 dE; the grader itself budgets 1.0 and steps up to a
+    # 65 cube when 33 misses it (teal_orange and kodak2383 on 2026-09-27),
+    # reporting any residual rather than hiding it.
     print("\nLUT bake error, worst dE2000 (and worst code levels of 255):")
     budget = 1.5
     for name in sorted(os.path.basename(p)[:-5] for p in glob.glob(LOOKS + "/*.json")):

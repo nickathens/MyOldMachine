@@ -5,12 +5,16 @@
 
 1. ΝΤΕΤΕΡΜΙΝΙΣΤΙΚΗ ΜΗΧΑΝΗ ΗΜΕΡΟΛΟΓΙΟΥ (compute). Δίνεις αφετήρια ημερομηνία και
    αριθμό ημερών, και επιστρέφει τη λήξη εφαρμόζοντας τους κανόνες του ΚΠολΔ 144:
-   η ημέρα του αφετήριου γεγονότος ΔΕΝ υπολογίζεται (παρ. 1), οι ενδιάμεσες αργίες
-   ΥΠΟΛΟΓΙΖΟΝΤΑΙ, και μόνο η τελευταία ημέρα, αν πέσει Σάββατο, Κυριακή ή εξαιρετέα,
-   μετατίθεται στην επόμενη εργάσιμη (παρ. 2). Υπολογίζει τις ελληνικές αργίες,
-   περιλαμβανομένων των κινητών εορτών που εξαρτώνται από το Ορθόδοξο Πάσχα. Η
-   αναστολή του Αυγούστου (ΚΠολΔ 147) προσφέρεται προαιρετικά. Αυτό το μέρος είναι
-   πάντοτε σωστή αριθμητική ημερολογίου, ανεξάρτητη από νομική κρίση.
+   η ημέρα του αφετήριου γεγονότος ΔΕΝ υπολογίζεται, οι ενδιάμεσες αργίες
+   ΥΠΟΛΟΓΙΖΟΝΤΑΙ, η προθεσμία λήγει στις 7 το βράδυ της τελευταίας ημέρας, και μόνο
+   η τελευταία ημέρα, αν είναι εξαιρετέα, μετατίθεται στην ίδια ώρα της επόμενης μη
+   εξαιρετέας (όλα παρ. 1· το Σάββατο είναι εξαιρετέα κατά την παρ. 3). Υπολογίζει
+   τις ελληνικές αργίες, περιλαμβανομένων των κινητών εορτών που εξαρτώνται από το
+   Ορθόδοξο Πάσχα. Η αναστολή του Αυγούστου (ΚΠολΔ 147 παρ. 2) προσφέρεται
+   προαιρετικά. Αυτό το μέρος είναι πάντοτε σωστή αριθμητική ημερολογίου,
+   ανεξάρτητη από νομική κρίση. (Έως τις 27.9.2026 η μετάθεση παραπεμπόταν στην
+   παρ. 2 του 144, που ρυθμίζει άλλο ζήτημα, η αναστολή στην παρ. 7 του 147, και η
+   ώρα 19:00 έλειπε από την έξοδο.)
 
 2. ΚΑΤΑΛΟΓΟΣ ΣΥΝΗΘΩΝ ΠΡΟΘΕΣΜΙΩΝ (list, info). Σκαλωσιά, όχι αυθεντία. Κάθε εγγραφή
    φέρει το άρθρο, την αφετηρία και τις παραλλαγές της, και είναι ΣΗΜΑΣΜΕΝΗ
@@ -104,8 +108,8 @@ def _is_nonworking(day, holidays):
 
 
 def _roll_forward(day, holidays):
-    """ΚΠολΔ 144 παρ. 2: αν η λήξη πέφτει Σάββατο, Κυριακή ή εξαιρετέα, μετατίθεται
-    στην επόμενη εργάσιμη. Επιστρέφει (νέα ημέρα, λίστα μετατοπισμένων ημερών)."""
+    """ΚΠολΔ 144 παρ. 1 και 3: αν η λήξη πέφτει Σάββατο, Κυριακή ή εξαιρετέα, μετατίθεται
+    στην επόμενη μη εξαιρετέα ημέρα. Επιστρέφει (νέα ημέρα, λίστα μετατοπισμένων ημερών)."""
     moved = []
     guard = 0
     while _is_nonworking(day, holidays):
@@ -117,28 +121,38 @@ def _roll_forward(day, holidays):
     return day, moved
 
 
-def compute(start, days, anastoli_avgoustou=False):
+def compute(start, days, anastoli_avgoustou=False, ergasimes=False):
     """Υπολογίζει τη λήξη δικονομικής προθεσμίας ημερών κατά τον ΚΠολΔ 144.
 
     start: η ημερομηνία του αφετήριου γεγονότος (π.χ. της επίδοσης).
     days: ο αριθμός των ημερών της προθεσμίας (θετικός ακέραιος).
+    ergasimes: αν True, μετρούν μόνο οι εργάσιμες (όχι Σάββατο, Κυριακή, αργίες),
+        όπως στις 15 εργάσιμες της ανακοπής κατά διαταγής πληρωμής (ΚΠολΔ 632
+        παρ. 2). Έως τις 27.9.2026 η μηχανή μετρούσε μόνο ημερολογιακές ημέρες, ενώ
+        το πρότυπο της ανακοπής παρέπεμπε σε αυτήν.
     anastoli_avgoustou: αν True, το διάστημα 1-31 Αυγούστου δεν προσμετράται
-        (ΚΠολΔ 147 παρ. 7 [επαλήθευσε]: επιβεβαίωσε ότι εφαρμόζεται στη συγκεκριμένη
-        προθεσμία, καθώς δεν καλύπτει όλες).
+        (ΚΠολΔ 147 παρ. 2 [επαλήθευσε]: ισχύει μόνο για τις προθεσμίες που
+        απαριθμεί, μεταξύ άλλων 503, 518 παρ. 1, 545 παρ. 1 και 2, 564 παρ. 1 και 2).
+        Επιβεβαίωσε ότι η συγκεκριμένη προθεσμία είναι στον κατάλογο.
     """
     if days < 1:
         raise ValueError("Οι ημέρες πρέπει να είναι θετικός ακέραιος.")
 
     enarxi = start + dt.timedelta(days=1)  # ΚΠολΔ 144 παρ. 1: η επομένη του γεγονότος
-    if not anastoli_avgoustou:
+    # αρκετά έτη αργιών για κάθε εύλογη προθεσμία σε εργάσιμες
+    holidays = _holiday_set(start.year, start.year + 2 + days // 200)
+    if not anastoli_avgoustou and not ergasimes:
         raw_last = start + dt.timedelta(days=days)
     else:
         d = start
         counted = 0
         while counted < days:
             d += dt.timedelta(days=1)
-            if d.month != 8:  # οι ημέρες του Αυγούστου δεν μετρούν
-                counted += 1
+            if anastoli_avgoustou and d.month == 8:  # οι ημέρες του Αυγούστου δεν μετρούν
+                continue
+            if ergasimes and _is_nonworking(d, holidays):
+                continue
+            counted += 1
         raw_last = d
 
     holidays = _holiday_set(start.year, raw_last.year + 1)
@@ -148,10 +162,12 @@ def compute(start, days, anastoli_avgoustou=False):
         "afetiria_imera": _GR_WEEKDAYS[start.weekday()],
         "enarxi": enarxi.isoformat(),
         "imeres": days,
+        "ergasimes": ergasimes,
         "anastoli_avgoustou": anastoli_avgoustou,
         "teleftaia_imerologiaki": raw_last.isoformat(),
         "lixi": lixi.isoformat(),
         "lixi_imera": _GR_WEEKDAYS[lixi.weekday()],
+        "lixi_ora": "19:00",  # ΚΠολΔ 144 παρ. 1: στις 7 το βράδυ, όχι στα μεσάνυχτα
         "metatethike": bool(moved),
         "metatopisi": [
             {"imera": d.isoformat(), "imera_evd": _GR_WEEKDAYS[d.weekday()], "logos": r}
@@ -168,7 +184,21 @@ _REGISTRY = {
         "imeres": 15,
         "arthro": "ΚΠολΔ 503",
         "afetiria": "Επίδοση της ερήμην απόφασης",
-        "parallages": [],
+        "parallages": [
+            "Ο Αύγουστος δεν μετρά (ΚΠολΔ 147 παρ. 2, --anastoli-avgoustou).",
+        ],
+        "katigoria": "Πολιτική δικονομία",
+    },
+    "anakopi-diatagis-pliromis": {
+        "onoma": "Ανακοπή κατά διαταγής πληρωμής",
+        "imeres": 15,
+        "ergasimes": True,
+        "arthro": "ΚΠολΔ 632 παρ. 2",
+        "afetiria": "Επίδοση της διαταγής πληρωμής",
+        "parallages": [
+            "Εργάσιμες ημέρες: τρέξε το compute με --ergasimes.",
+            "Αναστολή Αυγούστου: επιβεβαίωσε ότι η προθεσμία είναι στον κατάλογο του ΚΠολΔ 147 παρ. 2.",
+        ],
         "katigoria": "Πολιτική δικονομία",
     },
     "efesi": {
@@ -179,6 +209,8 @@ _REGISTRY = {
         "parallages": [
             "60 ημέρες αν ο διάδικος διαμένει στο εξωτερικό ή είναι αγνώστου διαμονής.",
             "2 έτη από τη δημοσίευση αν η απόφαση δεν επιδόθηκε.",
+            "Ο Αύγουστος δεν μετρά στις προθεσμίες της παρ. 1 (ΚΠολΔ 147 παρ. 2, "
+            "--anastoli-avgoustou).",
         ],
         "katigoria": "Πολιτική δικονομία",
     },
@@ -190,6 +222,8 @@ _REGISTRY = {
         "parallages": [
             "60 ημέρες αν ο διάδικος διαμένει στο εξωτερικό ή είναι αγνώστου διαμονής.",
             "2 έτη από τη δημοσίευση αν η απόφαση δεν επιδόθηκε.",
+            "Ο Αύγουστος δεν μετρά στις προθεσμίες των παρ. 1 και 2 (ΚΠολΔ 147 παρ. 2, "
+            "--anastoli-avgoustou).",
         ],
         "katigoria": "Πολιτική δικονομία",
     },
@@ -231,22 +265,25 @@ def _render_compute(r):
         "",
         f"Αφετήριο γεγονός: {r['afetiria']} ({r['afetiria_imera']})",
         f"Έναρξη (επομένη): {r['enarxi']}",
-        f"Διάρκεια: {r['imeres']} ημέρες",
+        f"Διάρκεια: {r['imeres']} {'εργάσιμες ' if r['ergasimes'] else ''}ημέρες",
         f"Αναστολή Αυγούστου: {'ναι' if r['anastoli_avgoustou'] else 'όχι'}",
         f"Τελευταία ημερολογιακή ημέρα: {r['teleftaia_imerologiaki']}",
     ]
     if r["metatethike"]:
-        lines.append("Μετάθεση λήξης (ΚΠολΔ 144 παρ. 2):")
+        lines.append("Μετάθεση λήξης (ΚΠολΔ 144 παρ. 1 και 3):")
         for m in r["metatopisi"]:
             lines.append(f"    {m['imera']} ({m['imera_evd']}): {m['logos']}")
     lines += [
         "",
-        f"ΛΗΞΗ: {r['lixi']} ({r['lixi_imera']})",
+        f"ΛΗΞΗ: {r['lixi']} ({r['lixi_imera']}) στις {r['lixi_ora']} (ΚΠολΔ 144 παρ. 1· "
+        "σε προθεσμία άλλου κώδικα επιβεβαίωσε την ώρα)",
         "",
         "Η μηχανή υπολογίζει το ημερολόγιο με βάση τα στοιχεία που έδωσες.",
         "Επιβεβαίωσε τον αριθμό ημερών και την αφετηρία (επίδοση, δημοσίευση ή "
-        "γνώση) στο διέπον άρθρο. Οι ενδιάμεσες αργίες προσμετρώνται. Τοπικές "
-        "αργίες δικαστηρίων δεν περιλαμβάνονται.",
+        "γνώση) στο διέπον άρθρο. "
+        + ("Μετρήθηκαν μόνο εργάσιμες ημέρες. " if r["ergasimes"]
+           else "Οι ενδιάμεσες αργίες προσμετρώνται. ")
+        + "Τοπικές αργίες δικαστηρίων δεν περιλαμβάνονται.",
     ]
     return "\n".join(lines)
 
@@ -258,7 +295,7 @@ def _render_info(slug, entry):
         f"Κατηγορία: {entry['katigoria']}",
         f"Διέπον άρθρο: {entry['arthro']}",
         f"Αφετηρία: {entry['afetiria']}",
-        f"Τυπική προθεσμία (επιβεβαίωσε): {entry['imeres']} ημέρες",
+        f"Τυπική προθεσμία (επιβεβαίωσε): {entry['imeres']} {'εργάσιμες ' if entry.get('ergasimes') else ''}ημέρες",
     ]
     if entry["parallages"]:
         lines.append("Παραλλαγές:")
@@ -268,7 +305,8 @@ def _render_info(slug, entry):
         "",
         f"Ο αριθμός ημερών είναι ενδεικτικός και χρειάζεται επιβεβαίωση στο {entry['arthro']}.",
         "Μόλις τον επιβεβαιώσεις, τρέξε:",
-        f"    prothesmies.py compute --apo ΗΜΕΡΟΜΗΝΙΑ_ΑΦΕΤΗΡΙΑΣ --imeres {entry['imeres']}",
+        f"    prothesmies.py compute --apo ΗΜΕΡΟΜΗΝΙΑ_ΑΦΕΤΗΡΙΑΣ --imeres {entry['imeres']}"
+        + (" --ergasimes" if entry.get("ergasimes") else ""),
     ]
     return "\n".join(lines)
 
@@ -279,7 +317,8 @@ def _render_list():
     awidth = max(len(e["arthro"]) for e in _REGISTRY.values())
     for slug, e in _REGISTRY.items():
         lines.append(
-            f"  {slug:<{width}}  {e['imeres']:>3} ημ.  {e['arthro']:<{awidth}}  {e['onoma']}")
+            f"  {slug:<{width}}  {e['imeres']:>3} {'εργ.' if e.get('ergasimes') else 'ημ. '}  "
+            f"{e['arthro']:<{awidth}}  {e['onoma']}")
     lines += ["", f"Λεπτομέρειες: prothesmies.py info efesi. Όλες οι τιμές {_VERIFY}."]
     return "\n".join(lines)
 
@@ -300,7 +339,10 @@ def main(argv=None):
     pc.add_argument("--apo", required=True, help="αφετήρια ημερομηνία ΕΕΕΕ-ΜΜ-ΗΗ")
     pc.add_argument("--imeres", required=True, type=int, help="αριθμός ημερών")
     pc.add_argument("--anastoli-avgoustou", action="store_true",
-                    help="μη προσμέτρηση 1-31 Αυγούστου (ΚΠολΔ 147, επιβεβαίωσε)")
+                    help="μη προσμέτρηση 1-31 Αυγούστου (ΚΠολΔ 147 παρ. 2, μόνο για τις "
+                         "προθεσμίες που απαριθμεί· επιβεβαίωσε)")
+    pc.add_argument("--ergasimes", action="store_true",
+                    help="μέτρα μόνο εργάσιμες ημέρες (π.χ. ΚΠολΔ 632 παρ. 2: 15 εργάσιμες)")
     pc.add_argument("--json", action="store_true")
 
     pi = sub.add_parser("info", help="στοιχεία μιας συνήθους προθεσμίας")
@@ -322,7 +364,7 @@ def main(argv=None):
         except ValueError:
             p.error(f"μη έγκυρη ημερομηνία: {args.apo} (χρησιμοποίησε ΕΕΕΕ-ΜΜ-ΗΗ)")
         try:
-            r = compute(start, args.imeres, args.anastoli_avgoustou)
+            r = compute(start, args.imeres, args.anastoli_avgoustou, args.ergasimes)
         except ValueError as exc:
             p.error(str(exc))
         print(json.dumps(r, ensure_ascii=False, indent=2) if args.json

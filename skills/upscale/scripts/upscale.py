@@ -32,6 +32,9 @@ def _patch_torchvision():
 
 _patch_torchvision()
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import faithful_io  # noqa: E402
+
 # Heavy imports only after the patch is in place.
 import cv2  # noqa: E402
 import torch  # noqa: E402
@@ -149,6 +152,9 @@ def upscale_image(
     img = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
     if img is None:
         raise FileNotFoundError(f"Cannot read image: {input_path}")
+    # IMREAD_UNCHANGED ignores EXIF orientation, and the output keeps no tag,
+    # so a portrait phone photo came back sideways
+    img = faithful_io.orient(img, faithful_io.exif_orientation(input_path))
 
     print(f"Upscaling {input_path} by {scale}x ...", file=sys.stderr)
     upsampler = _build_upsampler(scale, tile)
@@ -162,7 +168,9 @@ def upscale_image(
         output, _ = upsampler.enhance(img, outscale=scale)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(output_path, output)
+    # cv2.imwrite returns False instead of raising: a failed write used to
+    # print "Saved" and exit 0. The ICC profile is carried over as well.
+    faithful_io.write_cv2(output_path, output, faithful_io.icc_profile(input_path))
     print(f"Saved: {output_path}", file=sys.stderr)
 
 
@@ -183,7 +191,11 @@ def main() -> int:
         help="Tile size for low-memory systems; 0 disables tiling (default: 256)",
     )
     args = parser.parse_args()
-    upscale_image(args.input, args.output, args.scale, args.face, args.tile)
+    try:
+        upscale_image(args.input, args.output, args.scale, args.face, args.tile)
+    except (FileNotFoundError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

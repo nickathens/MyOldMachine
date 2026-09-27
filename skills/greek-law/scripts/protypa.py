@@ -90,7 +90,8 @@ META = [
         "doc_class": "δικόγραφο",
         "aoristia": "generic",
         "summary": "Ανακοπή κατά εκδοθείσας διαταγής πληρωμής, με αυστηρή προθεσμία.",
-        "pairs": "Κρίσιμη προθεσμία (άρθρο 632 ΚΠολΔ): υπολογίστε την με prothesmies.py. "
+        "pairs": "Κρίσιμη προθεσμία (άρθρο 632 παρ. 2 ΚΠολΔ, 15 εργάσιμες): υπολογίστε την με "
+                 "prothesmies.py compute --ergasimes (ή info anakopi-diatagis-pliromis). "
                  "Μετά: aoristia_check.py (--type generic).",
     },
     {
