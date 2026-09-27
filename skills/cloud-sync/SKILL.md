@@ -4,12 +4,10 @@ Sync files to/from cloud storage (Google Drive, Dropbox, S3, etc.) using rclone.
 
 ## Setup Required
 
-Before using, configure a remote:
-```bash
-rclone config
-```
-
-This creates an interactive wizard to connect cloud services.
+Every example below needs a configured remote first. `rclone config` is an
+interactive wizard that needs a terminal, and Google Drive or Dropbox also
+need a browser sign-in: that is the user's step at the machine, not something
+a bot turn can do. `rclone listremotes` shows what exists.
 
 ## Usage
 
@@ -27,13 +25,15 @@ rclone copy local_file.pdf gdrive:/backups/
 # Copy folder to cloud
 rclone copy ./project gdrive:/projects/myproject
 
-# Sync folder (mirror local to remote)
-rclone sync ./folder gdrive:/folder --progress
+# Sync folder: makes the remote IDENTICAL to local, DELETING remote files local lacks.
+# Always dry-run first and show the user the list; prefer copy, which never deletes.
+rclone sync ./folder gdrive:/folder --dry-run
+rclone sync ./folder gdrive:/folder
 
 # Download from cloud
 rclone copy gdrive:/path/to/file.pdf ./local/
 
-# Mount cloud as local folder (FUSE)
+# Mount cloud as local folder (FUSE); unmount: fusermount -u ~/gdrive (Linux), umount ~/gdrive (macOS)
 rclone mount gdrive: ~/gdrive --daemon
 
 # Get info about a remote file
@@ -59,8 +59,9 @@ User: "list my files on Google Drive"
 
 ## Notes
 
-- Requires one-time setup via `rclone config`
+- Requires one-time setup via `rclone config` (see above)
 - Supports 40+ cloud storage providers
-- Sync is one-way (local → remote) - use `bisync` for two-way
-- Progress shown with `--progress` flag
+- `sync` and `copy` go one way, source to destination; `rclone bisync` goes both
+  ways (its first run needs `--resync`)
+- `--progress` redraws a live display: fine in a terminal, noise in a turn's output
 - Encrypted remotes available for sensitive data

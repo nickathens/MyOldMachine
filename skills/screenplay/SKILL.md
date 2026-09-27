@@ -4,8 +4,8 @@ Write, format, version, and export screenplays using Fountain markup.
 
 ## Tools
 
-- **screenplain** (Python): Fountain to PDF/HTML/FDX conversion
-- **afterwriting** (Node.js CLI): Fountain to PDF with analytics (page count, timing, dialogue stats, scene breakdown)
+- **screenplain** (Python): Fountain to PDF/HTML/FDX, the default engine. It runs inside `screenplay.py`, which also uses its Fountain parser for `analyze`. A script with letters the PDF standard Courier lacks (Greek) is set in Nimbus Mono PS, a Courier clone that has them; a stray word in yet another script (a Chinese word in an English script) is set in an installed font that has it.
+- **afterwriting** (Node.js CLI): Fountain to PDF with scene numbers, a watermark, or no title page. Its fonts have no Greek letters (they print as blank space), so `screenplay.py` refuses it for Greek text.
 
 ## Core Workflow
 
@@ -23,8 +23,9 @@ python $SKILL_DIR/scripts/screenplay.py create "Script Title" --author "Author N
 # Save current version (auto-increments: v1, v2, v3...)
 python $SKILL_DIR/scripts/screenplay.py save <project_dir> --note "Added climax scene"
 
-# Export to PDF (screenplain: clean formatting)
+# Export to PDF (screenplain: clean formatting; add --a4 for A4)
 python $SKILL_DIR/scripts/screenplay.py export <project_dir> --format pdf
+python $SKILL_DIR/scripts/screenplay.py export <project_dir> --format pdf --a4
 
 # Export to PDF (afterwriting: with scene numbers, watermark, custom config)
 python $SKILL_DIR/scripts/screenplay.py export <project_dir> --format pdf --engine afterwriting --scene-numbers both
@@ -33,18 +34,23 @@ python $SKILL_DIR/scripts/screenplay.py export <project_dir> --format pdf --engi
 python $SKILL_DIR/scripts/screenplay.py export <project_dir> --format html
 python $SKILL_DIR/scripts/screenplay.py export <project_dir> --format fdx
 
-# Analyze script (page count, runtime, scenes, characters, locations)
+# Analyze the draft: pages as the PDF export lays them out, runtime (a page a minute),
+# scenes, each character's speeches and words, locations
 python $SKILL_DIR/scripts/screenplay.py analyze <project_dir>
 
 # List all versions
 python $SKILL_DIR/scripts/screenplay.py versions <project_dir>
 
-# Restore a previous version (auto-saves current draft first)
-python $SKILL_DIR/scripts/screenplay.py restore <project_dir> --version 3
+# Restore a previous version (3 or v3; the current draft is saved first unless it already is)
+python $SKILL_DIR/scripts/screenplay.py restore <project_dir> --version v3
 
-# Diff two versions (use 0 for current draft)
-python $SKILL_DIR/scripts/screenplay.py diff <project_dir> --v1 2 --v2 5
+# Diff two versions (0 is the current draft)
+python $SKILL_DIR/scripts/screenplay.py diff <project_dir> --v1 v2 --v2 v5
 ```
+
+Pass `--dir` to `create` with the project's real home (for example `~/projects/<slug>`); without it the folder lands in the current directory. If the folder already holds a `draft.fountain`, `create` keeps it and builds the project around it.
+
+Exports are named from the title: `<title>_v3.pdf` for saved version 3, `<title>_v4_draft.pdf` for the current draft after three saves. Any failure prints `Error:` and exits 1; afterwriting exits 0 even when it writes nothing, so the script checks for the file itself.
 
 ## Fountain Format Quick Reference
 
@@ -92,7 +98,7 @@ Dimitris walks to his car. Rain hammers the pavement.
 
 ## Project Directory Structure
 
-Each screenplay project gets this structure:
+`create` makes `draft.fountain`, `versions/`, `exports/` and `metadata.json`; add `development/` and `notes/` as the work needs them:
 
 ```
 <project_dir>/
@@ -113,13 +119,14 @@ Each screenplay project gets this structure:
 - `episode` : TV episode (target: 22-60 pages)
 - `sketch` : Comedy sketch / skit (target: 1-5 pages)
 
-## Afterwriting Engine Flags
+## Export Options
 
-When using `--engine afterwriting`, you can customize via:
+- `--a4` : A4 paper (default: US Letter), with either engine
+
+These three need `--engine afterwriting` (the script refuses them otherwise) and so are not available for Greek scripts:
 - `--scene-numbers` : none, left, right, both
 - `--watermark "DRAFT"` : Print watermark on every page
 - `--no-title-page` : Skip title page
-- `--a4` : Use A4 paper (default: US Letter)
 
 ## Documentation
 
@@ -129,6 +136,13 @@ The `docs/` directory within this skill contains screenwriting craft reference:
 - `craft.md` : Dialogue, subtext, action lines, show-don't-tell, pacing
 - `short-film.md` : Short film specific guidance
 - `formatting.md` : Industry standard formatting rules
+
+Export Greek scripts with the default engine, `--a4` for Greek and European submissions. When a
+script has letters the PDF standard Courier lacks (Greek above all), the PDF is set in a Courier
+style face that has them: Nimbus Mono PS (a Courier clone with Greek; on Debian or Ubuntu
+`apt install fonts-urw-base35`), else Courier New, Liberation Mono or FreeMono, with a per letter
+fallback font for anything still missing. Before 2026-09-27 accented vowels came out as black boxes,
+and afterwriting still prints Greek as blank space, so it is refused for such scripts.
 
 Read these before writing if you're unfamiliar with the form.
 

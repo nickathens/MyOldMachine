@@ -2,14 +2,21 @@
 
 Parse and read RSS/Atom feeds using feedparser.
 
+All three feeds under Common Feeds parsed on 2026-09-27 (feedparser). `feedparser.parse(url)` has no timeout of its own, so a server that
+stalls hangs the turn: set `socket.setdefaulttimeout(20)` first, as below.
+
 ## Read a Feed
 
 ```python
+import socket
 import feedparser
 
+socket.setdefaulttimeout(20)
 feed = feedparser.parse("https://example.com/feed.xml")
+if feed.bozo:
+    print(f"Feed problem: {feed.bozo_exception}")
 
-print(f"Feed: {feed.feed.title}")
+print(f"Feed: {feed.feed.get('title', '(no title)')}")
 print(f"Entries: {len(feed.entries)}")
 
 for entry in feed.entries[:5]:
@@ -23,7 +30,8 @@ for entry in feed.entries[:5]:
 
 ```bash
 python3 -c "
-import feedparser
+import socket, feedparser
+socket.setdefaulttimeout(20)
 feed = feedparser.parse('https://news.ycombinator.com/rss')
 for e in feed.entries[:5]:
     print(f'* {e.title}')

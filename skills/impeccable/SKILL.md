@@ -143,7 +143,7 @@ Use these when working on specific aspects of a web project:
 | **extract** | Extract reusable components, design tokens, patterns into design system. |
 | **onboard** | Design onboarding flows, empty states, first-time user experiences. |
 
-When invoking a command, always read the core guidelines above first, then apply the command's specific methodology.
+When invoking a command, always read the core guidelines above first, then apply the command's specific methodology. Upstream Impeccable keeps each command's method in its own file; those files are not vendored here, so the Purpose column above and the reference documents are the whole brief (checked 2026-09-27).
 
 ---
 

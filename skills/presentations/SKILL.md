@@ -94,7 +94,7 @@ Each shape below is grounded in two sources: the industry-standard form as it is
 
 **Typical section flow.** Hero, Momentum (third-party data), Experience, Value, Closing. Animated counters tied to audited audience numbers.
 
-- **Tooling:** `create_presentation.py` with `mode: dark`, `nav: dots` or none, hero looping video, `stats` sections with `data-count` for animated counters, surge deployment.
+- **Tooling:** `create_presentation.py` with `mode: dark`, `nav: dots` or none, hero looping video, `stats` sections, surge deployment. The pipeline's `stats` numbers are static: animated counters (`data-count`) need a small script added by hand or through `extra_body`.
 - **Distinguishing test:** "Is the URL itself part of the deliverable, sent to multiple stakeholders or a committee?" Then bid microsite. If the document is private and individually addressed → strategic proposal.
 
 ### Sponsorship Deck
@@ -293,11 +293,14 @@ The document is defined by a top-level object with metadata, a cover, and an arr
 - `lang` — Language code (default: `en`)
 - `particles` — Enable floating particle background (default: `true`)
 - `mode` — Display mode: `dark` (default), `light`, `editorial`, `minimal`
-- `animation` — Animation preset: `fade` (default), `slide`, `scale`, `blur`, `clip`
+- `animation` — Animation preset: `fade` (default), `slide`, `scale`, `blur`, `clip`, `smooth`
 - `nav` — Navigation type: `none` (default), `sidebar`, `topbar`, `dots`, `progress`
 - `cover` — Cover section (see below). Top-level, not inside `sections`.
 - `scheme` — Color scheme overrides. Auto-derives `accent_dim`, `accent_light`, `brand_glow` from base colors if not set.
-- `fonts` — Font overrides. Accepts any Google Font name (41 curated fonts with optimized specs, unknown fonts get default weights)
+- `fonts` — Font overrides. Accepts any Google Font name (curated fonts get optimized specs, unknown fonts get default weights). A commercial typeface that Google does not serve (Neue Haas Grotesk, GT Sectra, SF Pro, Canela, Tiempos...) is kept first in the CSS stack and a free stand-in is loaded after it (map in `scripts/design_md.py`), so a viewer without the real typeface sees the stand-in rather than the browser default
+- `font_subsets` — Extra Google Fonts subsets, e.g. `["greek"]` (added automatically for `lang: el`, `cyrillic` for ru/uk/bg/sr)
+- `brand_mark` — Persistent top-left wordmark: `{"text": "studio", "accent_letters": [2], "suffix": "AI", "url": "https://..."}`
+- `extra_head` / `extra_body` — Raw HTML appended to `<head>` / the end of `<body>` (custom scripts, analytics, hand-written counters). Inserted verbatim, never escaped
 
 ### Cover Object
 
@@ -311,6 +314,7 @@ The cover is full-viewport with animated entrance and scroll-fade-out.
 - `type` — Document type label (e.g. "Director's Treatment")
 - `meta` — Array of strings shown at bottom of cover
 - `background` — Background image path
+- `wordmark` — Large display lockup instead of `brand`: `{"text": "arrena", "accent_letters": [0], "suffix": "WATER", "url": "..."}`
 - `duration` — Seconds to hold on cover during video autoplay (default: `4.0`)
 
 ## Section-Level Timing (for Video Export)
@@ -501,16 +505,17 @@ Multiple beats in one section. Dialogue renders in serif italic with accent left
 ```
 Full-viewport section with product image, serif taglines, and brand logo.
 
-### Video (YouTube/Vimeo embed)
+### Video (YouTube/Vimeo embed or a video file)
 ```json
 {
     "type": "video",
     "label": "Reference Video",
     "url": "https://www.youtube.com/watch?v=xyz",
-    "caption": "Optional caption"
+    "caption": "Optional caption",
+    "aspect_ratio": "16:9"
 }
 ```
-YouTube and Vimeo URLs auto-convert to embed format.
+YouTube and Vimeo URLs auto-convert to embed format. A URL ending in `.mp4`, `.webm`, `.mov` or `.m4v` plays inline as a muted looping `<video>` (optional `poster`). `aspect_ratio` sets the frame: `"16:9"`, `"4/3"`, `"1920x1080"` or a number such as `2.39` (width over height); default 16:9. Video files are linked, not embedded, so ship them in the delivered folder next to the HTML.
 
 ### Closing (director info / credits)
 ```json
@@ -646,7 +651,7 @@ Record any presentation as a cinematic video. Uses ffmpeg x11grab with CPU-based
 
 **How it works:**
 1. The HTML includes dormant auto-scroll JS (activated by `?autoplay=1` URL parameter)
-2. `record_presentation.py` opens the HTML in Chromium, triggers autoplay, captures with ffmpeg x11grab
+2. `record_presentation.py` opens Chromium fullscreen on :0 at a device scale of 1 (on a HiDPI desktop a normal window carried the dock, the top bar, tabs and a 2x page), shows a grey page and checks one frame, then triggers autoplay and captures the top-left `--width` x `--height` with ffmpeg x11grab. If a notification or dialog covers the capture area it stops before recording, exits 1 and saves the offending frame as `<output>.blocked.png`: dismiss it on the desktop and run again
 3. GSAP ScrollToPlugin smoothly scrolls section-by-section with `power2.inOut` easing
 4. ScrollTrigger animations fire naturally as sections scroll into view
 5. Encoded as H.264 MP4 via libx264
@@ -717,7 +722,10 @@ This spec contains everything needed to generate the full JSON definition. The m
 
 ## Brand Ingestion (Firecrawl)
 
-Seed a treatment's `scheme`, `fonts`, and `cover.logo` from a live brand URL by passing `--brand-url`. The skill calls Firecrawl's v2 `/scrape` endpoint with the `branding` format, which is the dedicated design-system extractor (logo, colors, typography).
+Firecrawl's v2 `/scrape` endpoint with the `branding` format is the dedicated design-system extractor (logo, colors, typography). Two ways to use it, and they do different amounts:
+
+- `ingest_brand.py` emits the full partial: `scheme`, `fonts` and `cover` (logo plus brand link). Read it, then copy what fits into the treatment JSON by hand.
+- `create_presentation.py --brand-url` takes the **cover only** (the downloaded logo and `brand_url`); the scraped colors and fonts are deliberately not applied, so a site's web palette never overrides the treatment's own direction.
 
 ```bash
 # Standalone — emit a JSON partial
@@ -751,7 +759,7 @@ Free tier is 500 lifetime credits. One brand scrape = 1 credit.
 | `typography.fontFamilies.primary` | `fonts.body` |
 | `logo` / `images.logo` | `cover.logo` (downloaded to `~/.cache/presentations/brand_logos/`) |
 
-**Precedence** (highest wins): explicit treatment JSON → `--design-md` → `--aesthetic` → `--brand-url`. Nothing in the treatment gets overwritten.
+**Precedence** (highest wins): explicit treatment JSON → `--design-md` → `--aesthetic` → `--brand-url` (cover keys only). Nothing in the treatment gets overwritten.
 
 ## Aesthetic References
 
@@ -830,6 +838,6 @@ python scripts/create_presentation.py \
 
 ## Output
 
-- **HTML**: Self-contained, GSAP from CDN, images base64-embedded. Open in any browser.
+- **HTML**: One file, images base64-embedded; GSAP and the Google Fonts come from their CDNs. Opened offline (or where jsdelivr is blocked) the page shows every section still, without animation, and falls back to local fonts.
 - **PDF**: Playwright/Chromium print mode. All animations disabled, elements forced visible.
 - **Video**: ffmpeg x11grab + auto-scroll. 30fps H.264 MP4. Optional background audio. Linux only.

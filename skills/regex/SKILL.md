@@ -31,7 +31,8 @@ python3 -c "import re; m=re.search(r'(\w+)@(\w+\.\w+)', 'email@domain.com'); pri
 |---------|---------|
 | `\d+` | Numbers |
 | `\w+` | Words |
-| `[a-zA-Z]+` | Letters only |
+| `[a-zA-Z]+` | Latin letters only (no Greek, no accents) |
+| `[^\W\d_]+` | Letters in any script (Greek included) |
 | `\S+@\S+` | Email (simple) |
 | `https?://\S+` | URLs |
 | `\b\d{3}-\d{4}\b` | Phone (xxx-xxxx) |

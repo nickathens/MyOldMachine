@@ -1,6 +1,6 @@
 # API Test
 
-HTTP API testing and debugging.
+HTTP API testing and debugging with curl.
 
 ## Tools
 
@@ -31,6 +31,12 @@ http POST https://api.example.com/users name=John email=john@example.com
 http GET example.com Header:Value
 http --verbose example.com  # Full request/response
 ```
+
+- `-sS` hides the progress bar but keeps errors; `-f` makes an HTTP error
+  (404, 500) exit non zero; `-L` follows redirects; add `--max-time 20` so a
+  dead endpoint cannot hang the turn.
+- Keep tokens in variables (`$TOKEN`), not pasted into commands that land in
+  logs.
 
 ## Examples
 

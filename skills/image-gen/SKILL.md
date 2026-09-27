@@ -206,7 +206,7 @@ python skills/image-gen/scripts/generate.py --balance
 |------|-------------|
 | `-o`, `--output` | Output file path (auto: .jpg for images, .mp4 for video) |
 | `-m`, `--model` | Model name or alias (auto-selects based on --video flag) |
-| `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21 |
+| `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21, plus the per-model 2:1, 1:2 and `auto` (the model's own schema refuses a ratio it does not take; `--cost` shows it free). Pollinations falls back to 768x768 for a ratio it has no size for |
 | `-r`, `--ref-image` | Reference image for image-to-image or image-to-video |
 | `--video` | Generate video instead of image |
 | `--threed` | Generate a 3D mesh (default output `.glb`) |
@@ -293,7 +293,7 @@ python skills/image-gen/scripts/generate.py --balance
 | Image mid | 2 | nano-pro, cinematic, flux, seedream, kling |
 | Image expensive | 7 | gpt, hazel |
 | Image free | 0 | Pollinations (`--backend pollinations`) |
-| Video | 7-60 | kling-turbo (7), kling (10), seedance-mini (12), seedance (22), veo3.1 (22), gemini (24), cinematic3 (25), cinematic3.5 (25), h3 (20 at the 5s minimum, 4/second, 60 at 15s) |
+| Video | 7-60 | kling-turbo (7), kling (10), seedance-mini (12), seedance (22), veo3.1 (22), gemini (24), cinematic3 (25), cinematic3.5 (25), h3 (10 at the 5s minimum, 2/second since 2026-09-05, 30 at 15s) |
 | 3D | 5 | text-to-3d, image-to-3d |
 | Audio | 1 | music, speech |
 
@@ -305,7 +305,7 @@ When a media generation request comes from a structured source (Mini App, script
 
 1. **Read the model-specific guide** from `skills/image-gen/models/` BEFORE refining.
 2. **Refine the prompt** following that guide's techniques (structure, length, keywords, what to avoid).
-3. **Estimate cost** with `--cost` flag, including all params (model, aspect, resolution, duration, extras).
+3. **Estimate cost** with `--cost` flag, including all params (model, aspect, resolution, duration, extras) and the same media the job will use (`-r`, `--start-image`, `--end-image`, `--video-references`): a video reference more than doubles some prices, and before 2026-09-27 the quote ignored media.
 4. **Present all three** (original prompt, refined prompt, cost estimate) and wait for approval.
 5. **Never generate without explicit user approval.** Credits are real money.
 
@@ -350,17 +350,18 @@ rather than paying flagship rates to find a shot. Always confirm with `--cost` b
 |---|---|
 | 1.0 | `veo3-lite`, `hailuo` |
 | 1.2 | `seedance1.5` |
-| 1.5 | `kling-turbo`, `wan`, `grok-video`, `cinematic-v2` |
-| 2.0 | `kling`, `kling2.6` |
+| 1.5 | `kling-turbo`, `wan`, `wan2.6` (was 2.6 until September), `grok-video`, `cinematic-v2` |
+| 2.0 | `kling`, `kling2.6`, `h3` (was 4.0 until September) |
 | 2.5 | `happy-horse`, `seedance-mini` |
-| 2.6 | `wan2.6` |
 | 2.75 | `veo3.1` |
 | 3.0 | `gemini` |
-| 4.0 | `h3` |
 | 4.5 | `seedance`, `grok-video1.5` |
 | 5.0 | `cinematic3`, `cinematic3.5`, `marketing` |
 | 5.5 | `flux-video`, no video reference |
-| 6.5 | `seedance2.5` at 720p (2.5 at 480p, 9.0 at 1080p) |
+| 7.0 | `seedance2.5` at 720p (3.0 at 480p, 12.0 at 1080p; a `video_edit` 3.5, 7.5, 12.0) |
+
+Re-quoted live on 2026-09-27: `seedance2.5` rose when ByteDance's 1080p promotion ended on
+17 September, `h3` halved in early September, and `wan2.6` fell to 1.5 at 720p.
 
 `veo3` is priced per clip, not per second: 22 flat on `veo-3-fast`, 58 on `veo-3-preview`.
 Quality steps cost extra on top: `kling` 4k is 6.0/s, `seedance` 4k is 22/s, `cinematic3` 4k is 24/s.
@@ -373,11 +374,12 @@ price, not the name of the mode, so the trap springs on a quote that names no mo
   above turned inside out: a video continuation costs 2.4x what this table quotes. Budget a 20 s
   continuation at 110 and the bill is 260: read `flux-3-video.md` first.
 - `seedance2.5` **used to** drop to 4.0/s at 720p and 2.0 at 480p on the same trigger. **That tier
-  is gone [re-measured live 2026-08-19, re-verified 2026-08-23].** It charges one rate per
-  resolution in every mode: 2.5/s at 480p, 6.5 at 720p, and it now exposes **1080p at 9.0**. What
-  moves its bill instead is which duration gets used: **`video_edit` ignores the `duration` you pass
-  and charges the source clip's own length**, with a four second floor, so an 8 s clip is 52 at 720p
-  whether you ask for 5 s or 20 s. Read `seedance-2-5.md` before budgeting an edit or an extension.
+  is gone [re-measured live 2026-08-19, re-verified 2026-08-23].** It charges 3.0/s at 480p, 7.0 at
+  720p and 12.0 at 1080p [re-quoted 2026-09-27], and a `video_edit` bills its own 3.5, 7.5 and 12.0.
+  What moves its bill beyond that is which duration gets used:
+  **`video_edit` ignores the `duration` you pass and charges the source clip's own length**, with a
+  four second floor, so an 8 s clip is 60 at 720p whether you ask for 5 s or 20 s. Read
+  `seedance-2-5.md` before budgeting an edit or an extension.
 
 Every other model that accepts a `video_references` file quotes the same with and without one
 (`h3`, `wan2.6`, `wan3`, `gemini`, `seedance`), so `flux-video` is the whole list now, measured not

@@ -100,6 +100,8 @@ Two rules that catch the silent failures:
 - Inside CSS `@keyframes`, timing functions must be literal `cubic-bezier(...)` values. A `var()` token there is silently dropped by Chromium and the motion degrades to linear with no error. Keep tokens for the `animation` shorthand, write literal easing in keyframes, and verify with the easing probe.
 - Reduced motion is mandatory: under `prefers-reduced-motion: reduce` the logo must appear immediately in its final static state.
 
+The showcase opens at 0.45x speed on purpose (the delivery template asks for a speed slow enough to read the principles), with a slider up to 2.5x. Say so when sending it, or set the slider to 1 for the designed timing; `animate_svg_html.py` plays at 1x.
+
 Verify before delivering: capture the motion strip and look at it (nothing should clip mid flight), and confirm the final captured frame matches the verified static render (the Final Frame Contract). For loops, the last keyframe state must equal the first.
 
 ---

@@ -91,8 +91,9 @@ that is merely YELLOW between two companies can be RED against a consumer.
 Greek law is mostly consensual, but some contracts need a form on pain of nullity. A
 δικαιοπραξία that lacks a legally required type is void (ΑΚ 159). The two a reviewer meets
 most: any transfer of or real right over an ακίνητο needs a συμβολαιογραφικό έγγραφο
-(ΑΚ 369), and a δωρεά needs notarial form (ΑΚ 498). A private document purporting to sell
-land is RED by form alone.
+(ΑΚ 369), and a δωρεά needs notarial form (ΑΚ 498), unless it is a movable the donor
+actually hands over (χειρόδοτη δωρεά). A private document purporting to sell land is RED
+by form alone.
 
 ### Restraint of trade, ΑΚ 178 to 179 with Σύνταγμα άρθρο 5
 

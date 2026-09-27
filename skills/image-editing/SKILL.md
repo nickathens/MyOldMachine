@@ -54,5 +54,8 @@ blur, sharpen, contour, detail, edge_enhance, emboss, smooth, grayscale, sepia, 
 
 - Uses PIL/Pillow library
 - Supports PNG, JPG, GIF, BMP, WEBP, TIFF
-- Quality option only affects JPG output
+- Every command works on the image as displayed: a phone photo's EXIF rotation is applied first, so `--box` coordinates and the output are upright
+- Pillow edits colour in 8 bits: a 16-bit RGB master (PNG or TIFF) comes out 8-bit. `info` reports `bits_per_channel`, and every edit of such a file prints a note. For a deep master use the upscale skill's `--mode lanczos` or keep the edit out of the master
+- Every output keeps the source's ICC colour profile and dpi (dropped only when the colour space changes, e.g. `--filter grayscale`); PIL alone drops both, which is what made a 300 dpi key visual place at 72 dpi
+- JPEG and WebP are written at quality 95 by default (`convert --quality` sets it); saving to JPEG flattens any transparency onto white instead of black
 - Brightness/contrast values: 1.0 = no change, >1 = increase

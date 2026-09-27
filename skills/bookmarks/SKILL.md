@@ -1,72 +1,67 @@
 # Bookmarks
 
-Manage bookmarks using buku.
+Manage bookmarks with buku.
 
-## Add Bookmark
+Every command below was run against buku 5.1 on a throwaway database on 2026-09-27.
+
+In the bot always pass `--nostdin`, as the first argument (otherwise buku
+reads stdin and stops with "buku: waiting for input") and `--nc` (no colour codes); searches also
+take `--np` (no interactive prompt after the results).
+
+## Add
 
 ```bash
-# Add a URL
-buku -a https://example.com
-
-# Add with title and tags
-buku -a https://example.com "Example Site" tag1,tag2
-
-# Add with description
-buku -a https://example.com "Title" tag1 --comment "Description here"
+buku --nostdin --nc -a https://example.com tag1,tag2 --title "Example Site" --comment "Description here"
+buku --nostdin --nc -a https://example.com tag1,tag2 --offline     # do not fetch the page title
 ```
 
-## Search Bookmarks
+The title needs `--title`: words after the URL are tags, so
+`buku -a URL "Example Site" tag1,tag2` (what this file used to show) saves
+"example site tag1" as a tag and fetches the title from the page instead.
+
+## Search
 
 ```bash
-# Search by keyword
-buku keyword
-
-# Search by tag
-buku --stag tag1
-
-# Search multiple terms (AND)
-buku keyword1 keyword2
-
-# List all tags
-buku --stag
+buku --nostdin --np --nc -s keyword1 keyword2     # ANY of the words
+buku --nostdin --np --nc -S keyword1 keyword2     # ALL of the words
+buku --nostdin --np --nc --stag tag1              # by tag
+buku --nostdin --np --nc --stag                   # list all tags with counts
 ```
 
-## List Bookmarks
+A bare `buku keyword1 keyword2` also matches ANY word, not all (the old
+text said AND). In the results, `1. Example Org [2]`, the number in
+brackets is the bookmark's index; the leading number is only the position
+in the results.
+
+## List
 
 ```bash
-# List all
-buku -p
-
-# List last 10
-buku -p -n 10
-
-# List by index
-buku -p 1
+buku --nostdin --nc -p          # all
+buku --nostdin --nc -p -10      # the last 10
+buku --nostdin --nc -p 1        # index 1
 ```
 
-## Delete Bookmark
+(`-p -n 10` prints the first 10, not the last.)
+
+## Delete
 
 ```bash
-# Delete by index
-buku -d 1
-
-# Delete by URL
-buku -d --url https://example.com
+buku --nostdin --np --nc -s example.com           # find it; note the [index]
+buku --nostdin --tacit --nc -d 5                  # delete index 5
 ```
 
-## Export/Import
+**Never run `-d` without an index.** `buku -d --url https://example.com`,
+the old "delete by URL" example, ignores the URL and asks "Remove ALL
+bookmarks? (y/n)": one "y" empties the library. Confirm the index with the
+user before deleting, and never delete more than they asked for.
+
+## Export / Import
 
 ```bash
-# Export to HTML
-buku -e bookmarks.html
-
-# Export to Markdown
-buku -e bookmarks.md
-
-# Import from HTML
-buku -i bookmarks.html
+buku --nostdin --nc -e bookmarks.html     # or .md, .org, .xbel
+buku --nostdin --tacit --nc -i bookmarks.html
 ```
 
 ## Database
 
-Bookmarks stored in: `~/.local/share/buku/bookmarks.db`
+`~/.local/share/buku/bookmarks.db`, created by the first add.

@@ -65,7 +65,7 @@ python skills/watch/scripts/watch.py "$URL" --start 2:15 --end 2:45 --fps 3
 
 Auto-detected priority: **captions → Groq → OpenAI → local CLI**.
 
-1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles when the source has them.
+1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles when the source has them, chosen by the video's own language: a manual track in that language first, then the original speech recognition track (`el-orig` on a Greek video), then English. An automatic English track on a video in another language is YouTube's machine translation and is used last, labeled as such. The transcript line says which kind it read (for example `captions: automatic, original language (el-orig)`). A track that the default client refuses (HTTP 429) is fetched again through the `android_vr` client.
 2. **Whisper API fallback.** If no captions and a key is set, the script extracts mono 16kHz mp3 (~480 kB/min) and uploads to whichever API has a key:
    - **Groq** (`whisper-large-v3`) — fastest, cheapest. Key at https://console.groq.com/keys
    - **OpenAI** (`whisper-1`) — fallback. Key at https://platform.openai.com/api-keys

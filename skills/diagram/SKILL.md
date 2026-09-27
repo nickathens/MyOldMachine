@@ -27,7 +27,7 @@ $D src.mmd -o /tmp/dark.png --theme dark --width 1800
 $D src.mmd -o /tmp/light.png --theme default --background white
 ```
 
-Defaults: `--theme dark`, `--background transparent`, `--width 1600`, format inferred from output extension.
+Defaults: `--theme dark`, `--background transparent`, `--width 1600`, format inferred from output extension (`--format` overrides it). The output folder is created if missing, and a render that hangs is stopped after 180 s.
 
 `--width` is the page width: a wider diagram is fitted to it, a narrower one keeps its
 natural size. It means the same on Mermaid CLI 11 and 12; the script reads the installed

@@ -99,10 +99,13 @@ the claim cannot be adjudicated.
 
 ### Deadlines worth flagging
 
-Succession runs on strict periods: the time to αποποίηση, and the παραγραφή of the αγωγή
-περί κλήρου, among others. Treat any date as load bearing, tell the user to confirm the
-governing article, and reach for the Stage 4 deadline tool rather than compute from
-memory.
+Succession runs on strict periods: the time to αποποίηση (four months from knowledge,
+one year where the deceased or the heir lived abroad, ΑΚ 1847), and the παραγραφή of the
+αγωγή περί κλήρου, among others. Treat any date as load bearing and tell the user to
+confirm the governing article. These periods run in months and years, which
+`scripts/prothesmies.py` does not count (it counts days, for procedural deadlines): count
+them by the Civil Code's own rules on προθεσμίες (ΑΚ 240 κ.ε.) and confirm, never from
+memory. (Until 27.9.2026 this paragraph sent them to the deadline engine.)
 
 ---
 

@@ -38,12 +38,17 @@ fifteen seconds, a character or a product that must survive the whole clip, a co
 you already have, or a tail extension on footage that exists. It is the only model on this route
 that can edit inside a clip or extend one.
 
-Do not reach for it to find a framing or test an idea. At 6.5 credits a second in 720p it is the
-most expensive video model in the catalogue, and cheaper models will tell you whether the shot works.
+Do not reach for it to find a framing or test an idea. At 7.0 credits a second in 720p (re-quoted
+2026-09-27) it is the most expensive video model in the catalogue, and cheaper models will tell you whether the shot works.
 
 ---
 
 ## 1. What changed, and what the old guide got wrong
+
+**Prices moved again on 2026-09-17, when ByteDance's 1080p promotion ended.** Re-quoted live on
+2026-09-27: **3.0 credits a second at 480p, 7.0 at 720p, 12.0 at 1080p** (5 s = 15, 35, 60), and
+`video_edit` bills 3.5, 7.5 and 12.0 on its source length. The August figures below (2.5, 6.5, 9.0)
+are kept as the record of that probe; the operational numbers later in this guide are the new ones.
 
 The previous version of this guide was measured on 2026-08-07 through 2026-08-10. Nine days later
 the route has moved under it. Everything below was re-probed live on **2026-08-19** with CLI 1.1.23,
@@ -71,9 +76,9 @@ source clip, with a four second floor. Proven by holding the clip and changing t
 
 | Source clip | Requested duration | Quote at 720p |
 |---|---|---|
-| 2 s | 4, 5, 10, 30 | 26 every time (4 s floor x 6.5) |
-| 8 s | 5 | 52 (8 x 6.5) |
-| 8 s | 20 | 52 (8 x 6.5) |
+| 2 s | 4, 5, 10, 30 | 30 every time (4 s floor x 7.5) |
+| 8 s | 5 | 60 (8 x 7.5) |
+| 8 s | 20 | 60 (8 x 7.5) |
 
 `video_extension` behaves the opposite way and bills the duration you ask for: 32.5 for five
 seconds, 65 for ten, off the same two second source.
@@ -143,44 +148,45 @@ not the mode, not `generate_audio`, not `bitrate_mode`.
 
 | Resolution | Credits per second |
 |---|---|
-| 480p | **2.5** |
-| 720p | **6.5** |
-| 1080p | **9.0** |
+| 480p | **3.0** |
+| 720p | **7.0** |
+| 1080p | **12.0** |
 
-Exactly linear, measured at 4, 5, 10 and 30 seconds. The full grid:
+Exactly linear (measured at 4, 5, 10 and 30 seconds in August; re-quoted at 5 s on 2026-09-27:
+15, 35, 60). The full grid at today's rates:
 
 | Duration | 480p | 720p | 1080p |
 |---|---|---|---|
-| 4 s | 10 | 26 | 36 |
-| 5 s | 12.5 | 32.5 | 45 |
-| 10 s | 25 | 65 | 90 |
-| 15 s | 37.5 | 97.5 | 135 |
-| 30 s | 75 | 195 | 270 |
+| 4 s | 12 | 28 | 48 |
+| 5 s | 15 | 35 | 60 |
+| 10 s | 30 | 70 | 120 |
+| 15 s | 45 | 105 | 180 |
+| 30 s | 90 | 210 | 360 |
 
 **Effective duration is not always what you asked for.**
 
 - `t2v`, `omni_reference`, `video_extension`: you are billed for the duration you request.
 - `video_edit`: `duration` is ignored and you are billed for the **length of the source clip**,
-  with a four second floor. A 40 second edit of an 8 second clip is 52 credits at 720p, and asking
-  for 20 seconds does not change it.
+  with a four second floor. A 40 second edit of an 8 second clip is 60 credits at 720p (7.5 a
+  second, re-quoted 2026-09-27), and asking for 20 seconds does not change it.
 
 ### Where it sits in the catalogue
 
-At 6.5 a second in 720p it is the most expensive video model on this route, above `flux-video`
-at 5.5, `cinematic3` and `cinematic3.5` at 5.0, `seedance` at 4.5 and `h3` at 4.0. In 1080p at 9.0
-it is in a class of its own. The old escape hatch, the video reference discount that dropped it to
+At 7.0 a second in 720p it is the most expensive video model on this route, above `flux-video`
+at 5.5, `cinematic3` and `cinematic3.5` at 5.0, `seedance` at 4.5 and `h3` at 2.0. In 1080p at 12.0
+it is in a class of its own (re-quoted 2026-09-27). The old escape hatch, the video reference discount that dropped it to
 4.0, is gone.
 
-**480p is a genuine draft tier at 2.5 a second**, which is where `happy-horse` and `seedance-mini`
-live. Block the shot out there and commit once.
+**480p is a genuine draft tier at 3.0 a second**, just above `happy-horse` and `seedance-mini` at
+2.5. Block the shot out there and commit once.
 
 ### Cost discipline
 
 1. Find the framing on something cheap: `kling-turbo` at 1.5, `seedance1.5` at 1.2.
-2. Draft the motion here at 480p, 2.5 a second.
+2. Draft the motion here at 480p, 3.0 a second.
 3. Commit one roll at 720p, or 1080p if the client will see it full screen.
 
-Three takes of a 10 second shot at 720p is 195 credits. The same three takes drafted at 480p is 75.
+Three takes of a 10 second shot at 720p is 210 credits. The same three takes drafted at 480p is 90.
 
 ### Quoting, and the two traps in it
 
@@ -192,10 +198,12 @@ higgsfield generate cost seedance_2_5 --prompt "..." --duration 10 \
   --resolution 480p --mode t2v --json
 ```
 
-**Trap one: the wrapper's `--cost` lies about anything with media in it.** `generate.py --cost`
-never forwards `--start-image`, `--end-image` or video references, and it drops `--resolution` for
-video models. So a wrapper quote for a keyframed or edited job silently comes back as a plain text
-to video roll at the 720p default. Quote media jobs through the raw CLI.
+**Trap one, fixed 2026-09-27: the wrapper's `--cost` used to drop all media.** Until then
+`generate.py --cost` never forwarded `--start-image`, `--end-image`, `--video-references` or `-r`,
+so a keyframed or edited job came back priced as a plain text to video roll (a 5 s `flux-video`
+continuation quoted 27.5 against a real 65, measured on the Linux bot). It now sends exactly the
+media the create call sends. What it still leaves out is resolution: it drops `--resolution` for
+video models, so resolution goes in `--extra` (trap two).
 
 **Trap two: resolution travels in `--extra` when you go through the wrapper.** The wrapper's own
 `--resolution` flag is the image side and only accepts `1k`, `2k`, `4k`; argparse rejects `480p`
@@ -620,9 +628,9 @@ mode 'video_edit' requires exactly one video reference
 ```
 
 Aspect ratio and duration are locked to the source. Duration is not merely locked, it is **ignored
-and billed from the source**: an 8 second clip costs 52 credits at 720p whether you ask for 5
-seconds or 20. The floor is four seconds, so editing a 2 second clip costs 26, the same as editing
-a 4 second one.
+and billed from the source**: an 8 second clip costs 60 credits at 720p (7.5 a second, re-quoted
+2026-09-27) whether you ask for 5 seconds or 20. The floor is four seconds, so editing a 2 second
+clip costs 30, the same as editing a 4 second one.
 
 Structure it in three parts: name the master, define the scope, list what to preserve.
 
@@ -736,7 +744,7 @@ the budget is tight: **three short items at the very end, and reach for a positi
 
 "Gaze held to screen right" beats "no looking at camera". When you do need negatives, the three
 with the most leverage are no jitter, no bent limbs, no temporal flicker. That trio is carried from
-2.0 and has not been measured here, because measuring it properly costs 6.5 credits a second.
+2.0 and has not been measured here, because measuring it properly costs 7 credits a second.
 
 For a shot that must be one continuous take, the useful negative list is different and worth
 writing out: no cuts, no slow motion, no repeated action, no duplicated props, no teleportation.
@@ -814,7 +822,7 @@ which is exactly why drafting at 480p matters.
 
 **Change one thing.** When a generation misses, modify only the part that failed, usually the
 physical start or end state of one stage. Changing the camera, the character and the location at the
-same time gives you a new problem, not a fix, and it costs 6.5 credits a second to learn nothing.
+same time gives you a new problem, not a fix, and it costs 7 credits a second to learn nothing.
 
 Keep the prompt that nearly worked. Reuse a character description that is working rather than
 rewriting it, across takes and across days.
@@ -920,7 +928,7 @@ python skills/image-gen/scripts/generate.py "$(cat prompt.txt)" --video -m seeda
 # commit at 720p, the default
 python skills/image-gen/scripts/generate.py "$(cat prompt.txt)" --video -m seedance2.5 --duration 10
 
-# character locked shot, raw CLI because the wrapper drops media from quotes
+# character locked shot on the raw CLI (the wrapper's --cost carries media too since 2026-09-27)
 higgsfield generate cost seedance_2_5 --prompt "$(cat prompt.txt)" --duration 8 \
   --resolution 720p --mode omni_reference --image-references hero.png --json
 
@@ -983,7 +991,7 @@ five once video or audio references are in play.
 ### Price, per second, measured 2026-08-19
 
 ```
-480p  2.5      720p  6.5      1080p  9.0
+480p  3.0      720p  7.0      1080p  12.0      (video_edit: 3.5, 7.5, 12.0)
 ```
 
 Same rate in every mode. `video_edit` ignores your duration and bills the source clip's length,
@@ -991,9 +999,9 @@ four second floor. Everything else bills the duration you request.
 
 | | 4 s | 5 s | 10 s | 30 s |
 |---|---|---|---|---|
-| 480p | 10 | 12.5 | 25 | 75 |
-| 720p | 26 | 32.5 | 65 | 195 |
-| 1080p | 36 | 45 | 90 | 270 |
+| 480p | 12 | 15 | 30 | 90 |
+| 720p | 28 | 35 | 70 | 210 |
+| 1080p | 48 | 60 | 120 | 360 |
 
 ### Limits
 
@@ -1117,5 +1125,5 @@ respectively, which is where the frequently quoted claim that fal is 95 percent 
 - The 180 second beta, which is not exposed on this route at all.
 - The eleven language dialogue claim, which is first party but untested by us.
 - Every craft claim in section 8 carried from Seedance 2.0. The mechanisms are model agnostic and in
-  three cases ByteDance's own documented failure modes agree, but at 6.5 credits a second they were
+  three cases ByteDance's own documented failure modes agree, but at 7 credits a second they were
   reasoned rather than measured. Treat them as strong priors.

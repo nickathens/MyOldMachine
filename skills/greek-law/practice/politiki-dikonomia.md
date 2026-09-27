@@ -77,6 +77,7 @@ present.
 Run it:
 
 ```
+SKILL_DIR=skills/greek-law
 python $SKILL_DIR/scripts/aoristia_check.py draft.txt
 python $SKILL_DIR/scripts/aoristia_check.py draft.txt --json
 cat draft.txt | python $SKILL_DIR/scripts/aoristia_check.py -
@@ -123,13 +124,15 @@ discipline applies.
   and recipient and a clear δήλωση or πρόσκληση are essential.
 - αίτηση ασφαλιστικών μέτρων: ΚΠολΔ 682 επ. The επικείμενος κίνδυνος or κατεπείγουσα
   περίπτωση must be pleaded, and the αίτημα may not satisfy the main claim.
-- ανακοπή κατά διαταγής πληρωμής: ΚΠολΔ 632, on a strict deadline. Each λόγος ανακοπής
-  must be ορισμένος in its own right.
+- ανακοπή κατά διαταγής πληρωμής: ΚΠολΔ 632, on a strict deadline of 15 εργάσιμες
+  ημέρες from service (632 παρ. 2; `prothesmies.py compute --ergasimes`). Each λόγος
+  ανακοπής must be ορισμένος in its own right.
 - έφεση: ΚΠολΔ 511 επ. The λόγοι έφεσης must be specific.
 
-## Deadlines (knowledge here; the calculator is Stage 4)
+## Deadlines
 
 Civil procedure was reformed by Ν.4842/2021, in force 1 January 2022. Remedy deadlines
 are ανατρεπτικές προθεσμίες: strict, and not extended by silence. Treat any date in a
-matter as load bearing, tell the user to confirm it, and reach for the Stage 4 deadline
-tool, which will compute these with the governing article rather than by memory.
+matter as load bearing, tell the user to confirm it, and compute it with
+`scripts/prothesmies.py` (calendar or working days, the 19:00 expiry, the August
+suspension) as `practice/prothesmies.md` describes, never by memory.

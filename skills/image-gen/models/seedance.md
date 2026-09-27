@@ -38,8 +38,8 @@ being offered and would have failed at generation time.
 validator disagrees on two of them. An end frame with no start frame quotes fine on `seedance`
 (22.5 credits) and `seedance-mini` (12.5), and only `seedance1.5` refuses it with "end_image requires
 start_image to be set". A last frame lock without a first frame is a real option on 2.0. Measured
-through the raw CLI: the wrapper's `--cost` path never forwards the keyframe flags at all, so it
-cannot answer this question either way.
+through the raw CLI (the wrapper's `--cost` dropped keyframe flags until 2026-09-27; it forwards
+them now).
 
 `seedance1.5` at 1.2 credits a second is the second cheapest video model on the whole route, behind
 only `veo3-lite`. It is the correct place to find a Seedance shot before paying for 2.0.
@@ -223,7 +223,7 @@ The single most common "it looks like a moving photo" failure. Seedance front-lo
 
 ## Model Differences
 
-- **seedance**: Seedance 2.0. Best quality, strongest motion coherence, supports auto-duration 2-12s, multimodal references.
+- **seedance**: Seedance 2.0. Best quality, strongest motion coherence, 4 to 15 s (the hard specs above; there is no auto duration), multimodal references.
 - **seedance1.5**: Seedance 1.5. Faster, lower cost, has audio synthesis. Good for iteration.
 
 ## Speed and Bitrate (Seedance 2.0 only) **[live 2026-08-09]**

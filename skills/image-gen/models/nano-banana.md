@@ -1,6 +1,12 @@
 # Nano Banana Family (Google Imagen)
 
-Covers: nano (Nano Banana), nano2 (Nano Banana 2), nano-pro (Nano Banana Pro)
+Covers: nano (Nano Banana), nano2 (Nano Banana 2), nano-pro (Nano Banana Pro), nano-lite
+(Nano Banana 2 Lite), and recraft (Recraft V4.1), which SKILL.md routes here too.
+
+- **nano-lite**: the cheapest Pro tier. `--extra '{"thinking": "MINIMAL"}'` for speed; HIGH is the default.
+- **recraft**: a different model (design, logos, icons). `--extra '{"model_type": "vector"}'` for vector
+  output (also standard, utility, utility_vector); 1k or 2k. The advice below is written for the
+  Nano Banana models.
 
 ## Prompt Style
 

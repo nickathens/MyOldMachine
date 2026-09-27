@@ -1,6 +1,18 @@
 # Terminal Charts
 
-Create bar and line charts in the terminal using termgraph.
+Text bar charts with termgraph: plain, stacked,
+vertical, histogram and calendar heatmap. No line charts.
+
+For an image chart (PNG to send), use matplotlib; for a
+chart inside an Excel file, the spreadsheet skill.
+
+**For Telegram:** termgraph writes colour escape codes even without
+`--color`, which show up as junk in a message. Strip them and send the chart
+inside a code block:
+
+```bash
+printf "2020 50\n2021 75\n" | termgraph | sed 's/\x1b\[[0-9;]*m//g'
+```
 
 ## Bar Chart
 
@@ -41,7 +53,7 @@ termgraph data.txt
 echo -e "2020 10 20 30\n2021 15 25 35\n2022 20 30 40" | termgraph --stacked
 ```
 
-## Horizontal Line Chart
+## Values with a unit
 
 ```bash
 echo -e "Mon 10\nTue 15\nWed 8\nThu 20\nFri 12" | termgraph --suffix " orders"
@@ -56,3 +68,5 @@ echo -e "Mon 10\nTue 15\nWed 8\nThu 20\nFri 12" | termgraph --suffix " orders"
 - `--suffix " text"` - Add suffix to values
 - `--no-labels` - Hide labels
 - `--no-values` - Hide values
+- `--vertical`, `--histogram --bins N`, `--calendar --start-dt YYYY-MM-DD` - other chart kinds
+- A stacked file can start with a legend line: `@ label1,label2,label3`

@@ -57,7 +57,7 @@ rules, not suggestions:
 
 ```
 project/
-├── project.godot       # Project config
+├── project.godot       # Project config (run/main_scene names the main scene)
 ├── scenes/
 │   ├── main.tscn      # Main scene
 │   └── player.tscn    # Player scene
@@ -67,7 +67,7 @@ project/
 ├── assets/
 │   ├── sprites/
 │   └── audio/
-└── export_presets.cfg  # Export settings
+└── export_presets.cfg  # Export settings (written by the editor)
 ```
 
 ## GDScript Example
@@ -90,6 +90,8 @@ func _physics_process(delta):
 
     move_and_slide()
 ```
+
+The "jump", "left" and "right" actions must exist in the project's Input Map.
 
 ## Examples
 

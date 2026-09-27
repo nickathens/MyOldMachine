@@ -6,7 +6,7 @@ Search torrent indexers via Jackett and download via aria2. VPN-gated by default
 
 - **Jackett** runs in Docker on `127.0.0.1:9117` (localhost only). Aggregates ~500 public indexers behind one API.
 - **search.py** queries Jackett, ranks by seeders, filters to safe range (>=5 seeders, <=50GB by default), returns top 10 as JSON.
-- **download.py** verifies ProtonVPN is connected (Linux via NetworkManager, macOS via the ProtonVPN CLI), then runs aria2c one-shot. No seeding after download (`--seed-time=0`).
+- **download.py** verifies ProtonVPN is connected (Linux via NetworkManager, macOS via the system's network state), then runs aria2c one-shot; on Linux it is bound to the VPN's interface (`--interface=<device>`). No seeding after download (`--seed-time=0`).
 - Files land in `~/Downloads/torrents/`. Telegram cannot send files >2GB, so completion is a text-only summary with the path.
 
 ## One-time setup
@@ -85,6 +85,6 @@ If the VPN is off, connect via the `vpn` skill (`vpn.py connect --country NL`). 
 ## Notes
 
 - Quality is shown via the title text only (e.g. "1080p", "2160p", "WEBRip"). Auto-pick by quality is intentionally not done; user picks based on the trade-off they want.
-- The VPN status check is cross-platform: Linux uses `nmcli` (matching the `vpn` skill), macOS shells out to `protonvpn status`. It runs at the start of the download only — if the VPN drops mid-download, traffic is exposed. For belt-and-suspenders, enable the ProtonVPN killswitch in the GUI so the system blocks all traffic if the tunnel drops.
+- The VPN status check is cross-platform: Linux uses `nmcli` (matching the `vpn` skill) and reads the tunnel's device from the same line; macOS reads `scutil --nwi`. On Linux aria2c is bound to that device, which puts every socket it opens (peers, DHT, listen port) on the tunnel's address: if the VPN drops mid-download, that address is gone and the transfer stops instead of continuing over the home line (checked 2026-09-27 on aria2 1.37.0; if the VPN reconnects the download stays stalled, so restart it). On macOS the check runs at the start only, so a drop mid-download exposes traffic there. Either way, enable the ProtonVPN kill switch in the app so the system blocks all traffic if the tunnel drops.
 - If Jackett returns zero results, either no indexers are configured yet, or the query is too narrow. Check http://127.0.0.1:9117.
 - Upload is capped at 1KB/s and `--seed-time=0` stops seeding immediately after download — minimal swarm participation. Public indexers don't enforce ratios, so this is fine.

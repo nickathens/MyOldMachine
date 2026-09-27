@@ -10,6 +10,8 @@ named, and a failure log of fifty one faults that each reached a real film.
 **Before using:** read `SCOPE.md`. It never approves, never sends, never
 downscales, and never deletes a master until the survivors are verified.
 
+**Paths:** the commands below use `$SKILL_DIR`, which nothing sets for you. Set it first: `SKILL_DIR=skills/postproduction` (without it `python $SKILL_DIR/scripts/...` runs `/scripts/...` and fails).
+
 ---
 
 ## What this is, and what it refuses

@@ -51,12 +51,14 @@ structured form is our job, and that is what this file is for.
 | Reference videos | ≤ 3, each 2-15 s, ≤ 15 s total (≤ 50 MB) | `--video-references`, repeatable **[live]** |
 | Reference audio | ≤ 3, each 2-15 s, ≤ 15 s total (≤ 15 MB) | `--audio-references`, repeatable **[live]** |
 | Total ref files | 12 | same |
-| Cost | $0.13/s at 2K | **4 credits per second, flat** **[live]** |
+| Cost | $0.13/s at 2K | **2 credits per second, flat** **[live 2026-09-27]** (4 when this guide was written) |
 | Prompt rewriting (Context-IR) | callable as its own API mode | **not exposed** |
 | Open weights | yes, MiniMax H3 Community License | n/a |
 
-**Cost, measured, not estimated [live]:** 5 s = 20 credits, 6 s = 24, 10 s = 40, 15 s = 60. Exactly
-4 credits a second with no discount for length.
+**Cost, measured, not estimated [live 2026-09-27]:** 5 s = 10 credits, 10 s = 20, 15 s = 30. Exactly
+2 credits a second with no discount for length. It was 4 a second (5 s = 20) when this guide was
+written; the price halved between 2026-08-07 and 2026-09-05, and at 2 H3 is the cheapest model here
+that returns 2K with native audio. The table below is the 2026-08-07 sweep, at the old price.
 
 That puts H3 in the **upper middle** of the catalog, not at the top. Corrected 2026-08-07 after a
 full sweep: the earlier version of this line called H3 the most expensive video model here, which
@@ -356,13 +358,14 @@ explicitly `N/A` rather than left silent for the model to fill.
 - **Do not mix keyframes with reference media,** and do not send audio references alone. Both are
   refused before generation **[live]**.
 - **Do not stack camera labels** at the end of a sentence. Write the move as an action.
-- **Do not draft here.** 4 credits a second, 2K only. Find the shot on a cheap model first.
+- **There is no draft tier.** 2 credits a second, 2K only: a look can still be found on `kling-turbo` or
+  `wan` at 1.5 a second, but H3 is no longer the expensive step (it was 4 a second until September).
 
 ---
 
 ## Cost discipline
 
-At 4 credits a second with no draft tier, a three-take 10 s shot is 120 credits. Before generating:
+At 2 credits a second with no draft tier, a three-take 10 s shot is 60 credits. Before generating:
 run `--cost`, present the number, and say what a re-roll costs. Prefer FL2VA over a re-roll where the
 problem is the ending rather than the whole shot — supplying both keyframes constrains the take far
 more cheaply than rewriting and hoping.

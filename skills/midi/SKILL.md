@@ -40,7 +40,10 @@ python skills/midi/scripts/midi_tool.py quantize input.mid output.mid --grid 4
 ## Notes
 
 - Uses mido library for MIDI operations
-- Transpose affects all note events
-- Tempo changes adjust tempo map events
-- Merge layers tracks from multiple files
+- Transpose moves every note except channel 10 (General MIDI drums, where a note number is an instrument; `--include-drums` moves them too). A note pushed outside 0..127 is dropped and counted, and the key signature follows
+- `--bpm` sets the opening tempo and keeps later tempo changes in proportion (120 then 60, set to 90, becomes 90 then 45); `--scale` multiplies them all. Give one of the two
+- `info` reports the opening tempo plus `tempo_changes` and `tempo_range_bpm`
+- `notes` shows the tick, the seconds (through the tempo map) and the channel; the table stops at 50 notes and JSON carries all of them, unless `--limit N` (0 = all)
+- Merge layers tracks from multiple files into a type 1 file (two single track files used to fail), rescales resolution, and notes when a later file brings its own tempo events
 - Track numbers are 0-indexed
+- Bad values and unreadable files print `Error:` and exit 1

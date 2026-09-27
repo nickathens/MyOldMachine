@@ -30,3 +30,7 @@ Every recipe card is written in Chinese. They were not translated wholesale, bec
 ### Known upstream quirk
 
 `Caption.tsx` carries an upstream comment conceding that its 22px type violates the project's own aesthetic rule Q11 (subtitles at 56px or more) and is an intentional exception for an information strip. It is fine as a corner caption. Do not use it as a narrative subtitle without raising the size.
+
+### Paths the verbatim documents mention that do not exist here
+
+`template/`, `gallery/` (including `gallery/api/library.json` and `fetch-media.sh`), `assets/lib/` and `assets/audio/` stayed upstream, and the `npx remotion` commands need `@remotion/cli`, which this engine does not install. SKILL.md carries the translation to `render.mjs` and `still.mjs`.

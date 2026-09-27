@@ -21,8 +21,9 @@ git log --oneline -10
 git checkout -b feature/new-feature
 git merge feature/new-feature
 
-# Commits
-git add .
+# Commits: stage named files; `git add .` also sweeps in secrets, build output and
+# anything else untracked
+git add path/to/file.py path/to/other.py
 git commit -m "message"
 
 # GitHub CLI
@@ -41,7 +42,7 @@ gh repo clone owner/repo
 "Show recent commits"
 "Push to remote"
 
-## Notes
+## Rules
 
 - Always check status before committing
 - Use meaningful commit messages

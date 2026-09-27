@@ -10,6 +10,7 @@ instead.
 python3 skills/docs/scripts/convert.py FILE
 python3 skills/docs/scripts/convert.py FILE -o out.md
 python3 skills/docs/scripts/convert.py FILE --backend markitdown
+python3 skills/docs/scripts/convert.py FILE.csv --encoding cp1253
 ```
 
 Markdown goes to stdout, so it pipes cleanly. The backend that produced it is
@@ -67,6 +68,22 @@ set, and measure any format before adding it:
 ```bash
 python3 skills/docs/scripts/compare_backends.py YOUR_FILE ...
 ```
+
+## CSV encodings
+
+anydoc reads csv bytes that are not UTF-8 as Latin-1: a Greek csv saved by
+Excel on Windows (cp1253) came out "¼íïìá | Ðïóü" for "Όνομα | Ποσό", with
+exit 0 (found 2026-09-27). convert.py now transcodes such a csv to UTF-8
+before anydoc reads it, and says which encoding it used on stderr. Greek wins
+a tie: cp1253 and Windows Cyrillic share byte ranges and a short file cannot
+be told apart by statistics, so bytes that read as Greek (mostly non-ASCII
+letters, nearly all of them Greek) are taken as cp1253; anything else goes to
+charset_normalizer, and when its best candidates tie (they do on short files)
+cp1252 wins, then cp1251. `--encoding cp1253` (or any codec name) forces it.
+
+An output with no text at all (a scanned pdf, an image-only document) prints
+a note on stderr pointing at OCR, instead of an empty stdout that reads like
+an empty document. `-o` creates its folder.
 
 ## Fallback
 

@@ -57,6 +57,11 @@ which reshapes the mix. That is a mix decision, not a technical one, and
 `audio.py` reads the normalisation type out of loudnorm's own output and says
 which one happened rather than swallowing it.
 
+Only the named track moves (`--stream a:N`, default `a:0`, the first audio
+track). Every other stream, a second language or an M&E included, is copied
+untouched, because the gain was measured on one track and is wrong for any
+other. Normalise each deliverable track on its own.
+
 Always measure the OUTPUT. The container was rewritten, so the picture needs
 re-checking too.
 
