@@ -20,6 +20,7 @@ import platform
 import re
 import signal
 import sqlite3
+import tempfile
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -105,14 +106,15 @@ def parse_natural_time(text: str, strict: bool = False) -> Optional[datetime]:
     except ValueError:
         pass
 
-    # "in X minutes/hours/days"
-    in_pattern = re.match(r'in\s+(\d+)\s*(min(?:ute)?s?|hours?|days?|weeks?)' + tail, text)
+    # "in X minutes/hours/days", and the same without "in" ("2 hours check
+    # the oven" was refused; the Linux bot's review, 2026-09-27, S020)
+    in_pattern = re.match(r'(?:in\s+)?(\d+)\s*(min(?:ute)?s?|hours?|hrs?|days?|weeks?)\b' + tail, text)
     if in_pattern:
         amount = int(in_pattern.group(1))
         unit = in_pattern.group(2)
         if 'min' in unit:
             return now + timedelta(minutes=amount)
-        elif 'hour' in unit:
+        elif 'hour' in unit or unit.startswith('hr'):
             return now + timedelta(hours=amount)
         elif 'day' in unit:
             return now + timedelta(days=amount)
@@ -370,11 +372,20 @@ def _get_all_meta(user_id: int = None) -> list[dict]:
 
 
 def _delete_meta(job_id: str):
-    """Delete job metadata from SQLite."""
+    """Delete job metadata from SQLite, and any result it kept for a retry.
+
+    The job's undelivered result (S018) only exists for its retry, so a job
+    that is done, cancelled or given up on takes it along; otherwise a job
+    discarded after its last failed delivery left the file behind for good.
+    """
     conn = _connect_db(DB_PATH)
     conn.execute("DELETE FROM job_meta WHERE job_id = ?", (job_id,))
     conn.commit()
     conn.close()
+    try:
+        _undelivered_path(job_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _bump_recovery_attempts(job_id: str) -> None:
@@ -525,6 +536,80 @@ async def _send_with_retry(scheduler, user_id: int, text: str, max_retries: int 
     return False
 
 
+def _split_for_telegram(text: str, limit: int = 4000) -> list[str]:
+    """Pieces of at most `limit` characters, cut at a line, else a space."""
+    pieces = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = text.rfind(" ", 0, limit)
+        if cut <= 0:
+            cut = limit
+        pieces.append(text[:cut])
+        text = text[cut:].lstrip()
+    if text:
+        pieces.append(text)
+    return pieces or [""]
+
+
+async def _send_long(scheduler, user_id: int, text: str) -> bool:
+    """Send a text of any length as consecutive messages, each retried on its
+    own, so a delivered piece is never sent twice. An agent job's result used
+    to be cut at 3900 characters, which dropped its tail (the Linux bot's
+    review, 2026-09-27, S017)."""
+    for piece in _split_for_telegram(text):
+        if not await _send_with_retry(scheduler, user_id, piece):
+            return False
+    return True
+
+
+_DEFAULT_SCHEDULER_DIR = SCHEDULER_DIR
+
+
+def _undelivered_path(job_id: str) -> Path:
+    """Where a one-shot agent job's undelivered result waits for its retry.
+
+    A test run (MOM_TEST=1) that has not moved SCHEDULER_DIR never writes
+    here, so a test that only stubs the send cannot leave files in data/;
+    its fallback is per process, so an earlier run's leftovers never change
+    what a later run does.
+    """
+    base = SCHEDULER_DIR
+    if base is _DEFAULT_SCHEDULER_DIR and os.environ.get("MOM_TEST"):
+        base = Path(tempfile.gettempdir()) / f"mom-test-scheduler-{os.getpid()}"
+    # Ids are generated (uuid hex), but the file name never trusts one: no
+    # separator or ".." can take it outside undelivered/.
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", job_id) or "_"
+    return base / "undelivered" / f"{safe}.txt"
+
+
+# A one-shot reminder this late when it fires says it was delivered late.
+LATE_NOTE_SECONDS = 120
+
+# One-shot jobs whose executor is running right now. APScheduler drops a date
+# triggered job from its store when the run starts, so sync_from_meta saw the
+# meta row with no job behind it and re-added it every minute, counting each
+# pass as a failed recovery attempt: a long agent job could be discarded, with
+# a "gave up" alert, while it was still at work (the Linux bot's review,
+# 2026-09-27, S019).
+_RUNNING: set[str] = set()
+
+
+def _tracked(executor):
+    """Decorator: the job id is in _RUNNING while the executor runs."""
+    import functools
+
+    @functools.wraps(executor)
+    async def run(job_id: str):
+        _RUNNING.add(job_id)
+        try:
+            return await executor(job_id)
+        finally:
+            _RUNNING.discard(job_id)
+    return run
+
+
+@_tracked
 async def _execute_reminder(job_id: str):
     """Execute a reminder job."""
     scheduler = get_scheduler()
@@ -537,9 +622,23 @@ async def _execute_reminder(job_id: str):
         logger.error(f"No metadata for reminder {job_id}")
         return
 
+    # A one-shot that fires well after its time (the bot was down) says so.
+    # The note used to live in _recover_missed_jobs, which could never reach a
+    # job: start() syncs every past one-shot back in first (the Linux bot's
+    # review, 2026-09-27, S021).
+    late_note = ""
+    if not meta.get("repeat") and meta.get("run_at"):
+        try:
+            due = datetime.fromisoformat(meta["run_at"])
+            if (datetime.now() - due).total_seconds() > LATE_NOTE_SECONDS:
+                late_note = (f" (was scheduled for {due.strftime('%H:%M on %b %d')}, "
+                             "delivered late)")
+        except ValueError:
+            pass
+
     success = await _send_with_retry(
         scheduler, meta["user_id"],
-        f"\U0001f514 Reminder: {meta['message']}"
+        f"\U0001f514 Reminder: {meta['message']}{late_note}"
     )
     _log_execution(job_id, meta["user_id"], meta["message"], success,
                    None if success else "Failed to send after 3 retries")
@@ -551,6 +650,7 @@ async def _execute_reminder(job_id: str):
             logger.error(f"One-shot reminder {job_id} FAILED delivery -- metadata kept for recovery")
 
 
+@_tracked
 async def _execute_command(job_id: str):
     """Execute a shell command job."""
     scheduler = get_scheduler()
@@ -667,6 +767,7 @@ async def _execute_command(job_id: str):
             logger.error(f"One-shot command job {job_id} FAILED -- metadata kept for recovery")
 
 
+@_tracked
 async def _execute_agent(job_id: str):
     """Execute a Claude agent job."""
     scheduler = get_scheduler()
@@ -685,17 +786,26 @@ async def _execute_agent(job_id: str):
         return
 
     success = False
+    # A one-shot whose work finished but whose result could not be delivered
+    # keeps that result here, and its retry delivers it instead of running the
+    # whole task, and its side effects, again (the Linux bot's review,
+    # 2026-09-27, S018).
+    saved = _undelivered_path(job_id)
     try:
-        logger.info(f"Running agent job {job_id} ({meta['name']}): {meta['message'][:50]}...")
-
-        task_prompt = f"[Scheduled Task: {meta['name']}]\n\n{meta['message']}"
-        response = await scheduler._call_claude_fn(meta["user_id"], task_prompt)
+        if not meta.get("repeat") and saved.exists():
+            logger.info(f"Agent job {job_id}: delivering the result of the earlier run")
+            response = saved.read_text(encoding="utf-8")
+        else:
+            logger.info(f"Running agent job {job_id} ({meta['name']}): {meta['message'][:50]}...")
+            task_prompt = f"[Scheduled Task: {meta['name']}]\n\n{meta['message']}"
+            response = await scheduler._call_claude_fn(meta["user_id"], task_prompt)
 
         if meta.get("notify"):
             result_msg = f"\u23f0 Scheduled task complete: {meta['name']}\n\n{response}"
-            if len(result_msg) > 4000:
-                result_msg = result_msg[:3900] + "\n\n... (truncated)"
-            if not await _send_with_retry(scheduler, meta["user_id"], result_msg):
+            if not await _send_long(scheduler, meta["user_id"], result_msg):
+                if not meta.get("repeat"):
+                    saved.parent.mkdir(parents=True, exist_ok=True)
+                    saved.write_text(response, encoding="utf-8")
                 # Work done, result never reached the user: not a success.
                 # The except path below keeps a one-shot job's metadata, so it
                 # is still there to retry (audit F07, 2026-09-06).
@@ -716,11 +826,16 @@ async def _execute_agent(job_id: str):
 
     if not meta.get("repeat"):
         if success:
+            saved.unlink(missing_ok=True)
             _delete_meta(job_id)
         else:
             logger.error(f"One-shot agent job {job_id} FAILED -- metadata kept for recovery")
 
 
+# The executors are decorated at their definitions, not wrapped here: a job in
+# the SQLAlchemy store is saved by reference ("core.scheduler:_execute_agent")
+# and reloaded through that name on every run, so a wrapper that exists only in
+# this dict is dropped for every stored job.
 _JOB_EXECUTORS = {
     "reminder": _execute_reminder,
     "command": _execute_command,
@@ -1027,6 +1142,8 @@ class Scheduler:
 
         now = datetime.now()
         for meta in metas:
+            if meta["job_id"] in _RUNNING:
+                continue  # its executor is still at work; not missing
             if meta["job_id"] not in aps_ids:
                 try:
                     run_at_str = meta.get("run_at", "")
@@ -1146,63 +1263,6 @@ class Scheduler:
         for admin_id in admins:
             loop.create_task(self.send_message(admin_id, text))
 
-    async def _recover_missed_jobs(self):
-        """Fire one-shot jobs that were missed while bot was down."""
-        now = datetime.now()
-        metas = _get_all_meta()
-        aps_ids = {j.id for j in self._aps.get_jobs()}
-
-        for meta in metas:
-            if meta.get("repeat"):
-                continue
-            if meta["job_id"] in aps_ids:
-                continue
-            run_at_str = meta.get("run_at", "")
-            if not run_at_str:
-                continue
-            try:
-                run_at = datetime.fromisoformat(run_at_str)
-            except ValueError:
-                continue
-            if run_at >= now:
-                continue
-
-            delay_seconds = (now - run_at).total_seconds()
-            delay_minutes = int(delay_seconds / 60)
-
-            # Skip jobs missed by more than 24 hours — stale reminders aren't useful
-            if delay_seconds > STALE_ONESHOT_SECONDS:
-                logger.info(
-                    f"Discarding stale missed job {meta['job_id']} "
-                    f"({meta.get('name', '')}) — was due {delay_minutes}m ago (>24h)"
-                )
-                _delete_meta(meta["job_id"])
-                continue
-            job_type = meta.get("job_type", "reminder")
-            logger.warning(
-                f"Recovering missed {job_type} job {meta['job_id']} "
-                f"({meta.get('name', '')}) -- was due {delay_minutes}m ago"
-            )
-
-            try:
-                if job_type == "reminder":
-                    delay_note = f" (was scheduled for {run_at.strftime('%H:%M on %b %d')}, delivered late)"
-                    success = await _send_with_retry(
-                        self, meta["user_id"],
-                        f"\U0001f514 Reminder: {meta['message']}{delay_note}"
-                    )
-                    _log_execution(meta["job_id"], meta["user_id"],
-                                   meta["message"], success,
-                                   None if success else "Recovery: failed to send")
-                    if success:
-                        _delete_meta(meta["job_id"])
-                elif job_type == "command":
-                    await _execute_command(meta["job_id"])
-                elif job_type == "agent":
-                    await _execute_agent(meta["job_id"])
-            except Exception as e:
-                logger.error(f"Failed to recover missed job {meta['job_id']}: {e}")
-
     async def _sync_loop(self):
         """Periodically sync metadata to APScheduler."""
         while self._sync_running:
@@ -1257,7 +1317,6 @@ class Scheduler:
             self._sync_running = True
             self._sync_task = asyncio.create_task(self._sync_loop())
             self._compute_poll_task = asyncio.create_task(self._compute_poll_loop())
-            asyncio.create_task(self._recover_missed_jobs())
 
     def stop(self):
         """Stop the APScheduler and sync loop."""
