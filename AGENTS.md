@@ -102,6 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+- [2026-09-27] linux: port of the Linux bot's 2026-09-27 full review: core/scheduler.py,
+  core/session.py, utils/email_triage.py and bot.py, plus fixes and docs across the
+  skills, each with a test under tests/ (PR #187).
+
 (Entries removed above: #186 cleared in its reviewed merge revision,
 the same call as #176.
 #185 merged 2026-09-26, its line cleared inside
