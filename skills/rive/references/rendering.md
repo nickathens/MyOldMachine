@@ -25,6 +25,8 @@ Measured:
 | throughput, 4K | 32 fps with 8 workers |
 | determinism | the same arguments give a byte-identical PNG |
 
+Across CLI versions the pixels can move. Measured 29 Sep 2026, CLI 1.2.0 against 1.1.1, every template rendered for 4 s at 30 fps (alpha where the template has no background): five of the six came out byte identical. The logo reveal differs from frame 29, where its fill starts scaling from 96% to 100%: only anti-aliased edge pixels, 51 to 576 of the 2,073,600 in a frame, alpha within 1 code in 96% of them and 12 at most, and at most 9 codes once composited over black or white. With that scale animation removed all 120 frames match, and each version repeats its own render byte for byte. So a re-render that has to match an earlier delivery should use the CLI version that made it.
+
 Default workers: CPU count minus two, capped at ten. The project is copied into a private scratch folder first (paths that leave the project are rewritten to absolute), so parallel captures never write into your `build/` and alpha passes can edit the copy.
 
 ### Time
