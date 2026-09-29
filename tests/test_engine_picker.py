@@ -179,7 +179,7 @@ class MachineCatalogTests(unittest.TestCase):
 
     The curated pair above is for people who cannot touch .env. An admin can,
     so offering them the same two said this machine had two engines when the
-    catalog it ships has ten on these CLIs alone. This list is DERIVED from
+    catalog it ships has eight on these CLIs alone. This list is DERIVED from
     install/wizard.PROVIDER_MODELS rather than re-typed, so the tests here
     are about the derivation holding, not about the rows being memorised.
     """
@@ -208,9 +208,13 @@ class MachineCatalogTests(unittest.TestCase):
 
     def test_every_alias_points_at_a_model_that_exists(self):
         # A typo here is a /engine name that answers "no such engine", and
-        # the name is the only way to reach that model from Telegram.
-        known = {model for models in wizard.PROVIDER_MODELS.values()
-                 for model, _desc in models}
+        # the name is the only way to reach that model from Telegram. Only
+        # the two CLI lists count, because machine_engine() resolves among
+        # their rows: checked against every provider, `mini` still passed
+        # once gpt-5.4-mini left the codex list, since the `openai` API list
+        # carries the same id.
+        known = {model for _provider, cli, _accent in engines.MACHINE_CLI_PROVIDERS
+                 for model, _desc in wizard.PROVIDER_MODELS.get(cli, ())}
         for alias, model in engines.MACHINE_ALIASES.items():
             with self.subTest(alias=alias):
                 self.assertIn(model, known)
@@ -272,7 +276,7 @@ class MachineCatalogTests(unittest.TestCase):
 
     def test_the_probe_cache_is_per_model_not_per_engine_id(self):
         # Two rows share the id "opus" in spirit (the curated engine and the
-        # machine row for the same model) and ten share two binaries. Keyed
+        # machine row for the same model) and eight share two binaries. Keyed
         # on the id, the first answer would have been served to all of them.
         with patch("core.engines._cli_version_text",
                    return_value="codex-cli 0.154.0") as probe:

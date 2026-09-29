@@ -162,11 +162,15 @@ class RetiredModelsAbsentTests(unittest.TestCase):
         # has its own, smaller catalog, and answers HTTP 400 for anything
         # outside it. Measured 2026-09-07 on codex-cli 0.153.4, one live
         # `codex exec` per id: the three below failed, and all seven ids the
-        # picker now offers completed.
+        # picker offered then completed.
         ids = _ids("codex")
         for api_only in ("gpt-5.6", "gpt-5.4", "gpt-5.3-codex"):
             self.assertNotIn(api_only, ids)
-        self.assertIn("gpt-5.3-codex-spark", ids)
+        # gpt-5.3-codex-spark was the Codex spelling pinned here until Codex
+        # dropped it (HTTP 400 on 2026-09-29, codex-cli 0.158.0). The 5.6
+        # tiers are the same case: the API's bare gpt-5.6 is refused, and
+        # gpt-5.6-sol is what Codex runs.
+        self.assertIn("gpt-5.6-sol", ids)
 
 
 class GrokVisionGateTests(unittest.TestCase):

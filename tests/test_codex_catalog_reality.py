@@ -18,6 +18,12 @@ The symptom a user sees is not a message about model ids. It is the Effort
 section vanishing from the Mini App, because the effort table quite correctly
 had no row for a model that does not exist, followed by every turn failing.
 
+The catalog also changes under a list that was right when it shipped.
+`gpt-5.4-mini` and `gpt-5.3-codex-spark` completed on 2026-09-07 and were
+offered on that evidence. On 2026-09-29 (codex-cli 0.158.0) neither was in the
+catalog and each answered the same HTTP 400, while the five ids still offered
+completed in the same batch.
+
 What locks it here is the pair of directions between the picker and the
 effort table. `core.model_efforts` is deliberately stdlib-only and cannot
 import the wizard, so this file is where the two lists are made to agree.
@@ -39,13 +45,14 @@ from core import model_efforts as me  # noqa: E402
 from install import wizard  # noqa: E402
 
 # Every id in the catalog Codex CLI itself fetched from OpenAI and cached at
-# ~/.codex/models_cache.json (client_version 0.153.4, fetched 2026-09-07).
+# ~/.codex/models_cache.json (client_version 0.158.0, fetched 2026-09-29).
 # Two are internal and are deliberately not offered: `gpt-reserve` is spare
-# capacity and `codex-auto-review` backs `codex review`.
+# capacity and `codex-auto-review` backs `codex review`. `gpt-6-sol` and
+# `gpt-6-luna` are served but not offered; adding one needs an effort row and
+# a live turn first.
 CODEX_CATALOG = frozenset({
-    "gpt-6-astra", "gpt-reserve", "gpt-5.6-sol", "gpt-5.6-terra",
-    "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark",
-    "codex-auto-review",
+    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-reserve", "gpt-5.6-sol",
+    "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "codex-auto-review",
 })
 
 # Ids that are valid on the OpenAI API and are NOT Codex models. Named rather
@@ -55,6 +62,12 @@ API_ONLY_IDS = frozenset({
     "gpt-5.6", "gpt-5.4", "gpt-5.3-codex", "gpt-5.5-pro", "gpt-5.4-nano",
     "gpt-4.1", "gpt-4.1-mini",
 })
+
+# Ids Codex once ran and now refuses, named for the same reason. Both were in
+# the 2026-09-07 catalog; on 2026-09-29, codex-cli 0.158.0, each answered:
+#     The 'gpt-5.4-mini' model is not supported when using Codex with a
+#     ChatGPT account.
+DROPPED_IDS = frozenset({"gpt-5.4-mini", "gpt-5.3-codex-spark"})
 
 
 def offered() -> list[str]:
@@ -68,6 +81,13 @@ class CodexCatalogTests(unittest.TestCase):
             bad, [],
             "these are OpenAI API ids, and Codex answers HTTP 400 for each "
             f"on a ChatGPT account: {bad}")
+
+    def test_no_id_codex_has_dropped_is_offered(self):
+        bad = sorted(set(offered()) & DROPPED_IDS)
+        self.assertEqual(
+            bad, [],
+            "Codex ran these once and has refused them since, HTTP 400 on a "
+            f"ChatGPT account: {bad}")
 
     def test_every_offered_model_is_in_the_codex_catalog(self):
         unknown = sorted(set(offered()) - CODEX_CATALOG)

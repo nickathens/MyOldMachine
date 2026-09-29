@@ -182,10 +182,10 @@ class AdminMachinePickerTests(_EngineCase):
         self.assertEqual(payload["effort"], "max")
 
     def test_a_switch_across_providers_writes_both_keys_together(self):
-        asyncio.run(srv.set_engine(_FakeRequest({"engine": "spark"}),
+        asyncio.run(srv.set_engine(_FakeRequest({"engine": "luna"}),
                                    user=_user("7", "admin")))
         self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "codex")
-        self.assertEqual(srv._read_env_var("LLM_MODEL"), "gpt-5.3-codex-spark")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "gpt-5.6-luna")
         self.assertEqual(srv._read_env_var("OTHER"), "keep-me")
 
     def test_the_stored_effort_is_left_alone_by_an_engine_switch(self):
