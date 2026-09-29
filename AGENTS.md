@@ -102,6 +102,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-09-29] mac: gpt-5.4-mini and gpt-5.3-codex-spark, which Codex now refuses on a ChatGPT account, dropped from the engine picker, the effort table and .env.example (PR #188)
+
 (Entries removed above: #187 cleared in its reviewed merge revision,
 the same call as #186.
 #186 cleared in its reviewed merge revision,
