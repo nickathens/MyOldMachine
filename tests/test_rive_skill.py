@@ -5,7 +5,7 @@ that turns gestures and data into per-frame CLI arguments, the SVG converter,
 the render plans and ffmpeg commands, the lint, the fonts, audio and recipe
 maths, the templates' structure, the manifests and the docs. The live half
 builds, captures and renders with the real Rive CLI and skips wherever
-`rive` is not on PATH (CI has none; this Mac has 1.1.1), so the costs and
+`rive` is not on PATH (CI has none; this Mac has 1.2.0), so the costs and
 behaviours the scripts depend on are re-proved against the binary itself.
 
 Numbers asserted here were measured on Rive CLI 1.1.1 on 25 Sep 2026 and are
@@ -279,6 +279,9 @@ class LibTests(TempDir):
 
     def test_version_note(self):
         self.assertIsNone(L.version_note(L.TESTED_CLI_VERSIONS[0]))
+        # 1.2.0 passed the doctor on the Mac on 29 Sep 2026 and was rendered
+        # against 1.1.1 template by template (references/rendering.md)
+        self.assertIsNone(L.version_note("1.2.0"))
         self.assertIn("not a version", L.version_note("9.9.9"))
         self.assertIsNotNone(L.version_note(None))
 
