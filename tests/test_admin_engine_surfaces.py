@@ -158,7 +158,7 @@ class AdminEngineCommandTests(_BotSurface):
         # offering two. Every model the install catalog carries for a
         # subscription CLI is named here.
         for label in ("Claude Sonnet 5", "Claude Fable 5.1", "GPT-6 Astra",
-                      "GPT-5.6 Sol", "GPT-5.3 Codex Spark"):
+                      "GPT-5.6 Sol", "GPT-5.6 Luna"):
             with self.subTest(label=label):
                 self.assertIn(label, said)
         self.assertIn("(running now)", said)

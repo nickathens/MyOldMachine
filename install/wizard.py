@@ -461,18 +461,19 @@ PROVIDER_MODELS = {
     #     The 'gpt-5.6' model is not supported when using Codex with a
     #     ChatGPT account.
     # Every id below is present in the catalog Codex itself fetches from
-    # OpenAI (~/.codex/models_cache.json), and all seven were additionally
-    # run end to end on the same day: seven turns, seven turn.completed.
+    # OpenAI (~/.codex/models_cache.json), and all five were run end to end
+    # again on 2026-09-29 on CLI 0.158.0: five turns, five turn.completed.
     # Adding one from the `openai` list further down this file without a
     # live turn is exactly how the three above got here.
+    # The catalog also shrinks. `gpt-5.4-mini` and `gpt-5.3-codex-spark` were
+    # offered here and completed on 2026-09-07; by 2026-09-29 neither was in
+    # the catalog and each answered the same HTTP 400, so they were removed.
     "codex": [
         ("gpt-5.5", "GPT-5.5 — Codex CLI default, vision + tools, 1M ctx (recommended)"),
         ("gpt-6-astra", "GPT-6 Astra — most capable, six effort levels incl. ultra, 272K ctx; needs Codex CLI 0.153.1+ and a ChatGPT plan with Astra access"),
         ("gpt-5.6-sol", "GPT-5.6 Sol — flagship 5.6 tier, best at long-horizon coding, six effort levels incl. ultra"),
         ("gpt-5.6-terra", "GPT-5.6 Terra — mid 5.6 tier, cheaper path for scoped work, six effort levels incl. ultra"),
         ("gpt-5.6-luna", "GPT-5.6 Luna — fastest, cheapest 5.6 tier, for high-volume routine work"),
-        ("gpt-5.4-mini", "GPT-5.4 Mini — fast, lower-cost, good for lighter tasks and subagents"),
-        ("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark — specialist coding model, maximum coding depth"),
     ],
     "claude-api": [
         ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, 1M ctx, $3/$15 per MTok, intro $2/$10 through Aug 31 (recommended)"),

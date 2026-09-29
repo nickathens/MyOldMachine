@@ -28,7 +28,8 @@ not support.
 Source for the Codex rows: OpenAI's model catalog, which Codex CLI 0.153.4
 fetched on 2026-09-06 and cached at ``~/.codex/models_cache.json``. Each row
 is that model's ``supported_reasoning_levels`` and ``default_reasoning_level``
-verbatim. A Codex model absent from the table gets an EMPTY set, which means
+verbatim, and every row still matched the catalog 0.158.0 fetched on
+2026-09-29. A Codex model absent from the table gets an EMPTY set, which means
 "do not offer a row and send no override" — the CLI then applies the model's
 own default. Guessing a set for a model we have not read is how a level that
 does not exist reaches the API.
@@ -94,8 +95,6 @@ _MODEL_EFFORTS = {
     "gpt-5.6-terra": _SIX,
     "gpt-5.6-luna": _FIVE,
     "gpt-5.5": _FOUR,
-    "gpt-5.4-mini": _FOUR,
-    "gpt-5.3-codex-spark": _FOUR,
 }
 
 # default_reasoning_level from the same catalog rows.
@@ -105,8 +104,6 @@ _MODEL_DEFAULT_EFFORT = {
     "gpt-5.6-terra": "medium",
     "gpt-5.6-luna": "medium",
     "gpt-5.5": "medium",
-    "gpt-5.4-mini": "medium",
-    "gpt-5.3-codex-spark": "high",
 }
 
 # What this repo has always sent to `claude --effort`.

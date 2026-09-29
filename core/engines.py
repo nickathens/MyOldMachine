@@ -298,7 +298,7 @@ def resolve_engine(user_id: int, *, default_provider: str | None = None,
 # The two rows at the top of this file are a curated pair, offered to people
 # who cannot touch .env. An administrator is not one of those people, and
 # giving them the same pair said this machine had two engines. It does not:
-# ``install/wizard.PROVIDER_MODELS`` already ships ten models across the two
+# ``install/wizard.PROVIDER_MODELS`` already ships eight models across the two
 # subscription CLIs, and every one of them is a machine this repo can run.
 #
 # So the administrator's picker is the MACHINE setting, with every option in
@@ -329,8 +329,6 @@ MACHINE_ALIASES: dict[str, str] = {
     "sol": "gpt-5.6-sol",
     "terra": "gpt-5.6-terra",
     "luna": "gpt-5.6-luna",
-    "spark": "gpt-5.3-codex-spark",
-    "mini": "gpt-5.4-mini",
 }
 
 MACHINE_PICKER_NOTE = (
