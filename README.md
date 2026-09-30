@@ -625,6 +625,8 @@ The system update step covers whatever apt, dnf or brew knows about. Several app
 
 `utils/app_updates.py` checks all of them nightly and reports in the same digest. It installs only CLI updates, and only when the leading version number does not move: a major bump is reported for a human, because under semver that is a promise something breaks. Applications are never installed unattended whatever the setting says, since a 3.5 GB package behind a registration form is not something to start at 4am, and replacing an app under someone with a project open loses their work.
 
+The Codex CLI is checked there too, through whichever of Homebrew or npm installed it. As a Homebrew cask it was reported every night and never installed, because the brew step leaves casks alone, and on npm the 0.x rule would hold every release, since Codex numbers each one as a 0.x minor. So Codex has its own gate instead. A copy of the new build is unpacked in a scratch folder and has to accept the exact command line the bot runs it with, and still list the feature names the bot switches off, before the live one is replaced. The running bot trusts its first answer to those questions until it restarts, so a build that failed them would stop every Codex turn. The update also waits for a night when no Codex process is running, because a turn uses helper programs from the folder the update deletes.
+
 ```bash
 /maintenance apps on          # check nightly, install safe CLI updates
 /maintenance apps report      # check nightly, install nothing

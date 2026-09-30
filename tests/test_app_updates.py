@@ -10,13 +10,16 @@ make it safe to run unattended at 4am:
     never install, and no package crosses a major version boundary on its own.
 
 Every subprocess call and every HTTP fetch is mocked. Nothing here touches the
-network, npm, or the Claude CLI.
+network, npm, or the Claude CLI. The Codex tests run a stand-in codex script and
+tar for real, and one asks the real codex on PATH the bot's questions (skipped
+where there is none). None of them installs anything or starts a turn.
 """
 from __future__ import annotations
 
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -709,10 +712,11 @@ class CollectTests(unittest.TestCase):
 
         with patch.object(au, "CHECKS", tuple(
             (family, spy(family))
-            for family in ("claude-code", "resolve", "npm", "flatpak")
+            for family in ("claude-code", "codex", "resolve", "npm", "flatpak")
         )):
             au.collect(auto_update=True)
         self.assertTrue(seen["claude-code"])
+        self.assertTrue(seen["codex"])
         self.assertTrue(seen["npm"])
         # Applications are never installed by an unattended job.
         self.assertFalse(seen["resolve"])
@@ -806,7 +810,7 @@ class RegistryTests(unittest.TestCase):
     """The lists that decide what may be installed without a human."""
 
     def test_only_cli_families_may_install(self):
-        self.assertEqual(au.AUTO_INSTALLABLE, frozenset({"claude-code", "npm"}))
+        self.assertEqual(au.AUTO_INSTALLABLE, frozenset({"claude-code", "codex", "npm"}))
         self.assertNotIn("resolve", au.AUTO_INSTALLABLE)
         self.assertNotIn("flatpak", au.AUTO_INSTALLABLE)
 
@@ -838,6 +842,490 @@ class RegistryTests(unittest.TestCase):
         # a proof keyed on a name the updater never installs would never run
         self.assertTrue(au.NPM_PROOF)
         self.assertEqual(set(au.NPM_PROOF) - set(au.NPM_SKILL_CLIS), set())
+
+
+# --------------------------------------------------------------------------
+# Codex CLI
+# --------------------------------------------------------------------------
+
+_BOT_FLAGS = ("--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "-m",
+              "-c", "--dangerously-bypass-hook-trust", "--disable")
+_TAKES_VALUE = ("--sandbox", "-m", "-c", "--disable")
+_MODES = ("read-only", "workspace-write", "danger-full-access")
+
+
+def _fake_codex(folder: Path, version: str = "0.160.0", flags=_BOT_FLAGS,
+                modes=_MODES, features=("multi_agent", "multi_agent_v2", "apps"),
+                record: Path | None = None) -> Path:
+    """A codex that parses like the real one, as measured on 0.159.2.
+
+    clap reads every flag, and the --sandbox value, before it acts on --help:
+    an unknown one exits 2 with "error: unexpected argument", and --help at
+    the end then exits 0 without starting a turn. Feature names are only
+    listed, never checked while parsing.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / "codex"
+    script.write_text(f"""#!{sys.executable}
+import os, sys
+if {str(record) if record else ''!r}:
+    with open({str(record) if record else ''!r}, "a") as fh:
+        fh.write(os.environ.get("CODEX_HOME", "") + "\\n")
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("codex-cli {version}")
+    sys.exit(0)
+if args[:2] == ["features", "list"]:
+    for name in {tuple(features)!r}:
+        print(f"{{name:<40}} stable             false")
+    sys.exit(0)
+if args[:1] == ["exec"]:
+    i = 1
+    while i < len(args):
+        a = args[i]
+        if a == "--help":
+            print("Run Codex non-interactively")
+            sys.exit(0)
+        if a not in {tuple(flags)!r}:
+            print(f"error: unexpected argument '{{a}}' found", file=sys.stderr)
+            sys.exit(2)
+        if a in {_TAKES_VALUE!r}:
+            i += 1
+            if a == "--sandbox" and args[i] not in {tuple(modes)!r}:
+                print(f"error: invalid value '{{args[i]}}' for '--sandbox <SANDBOX_MODE>'",
+                      file=sys.stderr)
+                sys.exit(2)
+        i += 1
+    sys.exit(3)
+sys.exit(1)
+""", encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+class CodexTakesTheBotTests(unittest.TestCase):
+    """The question a new build has to answer before it replaces the live one."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def test_a_build_that_takes_the_bots_command_line_passes(self):
+        codex = _fake_codex(self.dir)
+        self.assertEqual(au._codex_takes_the_bot(str(codex), "0.160.0"), (True, ""))
+
+    def test_a_dropped_hook_trust_flag_is_refused(self):
+        # The running bot cached "yes" for this flag when it started. A build
+        # without it would abort every Codex turn until a restart.
+        codex = _fake_codex(self.dir, flags=tuple(
+            f for f in _BOT_FLAGS if f != "--dangerously-bypass-hook-trust"))
+        ok, why = au._codex_takes_the_bot(str(codex), "0.160.0")
+        self.assertFalse(ok)
+        self.assertIn("--dangerously-bypass-hook-trust", why)
+
+    def test_any_flag_the_bot_passes_is_required(self):
+        for dropped in ("--ephemeral", "--skip-git-repo-check", "--json", "--disable"):
+            with self.subTest(dropped=dropped):
+                codex = _fake_codex(self.dir / dropped.strip("-"),
+                                    flags=tuple(f for f in _BOT_FLAGS if f != dropped))
+                ok, why = au._codex_takes_the_bot(str(codex), "0.160.0")
+                self.assertFalse(ok)
+                self.assertIn(dropped, why)
+
+    def test_a_dropped_sandbox_mode_is_refused(self):
+        codex = _fake_codex(self.dir, modes=("read-only", "workspace-write"))
+        ok, why = au._codex_takes_the_bot(str(codex), "0.160.0")
+        self.assertFalse(ok)
+        self.assertIn("danger-full-access", why)
+
+    def test_a_dropped_feature_name_is_refused(self):
+        # Not caught while parsing: an unknown --disable name aborts the turn
+        # later, so the list has to be read.
+        codex = _fake_codex(self.dir, features=("multi_agent", "apps"))
+        ok, why = au._codex_takes_the_bot(str(codex), "0.160.0")
+        self.assertFalse(ok)
+        self.assertIn("multi_agent_v2", why)
+
+    def test_a_build_that_is_not_the_version_meant_is_refused(self):
+        codex = _fake_codex(self.dir, version="0.159.2")
+        ok, why = au._codex_takes_the_bot(str(codex), "0.160.0")
+        self.assertFalse(ok)
+        self.assertIn("0.159.2", why)
+
+    def test_the_trial_never_opens_the_live_codex_home(self):
+        record = self.dir / "homes.txt"
+        codex = _fake_codex(self.dir / "bin", record=record)
+        self.assertTrue(au._codex_takes_the_bot(str(codex), "0.160.0")[0])
+        homes = set(record.read_text(encoding="utf-8").split())
+        self.assertEqual(len(homes), 1, homes)
+        (home,) = homes
+        self.assertIn("codex_trial_home_", home)
+        self.assertNotEqual(Path(home), Path.home() / ".codex")
+        self.assertFalse(Path(home).exists(), "the scratch home was left behind")
+
+    @unittest.skipUnless(shutil.which("codex"), "no codex on PATH")
+    def test_the_installed_codex_takes_the_bot(self):
+        # The real build on this machine, asked the real questions. Skips where
+        # codex is not installed, CI included.
+        binary = shutil.which("codex")
+        version = au._codex_version(binary)
+        self.assertTrue(version, "codex --version gave no version")
+        self.assertEqual(au._codex_takes_the_bot(binary, version), (True, ""))
+
+
+class CodexCaskTrialTests(unittest.TestCase):
+    """The cask trial unpacks the very archive brew will install."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.brew_calls = []
+        self.real_run = au._run
+
+    def _archive(self, **fake) -> Path:
+        package = self.dir / "package"
+        _fake_codex(package / "bin", **fake)
+        (package / "codex-package.json").write_text("{}", encoding="utf-8")
+        archive = self.dir / "codex-package-aarch64-apple-darwin.tar.gz"
+        subprocess.run(["tar", "-czf", str(archive), "-C", str(package), "."], check=True)
+        return archive
+
+    def _brew(self, archive, fetch_rc=0):
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            if cmd[0] == "brew":
+                self.brew_calls.append((cmd, env))
+                if cmd[1] == "fetch":
+                    return fetch_rc, "" if fetch_rc == 0 else "curl: (6) Could not resolve host"
+                if cmd[1] == "--cache":
+                    return 0, str(archive)
+                raise AssertionError(f"unexpected brew call {cmd}")
+            return self.real_run(cmd, timeout=timeout, merge_stderr=merge_stderr, env=env)
+        return patch("utils.app_updates._run", side_effect=run)
+
+    def test_the_download_is_unpacked_and_tried(self):
+        archive = self._archive()
+        seen = []
+        real_trial = au._codex_takes_the_bot
+
+        def trial(binary, version):
+            seen.append(Path(binary))
+            return real_trial(binary, version)
+
+        with self._brew(archive), patch("utils.app_updates._codex_takes_the_bot", side_effect=trial):
+            self.assertEqual(au._codex_cask_trial("0.160.0"), (True, ""))
+        self.assertEqual([c[:2] for c, _ in self.brew_calls],
+                         [["brew", "fetch"], ["brew", "--cache"]])
+        for _cmd, env in self.brew_calls:
+            self.assertEqual(env.get("HOMEBREW_NO_AUTO_UPDATE"), "1")
+        (binary,) = seen
+        self.assertEqual(binary.parts[-2:], ("bin", "codex"))
+        self.assertIn("app_update_trial_", str(binary))
+        self.assertFalse(binary.exists(), "the unpacked trial copy was left behind")
+
+    def test_a_build_the_bot_cannot_use_fails_its_trial(self):
+        archive = self._archive(features=("multi_agent",))
+        with self._brew(archive):
+            ok, why = au._codex_cask_trial("0.160.0")
+        self.assertFalse(ok)
+        self.assertIn("multi_agent_v2", why)
+
+    def test_a_download_brew_could_not_fetch_is_a_failed_trial(self):
+        with self._brew(self.dir / "missing.tar.gz", fetch_rc=1):
+            ok, why = au._codex_cask_trial("0.160.0")
+        self.assertFalse(ok)
+        self.assertIn("could not download", why)
+
+    def test_an_archive_without_bin_codex_is_a_failed_trial(self):
+        package = self.dir / "odd"
+        package.mkdir()
+        (package / "README").write_text("nothing here", encoding="utf-8")
+        archive = self.dir / "odd.tar.gz"
+        subprocess.run(["tar", "-czf", str(archive), "-C", str(package), "."], check=True)
+        with self._brew(archive):
+            ok, why = au._codex_cask_trial("0.160.0")
+        self.assertFalse(ok)
+        self.assertIn("bin/codex", why)
+
+
+class CodexSourceTests(unittest.TestCase):
+    """Which installer owns the codex on PATH, read off where it points."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name).resolve()
+        (self.dir / "bin").mkdir()
+
+    def _link(self, target: Path) -> str:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")
+        link = self.dir / "bin" / "codex"
+        link.symlink_to(target)
+        return str(link)
+
+    def test_a_caskroom_link_is_the_cask(self):
+        link = self._link(self.dir / "Caskroom" / "codex" / "0.159.2" / "bin" / "codex")
+        with patch("utils.app_updates.puppeteer_browsers.npm_global_root") as root:
+            self.assertEqual(au._codex_source(link), "cask")
+        root.assert_not_called()
+
+    def test_an_npm_link_is_npm(self):
+        modules = self.dir / "lib" / "node_modules"
+        link = self._link(modules / "@openai" / "codex" / "bin" / "codex.js")
+        with patch("utils.app_updates.puppeteer_browsers.npm_global_root", return_value=modules):
+            self.assertEqual(au._codex_source(link), "npm")
+
+    def test_anything_else_is_left_alone(self):
+        link = self._link(self.dir / "src" / "codex-rs" / "target" / "release" / "codex")
+        with patch("utils.app_updates.puppeteer_browsers.npm_global_root",
+                   return_value=self.dir / "lib" / "node_modules"):
+            self.assertEqual(au._codex_source(link), "")
+
+    def test_another_cask_is_not_codexs(self):
+        link = self._link(self.dir / "Caskroom" / "codex-nightly" / "1.0" / "codex")
+        with patch("utils.app_updates.puppeteer_browsers.npm_global_root", return_value=None):
+            self.assertEqual(au._codex_source(link), "")
+
+
+class CodexVersionTests(unittest.TestCase):
+    def test_the_version_is_read_out_of_the_banner(self):
+        with patch("utils.app_updates._run", return_value=(0, "codex-cli 0.159.2")):
+            self.assertEqual(au._codex_version("codex"), "0.159.2")
+
+    def test_a_failed_or_empty_answer_is_no_version(self):
+        for answer in ((1, "codex-cli 0.159.2"), (0, ""), (0, "codex-cli dev")):
+            with self.subTest(answer=answer), patch("utils.app_updates._run", return_value=answer):
+                self.assertEqual(au._codex_version("codex"), "")
+
+    def test_the_cask_version_is_what_brew_would_install_now(self):
+        payload = json.dumps({"formulae": [], "casks": [{"token": "codex", "version": "0.159.2"}]})
+        with patch("utils.app_updates._run", return_value=(0, payload)) as run:
+            self.assertEqual(au._codex_latest("cask"), "0.159.2")
+        self.assertEqual(run.call_args.args[0][:3], ["brew", "info", "--cask"])
+        self.assertEqual(run.call_args.kwargs["env"].get("HOMEBREW_NO_AUTO_UPDATE"), "1")
+
+    def test_the_npm_version_is_npms_latest(self):
+        with patch("utils.app_updates._run", return_value=(0, "0.159.2")) as run:
+            self.assertEqual(au._codex_latest("npm"), "0.159.2")
+        self.assertEqual(run.call_args.args[0], ["npm", "view", "@openai/codex", "version"])
+
+    def test_unreadable_answers_are_no_version(self):
+        for source, answer in (("cask", (0, "Error: no cask")), ("cask", (1, "")),
+                               ("npm", (1, "E404")), ("npm", (0, "<html>")), ("", (0, "1.0"))):
+            with self.subTest(source=source, answer=answer), \
+                    patch("utils.app_updates._run", return_value=answer):
+                self.assertEqual(au._codex_latest(source), "")
+
+    def test_busy_is_read_from_the_process_table_only(self):
+        for rc, busy in ((0, True), (1, False)):
+            with self.subTest(rc=rc), patch("utils.app_updates._run", return_value=(rc, "")) as run:
+                self.assertEqual(au._codex_running(), busy)
+            self.assertEqual(run.call_args.args[0], ["pgrep", "-x", "codex"])
+
+
+class CodexCliTests(unittest.TestCase):
+    """check_codex_cli from the version read to the install, every step faked."""
+
+    BIN = "/opt/homebrew/bin/codex"
+
+    def run_check(self, auto=True, source="cask", installed="0.158.0", latest="0.159.2",
+                  busy=False, trial=(True, ""), install_rc=0, after=None, landed=(True, "")):
+        """Returns (statuses, calls): calls lists every step that ran, in order."""
+        calls = []
+        versions = [installed, latest if after is None else after]
+
+        def version(binary, env=None):
+            calls.append(("version", binary))
+            return versions.pop(0) if versions else ""
+
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            calls.append(("run", cmd, (env or {}).get("HOMEBREW_NO_AUTO_UPDATE")))
+            return install_rc, "brew said so"
+
+        def npm_live(spec):
+            calls.append(("npm-live", spec))
+            return install_rc, "npm said so"
+
+        def cask_trial(version):
+            calls.append(("cask-trial", version))
+            return trial
+
+        def npm_trial(pkg, version, proof):
+            calls.append(("npm-trial", pkg, version))
+            return trial
+
+        def takes(binary, version):
+            calls.append(("live-check", binary, version))
+            return landed
+
+        with patch("utils.app_updates.shutil.which", return_value=self.BIN), \
+                patch("utils.app_updates._codex_version", side_effect=version), \
+                patch("utils.app_updates._codex_source", return_value=source), \
+                patch("utils.app_updates._codex_latest", return_value=latest), \
+                patch("utils.app_updates._codex_running",
+                      side_effect=list(busy) if isinstance(busy, list) else lambda: busy), \
+                patch("utils.app_updates._codex_cask_trial", side_effect=cask_trial), \
+                patch("utils.app_updates._trial_install", side_effect=npm_trial), \
+                patch("utils.app_updates._codex_takes_the_bot", side_effect=takes), \
+                patch("utils.app_updates._npm_install_live", side_effect=npm_live), \
+                patch("utils.app_updates._run", side_effect=run):
+            statuses = au.check_codex_cli(auto_update=auto)
+        return statuses, calls
+
+    @staticmethod
+    def installs(calls):
+        return [c for c in calls if c[0] in ("run", "npm-live")]
+
+    def test_not_installed_reports_nothing(self):
+        with patch("utils.app_updates.shutil.which", return_value=None):
+            self.assertEqual(au.check_codex_cli(auto_update=True), [])
+
+    def test_a_zero_x_minor_is_installed(self):
+        # The whole point. is_major_jump holds this exact move, which is why
+        # Codex sat waiting on a human every night.
+        self.assertTrue(au.is_major_jump("0.158.0", "0.159.2"))
+        (s,), calls = self.run_check()
+        self.assertEqual((s.name, s.state, s.installed, s.latest),
+                         ("Codex CLI", "updated", "0.159.2", "0.159.2"))
+        self.assertEqual(self.installs(calls), [("run", ["brew", "upgrade", "--cask", "codex"], "1")])
+
+    def test_the_cask_is_tried_before_brew_touches_the_live_one(self):
+        _, calls = self.run_check()
+        steps = [c[0] for c in calls]
+        self.assertLess(steps.index("cask-trial"), steps.index("run"))
+        self.assertLess(steps.index("run"), steps.index("live-check"))
+        self.assertIn(("cask-trial", "0.159.2"), calls)
+        self.assertIn(("live-check", self.BIN, "0.159.2"), calls)
+
+    def test_npm_is_tried_in_a_scratch_prefix_then_installed_pinned(self):
+        (s,), calls = self.run_check(source="npm")
+        self.assertEqual(s.state, "updated")
+        self.assertIn(("npm-trial", "@openai/codex", "0.159.2"), calls)
+        self.assertEqual(self.installs(calls), [("npm-live", "@openai/codex@0.159.2")])
+
+    def test_a_failed_trial_keeps_the_working_version(self):
+        for source in ("cask", "npm"):
+            with self.subTest(source=source):
+                (s,), calls = self.run_check(
+                    source=source, trial=(False, "it refuses the bot's command line: error: x"))
+                self.assertEqual(s.state, "failed")
+                self.assertEqual(s.installed, "0.158.0")
+                self.assertIn("0.158.0 was kept", s.detail)
+                self.assertIn("refuses the bot's command line", s.detail)
+                self.assertEqual(self.installs(calls), [])
+
+    def test_a_busy_codex_is_not_swapped_under_a_turn(self):
+        (s,), calls = self.run_check(busy=True)
+        self.assertEqual(s.state, "outdated")
+        self.assertIn("in use", s.detail)
+        self.assertFalse([c for c in calls if c[0] in ("cask-trial", "npm-trial", "run", "npm-live")])
+
+    def test_a_turn_that_starts_during_the_trial_still_waits(self):
+        (s,), calls = self.run_check(busy=[False, True])
+        self.assertEqual(s.state, "outdated")
+        self.assertIn("in use", s.detail)
+        self.assertIn(("cask-trial", "0.159.2"), calls)
+        self.assertEqual(self.installs(calls), [])
+
+    def test_a_new_leading_number_waits_for_a_human(self):
+        (s,), calls = self.run_check(installed="0.159.2", latest="1.0.0")
+        self.assertEqual(s.state, "outdated")
+        self.assertIn("major version", s.detail)
+        self.assertFalse([c for c in calls if c[0] in ("cask-trial", "run")])
+
+    def test_report_only_mode_installs_nothing(self):
+        (s,), calls = self.run_check(auto=False)
+        self.assertEqual(s.state, "outdated")
+        self.assertEqual([c[0] for c in calls], ["version"])
+
+    def test_current_is_current(self):
+        (s,), calls = self.run_check(installed="0.159.2", latest="0.159.2")
+        self.assertEqual(s.state, "current")
+        self.assertEqual([c[0] for c in calls], ["version"])
+
+    def test_an_install_some_other_way_is_never_moved(self):
+        (s,), calls = self.run_check(source="")
+        self.assertEqual(s.state, "unknown")
+        self.assertEqual([c[0] for c in calls], ["version"])
+
+    def test_an_unreadable_latest_is_unknown_not_current(self):
+        (s,), _ = self.run_check(latest="")
+        self.assertEqual(s.state, "unknown")
+        self.assertIn("Homebrew", s.detail)
+
+    def test_a_refused_install_is_a_failure(self):
+        (s,), calls = self.run_check(install_rc=1)
+        self.assertEqual(s.state, "failed")
+        self.assertEqual(s.installed, "0.158.0")
+        self.assertNotIn("live-check", [c[0] for c in calls])
+
+    def test_an_install_that_did_not_move_the_version_is_a_failure(self):
+        (s,), _ = self.run_check(after="0.158.0")
+        self.assertEqual(s.state, "failed")
+        self.assertIn("reports 0.158.0", s.detail)
+
+    def test_a_build_that_fails_where_it_landed_is_not_an_update(self):
+        (s,), _ = self.run_check(landed=(False, "it no longer lists multi_agent_v2"))
+        self.assertEqual(s.state, "failed")
+        self.assertIn("passed its trial but not where it was installed", s.detail)
+
+    def test_the_npm_check_leaves_codex_to_this_one(self):
+        # Reported once, by the check that knows how to try it first.
+        with patch("utils.app_updates._npm_outdated_global",
+                   return_value={"@openai/codex": {"current": "0.158.0", "latest": "0.159.2"}}), \
+                patch("utils.app_updates._run") as run:
+            self.assertEqual(au.check_npm_clis(auto_update=True), [])
+        run.assert_not_called()
+
+
+class _CodexSpawnRefused(RuntimeError):
+    pass
+
+
+class CodexContractDriftTests(unittest.IsolatedAsyncioTestCase):
+    """The nightly asks about the command line the bot really builds."""
+
+    async def test_every_flag_the_bot_passes_is_asked_about(self):
+        from core import llm
+
+        captured = []
+
+        async def spawn(*cmd, **_kwargs):
+            captured.extend(cmd)
+            raise _CodexSpawnRefused("no real subprocess in tests")
+
+        provider = llm.CodexCLIProvider("gpt-6-astra")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".codex").mkdir()
+            (Path(tmp) / ".codex" / "hooks.json").write_text("{}", encoding="utf-8")
+            provider._bot_dir = Path(tmp)
+            with patch("asyncio.create_subprocess_exec", new=spawn), \
+                    patch("core.llm._codex_accepts_hook_trust_bypass", return_value=True), \
+                    patch("core.llm._codex_feature_names",
+                          return_value=frozenset(au.CODEX_BOT_FEATURES) | {"apps"}), \
+                    patch("core.config.get_llm_effort", return_value="max"):
+                try:
+                    await provider.complete("sys", [], user_id=None)
+                except _CodexSpawnRefused:
+                    pass
+        self.assertTrue(captured, "the provider never reached the spawn")
+        nightly = list(au.CODEX_BOT_ARGV)
+        for name in au.CODEX_BOT_FEATURES:
+            nightly += ["--disable", name]
+        bot_flags = {a for a in captured if a.startswith("-") and a != "-"}
+        self.assertIn("--dangerously-bypass-hook-trust", bot_flags)
+        self.assertEqual(bot_flags - set(nightly), set(),
+                         "the bot passes a flag the nightly check never asks a new build about")
+        self.assertEqual(captured[captured.index("--sandbox") + 1],
+                         nightly[nightly.index("--sandbox") + 1])
+        disabled = [captured[i + 1] for i, a in enumerate(captured) if a == "--disable"]
+        self.assertEqual(sorted(disabled), sorted(au.CODEX_BOT_FEATURES))
+
+    def test_the_feature_names_are_the_bots(self):
+        from core import llm
+        self.assertEqual(tuple(au.CODEX_BOT_FEATURES), tuple(llm._CODEX_DISABLED_FEATURES))
 
 
 class FetchTests(unittest.TestCase):

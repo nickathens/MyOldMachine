@@ -598,6 +598,17 @@ class PendingCaskTests(unittest.TestCase):
             ("font-fira-code", "homebrew/cask-versions/firefox-beta", "python@3.12"),
         )
 
+    @patch("utils.system_update._run_cmd")
+    def test_codex_is_left_to_the_app_check(self, run):
+        # The app check updates the Codex cask itself after a trial, so naming
+        # it here as well would ask the user to update what the same run is
+        # updating. The line read "waiting on you ... codex" every night
+        # until 30 Sep 2026.
+        run.return_value = (0, "codex\nlibreoffice\n")
+        self.assertEqual(su._outdated_casks(), ("libreoffice",))
+        run.return_value = (0, "codex\n")
+        self.assertEqual(su._outdated_casks(), ())
+
     def test_note_names_the_apps(self):
         note = su._brew_cask_note(("blender", "libreoffice"))
         self.assertIn("blender", note)
