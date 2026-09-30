@@ -30,7 +30,11 @@ LOG_DIR = DATA_DIR / "logs"
 if str(BOT_DIR) not in sys.path:
     sys.path.insert(0, str(BOT_DIR))
 
-from utils.app_updates import AppCheckResult, run_app_update_check  # noqa: E402
+from utils.app_updates import (  # noqa: E402
+    CASKS_UPDATED_HERE,
+    AppCheckResult,
+    run_app_update_check,
+)
 
 # Remembers which app updates the user has already been told about, so the
 # nightly reminder repeats weekly instead of every single night.
@@ -69,7 +73,8 @@ _UPGRADE_CMDS = {
     # headless launchd session (no GUI to mediate the trash/replace step) and a
     # timeout kill then strands the cask half-installed (Blender, 2026-07-15..18).
     # Outdated casks are reported in the summary instead — upgrade them
-    # interactively.
+    # interactively. The Codex CLI cask is plain command-line files, and
+    # utils/app_updates.py updates it after trying the new build first.
     "brew": "brew upgrade --formula",
 }
 
@@ -222,6 +227,11 @@ def _outdated_casks() -> tuple[str, ...]:
     Untreated that line became a phantom pending "app", and because the text
     varies between nights the app set kept changing, so _should_remind_pending
     saw news every night and REMIND_AFTER_DAYS could never throttle it.
+
+    Casks in app_updates.CASKS_UPDATED_HERE are left out. The app check
+    updates those itself and reports them on its own line, so naming them
+    here as well would ask the user to update something the same run is
+    updating.
     """
     rc, output = _run_cmd(
         "brew outdated --cask --quiet 2>/dev/null", use_sudo=False, timeout=60
@@ -231,6 +241,7 @@ def _outdated_casks() -> tuple[str, ...]:
     names = [
         line.strip() for line in output.splitlines()
         if _CASK_TOKEN.fullmatch(line.strip())
+        and line.strip() not in CASKS_UPDATED_HERE
     ]
     return tuple(sorted(names))
 
@@ -517,7 +528,8 @@ def _maybe_run_app_update_check(log_fn):
     Resolve, Claude Code and the global npm CLIs the skills install are all
     outside apt/brew, so before this ran nothing on the machine had ever looked
     at their versions — the nightly job reported "no updates available" on a
-    box carrying four stale CLIs and a stale Resolve (2026-08-04).
+    box carrying four stale CLIs and a stale Resolve (2026-08-04). The Codex
+    CLI is checked here too, whether brew or npm installed it.
 
     Never propagates: a version check is additive, and a flaky download feed
     must not fail the night's package upgrade.

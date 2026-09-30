@@ -96,9 +96,23 @@ NPM_SKILL_CLIS = {
 # already upgrades npm as part of node, so leaving it alone loses nothing.
 NPM_NEVER_TOUCH = frozenset({"npm", "npx", "node", "corepack"})
 
+# The Codex CLI, the bot's second engine. It arrives two ways: the installer
+# runs `npm install -g @openai/codex`, and the reference Mac has the Homebrew
+# cask. Neither ever moved by itself. The nightly brew upgrade leaves every
+# cask alone (system_update._UPGRADE_CMDS), and on npm is_major_jump would
+# hold every release, because Codex numbers each one as a 0.x minor (0.155 to
+# 0.159 in the week to 30 Sep 2026). So the cask sat in the digest night after
+# night as "waiting on you: codex". check_codex_cli owns it now, and the cask
+# list leaves out what is updated here.
+CODEX_CASK = "codex"
+CODEX_NPM = "@openai/codex"
+CASKS_UPDATED_HERE = frozenset({CODEX_CASK})
+
 # Families the nightly job may install without a human. A CLI moves by
 # replacing a file and old versions stay on disk; a GUI app bundle does not.
-AUTO_INSTALLABLE = frozenset({"claude-code", "npm"})
+# Codex is the exception on the first count, since brew and npm both delete
+# the old version, which is why it is tried before it is installed.
+AUTO_INSTALLABLE = frozenset({"claude-code", "codex", "npm"})
 
 _VERSION_PART = re.compile(r"\d+")
 
@@ -514,7 +528,8 @@ def check_npm_clis(auto_update: bool = False) -> list[AppStatus]:
     """Version state of the global npm CLIs the skills in this repo install."""
     results: list[AppStatus] = []
     for pkg, info in sorted(_npm_outdated_global().items()):
-        if pkg in NPM_NEVER_TOUCH or not isinstance(info, dict):
+        # Codex has its own check below, which reports it once.
+        if pkg in NPM_NEVER_TOUCH or pkg == CODEX_NPM or not isinstance(info, dict):
             continue
         current = str(info.get("current") or "")
         latest = str(info.get("latest") or "")
@@ -556,6 +571,242 @@ def check_npm_clis(auto_update: bool = False) -> list[AppStatus]:
                 continue
         results.append(AppStatus(pkg, "npm", latest, latest, "updated", detail))
     return results
+
+
+# --------------------------------------------------------------------------
+# Codex CLI — the bot's second engine, from the Homebrew cask or from npm
+# --------------------------------------------------------------------------
+
+CODEX_NAME = "Codex CLI"
+
+# Everything the bot hands `codex exec` on a turn (core/llm.py,
+# CodexCLIProvider.complete), with a real value where a flag takes one, and
+# `--disable <name>` added for each of CODEX_BOT_FEATURES. clap checks every
+# flag and the --sandbox value before it acts on --help, so
+# `codex exec <these> --help` exits 0 only on a build that takes the bot's
+# command line, and starts no turn. Measured on 0.159.2: 0 for this list, 2
+# for an unknown flag or an unknown sandbox mode.
+CODEX_BOT_ARGV = (
+    "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+    "--sandbox", "danger-full-access", "-m", "gpt-6-astra",
+    "-c", 'model_reasoning_effort="max"', "--dangerously-bypass-hook-trust",
+)
+# The names the bot turns off (core.llm._CODEX_DISABLED_FEATURES). An unknown
+# name is not caught with the flags above: it aborts the turn later, so
+# `codex features list` is asked instead.
+CODEX_BOT_FEATURES = ("multi_agent", "multi_agent_v2")
+
+
+def _brew_env() -> dict:
+    """brew's environment for the Codex steps: no self-update on the way.
+
+    The nightly run has already refreshed brew, and a refresh between the
+    trial and the install could move the cask to a version nobody tried.
+    """
+    return dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1")
+
+
+def _codex_version(binary: str, env: dict | None = None) -> str:
+    """What `codex --version` says ("codex-cli 0.159.2" gives "0.159.2"), or ""."""
+    rc, out = _run([binary, "--version"], timeout=30, merge_stderr=False, env=env)
+    words = out.split() if rc == 0 else []
+    return words[-1] if words and version_tuple(words[-1]) else ""
+
+
+def _codex_source(binary: str) -> str:
+    """How this codex was installed: "cask", "npm", or "" for anything else.
+
+    Read off where the command really points. The cask links it to
+    Caskroom/codex/<version>/bin/codex, npm to
+    <npm root>/@openai/codex/bin/codex.js. A source build, bun, pnpm or the
+    standalone installer is reported and never moved, because this check
+    would not know how to put it back.
+    """
+    real = Path(os.path.realpath(binary))
+    parts = real.parts
+    if any(a == "Caskroom" and b == CODEX_CASK for a, b in zip(parts, parts[1:])):
+        return "cask"
+    root = puppeteer_browsers.npm_global_root()
+    if root is not None and Path(os.path.realpath(root / CODEX_NPM)) in real.parents:
+        return "npm"
+    return ""
+
+
+def _codex_latest(source: str) -> str:
+    """Newest Codex that the install's own source offers, or "".
+
+    Each source is asked for what IT would install. The cask can trail
+    GitHub by hours (its bump is a pull request on Homebrew's side), so
+    reading GitHub would report an update brew cannot fetch yet.
+    """
+    if source == "cask":
+        rc, out = _run(["brew", "info", "--cask", "--json=v2", CODEX_CASK],
+                       timeout=120, merge_stderr=False, env=_brew_env())
+        try:
+            version = str(json.loads(out)["casks"][0]["version"]) if rc == 0 else ""
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            version = ""
+    elif source == "npm":
+        rc, out = _run(["npm", "view", CODEX_NPM, "version"], timeout=120,
+                       merge_stderr=False)
+        version = out.strip() if rc == 0 else ""
+    else:
+        version = ""
+    return version if version_tuple(version) and len(version) < 40 else ""
+
+
+def _codex_running() -> bool:
+    """True while any codex process is alive on the machine.
+
+    A turn keeps starting helpers out of its own install folder (codex-path/rg
+    for search, bin/codex-code-mode-host), and an update deletes that folder:
+    brew purges the old version and npm replaces the package. So the update
+    waits for a night when nobody is mid-turn. This only reads the process
+    table and acts on nothing it finds (AGENTS.md, "Never reap by name across
+    the machine").
+    """
+    rc, _out = _run(["pgrep", "-x", "codex"], timeout=15)
+    return rc == 0
+
+
+def _codex_takes_the_bot(binary: str, version: str) -> tuple[bool, str]:
+    """Whether the bot's Codex turns would still run on this build.
+
+    The running bot asks a codex build two things once and trusts the answers
+    for the life of its process (core/llm.py, _codex_cached_probe): whether
+    `exec --help` lists the hook-trust flag, and which names `features list`
+    shows. An update swaps the build under those answers, and one that dropped
+    either would abort every Codex turn until somebody restarted the bot. So
+    a build has to take the bot's whole command line and still list every name
+    the bot turns off, or it is not installed.
+
+    Asked with CODEX_HOME in a scratch folder, so a build on trial never opens
+    the live sign-in, config or session databases. Measured on 0.159.2: both
+    answers are the same with an empty home.
+    """
+    with tempfile.TemporaryDirectory(prefix="codex_trial_home_") as home:
+        env = dict(os.environ, CODEX_HOME=home)
+        found = _codex_version(binary, env)
+        if found != version:
+            return False, f"it reports version {found or 'nothing'}, not {version}"
+        argv = [binary, *CODEX_BOT_ARGV]
+        for name in CODEX_BOT_FEATURES:
+            argv += ["--disable", name]
+        rc, out = _run(argv + ["--help"], timeout=60, env=env)
+        if rc != 0:
+            # clap's "error:" line says why. It is not always the first line:
+            # on Linux the scratch home sits under /tmp, and every codex call
+            # there opens with "WARNING: ... Refusing to create helper binaries
+            # under temporary dir", which is harmless and not the reason
+            # (measured on 0.159.2).
+            lines = [line.strip() for line in out.splitlines() if line.strip()]
+            first = next((line for line in lines if line.startswith("error:")),
+                         lines[0] if lines else f"rc={rc}")
+            return False, f"it refuses the bot's command line: {first[:200]}"
+        rc, out = _run([binary, "features", "list"], timeout=60,
+                       merge_stderr=False, env=env)
+        if rc != 0:
+            return False, f"`codex features list` failed: {out[-200:] or f'rc={rc}'}"
+        listed = {line.split()[0] for line in out.splitlines() if line.split()}
+        missing = [name for name in CODEX_BOT_FEATURES if name not in listed]
+        if missing:
+            return False, f"it no longer lists {', '.join(missing)}, which the bot turns off"
+    return True, ""
+
+
+def _codex_cask_trial(version: str) -> tuple[bool, str]:
+    """Unpack the download brew is about to install and put it to the bot's test.
+
+    `brew fetch` downloads the archive into brew's own cache and checks it
+    against the cask's SHA-256, and the upgrade after it installs that same
+    file, so the build tried here is byte for byte the one that goes live.
+    """
+    env = _brew_env()
+    rc, out = _run(["brew", "fetch", "--cask", CODEX_CASK], timeout=900, env=env)
+    if rc != 0:
+        return False, f"brew could not download it: {out[-200:] or f'rc={rc}'}"
+    rc, path = _run(["brew", "--cache", "--cask", CODEX_CASK], timeout=60,
+                    merge_stderr=False, env=env)
+    archive = Path(path) if rc == 0 and path else None
+    if archive is None or not archive.is_file():
+        return False, "brew downloaded it but did not say where"
+    scratch = Path(tempfile.mkdtemp(prefix="app_update_trial_"))
+    try:
+        rc, out = _run(["tar", "-xzf", str(archive), "-C", str(scratch)], timeout=300)
+        binary = scratch / "bin" / "codex"
+        if rc != 0 or not binary.is_file():
+            return False, f"the download did not unpack to bin/codex: {out[-200:] or f'rc={rc}'}"
+        return _codex_takes_the_bot(str(binary), version)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def check_codex_cli(auto_update: bool = False) -> list[AppStatus]:
+    """Version state of the Codex CLI, updated through whatever installed it.
+
+    Any release that keeps the leading number is installed, which for Codex
+    so far is every one, but only after a copy of that exact release has
+    taken the bot's command line (_codex_takes_the_bot). The 0.x rule in
+    is_major_jump is not applied here on purpose: it would hold every Codex
+    release, and asking the build says more about what breaks the bot than
+    the version number does.
+    """
+    binary = shutil.which("codex")
+    if not binary:
+        return []
+    installed = _codex_version(binary)
+    if not installed:
+        return []
+    source = _codex_source(binary)
+    if not source:
+        return [AppStatus(CODEX_NAME, "codex", installed, "", "unknown",
+                          "installed some other way than Homebrew or npm, so left alone")]
+    where = "Homebrew" if source == "cask" else "npm"
+    latest = _codex_latest(source)
+    if not latest:
+        return [AppStatus(CODEX_NAME, "codex", installed, "", "unknown",
+                          f"could not read the newest version from {where}")]
+    if not is_newer(latest, installed):
+        return [AppStatus(CODEX_NAME, "codex", installed, latest, "current")]
+    if not auto_update:
+        return [AppStatus(CODEX_NAME, "codex", installed, latest, "outdated")]
+    if version_tuple(latest)[0] != version_tuple(installed)[0]:
+        return [AppStatus(CODEX_NAME, "codex", installed, latest, "outdated",
+                          "major version, worth a look before installing")]
+    in_use = AppStatus(CODEX_NAME, "codex", installed, latest, "outdated",
+                       "Codex was in use, so the update waits for a quiet night")
+    if _codex_running():
+        return [in_use]
+
+    if source == "cask":
+        works, why = _codex_cask_trial(latest)
+    else:
+        works, why = _trial_install(
+            CODEX_NPM, latest,
+            lambda prefix: _codex_takes_the_bot(str(prefix / "bin" / "codex"), latest))
+    if not works:
+        return [AppStatus(CODEX_NAME, "codex", installed, latest, "failed",
+                          f"{latest} failed its trial, so {installed} was kept: {why}")]
+    # Asked again, because a turn can start while the trial downloads.
+    if _codex_running():
+        return [in_use]
+
+    if source == "cask":
+        rc, out = _run(["brew", "upgrade", "--cask", CODEX_CASK], timeout=900, env=_brew_env())
+    else:
+        rc, out = _npm_install_live(f"{CODEX_NPM}@{latest}")
+    if rc != 0:
+        return [AppStatus(CODEX_NAME, "codex", installed, latest, "failed",
+                          out[-200:] if out else f"rc={rc}")]
+    now = _codex_version(binary)
+    if now != latest:
+        return [AppStatus(CODEX_NAME, "codex", now or installed, latest, "failed",
+                          f"{where} finished, but codex reports {now or 'nothing'}, not {latest}")]
+    works, why = _codex_takes_the_bot(binary, latest)
+    if not works:
+        return [AppStatus(CODEX_NAME, "codex", latest, latest, "failed",
+                          f"{latest} passed its trial but not where it was installed: {why}")]
+    return [AppStatus(CODEX_NAME, "codex", latest, latest, "updated")]
 
 
 # --------------------------------------------------------------------------
@@ -603,6 +854,7 @@ def check_flatpak(auto_update: bool = False) -> list[AppStatus]:
 # property of the function object.
 CHECKS: tuple[tuple[str, Callable[[bool], list[AppStatus]]], ...] = (
     ("claude-code", check_claude_code),
+    ("codex", check_codex_cli),
     ("resolve", check_davinci_resolve),
     ("npm", check_npm_clis),
     ("flatpak", check_flatpak),

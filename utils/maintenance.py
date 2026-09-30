@@ -51,8 +51,9 @@ DEFAULT_CONFIG = {
     # job never surprise-reboots a workstation. Ignored unless macos_system_updates is on.
     "macos_system_updates_restart": False,
     # Also check the apps no package manager tracks: DaVinci Resolve (Blackmagic
-    # retired the Homebrew cask), Claude Code (native install), the global npm
-    # CLIs the skills install, and Flatpak apps on Linux. On by default and
+    # retired the Homebrew cask), Claude Code (native install), the Codex CLI
+    # (a cask the brew step never upgrades, or npm), the global npm CLIs the
+    # skills install, and Flatpak apps on Linux. On by default and
     # read-only in itself — before this existed nothing on the machine had ever
     # looked at any of their versions.
     "app_update_checks": True,
@@ -140,7 +141,7 @@ def get_status_report() -> str:
         else:
             lines.append("  macOS softwareupdate: OFF (Apple security responses still auto-install)")
 
-    # Apps outside the package manager (Resolve, Claude Code, npm CLIs, Flatpak)
+    # Apps outside the package manager (Resolve, Claude Code, Codex, npm CLIs, Flatpak)
     if config.get("app_update_checks", True):
         if config.get("app_auto_update", True):
             lines.append("App update checks: ON (nightly, installs CLI updates)")
