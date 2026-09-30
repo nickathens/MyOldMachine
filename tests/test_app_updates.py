@@ -856,13 +856,16 @@ _MODES = ("read-only", "workspace-write", "danger-full-access")
 
 def _fake_codex(folder: Path, version: str = "0.160.0", flags=_BOT_FLAGS,
                 modes=_MODES, features=("multi_agent", "multi_agent_v2", "apps"),
-                record: Path | None = None) -> Path:
+                record: Path | None = None, warn: bool = False) -> Path:
     """A codex that parses like the real one, as measured on 0.159.2.
 
     clap reads every flag, and the --sandbox value, before it acts on --help:
     an unknown one exits 2 with "error: unexpected argument", and --help at
     the end then exits 0 without starting a turn. Feature names are only
     listed, never checked while parsing.
+
+    warn: open every call with the stderr line the real one prints on Linux
+    when CODEX_HOME is under /tmp, as the trial's scratch home is there.
     """
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / "codex"
@@ -871,6 +874,9 @@ import os, sys
 if {str(record) if record else ''!r}:
     with open({str(record) if record else ''!r}, "a") as fh:
         fh.write(os.environ.get("CODEX_HOME", "") + "\\n")
+if {warn!r}:
+    print('WARNING: proceeding, even though we could not create PATH aliases: '
+          'Refusing to create helper binaries under temporary dir "/tmp"', file=sys.stderr)
 args = sys.argv[1:]
 if args == ["--version"]:
     print("codex-cli {version}")
@@ -932,6 +938,21 @@ class CodexTakesTheBotTests(unittest.TestCase):
                 ok, why = au._codex_takes_the_bot(str(codex), "0.160.0")
                 self.assertFalse(ok)
                 self.assertIn(dropped, why)
+
+    def test_the_linux_temp_home_warning_is_not_a_refusal(self):
+        # Real codex on Linux opens every call with this line on stderr when
+        # CODEX_HOME is under /tmp. Only stdout is read for the version and
+        # the feature names, so a good build still passes.
+        codex = _fake_codex(self.dir, warn=True)
+        self.assertEqual(au._codex_takes_the_bot(str(codex), "0.160.0"), (True, ""))
+
+    def test_the_reason_given_is_the_refusal_not_the_warning(self):
+        codex = _fake_codex(self.dir, warn=True, flags=tuple(
+            f for f in _BOT_FLAGS if f != "--ephemeral"))
+        ok, why = au._codex_takes_the_bot(str(codex), "0.160.0")
+        self.assertFalse(ok)
+        self.assertIn("error: unexpected argument '--ephemeral'", why)
+        self.assertNotIn("WARNING", why)
 
     def test_a_dropped_sandbox_mode_is_refused(self):
         codex = _fake_codex(self.dir, modes=("read-only", "workspace-write"))

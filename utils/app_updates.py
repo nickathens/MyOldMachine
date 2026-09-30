@@ -694,7 +694,14 @@ def _codex_takes_the_bot(binary: str, version: str) -> tuple[bool, str]:
             argv += ["--disable", name]
         rc, out = _run(argv + ["--help"], timeout=60, env=env)
         if rc != 0:
-            first = next((line.strip() for line in out.splitlines() if line.strip()), f"rc={rc}")
+            # clap's "error:" line says why. It is not always the first line:
+            # on Linux the scratch home sits under /tmp, and every codex call
+            # there opens with "WARNING: ... Refusing to create helper binaries
+            # under temporary dir", which is harmless and not the reason
+            # (measured on 0.159.2).
+            lines = [line.strip() for line in out.splitlines() if line.strip()]
+            first = next((line for line in lines if line.startswith("error:")),
+                         lines[0] if lines else f"rc={rc}")
             return False, f"it refuses the bot's command line: {first[:200]}"
         rc, out = _run([binary, "features", "list"], timeout=60,
                        merge_stderr=False, env=env)
