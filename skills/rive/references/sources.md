@@ -45,7 +45,7 @@ Community pulse (the last30days skill, 25 Sep 2026): thin; a Reddit thread quest
 | Thing | Version | Where it is pinned or checked |
 |---|---|---|
 | Rive CLI | 1.1.1 (21 Sep 2026), 1.2.0 (25 Sep 2026) | `rivelib.TESTED_CLI_VERSIONS`; `rive_doctor.py` re-checks flags and timing |
-| Rive editor (desktop) | 0.8.5940 | self-updating |
+| Rive editor (desktop) | 0.8.5940 at install (25 Sep 2026), 0.9.46 since 1 Oct 2026 | `rive_doctor.py` prints it; `brew upgrade --cask rive` when the nightly report lists it (`editor.md`) |
 | `@rive-app/webgl2`, `@rive-app/canvas` | 2.43.1 | `scripts/web_runtime.json` with integrity hashes |
 | ffmpeg | 9.0.2 | the tagging and decoding notes in `rendering.md` were measured on it |
 | Space Grotesk (templates) | variable, wght 300-700 | `templates/_fonts`, SIL OFL 1.1 |
