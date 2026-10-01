@@ -4,16 +4,16 @@
   "packages": {
     "webgl2": {
       "npm": "@rive-app/webgl2",
-      "version": "2.43.1",
-      "tarball": "https://registry.npmjs.org/@rive-app/webgl2/-/webgl2-2.43.1.tgz",
-      "integrity": "sha512-Er2zB3bH8CIyNoHEMLU5dAtx2Ie1t4wvxOFhTIrOfr8Cya7HE5lFzAYBozSwHtBDnZ7/6NwT4oz6CuPyR06u9g==",
+      "version": "2.44.0",
+      "tarball": "https://registry.npmjs.org/@rive-app/webgl2/-/webgl2-2.44.0.tgz",
+      "integrity": "sha512-BIlutEsgyPRwMLEat2dDVBannAqIH75TeCCyrYA4KjUMMM+2bFJ2qfwqJACUAsUE+EYdcQaONycfTFRQ4JGLqg==",
       "files": ["rive.js", "rive.wasm", "rive_fallback.wasm"]
     },
     "canvas": {
       "npm": "@rive-app/canvas",
-      "version": "2.43.1",
-      "tarball": "https://registry.npmjs.org/@rive-app/canvas/-/canvas-2.43.1.tgz",
-      "integrity": "sha512-GqENtpSOK5KOnF+kmzDQ70tfEQYksSOb39jcPPAV5vj5XDJ3vekPdbqTWuQdEyOFMhJUir4iBo3On9Gy2hghtQ==",
+      "version": "2.44.0",
+      "tarball": "https://registry.npmjs.org/@rive-app/canvas/-/canvas-2.44.0.tgz",
+      "integrity": "sha512-ak0GGwCbuWubi6rP9qB5YPy5CxYuTY3AiuTV4i1Vi7GXhuK2XB+M+4WJMuGcYGfGLzojaVMKaxtunD5OjjGzOQ==",
       "files": ["rive.js", "rive.wasm", "rive_fallback.wasm"]
     }
   }

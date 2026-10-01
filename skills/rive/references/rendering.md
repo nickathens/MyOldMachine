@@ -53,7 +53,7 @@ Each primitive costs scene time, measured with `--data-dump-every=1`:
 
 Coordinates are artboard coordinates, not output pixels, whatever `--size` is.
 
-Keys are not text input: `--key=h` into a focused TextInput types nothing (measured), and no runtime supports TextInput yet (Rive's feature table, Sep 2026). Animate typing instead (`rive_recipes.py typing`).
+Keys are not text input: `--key=h` into a focused TextInput types nothing (measured). Rive's feature table still listed TextInput as coming soon on every runtime on 1 Oct 2026, but the web runtime 2.44.0 takes typing on a live page (measured, `web.md`); neither engine here can type into a render. Animate typing instead (`rive_recipes.py typing`).
 
 ### Data over time
 
@@ -107,10 +107,12 @@ The web engine has real alpha in one pass (a transparent canvas read back as PNG
 
 For a `.riv` the CLI cannot open (there is no command that renders a bare `.riv`), `rive_render.py` drives Rive's low-level web runtime in headless Chromium: `RuntimeLoader.awaitInstance()`, `load()`, an artboard and a `StateMachineInstance`, then for each frame `advanceAndApply` in the same 1/60 s steps, pointer calls at the same times the CLI would make them, `artboard.draw()`, and `canvas.toDataURL()` **in the same task** (the WebGL drawing buffer is not preserved; read later it is empty). `scripts/web/engine.html` is that page; `scripts/riveweb.py` serves it from a private folder on a random localhost port.
 
-- Runtime: `@rive-app/webgl2` 2.43.1, the Rive Renderer, pinned with its npm integrity hash in `scripts/web_runtime.json`, fetched once into `~/Library/Caches/rive-skill` (macOS) or `~/.cache/rive-skill` (Linux). `--web-runtime canvas` uses the Canvas2D build (no vector feathering).
+- Runtime: `@rive-app/webgl2` 2.44.0 (2.43.1 until 1 Oct 2026), the Rive Renderer, pinned with its npm integrity hash in `scripts/web_runtime.json`, fetched once into `~/Library/Caches/rive-skill` (macOS) or `~/.cache/rive-skill` (Linux). `--web-runtime canvas` is meant to use the Canvas2D build (no vector feathering), but on 1 Oct 2026 it rendered nothing on 2.43.1 and on 2.44.0 (the render stops with "every sampled frame is empty"): the canvas build only draws when `resolveAnimationFrame()` runs, and `engine.html` never calls it. Pages built with `--runtime canvas` are not affected.
 - WebGL2 runs on SwiftShader (`--use-angle=swiftshader`): no GPU needed, the same on Linux. Renderer string in the report.
 - Measured: 1280x720 at about 49 frames a second in one page; 1080p about 12 fps including start-up. Interiors match the CLI; edges are anti-aliased differently (mean 0.1-0.2 codes, under 0.5% of pixels past 8 codes). Timing matched: a click at 1.0 s rendered at 1.5 s showed the same animation phase in both engines (bars region mean difference 0.06).
 - Limits: unsigned scripts are rejected by web runtimes; the runtime does not know which state machine is the artboard's default (it takes the first, and warns when there are several: pass `--state-machine`); keys, gamepad and semantic actions are not replayed (pointer only); `--fit layout` is treated as `contain`.
+
+Across runtime versions the pixels can move. Measured 1 Oct 2026, 2.44.0 against 2.43.1 with this engine: the six templates (the button with two clicks, the counter counting to 1250, the visualizer on a test track, the rest as built; alpha where the template has no background) and three delivered logo animations, one of them with 469 pictures inside, 1,360 frames in all at their own sizes up to 1920x1080. The button, lower third and phone screen came out byte identical. 322 frames of the other six differ, in at most 29 pixels a frame by more than 2 codes: single anti-aliased edge pixels gaining or losing part of their coverage (a single pixel moved 128 codes at most), plus up to 1,234 pixels a frame off by exactly 1 code in soft glows. Repeat renders on 2.43.1 matched byte for byte, so every difference is the runtime's. The 2.44.0 release notes list a fix to trimmed paths and several renderer changes; which one moves which pixel was not traced. A page keeps the runtime it was built with (inside a single-file page, beside a folder page's `index.html`), so pages built before a bump do not change.
 
 ## Encoding
 

@@ -111,7 +111,7 @@ Outputs by extension: `.png` (one frame), a `%05d` pattern or a folder (PNG sequ
 
 | | cli (a project folder) | web (a `.riv` file) |
 |---|---|---|
-| Renderer | Rive's own (Metal on a Mac, OpenGL through EGL on Linux), the same as the previewer | Rive's web runtime (@rive-app/webgl2 2.43.1) on SwiftShader |
+| Renderer | Rive's own (Metal on a Mac, OpenGL through EGL on Linux), the same as the previewer | Rive's web runtime (@rive-app/webgl2 2.44.0) on SwiftShader |
 | Speed, 1080p | 58-64 frames a second with 8-12 workers | about 12 fps including start-up |
 | Transparency | solved from a black and a white pass | real, one pass |
 | Scripts (Luau) | run, unsigned | rejected unless signed with `--publish` |
