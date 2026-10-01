@@ -12,7 +12,7 @@ A `.riv` plays in a web page through Rive's open-source runtime (rive-app/rive-w
 | `@rive-app/canvas-single` | Canvas2D with the wasm inlined | one request instead of two |
 | `@rive-app/webgl` | | deprecated after 2.37.0 |
 
-Sizes (Rive, Jan 2026, brotli): canvas-lite 222 KB, canvas 567 KB, webgl2 648 KB compressed. Pinned here: 2.43.1 (23 Sep 2026), `scripts/web_runtime.json`, fetched with its integrity hash into a user cache. React has `@rive-app/react-webgl2`; Flutter, iOS, Android, React Native, Unity, Unreal, Defold and C++ have their own runtimes.
+Sizes (Rive, Jan 2026, brotli): canvas-lite 222 KB, canvas 567 KB, webgl2 648 KB compressed. Pinned here: 2.44.0 (30 Sep 2026; 2.43.1 until 1 Oct 2026, compared frame by frame in `rendering.md`), `scripts/web_runtime.json`, fetched with its integrity hash into a user cache. React has `@rive-app/react-webgl2`; Flutter, iOS, Android, React Native, Unity, Unreal, Defold and C++ have their own runtimes.
 
 What the web runtimes support (Rive's feature table, read 25 Sep 2026), against what the CLI can author:
 
@@ -26,7 +26,8 @@ What the web runtimes support (Rive's feature table, read 25 Sep 2026), against 
 | GPU canvas (scripted WGSL) | webgl2 2.42.0 | not canvas; the web allows one GPU canvas per file (the Clihelp CRT project found a nested second one gets nil) |
 | focus (keyboard navigation) | 2.43.1 | |
 | vector feathering | webgl2 2.26.0 | **not canvas** |
-| text input | none yet | the CLI's TextInput component does not run on any runtime |
+| text input (typing into a `TextInput`) | 2.44.0, measured here | Rive's table still said "coming soon" on 1 Oct 2026. The CLI's own `text_input` sample, unsigned, on a page: typing went into the field and into the obscured one on webgl2 and canvas 2.44.0, and did nothing on 2.43.1 (a click placed the caret, keys were dropped). The player keeps a hidden text input element over the canvas for the keys, which is also what raises a phone's keyboard (its type declarations say so; no phone tested) |
+| masking | 2.44.0 (release notes) | the CLI 1.2.0 schema has no mask type, so only editor files can use it |
 
 A file from a newer editor or CLI still loads in an older runtime; features the runtime does not know are skipped.
 
@@ -39,7 +40,7 @@ python3 skills/rive/scripts/rive_web.py page build/card.riv -o card.html --singl
 
 Folder mode writes `index.html`, `rive.js`, `rive.wasm` and the `.riv` (cacheable, best for a site or a surge deploy). `--single-file` inlines all three into one HTML file (about 3.6 MB with a font; good as an attachment). `--controls` builds a small panel from the view model at runtime: text fields for strings, sliders for numbers (0..100), checkboxes, colour pickers, trigger buttons, enum menus. Each starts from the file's own value and follows it when the file changes a value itself. A colour picker holds red, green and blue only, so a pick keeps the colour's own transparency (an 85% plate stays 85%). `--fit` is `contain` by default; `layout` makes a responsive artboard reflow to the window. The page binds the file's default view model instance when the file has one (`autoBind`; on a file without one it would log a console error) and calls `resizeDrawingSurfaceToCanvas()` on load and resize, so it is sharp on a Retina screen.
 
-**Name the state machine when the artboard has more than one** (`--state-machine`). The runtime cannot see the artboard's default one, and with none named it plays the first timeline and warns that the next major version will change this (read in rive.js 2.43.1): listeners and binds are then dead, and the button template's page ignored a click (measured). So the page reads the file first and plays the artboard's first state machine unless one is named, with a console note when there are several. It passes the name with the singular `stateMachine` option; the plural `stateMachines` is deprecated in 2.43.1.
+**Name the state machine when the artboard has more than one** (`--state-machine`). The runtime cannot see the artboard's default one, and with none named it plays the first timeline and warns that the next major version will change this (read in rive.js 2.43.1, and unchanged in 2.44.0): listeners and binds are then dead, and the button template's page ignored a click (measured). So the page reads the file first and plays the artboard's first state machine unless one is named, with a console note when there are several. It passes the name with the singular `stateMachine` option; the plural `stateMachines` is deprecated (2.43.1 and 2.44.0).
 
 ## Signing: the one that bites
 
@@ -77,4 +78,4 @@ Also: `r.viewModelByName(name).instanceByName(name)` and `r.bindViewModelInstanc
 - Webflow and Framer have official Rive plugins; Rive's hosted embed links (an iframe, no API access) need the Voyager plan.
 - Several graphics on one page with webgl2: set `useOffscreenRenderer: true` on each so they share one WebGL context (browsers cap contexts), or use the canvas package.
 - Pause graphics that scroll off screen, and consider `prefers-reduced-motion`: the same file can carry a calmer artboard or state for those users.
-- Keyboard focus and screen-reader semantics work on webgl2/canvas 2.43.1; test them with `rive <dir> --key=...` and `--semantics=-` before shipping.
+- Keyboard focus and screen-reader semantics work on webgl2/canvas since 2.43.1, typing into a text field since 2.44.0. Test focus and semantics with `rive <dir> --key=...` and `--semantics=-` before shipping; test typing on the page itself (click the field, type), because `--key` presses are not text.

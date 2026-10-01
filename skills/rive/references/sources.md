@@ -8,7 +8,7 @@ Researched and measured 25 Sep 2026 for the first version of this skill. Finding
 - Rive's web documentation through its index for agents, `https://rive.app/docs/llms.txt` (about 440 pages; every page has a `.md` copy): the CLI pages, editor exporting, SVG/PSD/fonts/audio import, the AI agent, MCP, feature support, runtime sizes, the web runtime (getting started, parameters, low-level API, data binding, Canvas vs WebGL2), best practices, pricing.
 - `https://rive.app/pricing`, rendered in a real browser (the docs pricing page disagrees on Voyager).
 - Rive's release manifest, `https://releases.rive.app/cli/latest/manifest.json` (per-platform artifacts with SHA-256; `v<version>/manifest.json` for a given one), and the Homebrew tap rive-app/homebrew-tap.
-- The web runtime packages themselves (`@rive-app/webgl2` and `@rive-app/canvas` 2.43.1: `rive.d.ts`, `rive_advanced.mjs.d.ts`, `rive.js`), read for the low-level API, the default-state-machine behaviour and the event and asset names.
+- The web runtime packages themselves (`@rive-app/webgl2` and `@rive-app/canvas` 2.43.1: `rive.d.ts`, `rive_advanced.mjs.d.ts`, `rive.js`), read for the low-level API, the default-state-machine behaviour and the event and asset names. For 2.44.0 (1 Oct 2026): its release notes (rive-app/rive-wasm), the diff of every type declaration against 2.43.1 (nothing the skill calls changed or went away; added: text and key input through a hidden text input element, `selectedText()`, and modifier keys now forwarded as keys), the same default-state-machine and `stateMachines` warnings in `rive.js`, the same files in the tarball, and Rive's feature table again (text input still "coming soon").
 - The CLI binary's own strings, for its environment variables (`RIVE_NO_AUDIO_DEVICE`, `RIVE_HOME`, `RIVE_DOCS_DIR`...), and an `fs_usage` trace for where the login lives.
 - Rive's blog and X posts: the CLI technical preview (11 Sep 2026) and "free during the preview" posts, Games Done Quick's omnibar, Territory Studio's film UI talk, the film and TV use-case page.
 - rive-app/rive-runtime#92 (Linux Mesa blank renders), #87 (MCP and agent quality).
@@ -45,7 +45,7 @@ Community pulse (the last30days skill, 25 Sep 2026): thin; a Reddit thread quest
 | Thing | Version | Where it is pinned or checked |
 |---|---|---|
 | Rive CLI | 1.1.1 (21 Sep 2026), 1.2.0 (25 Sep 2026) | `rivelib.TESTED_CLI_VERSIONS`; `rive_doctor.py` re-checks flags and timing |
-| Rive editor (desktop) | 0.8.5940 | self-updating |
-| `@rive-app/webgl2`, `@rive-app/canvas` | 2.43.1 | `scripts/web_runtime.json` with integrity hashes |
+| Rive editor (desktop) | 0.8.5940 at install (25 Sep 2026), 0.9.46 since 1 Oct 2026 | `rive_doctor.py` prints it; `brew upgrade --cask rive` when the nightly report lists it (`editor.md`) |
+| `@rive-app/webgl2`, `@rive-app/canvas` | 2.44.0 (30 Sep 2026), 2.43.1 until 1 Oct 2026 | `scripts/web_runtime.json` with integrity hashes; the comparison is in `rendering.md` |
 | ffmpeg | 9.0.2 | the tagging and decoding notes in `rendering.md` were measured on it |
 | Space Grotesk (templates) | variable, wght 300-700 | `templates/_fonts`, SIL OFL 1.1 |

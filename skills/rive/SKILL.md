@@ -30,7 +30,7 @@ python3 skills/rive/scripts/rive_doctor.py --web      # also the web engine (hea
 python3 skills/rive/scripts/rive_doctor.py --install  # install the CLI the supported way, then check
 ```
 
-On this Mac: Rive CLI 1.2.0 (`brew install --cask rive-app/tap/rive-cli`, update with `brew upgrade --cask rive-cli`; `rive update` does not work on a brew install) and the Rive editor 0.9.21 (`brew install --cask rive`, self-updating, needs a Rive account signed in at the screen). On Linux x64, `--install` downloads the official build, checks its SHA-256 against Rive's release manifest, and lays it out as Rive's own install.sh does: `~/.rive/versions/<version>/` with the docs and samples beside the binary (the only place `rive docs` and `rive samples` look) and `~/.rive/bin/rive` for PATH.
+On this Mac: Rive CLI 1.2.0 (`brew install --cask rive-app/tap/rive-cli`, update with `brew upgrade --cask rive-cli`; `rive update` does not work on a brew install) and the Rive editor (`brew install --cask rive`, needs a Rive account signed in at the screen; `rive_doctor.py` prints its version). The editor's own updater runs only while the app is open, and nobody opens it here, so the nightly report lists it each time Rive ships a new version: `brew upgrade --cask rive` is the update (`references/editor.md`). On Linux x64, `--install` downloads the official build, checks its SHA-256 against Rive's release manifest, and lays it out as Rive's own install.sh does: `~/.rive/versions/<version>/` with the docs and samples beside the binary (the only place `rive docs` and `rive samples` look) and `~/.rive/bin/rive` for PATH.
 
 **Run the doctor after every CLI update.** The CLI is a technical preview (launched 11 Sep 2026, twelve releases in its first 19 days, one flag already renamed), so a new version is not trusted until the doctor passes: it re-checks every flag these scripts pass, builds and renders a bundled sample, and re-measures the gesture timing the renderer depends on. The versions these scripts were measured against are in `scripts/rivelib.py` (`TESTED_CLI_VERSIONS`).
 
@@ -111,7 +111,7 @@ Outputs by extension: `.png` (one frame), a `%05d` pattern or a folder (PNG sequ
 
 | | cli (a project folder) | web (a `.riv` file) |
 |---|---|---|
-| Renderer | Rive's own (Metal on a Mac, OpenGL through EGL on Linux), the same as the previewer | Rive's web runtime (@rive-app/webgl2 2.43.1) on SwiftShader |
+| Renderer | Rive's own (Metal on a Mac, OpenGL through EGL on Linux), the same as the previewer | Rive's web runtime (@rive-app/webgl2 2.44.0) on SwiftShader |
 | Speed, 1080p | 58-64 frames a second with 8-12 workers | about 12 fps including start-up |
 | Transparency | solved from a black and a white pass | real, one pass |
 | Scripts (Luau) | run, unsigned | rejected unless signed with `--publish` |

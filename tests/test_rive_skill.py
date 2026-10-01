@@ -1577,6 +1577,23 @@ class DocTests(unittest.TestCase):
         for version in L.TESTED_CLI_VERSIONS:
             self.assertIn(version, sources)
 
+    def test_the_docs_name_the_pinned_web_runtime(self):
+        # the pin went 2.43.1 -> 2.44.0 on 1 Oct 2026; a bump that leaves these
+        # sentences behind tells the reader which runtime renders, wrongly
+        pins = json.loads((SCRIPTS / "web_runtime.json").read_text())
+        versions = {pin["version"] for pin in pins["packages"].values()}
+        self.assertEqual(len(versions), 1, "bump webgl2 and canvas together")
+        version = re.escape(versions.pop())
+        refs = SKILL / "references"
+        for path, pattern in [
+            (SKILL / "SKILL.md", rf"Rive's web runtime \(@rive-app/webgl2 {version}\)"),
+            (refs / "rendering.md", rf"Runtime: `@rive-app/webgl2` {version} "),
+            (refs / "web.md", rf"Pinned here: {version} "),
+            (refs / "sources.md", rf"\| `@rive-app/webgl2`, `@rive-app/canvas` \| {version} "),
+        ]:
+            with self.subTest(path.name):
+                self.assertRegex(path.read_text(), pattern)
+
     def test_no_blockquotes_in_the_docs(self):
         for path in [SKILL / "SKILL.md", *sorted((SKILL / "references").glob("*.md"))]:
             with self.subTest(path.name):
