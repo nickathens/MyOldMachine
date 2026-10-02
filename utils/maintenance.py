@@ -62,6 +62,13 @@ DEFAULT_CONFIG = {
     # bump is reported for a human instead). GUI applications are never
     # installed unattended whatever this says — see app_updates.AUTO_INSTALLABLE.
     "app_auto_update": True,
+    # Straight after the system update's package upgrade, repair the Python
+    # tool kits (virtual environments) a Homebrew Python upgrade left dead, and
+    # move the ones tied to a single Python release onto Homebrew's stable path
+    # before the next upgrade kills them. Each change is proved by starting the
+    # kit and undone if it does not start; the 04:45 report says what changed.
+    # See utils/venv_repair.py.
+    "venv_repair": True,
     # Close idle, orphaned heavyweight helper apps (LibreOffice, GIMP, Inkscape,
     # Blender) that skills spawn headless and leave resident. On by default: the
     # process reaper only touches an app that is BOTH older than the window below
@@ -132,6 +139,12 @@ def get_status_report() -> str:
         lines.append("System updates: ON (nightly)")
     else:
         lines.append("System updates: OFF")
+
+    # Runs inside the system update job, so it is idle whenever that is off.
+    if config.get("venv_repair", True):
+        lines.append("  Python tool kit repair: ON (after the update)")
+    else:
+        lines.append("  Python tool kit repair: OFF")
 
     # macOS-only: softwareupdate sub-toggle
     if platform.system() == "Darwin":

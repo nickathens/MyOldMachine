@@ -102,6 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-10-02] mac: the nightly update repairs the Python tool kits a Homebrew
+Python update broke, and the 04:45 report says so (`mac/venv-repair`).
+
 (Entries removed above: #192 cleared in its reviewed merge revision,
 the same call as #190.
 #190 cleared in its reviewed merge revision,

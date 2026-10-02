@@ -49,6 +49,18 @@ def _neutralise_app_check(case: unittest.TestCase) -> None:
     case.addCleanup(p.stop)
 
 
+def _neutralise_venv_repair(case: unittest.TestCase) -> None:
+    """Stop run_system_update starting the real Python tool kit repair.
+
+    That runs utils/venv_repair.py as a new process, which walks the real home
+    folder, can re-link real kits and writes data/venv_repair.json. Its own
+    tests are in tests/test_venv_repair.py.
+    """
+    p = patch.object(su, "_run_venv_repair")
+    p.start()
+    case.addCleanup(p.stop)
+
+
 class RunCmdSudoOverrideTests(unittest.TestCase):
     """The force_sudo_on_darwin flag must override the Darwin no-sudo default."""
 
@@ -286,6 +298,7 @@ class RunSystemUpdateOrchestrationTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         _neutralise_app_check(self)
+        _neutralise_venv_repair(self)
 
     @patch("utils.system_update._maybe_run_app_update_check")
     @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
@@ -529,6 +542,7 @@ class QuietNightIntegrationTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         _neutralise_app_check(self)
+        _neutralise_venv_repair(self)
 
     def _shell(self, cmd, **kwargs):
         if "brew outdated --cask --quiet" in cmd:
