@@ -34,12 +34,25 @@ actually need.
 
 ## The entry to add is not the one you would guess
 
-macOS gives the permission to the **responsible process**, which for this bot
-is its own Python interpreter, not the `osascript` it shells out to, and not
-Terminal, which is not in the picture at all when the bot runs from a launch
-agent.
+macOS gives the permission to the **responsible process**: for a launch agent,
+the first program the job runs that is not part of macOS. It is not the
+`osascript` the bot shells out to, and not Terminal, which is not in the
+picture at all when the bot runs from a launch agent.
 
-A framework Python does one more thing that trips everybody: it re-execs itself
+The launch agent starts the bot through a small **starter** of its own (see
+[the trap that bites later](#the-trap-that-bites-later)), so on an install that
+has one, the entry is the starter:
+
+```
+~/Library/Application Support/MyOldMachine/MyOldMachine
+```
+
+That is also the name macOS puts on its consent boxes: "MyOldMachine" would
+like to access files on a removable volume.
+
+Without a starter (an install that predates it, or a Mac without the Command
+Line Tools to build one) the responsible process is the bot's own Python, and a
+framework Python does one more thing that trips everybody: it re-execs itself
 through a `Python.app` bundle inside the framework so it can reach the window
 server. That bundle is what appears in `ps`, and that bundle is what System
 Settings has to be given:
@@ -97,6 +110,56 @@ its identifier. The switch in System Settings still looks on. It now applies to
 a file that no longer exists. Nothing announces this, and a machine running
 unattended package updates on a nightly timer will hit it eventually.
 
+It did on 2 Oct 2026. The 04:00 update moved Python 3.12.14 to 3.12.15, and
+both grants the bot had, Accessibility and files on the removable storage
+drive, stopped applying. At the 05:00 restart the bot looked at the drive, macOS
+asked again, and the consent box waited on a screen with nobody at it. Until a
+person clicked Allow, macOS held every read of that drive behind the box. A
+program cannot click it: macOS ignores synthetic clicks on its consent boxes.
+
+### The starter
+
+The fix is a program at the top of the job that never changes. The launch
+agent runs
+
+```
+/bin/bash -c "set -a; source .env; set +a; ... exec <starter> .venv/bin/python bot.py"
+```
+
+and the starter, built from `install/macos_starter.c`, starts the bot as its
+child and stays. `/bin/bash` is part of macOS, so it is passed over, and the
+starter is held responsible for everything the bot and its tools ask for.
+`sudo launchctl procinfo <bot pid>` shows which program that is, on the
+`responsible path` line. The starter passes on SIGTERM and the other signals
+launchd and `/restart` send, hands back the bot's exit status, and keeps the bot
+in its process group, so stopping the job still stops everything in it.
+
+Grant the starter once and Python updates stop mattering.
+
+**It is built once and never rebuilt.** An ad hoc signature is a hash of the
+program's bytes, so a rebuilt starter, even from the same source, is a new
+program to macOS and loses the grants exactly as Python does.
+`install/service.py` builds it only when it is missing, and keeps any copy that
+is already there whatever the source in the repo says now.
+
+**A missing starter never stops the bot.** If it is not there or cannot be
+executed, the launch agent starts Python directly, exactly as before, and the
+grants are Python's again until the starter is back.
+
+An install from before the starter moves onto it in two steps:
+
+```bash
+python install/service.py --repo-dir . --no-load   # build it, rewrite the agent, leave the bot running
+```
+
+then a `/restart`. The first look at an external drive after that raises one
+consent box naming MyOldMachine; allow it once. Add the starter for
+Accessibility with **+** as above. `--check` names it.
+
+Full Disk Access would cover the drive as well, but it reaches much further:
+every session of every user of this bot could then read the account's Mail and
+Messages. The removable volume grant is the narrow one.
+
 That is why the grant is recorded with the signing identifier it was given to,
 and why the nightly report has a section that stays silent unless a permission
 that was **observed working** has stopped:
@@ -134,6 +197,10 @@ drive the screen". Two rules it exists to enforce:
 - **Three states, not two.** `granted`, `denied`, `unknown`. When Automation is
   off, an Accessibility probe fails for a reason that has nothing to do with
   Accessibility, and answering `denied` sends someone to the wrong pane.
+
+And one for the starter: **never rebuild it, and never delete it to "refresh"
+it.** Either one voids every grant it holds, and the next drive access waits on
+a person at the screen.
 
 ```bash
 python install/macos_permissions.py --json      # machine readable

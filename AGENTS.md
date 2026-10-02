@@ -102,6 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-10-02] mac: the bot's LaunchAgent starts it through a stable starter, so
+a Python update stops voiding its macOS grants (`mac/stable-starter`).
+
 (Entries removed above: #190 cleared in its reviewed merge revision,
 the same call as #188.
 #188 cleared in its reviewed merge revision,

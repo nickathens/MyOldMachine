@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from install.macos_starter import ensure_starter, starter_path
 from install.os_detect import detect as detect_os
 from install.sudo import (
     get_sudo_password as _shared_get_sudo_password,
@@ -248,12 +249,18 @@ def setup_linux_service(repo_dir: Path) -> bool:
     return True
 
 
-def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
+def _setup_macos_launch_agent(repo_dir: Path, os_info=None,
+                              load: bool = True) -> bool:
     """Install a per-user LaunchAgent. Returns True on success.
 
     If a stale system-wide LaunchDaemon at /Library/LaunchDaemons/
     com.myoldmachine.bot.plist is present from a prior install, it is
     unloaded and removed first to avoid a Label conflict.
+
+    The bot is started through the starter (install/macos_starter.py), built
+    here when it is missing and never rebuilt. With load=False the plist is
+    written but not reloaded, so a running bot changes over at its next
+    /restart instead of being stopped mid-reply by its own installer.
     """
     venv_python = repo_dir / ".venv" / "bin" / "python"
 
@@ -283,10 +290,14 @@ def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
             warn(f"Could not remove {bot_daemon}: {rm.stderr[:200]}")
     _remove_stale_telegram_bot_api_plist_macos(getpass.getuser(), password)
 
+    starter, note = ensure_starter(Path.home())
+    (ok if starter else warn)(note)
+
     content = template_path.read_text(encoding="utf-8")
     content = content.replace("{{PYTHON}}", str(venv_python))
     content = content.replace("{{WORKING_DIR}}", str(repo_dir))
     content = content.replace("{{BOT_PY}}", str(repo_dir / "bot.py"))
+    content = content.replace("{{STARTER}}", str(starter_path(Path.home())))
     content = content.replace("{{LOG_DIR}}", str(repo_dir / "data" / "logs"))
     content = content.replace("{{ENV_FILE}}", str(repo_dir / ".env"))
     content = content.replace("{{VENV_BIN}}", str(repo_dir / ".venv" / "bin"))
@@ -304,6 +315,11 @@ def _setup_macos_launch_agent(repo_dir: Path, os_info=None) -> bool:
     except Exception as e:
         error(f"Failed to write plist: {e}")
         return False
+
+    if not load:
+        ok(f"LaunchAgent written to {plist_path}, not reloaded")
+        info("A running bot changes over at its next restart (/restart)")
+        return True
 
     _launchctl_load(plist_path, os_info, system_wide=False)
 
@@ -378,10 +394,10 @@ def _launchctl_load(plist_path: Path, os_info=None, *,
                 warn(f"launchctl load warning: {result.stderr}")
 
 
-def setup_macos_service(repo_dir: Path, os_info=None) -> bool:
+def setup_macos_service(repo_dir: Path, os_info=None, load: bool = True) -> bool:
     """Create and load launchd plist. Installs a LaunchAgent in
     ~/Library/LaunchAgents/. Returns True on success."""
-    return _setup_macos_launch_agent(repo_dir, os_info)
+    return _setup_macos_launch_agent(repo_dir, os_info, load=load)
 
 
 def main():
@@ -389,6 +405,11 @@ def main():
     parser.add_argument("--repo-dir", type=str, required=True)
     parser.add_argument("--os", type=str, choices=["linux", "macos"],
                         help="Override OS detection (optional)")
+    parser.add_argument("--no-load", action="store_true",
+                        help="macOS only: write the LaunchAgent (and build the "
+                             "starter if it is missing) without reloading the "
+                             "bot; a running bot changes over at its next "
+                             "/restart")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir)
@@ -400,10 +421,12 @@ def main():
     info(f"Setting up service for {os_info.display_name}")
 
     success = False
-    if os_type == "linux":
+    if args.no_load and os_type != "macos":
+        error("--no-load is macOS only")
+    elif os_type == "linux":
         success = setup_linux_service(repo_dir)
     elif os_type == "macos":
-        success = setup_macos_service(repo_dir, os_info)
+        success = setup_macos_service(repo_dir, os_info, load=not args.no_load)
     else:
         error(f"Unsupported OS: {os_type}")
 

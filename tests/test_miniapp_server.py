@@ -610,6 +610,55 @@ class TestBotStatus(unittest.TestCase):
         self.assertTrue(status["supported"])
         self.assertEqual(status["service"], srv.BOT_LAUNCHD_LABEL)
 
+    def _launchd_with_table(self, table: str, stats: dict) -> None:
+        """launchctl says pid 4242; `ps -ax` prints `table`; per-pid stats."""
+        self._platform.system = lambda: "Darwin"  # type: ignore[assignment]
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = R()
+            if cmd[0] == "launchctl":
+                r.stdout = "gui/501/com.myoldmachine.bot = {\n\tstate = running\n\tpid = 4242\n}\n"
+            elif cmd[:2] == ["ps", "-ax"]:
+                r.stdout = table
+            elif cmd[0] == "ps":
+                r.stdout = stats.get(cmd[-1], "")
+            return r
+
+        self._patch_run(fake_run)
+
+    def test_macos_behind_the_starter_the_bot_itself_is_measured(self) -> None:
+        # launchd's pid is the starter, which is under a megabyte. Reporting
+        # its memory as the bot's would read as a bot that holds nothing.
+        starter = srv.starter_path()
+        self._launchd_with_table(
+            f"    1     0 /sbin/launchd\n"
+            f" 4242     1 {starter}\n"
+            f" 4300  4242 /opt/homebrew/Cellar/python@3.12/3.12.15/Frameworks/"
+            f"Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python\n"
+            f" 4400  4300 node\n",
+            {"4242": "02:00 900\n", "4300": "01:59 204800\n"})
+        status = srv._bot_status()
+        self.assertTrue(status["active"])
+        self.assertEqual(status["pid"], 4300)
+        self.assertEqual(status["memory_mb"], 200)
+        self.assertEqual(status["uptime_seconds"], 119)
+
+    def test_macos_a_bot_with_one_child_is_not_mistaken_for_the_starter(self) -> None:
+        # Without the starter, launchd's pid is the bot, and a turn in flight
+        # is its only child. That child is a Claude CLI, not the bot.
+        self._launchd_with_table(
+            " 4242     1 /opt/homebrew/Cellar/python@3.12/3.12.15/Frameworks/"
+            "Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python\n"
+            " 4300  4242 /Users/x/.local/bin/claude\n",
+            {"4242": "02:00 204800\n", "4300": "00:30 51200\n"})
+        status = srv._bot_status()
+        self.assertEqual(status["pid"], 4242)
+        self.assertEqual(status["memory_mb"], 200)
+
     def test_macos_no_launchagent_falls_back_to_pgrep(self) -> None:
         self._platform.system = lambda: "Darwin"  # type: ignore[assignment]
 

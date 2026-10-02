@@ -40,6 +40,7 @@ BOT_DIR = Path(__file__).resolve().parent.parent
 if str(BOT_DIR) not in sys.path:
     sys.path.insert(0, str(BOT_DIR))
 
+from install.macos_starter import starter_path  # noqa: E402
 from miniapp.auth import validate_init_data  # noqa: E402
 from utils.env_io import atomic_env_write  # noqa: E402
 
@@ -447,6 +448,42 @@ def _bot_status_linux() -> dict:
     }
 
 
+def _bot_pid_behind_starter(pid: int) -> int:
+    """The bot's own pid when launchd's is the starter in front of it.
+
+    The LaunchAgent starts the bot through a small starter program
+    (install/macos_starter.py) that keeps running as the job's process, so
+    the pid launchd reports is the starter's: under a megabyte, with the bot
+    as its only child. Its uptime is the bot's; its memory is not. Any other
+    process is left as it is, the bot included, whose own children (a Claude
+    or Codex turn) are not the bot.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,ppid=,comm="],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return pid
+    command = None
+    children = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        try:
+            this, parent = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        if this == pid:
+            command = parts[2].strip()
+        elif parent == pid:
+            children.append(this)
+    if command != str(starter_path()) or len(children) != 1:
+        return pid
+    return children[0]
+
+
 def _bot_status_macos() -> dict:
     """Read launchd state for the bot's LaunchAgent. Falls through to a
     process-table scan if the agent isn't registered (e.g. when running the
@@ -485,6 +522,7 @@ def _bot_status_macos() -> dict:
     uptime_seconds: int | None = None
     memory_mb: int | None = None
     if active and pid is not None:
+        pid = _bot_pid_behind_starter(pid)
         uptime_seconds, memory_mb = _ps_pid_stats(pid)
 
     return {
