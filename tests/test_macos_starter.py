@@ -136,6 +136,27 @@ class StarterProgramTests(unittest.TestCase):
                 self.assertEqual(proc.wait(timeout=10), code,
                                  f"{name} did not reach the child")
 
+    def test_a_python_bot_starts_with_nothing_held_and_stops_on_sigterm(self):
+        # The starter holds the six signals while it starts the bot. A child
+        # that inherited that mask would never see SIGTERM, so launchd would
+        # wait out its exit timeout and SIGKILL the bot mid-reply. /bin/sh
+        # clears an inherited mask when it starts, which hides this from the
+        # shell tests above. Python keeps it, and the bot is Python.
+        ready = self.dir / "ready.python"
+        scratch = self.dir / "ready.python.tmp"
+        proc = self._start(sys.executable, "-c", (
+            "import os, signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, lambda *a: sys.exit(55))\n"
+            "held = sorted(int(s) for s in signal.pthread_sigmask(signal.SIG_BLOCK, []))\n"
+            f"open({str(scratch)!r}, 'w').write(repr(held))\n"
+            f"os.replace({str(scratch)!r}, {str(ready)!r})\n"
+            "while True:\n"
+            "    time.sleep(0.05)\n"))
+        _wait_for(ready)
+        self.assertEqual(ready.read_text(), "[]", "the bot started with signals held")
+        os.kill(proc.pid, signal.SIGTERM)
+        self.assertEqual(proc.wait(timeout=10), 55, "SIGTERM did not reach the bot")
+
     def test_the_bot_is_the_starters_child_in_the_starters_group(self):
         ready = self.dir / "ready.group"
         proc = self._start("/bin/sh", "-c", f'echo $$ > "{ready}.pid"; : > "{ready}"; '
