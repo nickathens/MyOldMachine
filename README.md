@@ -65,7 +65,7 @@ machine freezes, or the network drops, instead of you noticing hours later. It
 pings an uptime monitor you create on a timer while the bot is running, and the
 pings stop when the bot does. See [docs/heartbeat.md](docs/heartbeat.md).
 
-**Screen control (macOS, opt-in).** Clicking, typing and reading other apps' windows is a separate macOS permission that only a human can grant, and the entry it wants is the framework `Python.app`, not the `python` in the virtualenv. `python install/macos_permissions.py --check` reports the three services separately and names the exact entry; `--grant` walks through adding it and verifies it took. Accessibility is a standing grant over every app on the machine, so it is offered, never assumed. See [docs/macos-permissions.md](docs/macos-permissions.md).
+**Screen control (macOS, opt-in).** Clicking, typing and reading other apps' windows is a separate macOS permission that only a human can grant, and the entry it wants is the bot's own starter (`~/Library/Application Support/MyOldMachine/MyOldMachine`), which the launch agent runs the bot through so a Python update cannot void the grant. Without a starter it is the framework `Python.app`, not the `python` in the virtualenv. `python install/macos_permissions.py --check` reports the three services separately and names the exact entry; `--grant` walks through adding it and verifies it took. Accessibility is a standing grant over every app on the machine, so it is offered, never assumed. See [docs/macos-permissions.md](docs/macos-permissions.md).
 
 ### Resuming a failed install
 

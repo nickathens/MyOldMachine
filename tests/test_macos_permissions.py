@@ -23,6 +23,11 @@ The traps being locked down, all of them met while building this:
   6  the grant is keyed to an ad-hoc signature at a versioned Homebrew path, so
      a Python upgrade silently voids it while System Settings still shows the
      switch on
+  7  once the LaunchAgent starts the bot through its starter, the starter is
+     the responsible process, so naming Python then would hand System Settings
+     an entry that applies to nothing, trap 2 one level up. Most classes below
+     are about the Python case and pin `starter_in_use` to None, because the
+     Mac running the suite may have the real starter installed
 """
 
 from __future__ import annotations
@@ -52,6 +57,13 @@ def load_module():
 
 
 perms = load_module()
+
+
+def no_starter(test: unittest.TestCase) -> None:
+    """The Python case, whatever is installed on the machine running this."""
+    patcher = mock.patch.object(perms, "starter_in_use", return_value=None)
+    patcher.start()
+    test.addCleanup(patcher.stop)
 
 
 # Captured from this machine, verbatim.
@@ -176,6 +188,9 @@ class ProbeTests(unittest.TestCase):
 class GrantTargetTests(unittest.TestCase):
     """Trap 2, 3 and 4: which program the grant has to name."""
 
+    def setUp(self):
+        no_starter(self)
+
     def _framework(self, root: Path, version: str = "3.12") -> Path:
         base = root / "Frameworks" / "Python.framework" / "Versions" / version
         (base / "bin").mkdir(parents=True)
@@ -263,6 +278,7 @@ class StateTests(unittest.TestCase):
     """Trap 5 and 6: what gets written down, and what it is for."""
 
     def setUp(self):
+        no_starter(self)
         self._td = tempfile.TemporaryDirectory()
         self.state = Path(self._td.name) / "macos_permissions.json"
         self.addCleanup(self._td.cleanup)
@@ -362,6 +378,9 @@ class StateTests(unittest.TestCase):
 class InteractiveTests(unittest.TestCase):
     """The step itself: it must never claim a grant it did not observe."""
 
+    def setUp(self):
+        no_starter(self)
+
     def _run_step(self, before, after, answer="y"):
         asked = []
 
@@ -421,6 +440,9 @@ class InteractiveTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def setUp(self):
+        no_starter(self)
+
     def test_json_shape(self):
         import contextlib
         import io
@@ -505,6 +527,9 @@ class SpacedPathTests(unittest.TestCase):
     wearing the module's own authority.
     """
 
+    def setUp(self):
+        no_starter(self)
+
     def _repo_with_a_space(self, td):
         repo = Path(td) / "My Old Machine"
         venv_bin = repo / ".venv" / "bin"
@@ -564,6 +589,9 @@ class InstallerPromptTests(unittest.TestCase):
     This captures the callable `install/wizard.py` hands over and drives the
     real step with it.
     """
+
+    def setUp(self):
+        no_starter(self)
 
     def _installer_ask(self):
         import install.wizard as wizard
@@ -670,7 +698,10 @@ class EndToEndCliTests(unittest.TestCase):
             state.write_text(json.dumps({"granted": {"accessibility": {
                 "target": self.FRAMEWORK, "identity": "an-older-build"}}}))
             buf = io.StringIO()
+            # An empty home: no starter and no LaunchAgent, so this is the
+            # Python case on any machine, including one with the real starter.
             with mock.patch.object(perms.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(Path, "home", return_value=Path(td)), \
                  mock.patch.object(perms, "STATE_FILE", state), \
                  mock.patch.object(perms, "_run", side_effect=self._shell):
                 with contextlib.redirect_stdout(buf):
@@ -687,6 +718,121 @@ class EndToEndCliTests(unittest.TestCase):
         # this is the replaced-interpreter message, not the revoked one.
         self.assertIn("was replaced", printed)
         self.assertNotIn("granted once and is refused now", printed)
+
+
+    def test_check_names_the_starter_once_the_bot_runs_through_it(self):
+        import contextlib
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            starter = perms.macos_starter.starter_path(home)
+            starter.parent.mkdir(parents=True)
+            starter.write_text("#!/bin/sh\n")
+            starter.chmod(0o755)
+            agent = home / perms.LAUNCH_AGENT
+            agent.parent.mkdir(parents=True)
+            agent.write_text(f'<string>s="{starter}"; exec python bot.py</string>')
+            state = home / "macos_permissions.json"
+            state.write_text(json.dumps({"granted": {"accessibility": {
+                "target": self.FRAMEWORK, "identity": "an-older-build"}}}))
+            buf = io.StringIO()
+            with mock.patch.object(perms.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(Path, "home", return_value=home), \
+                 mock.patch.object(perms, "STATE_FILE", state), \
+                 mock.patch.object(perms, "_run", side_effect=self._shell):
+                with contextlib.redirect_stdout(buf):
+                    rc = perms.main(["--check"])
+            printed = buf.getvalue()
+
+        self.assertEqual(rc, 0)
+        self.assertIn(f"granted to: {starter}", printed)
+        self.assertNotIn("Python.app", printed.split("granted to:")[1].splitlines()[0])
+        # A grant recorded for Python and refused now, because the bot moved
+        # onto the starter: that is the move, not a Homebrew upgrade.
+        self.assertIn("now starts through its starter", printed)
+        self.assertNotIn("Homebrew", printed)
+
+
+class StarterTargetTests(unittest.TestCase):
+    """Trap 7: whether the bot runs through its starter, read from the disk."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.home = Path(self._td.name)
+        patcher = mock.patch.object(Path, "home", return_value=self.home)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.starter = perms.macos_starter.starter_path(self.home)
+        self.agent = self.home / perms.LAUNCH_AGENT
+
+    def _starter(self, executable: bool = True) -> None:
+        self.starter.parent.mkdir(parents=True)
+        self.starter.write_text("#!/bin/sh\n")
+        self.starter.chmod(0o755 if executable else 0o644)
+
+    def _agent(self, through_starter: bool = True) -> None:
+        self.agent.parent.mkdir(parents=True)
+        lead = f's="{self.starter}"; ' if through_starter else ""
+        self.agent.write_text(f"<string>set -a; {lead}exec python bot.py</string>")
+
+    def test_the_starter_is_named_even_while_python_is_the_live_bot(self):
+        # Between writing the new LaunchAgent and the restart, the old Python
+        # is still the running bot. A grant given to it now would be dropped
+        # at that restart, so the LaunchAgent decides, not the process table.
+        self._starter()
+        self._agent()
+        live = ("  608 /opt/homebrew/Cellar/python@3.12/3.12.15/Frameworks/"
+                "Python.framework/Versions/3.12/Resources/Python.app/Contents/"
+                "MacOS/Python /repo/bot.py\n")
+        with mock.patch.object(perms, "_run", return_value=(0, live)):
+            self.assertEqual(perms.grant_target(), self.starter)
+
+    def test_an_agent_written_before_the_starter_still_means_python(self):
+        self._starter()
+        self._agent(through_starter=False)
+        self.assertIsNone(perms.starter_in_use())
+
+    def test_a_missing_starter_means_python_because_the_agent_falls_back(self):
+        self._agent()
+        self.assertIsNone(perms.starter_in_use())
+
+    def test_a_starter_that_cannot_run_means_python(self):
+        self._starter(executable=False)
+        self._agent()
+        self.assertIsNone(perms.starter_in_use())
+
+    def test_no_agent_installed_means_python(self):
+        self._starter()
+        self.assertIsNone(perms.starter_in_use())
+
+    def test_the_step_warns_only_when_the_grant_would_go_to_python(self):
+        import contextlib
+
+        def run():
+            answers = iter(["y"])
+            denied = {p["key"]: perms.DENIED for p in perms.PERMISSIONS}
+            buf = io.StringIO()
+            with mock.patch.object(perms.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(perms, "probe_all", return_value=denied), \
+                 mock.patch.object(perms, "_live_bot_executable", return_value=Path(
+                     "/opt/homebrew/Cellar/python@3.12/3.12.15/Frameworks/Python.framework/"
+                     "Versions/3.12/Resources/Python.app/Contents/MacOS/Python")), \
+                 mock.patch.object(perms, "copy_to_clipboard", return_value=True), \
+                 mock.patch.object(perms, "open_pane", return_value=True), \
+                 mock.patch.object(perms, "record_grants"):
+                with contextlib.redirect_stdout(buf):
+                    perms.run_macos_permissions_step(
+                        {}, ask=lambda prompt: next(answers, ""))
+            return buf.getvalue()
+
+        self._agent()
+        python = run()
+        self.assertIn("Resources/Python.app", python)
+        self.assertIn("next Python update will undo it", python)
+        self._starter()
+        through = run()
+        self.assertNotIn("undo it", through)
+        self.assertIn(str(self.starter), through)
 
 
 class ModuleShapeTests(unittest.TestCase):
@@ -720,6 +866,7 @@ class NagOnceTests(unittest.TestCase):
     """
 
     def setUp(self):
+        no_starter(self)
         self._td = tempfile.TemporaryDirectory()
         self.state = Path(self._td.name) / "macos_permissions.json"
         self.addCleanup(self._td.cleanup)

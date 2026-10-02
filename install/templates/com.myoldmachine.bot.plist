@@ -5,11 +5,18 @@
     <key>Label</key>
     <string>com.myoldmachine.bot</string>
 
+    <!-- The bot runs through its starter (install/macos_starter.c) when the
+         starter is there. macOS gives its privacy grants to the first program
+         of the job that is not part of macOS. Without the starter that is
+         Homebrew's Python, which every Python update replaces, voiding the
+         grants. Without one the bot starts exactly as before, and so it does
+         when the starter cannot be executed, so a missing starter can never
+         keep the bot from starting. -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>set -a; source {{ENV_FILE}}; set +a; exec {{PYTHON}} {{BOT_PY}}</string>
+        <string>set -a; source {{ENV_FILE}}; set +a; shopt -s execfail; s="{{STARTER}}"; if [ -x "$s" ]; then exec "$s" {{PYTHON}} {{BOT_PY}}; fi; exec {{PYTHON}} {{BOT_PY}}</string>
     </array>
 
     <key>WorkingDirectory</key>

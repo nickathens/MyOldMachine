@@ -20,13 +20,15 @@ because a permission granted and then revoked in System Settings leaves every
 file exactly where it was.
 
 There is one more trap, and it is why `--check` exists at all. macOS attributes
-a grant to the *responsible* process, which for this bot is its own Python
-interpreter, not the `osascript` it shells out to. That interpreter is usually
-an ad-hoc signed Homebrew build at a path with a version number in it. Upgrade
-Python and the path, the code hash and the signing identifier all change, so
-the grant silently stops applying while still looking present in System
-Settings. This machine runs package updates on a nightly timer, so that is not
-hypothetical.
+a grant to the *responsible* process, not the `osascript` the bot shells out
+to. Left to itself that is the bot's own Python interpreter, usually an ad-hoc
+signed Homebrew build at a path with a version number in it. Upgrade Python and
+the path, the code hash and the signing identifier all change, so the grant
+silently stops applying while still looking present in System Settings. This
+machine runs package updates on a nightly timer, so that is not hypothetical.
+So the LaunchAgent starts the bot through a starter that never changes
+(`install/macos_starter.py`), and whenever it does, the starter is the entry
+to grant instead.
 """
 
 from __future__ import annotations
@@ -41,7 +43,12 @@ import tempfile
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent.parent
+if str(REPO_DIR) not in sys.path:
+    sys.path.insert(0, str(REPO_DIR))
+from install import macos_starter  # noqa: E402
+
 STATE_FILE = REPO_DIR / "data" / "macos_permissions.json"
+LAUNCH_AGENT = Path("Library") / "LaunchAgents" / "com.myoldmachine.bot.plist"
 
 GRANTED = "granted"
 DENIED = "denied"
@@ -253,15 +260,39 @@ def _executable_from(args: str) -> Path:
     return Path(tokens[0])
 
 
+def starter_in_use() -> Path | None:
+    """The starter, when the installed LaunchAgent starts the bot through it.
+
+    It is then the responsible process for everything the bot does, whatever
+    Python is installed, so it is the one entry System Settings needs. A
+    LaunchAgent written before the starter existed does not use it, and the
+    LaunchAgent falls back to Python itself when the starter is missing, so
+    both have to hold.
+    """
+    starter = macos_starter.starter_path()
+    if not macos_starter.usable(starter):
+        return None
+    try:
+        agent = (Path.home() / LAUNCH_AGENT).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return starter if str(starter) in agent else None
+
+
 def grant_target(repo_dir: Path | None = None) -> Path | None:
     """The exact thing to add in System Settings.
 
-    Resolved from the virtualenv first because that answer exists at install
+    The starter, whenever the bot is started through it. Otherwise Python,
+    resolved from the virtualenv first because that answer exists at install
     time, when no bot is running yet, and because the launch agent runs the bot
     from that same virtualenv. A live bot is consulted only to override it, for
     the case where someone started the bot from a different interpreter than
     the one the installer built.
     """
+    starter = starter_in_use()
+    if starter is not None:
+        return starter
+
     target = None
     venv_python = (repo_dir or REPO_DIR) / ".venv" / "bin" / "python"
     if venv_python.exists():
@@ -383,11 +414,19 @@ def regressions(path: Path | None = None,
         label = next((p["label"] for p in PERMISSIONS if p["key"] == key), key)
         was = record.get("identity")
         if was and identity_now and was != identity_now:
-            line = (
-                f"{label} has stopped applying: the interpreter it was granted "
-                f"to was replaced, most likely by a Homebrew Python upgrade. "
-                f"Re-add {target} in System Settings."
-            )
+            if target is not None and target == starter_in_use():
+                line = (
+                    f"{label} has stopped applying: the bot now starts "
+                    f"through its starter, which needs the grant once and then "
+                    f"keeps it through Python updates. Add {target} in System "
+                    f"Settings."
+                )
+            else:
+                line = (
+                    f"{label} has stopped applying: the interpreter it was "
+                    f"granted to was replaced, most likely by a Homebrew Python "
+                    f"upgrade. Re-add {target} in System Settings."
+                )
         else:
             line = f"{label} was granted once and is refused now."
         if record.get("reported") == seen:
@@ -507,9 +546,18 @@ def run_macos_permissions_step(config: dict, ask=input) -> None:
     print(
         "\n  It is not the app you would guess, and guessing is the usual way\n"
         "  this goes wrong. macOS gives the permission to the program\n"
-        "  responsible for the request, which here is the assistant's own\n"
-        "  Python, not the small script it uses to send the click."
+        "  responsible for the request, which here is the program the\n"
+        "  assistant is started through, not the small script it uses to\n"
+        "  send the click."
     )
+    if starter_in_use() is None:
+        print(
+            f"\n  {YELLOW}This is Python itself, so the next Python update will"
+            f" undo it.{NC}\n"
+            "  Moving the bot onto its starter first makes the grant last:\n"
+            f"    {DIM}python install/service.py --repo-dir . --no-load{NC}\n"
+            "  then restart the bot, and run this again."
+        )
 
     for perm in PERMISSIONS:
         if perm["key"] == "automation" or states[perm["key"]] == GRANTED:

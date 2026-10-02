@@ -189,6 +189,7 @@ jobs:
           python -c "
           import subprocess, tempfile
           from pathlib import Path
+          from install.macos_starter import starter_path
 
           repo_dir = Path('.').absolute()
           template = repo_dir / 'install' / 'templates' / 'com.myoldmachine.bot.plist'
@@ -204,6 +205,7 @@ jobs:
               '{{VENV_BIN}}': str(repo_dir / '.venv' / 'bin'),
               '{{HOME}}': str(Path.home()),
               '{{CLI_BIN_PATHS}}': '',
+              '{{STARTER}}': str(starter_path()),
           }
           for k, v in subs.items():
               content = content.replace(k, v)
