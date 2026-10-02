@@ -637,6 +637,21 @@ python utils/app_updates.py [--update]
 
 Apps waiting on a human are reminded weekly rather than nightly, on their own clock, separate from the Homebrew casks: a new cask appearing must not reset the reminder for a Resolve that has been waiting a fortnight.
 
+### Python tool kits after a Python update
+
+Skills keep their heavier Python packages in tool kits of their own, virtual environments such as `~/.venvs/post` or `data/stt/venv`. Homebrew installs each Python release in a folder named after its exact version and deletes it when the next release lands, so a kit linked to that folder stops working, "No such file or directory", the night Python moves. Any kit built from another kit's Python is linked that way, and inside a bot session `python3 -m venv` is exactly that. On the reference Mac two updates killed eight kits, two of them unnoticed for seven weeks.
+
+So straight after the package upgrade, the system update step runs `utils/venv_repair.py`. It looks through the home folder and the bot's folder, moves every kit tied to one Python release onto Homebrew's stable path to the same Python, and repairs a dead kit the same way. Nothing is reinstalled: a patch release keeps the same ABI, so the packages in a kit keep loading, and a kit is never moved to another minor version. Each change is proved by starting the kit and undone if the kit does not start. The 04:45 report names every kit it repaired or protected and any it could not repair, and says nothing on other nights.
+
+It never reads the folders macOS guards (Desktop, Documents, Downloads, Library and the media folders), where a consent box at 4am would wait for someone to answer it, never follows a symbolic link, never looks inside another user's private folder and never touches the bot's own `.venv`. It runs as a new process, because the upgrade it follows can delete the Python the update itself is running on.
+
+```bash
+python utils/venv_repair.py              # list every kit and what would change
+python utils/venv_repair.py --repair     # repair now
+```
+
+It is on by default; `"venv_repair": false` in `data/maintenance.json` turns it off.
+
 ## Prompt evaluation
 
 A built in testing framework verifies system prompt behavior across providers. It catches regressions when you change prompts, runs locally, and sends nothing off the machine.

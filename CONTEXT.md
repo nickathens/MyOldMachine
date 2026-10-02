@@ -98,6 +98,7 @@ utils/
   skill_usage_cli.py — CLI to inspect/summarize skill invocation history
   startup_cleanup.py — Clears transient state on bot startup
   system_update.py  — Host OS update orchestration
+  venv_repair.py    — Repairs Python tool kits a Homebrew Python update broke (runs after the update)
 ```
 
 ## Tools (5 total)

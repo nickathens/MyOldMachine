@@ -309,6 +309,17 @@ def _permissions_section() -> list[str]:
     return ["SCREEN CONTROL", *[f"  {line}" for line in lost]]
 
 
+def _python_kits_section() -> list[str]:
+    """Only speaks when the 04:00 update repaired a Python tool kit, protected
+    one from the next Python update, found one it could not repair, or could
+    not finish looking. Empty on every other night."""
+    try:
+        from utils.venv_repair import report_section
+        return report_section()
+    except Exception as e:
+        return ["Python tool kits", f"  Could not read the 04:00 check: {e}"]
+
+
 def build_report() -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     parts = [f"Nightly maintenance report for {today}", ""]
@@ -320,6 +331,9 @@ def build_report() -> str:
     permissions = _permissions_section()
     if permissions:
         parts += permissions + [""]
+    kits = _python_kits_section()
+    if kits:
+        parts += kits + [""]
     parts += _system_section()
     return "\n".join(parts).rstrip() + "\n"
 

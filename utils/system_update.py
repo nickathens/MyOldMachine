@@ -35,6 +35,11 @@ from utils.app_updates import (  # noqa: E402
     AppCheckResult,
     run_app_update_check,
 )
+# Imported here, before the upgrade, for the reason _run_venv_repair gives.
+from utils.venv_repair import record_failure as _record_venv_repair_failure  # noqa: E402
+
+VENV_REPAIR_SCRIPT = BOT_DIR / "utils" / "venv_repair.py"
+VENV_REPAIR_TIMEOUT = 600
 
 # Remembers which app updates the user has already been told about, so the
 # nightly reminder repeats weekly instead of every single night.
@@ -554,6 +559,40 @@ def _maybe_run_app_update_check(log_fn):
         return AppCheckResult()
 
 
+def _run_venv_repair(log_fn) -> None:
+    """Bring back the Python tool kits an upgrade has just broken.
+
+    In a new process. Homebrew deletes the old Python's folder when it
+    upgrades python@3.x, and this job may be running on that Python: every
+    module not already imported is gone with it. That is why the Apple and app
+    checks below have died with "No module named 'tarfile'" on the nights
+    Python moved (14 Aug and 2 Oct 2026), which are exactly the nights this
+    repair is for. A new process starts on whichever Python is installed now.
+    So nothing here may import anything new either, and the one helper it
+    calls was imported with the module.
+
+    The outcome is recorded for the 04:45 report. Never raises.
+    """
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(VENV_REPAIR_SCRIPT), "--nightly"],
+            capture_output=True, text=True, timeout=VENV_REPAIR_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        reason = f"it ran longer than {VENV_REPAIR_TIMEOUT} s"
+    except Exception as e:
+        reason = f"it could not start ({e})"
+    else:
+        lines = (proc.stdout or "").strip().splitlines()
+        if proc.returncode == 0:
+            log_fn(lines[-1] if lines else "Python tool kits: checked")
+            return
+        tail = (proc.stderr or "").strip().splitlines()
+        reason = tail[-1] if tail else f"exit {proc.returncode}"
+    log_fn(f"Python tool kit check failed: {reason}")
+    _record_venv_repair_failure(reason)
+
+
 def run_system_update(notify_fn=None) -> str:
     """
     Run a full system update cycle.
@@ -592,6 +631,10 @@ def run_system_update(notify_fn=None) -> str:
     log("=== System update started ===")
 
     pkg = _run_pkg_manager_update(log_fn=log, notify_fn=notify)
+
+    # Straight after the upgrade, and after a failed one too, since a failure
+    # part way through can still have replaced Python.
+    _run_venv_repair(log_fn=log)
 
     # Apple updates run independently of the package manager flow, but only
     # after a clean (non-error) outcome — a failing brew shouldn't trigger
