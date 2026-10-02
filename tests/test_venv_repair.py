@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -366,6 +367,47 @@ class RealPythonTests(TempCase):
         self.assertEqual(self._imports_its_package(kit), f"42 {kit}")
 
 
+class StartTestTests(TempCase):
+    """The start test with a real Python, on every machine, CI included.
+
+    Every repair rests on it. RealPythonTests need a Homebrew Python, so on
+    Linux and in CI nothing else starts a real kit through it, and the fake
+    interpreters above answer the same whatever flags they are given.
+    """
+
+    def _kit(self) -> vr.Kit:
+        path = self.tmp / "kit"
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(path)],
+                       check=True, capture_output=True)
+        return vr.Kit(path, vr.PINNED, minor="%d.%d" % sys.version_info[:2])
+
+    def test_a_real_kit_passes_as_itself(self):
+        # Under -S, site never reads pyvenv.cfg and sys.prefix is the base
+        # Python's, so every sound repair would read as outside the kit.
+        self.assertEqual(vr._starts(self._kit()), (True, ""))
+
+    def test_the_callers_environment_cannot_fail_it(self):
+        # Without -I a stray PYTHONHOME stops any Python at startup, and a
+        # sound repair would be put back.
+        kit = self._kit()
+        nowhere = str(self.tmp / "nowhere")
+        with patch.dict(os.environ, {"PYTHONHOME": nowhere, "PYTHONPATH": nowhere}):
+            self.assertEqual(vr._starts(kit), (True, ""))
+
+    def test_a_kit_that_hangs_counts_as_not_starting(self):
+        kit = vr.Kit(self.tmp / "kit", vr.PINNED, minor="3.12")
+        hang = kit.path / "bin" / "python3"
+        hang.parent.mkdir(parents=True)
+        hang.write_text("#!/bin/sh\nexec sleep 20\n")
+        hang.chmod(0o755)
+        started = time.monotonic()
+        with patch.object(vr, "START_TIMEOUT", 1):
+            ok, why = vr._starts(kit)
+        self.assertFalse(ok)
+        self.assertIn("timed out", why)
+        self.assertLess(time.monotonic() - started, 10)
+
+
 class WalkTests(TempCase):
     def setUp(self):
         super().setUp()
@@ -655,6 +697,12 @@ class NightlyCommandTests(TempCase):
         from utils.maintenance import DEFAULT_CONFIG
         self.assertIs(DEFAULT_CONFIG["venv_repair"], True)
 
+    def test_status_shows_the_switch(self):
+        import utils.maintenance as m
+        for on, word in ((True, "ON"), (False, "OFF")):
+            with patch.object(m, "load_config", return_value=dict(m.DEFAULT_CONFIG, venv_repair=on)):
+                self.assertIn(f"Python tool kit repair: {word}", m.get_status_report())
+
 
 class SystemUpdateWiringTests(TempCase):
     """utils/system_update.py runs the repair in a new process and survives the
@@ -728,6 +776,34 @@ class SystemUpdateWiringTests(TempCase):
                     self.su._run_venv_repair(self.logged.append)
         self.assertEqual(self.logged[0], "Python tool kits: 1 checked")
         self.assertEqual(json.loads(self.file.read_text())["error"], "boom")
+
+    # The tests above hand back a finished CompletedProcess whatever the call
+    # asked for, so they cannot see the output going uncaptured or the bound
+    # going missing. These start a real process.
+    def _real_child(self, body: str, timeout: int = 30) -> float:
+        script = self.tmp / "child.py"
+        script.write_text(body)
+        started = time.monotonic()
+        with patch.object(self.su, "VENV_REPAIR_SCRIPT", script), \
+             patch.object(self.su, "VENV_REPAIR_TIMEOUT", timeout):
+            self.su._run_venv_repair(self.logged.append)
+        return time.monotonic() - started
+
+    def test_a_real_child_has_its_summary_read(self):
+        self._real_child('print("noise")\nprint("Python tool kits: 3 checked, 3 ok")\n')
+        self.assertEqual(self.logged, ["Python tool kits: 3 checked, 3 ok"])
+        self.assertFalse(self.file.exists())
+
+    def test_a_real_child_that_crashes_is_recorded(self):
+        self._real_child('import sys\nsys.stderr.write("Traceback\\nKeyError: 1\\n")\nsys.exit(1)\n')
+        self.assertEqual(json.loads(self.file.read_text())["error"], "KeyError: 1")
+
+    def test_a_real_child_that_hangs_is_stopped(self):
+        # Unbounded, one stuck kit holds the 04:00 job until the scheduler
+        # kills it, and the Apple and app checks after it never run.
+        took = self._real_child("import time\ntime.sleep(20)\n", timeout=1)
+        self.assertLess(took, 10)
+        self.assertEqual(json.loads(self.file.read_text())["error"], "it ran longer than 1 s")
 
     def test_runs_after_the_upgrade_even_a_failed_one(self):
         su = self.su
