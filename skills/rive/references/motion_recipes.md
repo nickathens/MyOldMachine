@@ -56,7 +56,7 @@ Key `end` (115) on the one `TrimPath` from 0 to 1 and every stroke pointing at t
 
 ## Glow (logo_reveal, visualizer)
 
-Two strokes on one shape: the soft one first (thick, with a `Feather`), the crisp one after (drawn on top). A glow ring whose opacity is bound to a value flashes with it (the visualizer's `onset`). A filled glow is a feathered `Fill` with `fillRule="clockwise"` (without that rule it draws nothing), or a `RadialGradient` from the colour to the same colour at alpha `00`.
+Two strokes on one shape: the soft one first (thick, with a `Feather`), the crisp one after (drawn on top). A glow ring whose opacity is bound to a value flashes with it (the visualizer's `onset`). A filled glow is a feathered `Fill` with `fillRule="clockwise"` (without that rule it draws nothing), or a `RadialGradient` from the colour to the same colour at alpha `00`. On Linux (measured on an NVIDIA card) the CLI's captures and renders leave the feathered one out (`rml.md`).
 
 ## Soft drop shadow (measured)
 
@@ -74,6 +74,8 @@ A feathered `Fill` with `fillRule="clockwise"` and an `offsetY`, declared before
 ```
 
 The recipe this replaced, a thick feathered `Stroke` on a slightly smaller copy of the card declared after it, still works on every version and spreads wider: it darkens the sides and the top as well as the ground below.
+
+On Linux (measured on an NVIDIA GTX 970) the CLI draws no feathered Fill, so `rive_check.py`'s pictures and a cli engine render there show this card with no shadow, and nothing warns. Measured 4 Oct 2026 on CLI 1.3.0 over a light grey ground: the ground under the card stayed within 1 code of the background in the CLI's capture, and came out 36 codes darker in the web runtime playing the same `.riv`; the stroke recipe drew its shadow in both. There, use the stroke recipe, or render the `.riv` with `--engine web`.
 
 ## Counters (counter)
 

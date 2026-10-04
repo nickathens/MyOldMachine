@@ -985,6 +985,8 @@ class LintTests(TempDir):
                                                                          "the Fill on line 5 ")):
             tree = {"artboards": [{"type": "Artboard", "children": [{"type": "Shape", "children": [rect, fill]}]}]}
             self.assertTrue(C.lint_tree(tree)[0]["message"].startswith(opening))
+            # an error, so the gate exits 1 on a fill that draws nothing
+            self.assertEqual(C.lint_tree(tree)[0]["severity"], "error")
 
     def test_a_feathered_text_fill_draws_under_any_rule(self):
         # a text style's Fill, and its background's, feathered on nonZero: both
@@ -1026,10 +1028,20 @@ class LintTests(TempDir):
              shape(self.points_path(self.CW, isClockwise=False)), ["path-direction-flag"]),
             ("a lone hole is left alone", shape(self.points_path(self.CCW, isHole=True)), []),
             ("two points enclose nothing to judge", shape(self.points_path(self.CCW[:2])), []),
+            # the drop shadow recipe: one clockwise Fill beside a nonZero one;
+            # the crisp fill still draws, the shadow vanishes
+            ("a clockwise shadow beside a nonZero fill still needs clockwise points",
+             {"type": "Shape", "name": "S", "children": [self.points_path(self.CCW), self.fill("clockwise"),
+                                                         self.fill("nonZero", feather=False)]}, ["path-direction"]),
         ]
         for what, node, expected in cases:
             with self.subTest(what):
                 self.assertEqual(self.tree_kinds(node), expected)
+        # both are warnings: the scene builds and may still be meant
+        found = C.lint_tree({"artboards": [{"type": "Artboard", "children": [
+            shape(self.points_path(self.CCW)), shape(self.points_path(self.CW, isClockwise=False))]}]})
+        self.assertEqual({f["kind"]: f["severity"] for f in found},
+                         {"path-direction": "warning", "path-direction-flag": "warning"})
 
     def test_probe_values_never_equal_the_current_value(self):
         self.assertEqual(C.probe_value("boolean", True, "on"), "false")
@@ -1799,31 +1811,68 @@ class LiveFeatherTests(unittest.TestCase):
     clockwise, text excepted, and under that rule a custom path whose points
     run counter-clockwise cuts a hole instead of filling. Each case runs the
     whole gate, so the lint's verdict is checked against a real capture.
+
+    On Linux the CLI's own captures draw no feathered Fill at all, under any
+    rule and on text too, while its feathered strokes draw: measured 4 Oct
+    2026 on CLI 1.1.1, 1.2.0 and 1.3.0 (NVIDIA GTX 970, driver 580). The web
+    runtime draws the .riv each of them builds by the rules above. So where
+    the CLI's capture cannot draw a feathered Fill, the web runtime playing
+    the .riv that the same CLI builds is the renderer each case is held to.
     """
 
     SQUARE = '<Rectangle width="200" height="200" name="Rect"/>'
     CW = [(-100, -100), (100, -100), (100, 100), (-100, 100)]
     FEATHERED = '<SolidColor colorValue="FFFFFFFF" name="C"/><Feather strength="24" name="Soft"/>'
 
-    def gate(self, body: str, font: bool = False) -> tuple[set, bool]:
-        """(lint kinds, whether the capture drew anything) for one artboard."""
+    @classmethod
+    def setUpClass(cls):
+        # one feathered Fill under the clockwise rule, through the CLI's own capture
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = cls.project(Path(tmp), f'<Shape x="200" y="200" name="Square">{cls.SQUARE}'
+                                          f'<Fill fillRule="clockwise" name="Fill">{cls.FEATHERED}</Fill></Shape>')
+            png = Path(tmp) / "probe.png"
+            L.run_rive([str(proj), "--quiet", f"--screenshot={png}", "--advance=1s"], timeout=120)
+            cls.on_web = not png.is_file() or L.blank_reason(png) is not None
+        if cls.on_web and not importlib.util.find_spec("playwright"):
+            raise unittest.SkipTest("this CLI's captures draw no feathered Fill (Linux), and without Playwright "
+                                    "the web runtime cannot judge one either")
+
+    @staticmethod
+    def project(folder: Path, body: str, font: bool = False) -> Path:
         rml = (f'<Rive version="1" kind="fragment"><Artboard width="400" height="400" name="Probe" id="0:2">'
                f'{body}</Artboard>'
                + ('<FontAsset file="SpaceGrotesk-Variable.ttf" name="Space Grotesk" id="0:50"/>' if font else "")
                + "</Rive>")
+        proj = folder / "p"
+        proj.mkdir()
+        (proj / "rive.yaml").write_text("name: p\nmain: Probe\n")
+        (proj / "scene.rml").write_text(rml)
+        if font:
+            shutil.copy(TEMPLATES / "_fonts" / "SpaceGrotesk-Variable.ttf", proj)
+        return proj
+
+    def gate(self, body: str, font: bool = False) -> tuple[set, bool]:
+        """(lint kinds, whether the scene drew anything) for one artboard: the
+        gate's own capture, or on a CLI that cannot capture a feathered Fill,
+        the web runtime playing the .riv that CLI builds, at the same time."""
         with tempfile.TemporaryDirectory() as tmp:
-            proj = Path(tmp) / "p"
-            proj.mkdir()
-            (proj / "rive.yaml").write_text("name: p\nmain: Probe\n")
-            (proj / "scene.rml").write_text(rml)
-            if font:
-                shutil.copy(TEMPLATES / "_fonts" / "SpaceGrotesk-Variable.ttf", proj)
+            proj = self.project(Path(tmp), body, font)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 C.main([str(proj), "--out", str(Path(tmp) / "o"), "--json"])
             report = json.loads(buf.getvalue())
             self.assertIn("at", report["images"], report["errors"])
-            drawn = L.blank_reason(Path(report["images"]["at"])) is None
+            shot = Path(report["images"]["at"])
+            if self.on_web:
+                L.run_rive([str(proj), "--once", "--quiet"], timeout=120)
+                rivs = sorted((proj / "build").glob("*.riv"))
+                self.assertTrue(rivs, "the CLI built no .riv")
+                with W.WebSession(rivs[0], width=400, height=400) as session:
+                    session.setup(width=400, height=400)
+                    png, _ = session.frame_png(1.0)
+                shot = Path(tmp) / "web.png"
+                shot.write_bytes(png)
+            drawn = L.blank_reason(shot) is None
         return {f["kind"] for f in report["lint"]}, drawn
 
     def shape(self, geometry: str, rule: str = "") -> str:
@@ -1845,8 +1894,10 @@ class LiveFeatherTests(unittest.TestCase):
         for where in ("style", "background"):
             with self.subTest(where):
                 feathered = f'<Fill name="F">{self.FEATHERED}</Fill>'
+                # clear ink: black glyphs on the capture's grey read as drawn
+                # by themselves, whether the feathered background drew or not
                 ink, box = (feathered, "") if where == "style" else (
-                    '<Fill name="Ink"><SolidColor colorValue="FF000000" name="C"/></Fill>',
+                    '<Fill name="Ink"><SolidColor colorValue="00000000" name="C"/></Fill>',
                     f'<TextStyleBackground name="BG">{feathered}</TextStyleBackground>')
                 kinds, drawn = self.gate(
                     '<Text x="40" y="150" name="Word" id="0:30"><TextStylePaint fontSize="120" lineHeight="140" '

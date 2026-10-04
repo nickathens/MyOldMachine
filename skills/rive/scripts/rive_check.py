@@ -169,7 +169,10 @@ def lint_script_inputs(project: Path) -> list[dict]:
 # rule. Under the clockwise rule the built-in shapes fill, mirrored or not, but a
 # custom path's points must run clockwise (y grows down) or the contour cuts a
 # hole instead of filling, and isClockwise="false" is read by 1.3.0 and ignored
-# by 1.1.1 and 1.2.0, so the same file draws differently on each.
+# by 1.1.1 and 1.2.0, so the same file draws differently on each. On Linux
+# (measured on an NVIDIA GTX 970) the CLI's own captures draw no feathered Fill
+# at all (references/rendering.md), but the .riv it builds follows these rules
+# in the web runtime.
 PARAMETRIC_PATHS = {"Rectangle", "Ellipse", "Triangle", "Polygon", "Star"}
 TEXT_PAINTS = {"TextStylePaint", "TextStyleBackground"}
 

@@ -202,7 +202,7 @@ Every one of these builds clean. The full list, with how to detect each, is in `
 - The keyframe element must match the property type (`KeyFrameDouble`, `KeyFrameColor`, `KeyFrameString`, `KeyFrameId`...), and `cubic` needs a `CubicEaseInterpolator` child; the ease belongs on the segment's **first** key; `hold` is the default.
 - A `LayoutComponent` needs its style **nested and named by `styleId`**; padding, gaps and insets need `*UnitsValue="points"`; a shape inside a fixed or fill box is stretched to it unless wrapped in a `Node` or given a `LayoutParticipant`.
 - Text needs a font file, a style with a `Fill`, and a run with `styleId`; a variable font renders its default instance.
-- A `Feather` inside a `Fill` draws nothing unless that Fill has `fillRule="clockwise"` (the editor sets it, RML does not); text is the exception. Under that rule a `PointsPath` must run clockwise or it cuts a hole (`references/rml.md`).
+- A `Feather` inside a `Fill` draws nothing unless that Fill has `fillRule="clockwise"` (the editor sets it, RML does not); text is the exception. Under that rule a `PointsPath` must run clockwise or it cuts a hole (`references/rml.md`). On Linux (measured on an NVIDIA card) the CLI's captures and renders draw no feathered Fill at all; the web runtime does (`references/rendering.md`, Linux).
 - Bind the property that exists on the target (`width` is on `Rectangle`, key 20; height 21; not on the `Shape`); a number cannot drive text without `DataConverterToString`.
 - Every listener under the pointer fires; a transparent fill still catches clicks; author both directions of a toggle.
 
