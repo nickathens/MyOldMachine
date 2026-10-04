@@ -56,25 +56,24 @@ Key `end` (115) on the one `TrimPath` from 0 to 1 and every stroke pointing at t
 
 ## Glow (logo_reveal, visualizer)
 
-Two strokes on one shape: the soft one first (thick, with a `Feather`), the crisp one after (drawn on top). A glow ring whose opacity is bound to a value flashes with it (the visualizer's `onset`). A filled glow is a `RadialGradient` from the colour to the same colour at alpha `00`; `Feather` inside a `Fill` renders nothing.
+Two strokes on one shape: the soft one first (thick, with a `Feather`), the crisp one after (drawn on top). A glow ring whose opacity is bound to a value flashes with it (the visualizer's `onset`). A filled glow is a feathered `Fill` with `fillRule="clockwise"` (without that rule it draws nothing), or a `RadialGradient` from the colour to the same colour at alpha `00`.
 
 ## Soft drop shadow (measured)
 
-Rive has no shadow effect. A thick feathered stroke on a slightly smaller copy of the shape, offset down, declared after the card so it sits under it:
+A feathered `Fill` with `fillRule="clockwise"` and an `offsetY`, declared before the card's own fill on the same shape (the later paint draws on top). Without the clockwise rule the shadow draws nothing and the build stays clean; `rive_check.py` fails it. Measured on CLI 1.1.1, 1.2.0 and 1.3.0 and in the web runtime, 4 Oct 2026:
 
 ```xml
 <Shape x="300" y="200" name="Card">
     <Rectangle width="320" height="200" originX="0.5" originY="0.5" cornerRadiusTL="24" name="Path"/>
+    <Fill fillRule="clockwise" name="Shadow">
+        <SolidColor colorValue="55000000" name="C"/>
+        <Feather strength="28" offsetY="18" name="Soft"/>
+    </Fill>
     <Fill name="Fill"><SolidColor colorValue="FFFFFFFF" name="C"/></Fill>
 </Shape>
-<Shape x="300" y="200" name="Card Shadow">
-    <Rectangle width="300" height="180" originX="0.5" originY="0.5" cornerRadiusTL="24" name="Path"/>
-    <Stroke thickness="40" name="Shadow">
-        <SolidColor colorValue="55000000" name="C"/>
-        <Feather strength="28" offsetX="0" offsetY="18" name="Soft"/>
-    </Stroke>
-</Shape>
 ```
+
+The recipe this replaced, a thick feathered `Stroke` on a slightly smaller copy of the card declared after it, still works on every version and spreads wider: it darkens the sides and the top as well as the ground below.
 
 ## Counters (counter)
 

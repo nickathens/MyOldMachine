@@ -71,7 +71,7 @@ It runs the three checks Rive says are not interchangeable, plus what none of th
 | `rive <dir> --test` (only when the project has Luau) | a failing `Tests` case, by name, line and message | whatever the tests do not assert |
 | `rive inspect --json` problems | bind paths, missing references, state machine wiring, overlapping states | Luau, appearance |
 | a capture | appearance | nothing visual |
-| lint (this script) | the silent failures: units left undefined, cubic keys with no curve, unlabelled text styles, system fonts, keyboard phase masks, script inputs matching no field, feather in a fill | |
+| lint (this script) | the silent failures: units left undefined, cubic keys with no curve, unlabelled text styles, system fonts, keyboard phase masks, script inputs matching no field, a feathered fill without the clockwise rule, a custom path running the wrong way under it | |
 | `--interaction` | a control that does nothing, or only works one way | |
 | `--probe-binds` | a view model property that drives nothing on screen | |
 
@@ -202,7 +202,7 @@ Every one of these builds clean. The full list, with how to detect each, is in `
 - The keyframe element must match the property type (`KeyFrameDouble`, `KeyFrameColor`, `KeyFrameString`, `KeyFrameId`...), and `cubic` needs a `CubicEaseInterpolator` child; the ease belongs on the segment's **first** key; `hold` is the default.
 - A `LayoutComponent` needs its style **nested and named by `styleId`**; padding, gaps and insets need `*UnitsValue="points"`; a shape inside a fixed or fill box is stretched to it unless wrapped in a `Node` or given a `LayoutParticipant`.
 - Text needs a font file, a style with a `Fill`, and a run with `styleId`; a variable font renders its default instance.
-- `Feather` inside a `Fill` renders nothing; feather a `Stroke`.
+- A `Feather` inside a `Fill` draws nothing unless that Fill has `fillRule="clockwise"` (the editor sets it, RML does not); text is the exception. Under that rule a `PointsPath` must run clockwise or it cuts a hole (`references/rml.md`).
 - Bind the property that exists on the target (`width` is on `Rectangle`, key 20; height 21; not on the `Shape`); a number cannot drive text without `DataConverterToString`.
 - Every listener under the pointer fires; a transparent fill still catches clicks; author both directions of a toggle.
 

@@ -128,13 +128,6 @@ def lint_markup(project: Path) -> list[dict]:
             if order is not None and "/" not in order:
                 add("warning", "fractional-index", rml, line,
                     f'order "{order}" has no slash, so it parses as invalid and is ignored; write "{order}/1"')
-            if element == "Fill":
-                close = text.find("</Fill>", match.end())
-                inner = text[match.end():close] if close > 0 else ""
-                if "<Feather" in inner:
-                    add("error", "feather-in-fill", rml, line,
-                        "Feather inside a Fill renders nothing at any strength; feather a Stroke, or use a "
-                        "RadialGradient to transparent for a soft filled glow")
             if element == "DataBindContext" and names.get("nameBased") == "true":
                 add("warning", "name-based-bind", rml, line,
                     "nameBased binds need a ManifestAsset this toolchain cannot build; the bind is inert")
@@ -168,9 +161,74 @@ def lint_script_inputs(project: Path) -> list[dict]:
                         "its default and the scene's value is discarded"} for name in missing]
 
 
+# Measured on CLI 1.1.1, 1.2.0 and 1.3.0, and in the web runtime 2.44.0 playing
+# each one's .riv, 4 Oct 2026 (references/rml.md, Drawing). A Feather inside a
+# Fill draws only under fillRule clockwise: under nonZero or evenOdd the paint
+# vanishes, inner or not, on a shape, a layout box or the artboard. Text is the
+# exception: the Fill of a text style, or of its background, feathers under any
+# rule. Under the clockwise rule the built-in shapes fill, mirrored or not, but a
+# custom path's points must run clockwise (y grows down) or the contour cuts a
+# hole instead of filling, and isClockwise="false" is read by 1.3.0 and ignored
+# by 1.1.1 and 1.2.0, so the same file draws differently on each.
+PARAMETRIC_PATHS = {"Rectangle", "Ellipse", "Triangle", "Polygon", "Star"}
+TEXT_PAINTS = {"TextStylePaint", "TextStyleBackground"}
+
+
+def label(node: dict) -> str:
+    return f" {node['name']!r}" if node.get("name") else ""
+
+
+def clockwise_rule(paint: dict) -> bool:
+    return (paint.get("enums") or {}).get("fillRule", paint.get("fillRule")) in ("clockwise", 2)
+
+
+def winding(path: dict) -> float:
+    """Twice the area inside a path's points, positive when they run clockwise
+    on screen. Curve handles are left out; two points or fewer give 0."""
+    pts = [(float(v.get("x", 0)), float(v.get("y", 0))) for v in path.get("children") or []
+           if str(v.get("type", "")).endswith("Vertex")]
+    return sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]))
+
+
+def lint_paints(node: dict) -> list[dict]:
+    findings = []
+    kids = node.get("children") or []
+    fills = [k for k in kids if k.get("type") == "Fill"]
+    if node.get("type") not in TEXT_PAINTS:
+        for fill in fills:
+            if any(c.get("type") == "Feather" for c in fill.get("children") or []) and not clockwise_rule(fill):
+                findings.append({"severity": "error", "kind": "feather-in-fill", "line": fill.get("line"),
+                                 "message": f"the Fill{label(fill)} on line {fill.get('line')} has a "
+                                            'Feather but not fillRule="clockwise", so it draws nothing at any '
+                                            "strength (the editor sets the rule when you feather a fill; in RML "
+                                            "you write it)"})
+    if node.get("type") != "Shape" or not any(clockwise_rule(f) for f in fills):
+        return findings
+    paths = [k for k in kids if k.get("type") == "PointsPath"]
+    for path in paths:
+        if path.get("isClockwise") is False:
+            findings.append({"severity": "warning", "kind": "path-direction-flag", "line": path.get("line"),
+                             "message": f'the PointsPath on line {path.get("line")} has isClockwise="false" '
+                                        "under fillRule clockwise: CLI 1.3.0 reads it and 1.1.1 and 1.2.0 ignore "
+                                        "it, so it fills on one and cuts a hole on the other. Write its points "
+                                        "clockwise and drop the attribute; cut a hole with points that run "
+                                        'counter-clockwise, or with isHole="true"'})
+    solid = [p for p in paths if not p.get("isHole")]
+    if solid and not any(k.get("type") in PARAMETRIC_PATHS for k in kids):
+        outer = max(solid, key=lambda p: abs(winding(p)))
+        if winding(outer) < 0 and outer.get("isClockwise") is not False:
+            findings.append({"severity": "warning", "kind": "path-direction", "line": outer.get("line"),
+                             "message": f"the PointsPath on line {outer.get('line')} is the outer contour of "
+                                        f"the Shape{label(node)} and its points run counter-clockwise, "
+                                        "so under fillRule clockwise it cuts a hole instead of filling (alone, "
+                                        "the shape draws nothing). Reverse the order of its points"})
+    return findings
+
+
 def lint_tree(inspect: dict) -> list[dict]:
     findings = []
     for node in walk(inspect.get("artboards") or []):
+        findings += lint_paints(node)
         t = node.get("type", "")
         if t.startswith("KeyFrame") and (node.get("enums") or {}).get("interpolationType") in ("cubic", "elastic"):
             kids = [c for c in node.get("children") or [] if str(c.get("type", "")).endswith("Interpolator")]
@@ -349,7 +407,7 @@ def run(args) -> dict:
     run_tests(project, report)
 
     # 2 wiring
-    inspect = L.inspect_project(project)
+    inspect = L.inspect_project(project, all_properties=True)
     probs = L.problems(inspect)
     report["problems"] = probs
     for p in probs:

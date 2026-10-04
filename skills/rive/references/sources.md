@@ -5,6 +5,7 @@ Researched and measured 25 Sep 2026 for the first version of this skill. Finding
 ## Primary sources
 
 - The Rive CLI's own documentation, `rive docs` (42 topics, about 610 KB of Markdown written for agents), `rive schema`, and the bundled samples (`rive samples`), all for CLI 1.1.1. Read in full. The CLI ships them without a licence, so this skill paraphrases and points to `rive docs <topic>` instead of copying.
+- For CLI 1.3.0 (4 Oct 2026): its help and schema against 1.2.0 (nothing removed; new: `ls`, `workspace`, `open`, serving to a phone, `LayerMask`; `--define` now names AnimaScript), and its bundled docs, whose `drawing` and `gotchas` pages first say a feathered Fill needs the clockwise fill rule. That rule, the text exception and the path direction under it were then measured on 1.1.1, 1.2.0 and 1.3.0 and in the web runtime (`rml.md`, Drawing).
 - Rive's web documentation through its index for agents, `https://rive.app/docs/llms.txt` (about 440 pages; every page has a `.md` copy): the CLI pages, editor exporting, SVG/PSD/fonts/audio import, the AI agent, MCP, feature support, runtime sizes, the web runtime (getting started, parameters, low-level API, data binding, Canvas vs WebGL2), best practices, pricing.
 - `https://rive.app/pricing`, rendered in a real browser (the docs pricing page disagrees on Voyager).
 - Rive's release manifest, `https://releases.rive.app/cli/latest/manifest.json` (per-platform artifacts with SHA-256; `v<version>/manifest.json` for a given one), and the Homebrew tap rive-app/homebrew-tap.

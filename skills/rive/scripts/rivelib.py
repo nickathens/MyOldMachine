@@ -365,8 +365,11 @@ _PROPERTY_KIND = {
 }
 
 
-def inspect_project(project: str | Path, timeout: float = 120) -> dict:
-    result = run_rive(["inspect", str(project), "--json"], timeout=timeout)
+def inspect_project(project: str | Path, timeout: float = 120, all_properties: bool = False) -> dict:
+    """The resolved scene. all_properties adds the editor-only ones (--all),
+    among them a path's isClockwise, which the lint needs."""
+    result = run_rive(["inspect", str(project), "--json"] + (["--all"] if all_properties else []),
+                      timeout=timeout)
     data = parse_envelope(result.stdout)
     if data is None:
         raise RiveError(f"rive inspect printed no JSON (exit {result.returncode}: "
