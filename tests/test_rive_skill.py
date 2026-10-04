@@ -5,7 +5,7 @@ that turns gestures and data into per-frame CLI arguments, the SVG converter,
 the render plans and ffmpeg commands, the lint, the fonts, audio and recipe
 maths, the templates' structure, the manifests and the docs. The live half
 builds, captures and renders with the real Rive CLI and skips wherever
-`rive` is not on PATH (CI has none; this Mac has 1.2.0), so the costs and
+`rive` is not on PATH (CI has none; this Mac has 1.3.0), so the costs and
 behaviours the scripts depend on are re-proved against the binary itself.
 
 Numbers asserted here were measured on Rive CLI 1.1.1 on 25 Sep 2026 and are
@@ -282,6 +282,9 @@ class LibTests(TempDir):
         # 1.2.0 passed the doctor on the Mac on 29 Sep 2026 and was rendered
         # against 1.1.1 template by template (references/rendering.md)
         self.assertIsNone(L.version_note("1.2.0"))
+        # 1.3.0 passed the doctor on the Mac on 4 Oct 2026 and was rendered
+        # against 1.2.0 frame by frame (references/rendering.md)
+        self.assertIsNone(L.version_note("1.3.0"))
         self.assertIn("not a version", L.version_note("9.9.9"))
         self.assertIsNotNone(L.version_note(None))
 
@@ -886,7 +889,6 @@ class LintTests(TempDir):
 <KeyboardInput keyType="down" keyPhase="7"/>
 <KeyboardInput keyType="up"/>
 <Shape childOrder="1"/>
-<Fill name="F"><SolidColor colorValue="FFFFFFFF"/><Feather strength="4"/></Fill>
 <DataBindContext nameBased="true"/>
 <NestedSimpleAnimation animationId="0:3"/>
 <TransitionValueIdComparator/>
@@ -895,7 +897,7 @@ class LintTests(TempDir):
 </Rive>"""
         kinds = self.kinds(rml, "type T = { velocity: Input<number> }")
         for k in ("units-undefined", "text-style-unlabelled", "font-without-file", "system-font-embedded",
-                  "key-phase-seven", "key-phase-zero", "fractional-index", "feather-in-fill", "name-based-bind",
+                  "key-phase-seven", "key-phase-zero", "fractional-index", "name-based-bind",
                   "nested-animation-paused", "abstract-comparator", "script-input-unmatched",
                   "comment-double-dash"):
             self.assertIn(k, kinds)
@@ -938,6 +940,108 @@ class LintTests(TempDir):
         self.assertEqual(found.count("layout-style-unlinked"), 1)
         self.assertEqual(found.count("vm-name"), 2)
         self.assertIn("modifier-flags-zero", found)
+
+    @staticmethod
+    def fill(rule="nonZero", feather=True):
+        """A Fill as `rive inspect` resolves it: an unset rule reads nonZero."""
+        kids = [{"type": "SolidColor"}] + ([{"type": "Feather", "strength": 24}] if feather else [])
+        code = {"nonZero": 0, "evenOdd": 1, "clockwise": 2}[rule]
+        return {"type": "Fill", "line": 5, "name": "F", "fillRule": code, "enums": {"fillRule": rule},
+                "children": kids}
+
+    @staticmethod
+    def points_path(points, line=4, **props):
+        return {"type": "PointsPath", "line": line, "isClosed": True, "isClockwise": True, "isHole": False,
+                **props, "children": [{"type": "StraightVertex", "x": x, "y": y} for x, y in points]}
+
+    def tree_kinds(self, *nodes):
+        return [f["kind"] for f in C.lint_tree({"artboards": [{"type": "Artboard", "children": list(nodes)}]})]
+
+    # right along the top, down, back along the bottom: clockwise on screen, where y grows down
+    CW = [(-100, -100), (100, -100), (100, 100), (-100, 100)]
+    CCW = CW[::-1]
+
+    def test_a_feathered_fill_needs_the_clockwise_rule(self):
+        # measured 4 Oct 2026 on CLI 1.1.1, 1.2.0, 1.3.0 and the web runtime:
+        # under nonZero or evenOdd a feathered Fill draws nothing, under
+        # clockwise it draws; the old lint failed every feathered Fill
+        rect = {"type": "Rectangle", "width": 200, "height": 200}
+        for rule, flagged in (("nonZero", True), ("evenOdd", True), ("clockwise", False)):
+            with self.subTest(rule):
+                kinds = self.tree_kinds({"type": "Shape", "name": "S", "children": [rect, self.fill(rule)]})
+                self.assertEqual(kinds.count("feather-in-fill"), int(flagged))
+        # a rule written as its number resolves without the enum name
+        numeric = {"type": "Fill", "line": 5, "fillRule": 2, "children": [{"type": "Feather"}]}
+        self.assertEqual(self.tree_kinds({"type": "Shape", "children": [rect, numeric]}), [])
+        # a fill with no feather is never this rule's business
+        self.assertEqual(self.tree_kinds({"type": "Shape", "children": [rect, self.fill(feather=False)]}), [])
+        # the same holds on a layout box and on the artboard itself
+        self.assertEqual(self.tree_kinds({"type": "LayoutComponent", "styleId": "0:3",
+                                          "children": [self.fill()]}), ["feather-in-fill"])
+        self.assertEqual(self.tree_kinds({"type": "LayoutComponent", "styleId": "0:3",
+                                          "children": [self.fill("clockwise")]}), [])
+        self.assertEqual(self.tree_kinds(self.fill()), ["feather-in-fill"])
+        for fill, opening in ((self.fill(), "the Fill 'F' on line 5 "), ({**self.fill(), "name": ""},
+                                                                         "the Fill on line 5 ")):
+            tree = {"artboards": [{"type": "Artboard", "children": [{"type": "Shape", "children": [rect, fill]}]}]}
+            self.assertTrue(C.lint_tree(tree)[0]["message"].startswith(opening))
+            # an error, so the gate exits 1 on a fill that draws nothing
+            self.assertEqual(C.lint_tree(tree)[0]["severity"], "error")
+
+    def test_a_feathered_text_fill_draws_under_any_rule(self):
+        # a text style's Fill, and its background's, feathered on nonZero: both
+        # drew on every CLI and the web runtime, so neither is an error
+        for paint in ("TextStylePaint", "TextStyleBackground"):
+            with self.subTest(paint):
+                self.assertEqual(self.tree_kinds({"type": "Text", "children": [
+                    {"type": paint, "children": [self.fill("nonZero")]}]}), [])
+
+    def test_winding_reads_clockwise_on_screen_as_positive(self):
+        self.assertEqual(C.winding(self.points_path(self.CW)), 2 * 200 * 200)
+        self.assertEqual(C.winding(self.points_path(self.CCW)), -2 * 200 * 200)
+        self.assertEqual(C.winding(self.points_path(self.CW[:2])), 0)
+
+    def test_custom_paths_under_the_clockwise_rule(self):
+        inner = [(x * 0.4, y * 0.4) for x, y in self.CW]
+
+        def shape(*kids, rule="clockwise"):
+            return {"type": "Shape", "name": "S", "children": [*kids, self.fill(rule)]}
+
+        cases = [
+            # (what, shape, kinds expected)
+            ("clockwise points fill", shape(self.points_path(self.CW)), []),
+            ("counter-clockwise points cut a hole and draw nothing", shape(self.points_path(self.CCW)),
+             ["path-direction"]),
+            ("a counter-clockwise inner contour is a hole on purpose",
+             shape(self.points_path(self.CW), self.points_path(inner[::-1], line=9)), []),
+            ("an inner hole cut with isHole", shape(self.points_path(self.CW),
+                                                    self.points_path(inner, line=9, isHole=True)), []),
+            ("the outer contour decides, not the first one",
+             shape(self.points_path(inner, line=9), self.points_path(self.CCW)), ["path-direction"]),
+            ("direction does not matter under nonZero",
+             {"type": "Shape", "children": [self.points_path(self.CCW), self.fill("nonZero", feather=False)]}, []),
+            ("a rectangle in the shape fills whatever the path does",
+             shape({"type": "Rectangle", "width": 10, "height": 10}, self.points_path(self.CCW)), []),
+            ("isClockwise false on counter-clockwise points: 1.3.0 fills, older CLIs do not",
+             shape(self.points_path(self.CCW, isClockwise=False)), ["path-direction-flag"]),
+            ("isClockwise false on clockwise points: older CLIs fill, 1.3.0 does not",
+             shape(self.points_path(self.CW, isClockwise=False)), ["path-direction-flag"]),
+            ("a lone hole is left alone", shape(self.points_path(self.CCW, isHole=True)), []),
+            ("two points enclose nothing to judge", shape(self.points_path(self.CCW[:2])), []),
+            # the drop shadow recipe: one clockwise Fill beside a nonZero one;
+            # the crisp fill still draws, the shadow vanishes
+            ("a clockwise shadow beside a nonZero fill still needs clockwise points",
+             {"type": "Shape", "name": "S", "children": [self.points_path(self.CCW), self.fill("clockwise"),
+                                                         self.fill("nonZero", feather=False)]}, ["path-direction"]),
+        ]
+        for what, node, expected in cases:
+            with self.subTest(what):
+                self.assertEqual(self.tree_kinds(node), expected)
+        # both are warnings: the scene builds and may still be meant
+        found = C.lint_tree({"artboards": [{"type": "Artboard", "children": [
+            shape(self.points_path(self.CCW)), shape(self.points_path(self.CW, isClockwise=False))]}]})
+        self.assertEqual({f["kind"]: f["severity"] for f in found},
+                         {"path-direction": "warning", "path-direction-flag": "warning"})
 
     def test_probe_values_never_equal_the_current_value(self):
         self.assertEqual(C.probe_value("boolean", True, "on"), "false")
@@ -1696,6 +1800,131 @@ class LiveTemplateTests(unittest.TestCase):
         report = json.loads(buf.getvalue())
         self.assertEqual(code, 0)
         self.assertTrue(all(v.startswith("drives") for v in report["binds"].values()), report["binds"])
+
+
+@LIVE
+class LiveFeatherTests(unittest.TestCase):
+    """The lint's feathered fill rules, held against the renderer itself.
+
+    Measured 4 Oct 2026 on CLI 1.1.1, 1.2.0 and 1.3.0 and in the web runtime
+    playing each one's .riv: a feathered Fill draws only under fillRule
+    clockwise, text excepted, and under that rule a custom path whose points
+    run counter-clockwise cuts a hole instead of filling. Each case runs the
+    whole gate, so the lint's verdict is checked against a real capture.
+
+    On Linux the CLI's own captures draw no feathered Fill at all, under any
+    rule and on text too, while its feathered strokes draw: measured 4 Oct
+    2026 on CLI 1.1.1, 1.2.0 and 1.3.0 (NVIDIA GTX 970, driver 580). The web
+    runtime draws the .riv each of them builds by the rules above. So where
+    the CLI's capture cannot draw a feathered Fill, the web runtime playing
+    the .riv that the same CLI builds is the renderer each case is held to.
+    """
+
+    SQUARE = '<Rectangle width="200" height="200" name="Rect"/>'
+    CW = [(-100, -100), (100, -100), (100, 100), (-100, 100)]
+    FEATHERED = '<SolidColor colorValue="FFFFFFFF" name="C"/><Feather strength="24" name="Soft"/>'
+
+    @classmethod
+    def setUpClass(cls):
+        # one feathered Fill under the clockwise rule, through the CLI's own capture
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = cls.project(Path(tmp), f'<Shape x="200" y="200" name="Square">{cls.SQUARE}'
+                                          f'<Fill fillRule="clockwise" name="Fill">{cls.FEATHERED}</Fill></Shape>')
+            png = Path(tmp) / "probe.png"
+            L.run_rive([str(proj), "--quiet", f"--screenshot={png}", "--advance=1s"], timeout=120)
+            cls.on_web = not png.is_file() or L.blank_reason(png) is not None
+        if cls.on_web and not importlib.util.find_spec("playwright"):
+            raise unittest.SkipTest("this CLI's captures draw no feathered Fill (Linux), and without Playwright "
+                                    "the web runtime cannot judge one either")
+
+    @staticmethod
+    def project(folder: Path, body: str, font: bool = False) -> Path:
+        rml = (f'<Rive version="1" kind="fragment"><Artboard width="400" height="400" name="Probe" id="0:2">'
+               f'{body}</Artboard>'
+               + ('<FontAsset file="SpaceGrotesk-Variable.ttf" name="Space Grotesk" id="0:50"/>' if font else "")
+               + "</Rive>")
+        proj = folder / "p"
+        proj.mkdir()
+        (proj / "rive.yaml").write_text("name: p\nmain: Probe\n")
+        (proj / "scene.rml").write_text(rml)
+        if font:
+            shutil.copy(TEMPLATES / "_fonts" / "SpaceGrotesk-Variable.ttf", proj)
+        return proj
+
+    def gate(self, body: str, font: bool = False) -> tuple[set, bool]:
+        """(lint kinds, whether the scene drew anything) for one artboard: the
+        gate's own capture, or on a CLI that cannot capture a feathered Fill,
+        the web runtime playing the .riv that CLI builds, at the same time."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = self.project(Path(tmp), body, font)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                C.main([str(proj), "--out", str(Path(tmp) / "o"), "--json"])
+            report = json.loads(buf.getvalue())
+            self.assertIn("at", report["images"], report["errors"])
+            shot = Path(report["images"]["at"])
+            if self.on_web:
+                L.run_rive([str(proj), "--once", "--quiet"], timeout=120)
+                rivs = sorted((proj / "build").glob("*.riv"))
+                self.assertTrue(rivs, "the CLI built no .riv")
+                with W.WebSession(rivs[0], width=400, height=400) as session:
+                    session.setup(width=400, height=400)
+                    png, _ = session.frame_png(1.0)
+                shot = Path(tmp) / "web.png"
+                shot.write_bytes(png)
+            drawn = L.blank_reason(shot) is None
+        return {f["kind"] for f in report["lint"]}, drawn
+
+    def shape(self, geometry: str, rule: str = "") -> str:
+        return (f'<Shape x="200" y="200" name="Square">{geometry}'
+                f'<Fill{rule} name="Fill">{self.FEATHERED}</Fill></Shape>')
+
+    def path(self, points, extra: str = "") -> str:
+        vertices = "".join(f'<StraightVertex x="{x}" y="{y}"/>' for x, y in points)
+        return f'<PointsPath isClosed="true"{extra} name="Path">{vertices}</PointsPath>'
+
+    def test_a_feathered_fill_draws_only_under_the_clockwise_rule(self):
+        for rule, draws in (("", False), (' fillRule="evenOdd"', False), (' fillRule="clockwise"', True)):
+            with self.subTest(rule or "nonZero, the default"):
+                kinds, drawn = self.gate(self.shape(self.SQUARE, rule))
+                self.assertEqual(drawn, draws)
+                self.assertEqual("feather-in-fill" in kinds, not draws, kinds)
+
+    def test_feathered_text_draws_under_any_rule(self):
+        for where in ("style", "background"):
+            with self.subTest(where):
+                feathered = f'<Fill name="F">{self.FEATHERED}</Fill>'
+                # clear ink: black glyphs on the capture's grey read as drawn
+                # by themselves, whether the feathered background drew or not
+                ink, box = (feathered, "") if where == "style" else (
+                    '<Fill name="Ink"><SolidColor colorValue="00000000" name="C"/></Fill>',
+                    f'<TextStyleBackground name="BG">{feathered}</TextStyleBackground>')
+                kinds, drawn = self.gate(
+                    '<Text x="40" y="150" name="Word" id="0:30"><TextStylePaint fontSize="120" lineHeight="140" '
+                    'fontAssetId="0:50" familyName="Space Grotesk" styleName="Bold" name="Style" id="0:31">'
+                    f'{ink}{box}</TextStylePaint><TextValueRun styleId="0:31" text="ROBO" name="Run"/></Text>',
+                    font=True)
+                self.assertTrue(drawn)
+                self.assertNotIn("feather-in-fill", kinds)
+
+    def test_under_the_clockwise_rule_a_path_must_run_clockwise(self):
+        for points, draws in ((self.CW, True), (self.CW[::-1], False)):
+            with self.subTest("clockwise" if draws else "counter-clockwise"):
+                kinds, drawn = self.gate(self.shape(self.path(points), ' fillRule="clockwise"'))
+                self.assertEqual(drawn, draws)
+                self.assertEqual("path-direction" in kinds, not draws, kinds)
+
+    def test_is_clockwise_false_is_read_from_1_3_0_on(self):
+        # 1.1.1 and 1.2.0 ignore the flag and go by the points; 1.3.0 reads
+        # it, so the same file draws the opposite way, and the lint says so
+        older = L.cli_version() in ("1.1.1", "1.2.0")
+        for points, draws_on_older in ((self.CW[::-1], False), (self.CW, True)):
+            with self.subTest("counter-clockwise points" if not draws_on_older else "clockwise points"):
+                kinds, drawn = self.gate(self.shape(self.path(points, ' isClockwise="false"'),
+                                                    ' fillRule="clockwise"'))
+                self.assertEqual(drawn, draws_on_older if older else not draws_on_older)
+                self.assertIn("path-direction-flag", kinds)
+                self.assertNotIn("path-direction", kinds)
 
 
 @LIVE

@@ -27,7 +27,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 
 # The CLI versions these scripts were measured against. A different version
 # is allowed, but reported, so a changed flag shows up as a named cause.
-TESTED_CLI_VERSIONS = ("1.1.1", "1.2.0")
+TESTED_CLI_VERSIONS = ("1.1.1", "1.2.0", "1.3.0")
 
 # The CLI steps scene time in fixed 1/60 s frames, whatever --advance says.
 FRAME = 1.0 / 60.0
@@ -365,8 +365,11 @@ _PROPERTY_KIND = {
 }
 
 
-def inspect_project(project: str | Path, timeout: float = 120) -> dict:
-    result = run_rive(["inspect", str(project), "--json"], timeout=timeout)
+def inspect_project(project: str | Path, timeout: float = 120, all_properties: bool = False) -> dict:
+    """The resolved scene. all_properties adds the editor-only ones (--all),
+    among them a path's isClockwise, which the lint needs."""
+    result = run_rive(["inspect", str(project), "--json"] + (["--all"] if all_properties else []),
+                      timeout=timeout)
     data = parse_envelope(result.stdout)
     if data is None:
         raise RiveError(f"rive inspect printed no JSON (exit {result.returncode}: "

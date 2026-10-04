@@ -30,7 +30,7 @@ python3 skills/rive/scripts/rive_doctor.py --web      # also the web engine (hea
 python3 skills/rive/scripts/rive_doctor.py --install  # install the CLI the supported way, then check
 ```
 
-On this Mac: Rive CLI 1.2.0 (`brew install --cask rive-app/tap/rive-cli`, update with `brew upgrade --cask rive-cli`; `rive update` does not work on a brew install) and the Rive editor (`brew install --cask rive`, needs a Rive account signed in at the screen; `rive_doctor.py` prints its version). The editor's own updater runs only while the app is open, and nobody opens it here, so the nightly report lists it each time Rive ships a new version: `brew upgrade --cask rive` is the update (`references/editor.md`). On Linux x64, `--install` downloads the official build, checks its SHA-256 against Rive's release manifest, and lays it out as Rive's own install.sh does: `~/.rive/versions/<version>/` with the docs and samples beside the binary (the only place `rive docs` and `rive samples` look) and `~/.rive/bin/rive` for PATH.
+On this Mac: Rive CLI 1.3.0 (`brew install --cask rive-app/tap/rive-cli`, update with `brew upgrade --cask rive-cli`; `rive update` does not work on a brew install) and the Rive editor (`brew install --cask rive`, needs a Rive account signed in at the screen; `rive_doctor.py` prints its version). The editor's own updater runs only while the app is open, and nobody opens it here, so the nightly report lists it each time Rive ships a new version: `brew upgrade --cask rive` is the update (`references/editor.md`). On Linux x64, `--install` downloads the official build, checks its SHA-256 against Rive's release manifest, and lays it out as Rive's own install.sh does: `~/.rive/versions/<version>/` with the docs and samples beside the binary (the only place `rive docs` and `rive samples` look) and `~/.rive/bin/rive` for PATH.
 
 **Run the doctor after every CLI update.** The CLI is a technical preview (launched 11 Sep 2026, twelve releases in its first 19 days, one flag already renamed), so a new version is not trusted until the doctor passes: it re-checks every flag these scripts pass, builds and renders a bundled sample, and re-measures the gesture timing the renderer depends on. The versions these scripts were measured against are in `scripts/rivelib.py` (`TESTED_CLI_VERSIONS`).
 
@@ -71,7 +71,7 @@ It runs the three checks Rive says are not interchangeable, plus what none of th
 | `rive <dir> --test` (only when the project has Luau) | a failing `Tests` case, by name, line and message | whatever the tests do not assert |
 | `rive inspect --json` problems | bind paths, missing references, state machine wiring, overlapping states | Luau, appearance |
 | a capture | appearance | nothing visual |
-| lint (this script) | the silent failures: units left undefined, cubic keys with no curve, unlabelled text styles, system fonts, keyboard phase masks, script inputs matching no field, feather in a fill | |
+| lint (this script) | the silent failures: units left undefined, cubic keys with no curve, unlabelled text styles, system fonts, keyboard phase masks, script inputs matching no field, a feathered fill without the clockwise rule, a custom path running the wrong way under it | |
 | `--interaction` | a control that does nothing, or only works one way | |
 | `--probe-binds` | a view model property that drives nothing on screen | |
 
@@ -202,7 +202,7 @@ Every one of these builds clean. The full list, with how to detect each, is in `
 - The keyframe element must match the property type (`KeyFrameDouble`, `KeyFrameColor`, `KeyFrameString`, `KeyFrameId`...), and `cubic` needs a `CubicEaseInterpolator` child; the ease belongs on the segment's **first** key; `hold` is the default.
 - A `LayoutComponent` needs its style **nested and named by `styleId`**; padding, gaps and insets need `*UnitsValue="points"`; a shape inside a fixed or fill box is stretched to it unless wrapped in a `Node` or given a `LayoutParticipant`.
 - Text needs a font file, a style with a `Fill`, and a run with `styleId`; a variable font renders its default instance.
-- `Feather` inside a `Fill` renders nothing; feather a `Stroke`.
+- A `Feather` inside a `Fill` draws nothing unless that Fill has `fillRule="clockwise"` (the editor sets it, RML does not); text is the exception. Under that rule a `PointsPath` must run clockwise or it cuts a hole (`references/rml.md`). On Linux (measured on an NVIDIA card) the CLI's captures and renders draw no feathered Fill at all; the web runtime does (`references/rendering.md`, Linux).
 - Bind the property that exists on the target (`width` is on `Rectangle`, key 20; height 21; not on the `Shape`); a number cannot drive text without `DataConverterToString`.
 - Every listener under the pointer fires; a transparent fill still catches clicks; author both directions of a toggle.
 

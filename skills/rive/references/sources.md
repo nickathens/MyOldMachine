@@ -5,6 +5,7 @@ Researched and measured 25 Sep 2026 for the first version of this skill. Finding
 ## Primary sources
 
 - The Rive CLI's own documentation, `rive docs` (42 topics, about 610 KB of Markdown written for agents), `rive schema`, and the bundled samples (`rive samples`), all for CLI 1.1.1. Read in full. The CLI ships them without a licence, so this skill paraphrases and points to `rive docs <topic>` instead of copying.
+- For CLI 1.3.0 (4 Oct 2026): its help and schema against 1.2.0 (nothing removed; new: `ls`, `workspace`, `open`, serving to a phone, `LayerMask`; `--define` now names AnimaScript), and its bundled docs, whose `drawing` and `gotchas` pages first say a feathered Fill needs the clockwise fill rule. That rule, the text exception and the path direction under it were then measured on 1.1.1, 1.2.0 and 1.3.0 and in the web runtime (`rml.md`, Drawing).
 - Rive's web documentation through its index for agents, `https://rive.app/docs/llms.txt` (about 440 pages; every page has a `.md` copy): the CLI pages, editor exporting, SVG/PSD/fonts/audio import, the AI agent, MCP, feature support, runtime sizes, the web runtime (getting started, parameters, low-level API, data binding, Canvas vs WebGL2), best practices, pricing.
 - `https://rive.app/pricing`, rendered in a real browser (the docs pricing page disagrees on Voyager).
 - Rive's release manifest, `https://releases.rive.app/cli/latest/manifest.json` (per-platform artifacts with SHA-256; `v<version>/manifest.json` for a given one), and the Homebrew tap rive-app/homebrew-tap.
@@ -44,7 +45,7 @@ Community pulse (the last30days skill, 25 Sep 2026): thin; a Reddit thread quest
 
 | Thing | Version | Where it is pinned or checked |
 |---|---|---|
-| Rive CLI | 1.1.1 (21 Sep 2026), 1.2.0 (25 Sep 2026) | `rivelib.TESTED_CLI_VERSIONS`; `rive_doctor.py` re-checks flags and timing |
+| Rive CLI | 1.1.1 (21 Sep 2026), 1.2.0 (25 Sep 2026), 1.3.0 (1 Oct 2026) | `rivelib.TESTED_CLI_VERSIONS`; `rive_doctor.py` re-checks flags and timing |
 | Rive editor (desktop) | 0.8.5940 at install (25 Sep 2026), 0.9.46 since 1 Oct 2026 | `rive_doctor.py` prints it; `brew upgrade --cask rive` when the nightly report lists it (`editor.md`) |
 | `@rive-app/webgl2`, `@rive-app/canvas` | 2.44.0 (30 Sep 2026), 2.43.1 until 1 Oct 2026 | `scripts/web_runtime.json` with integrity hashes; the comparison is in `rendering.md` |
 | ffmpeg | 9.0.2 | the tagging and decoding notes in `rendering.md` were measured on it |
