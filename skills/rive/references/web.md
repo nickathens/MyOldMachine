@@ -27,7 +27,7 @@ What the web runtimes support (Rive's feature table, read 25 Sep 2026), against 
 | focus (keyboard navigation) | 2.43.1 | |
 | vector feathering | webgl2 2.26.0 | **not canvas** |
 | text input (typing into a `TextInput`) | 2.44.0, measured here | Rive's table still said "coming soon" on 1 Oct 2026. The CLI's own `text_input` sample, unsigned, on a page: typing went into the field and into the obscured one on webgl2 and canvas 2.44.0, and did nothing on 2.43.1 (a click placed the caret, keys were dropped). The player keeps a hidden text input element over the canvas for the keys, which is also what raises a phone's keyboard (its type declarations say so; no phone tested) |
-| masking | 2.44.0 (release notes) | the CLI 1.2.0 schema has no mask type, so only editor files can use it |
+| masking | 2.44.0 (release notes) | the CLI 1.2.0 schema has no mask type; 1.3.0's adds `LayerMask` (`rive schema LayerMask`), not tried here yet, so for now masking is for editor files |
 
 A file from a newer editor or CLI still loads in an older runtime; features the runtime does not know are skipped.
 

@@ -27,7 +27,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 
 # The CLI versions these scripts were measured against. A different version
 # is allowed, but reported, so a changed flag shows up as a named cause.
-TESTED_CLI_VERSIONS = ("1.1.1", "1.2.0")
+TESTED_CLI_VERSIONS = ("1.1.1", "1.2.0", "1.3.0")
 
 # The CLI steps scene time in fixed 1/60 s frames, whatever --advance says.
 FRAME = 1.0 / 60.0
