@@ -102,9 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-10-06] mac: the Mini App's image and video menu read from the image tool, and the ratio and resolution you pick reach Higgsfield (miniapp/server.py, miniapp/static/index.html, skills/image-gen/scripts/generate.py, bot.py) (PR #197)
-
-(Entries removed above: #196 cleared in its reviewed merge revision,
+(Entries removed above: #197 cleared in its reviewed merge revision,
+the same call as #196.
+#196 cleared in its reviewed merge revision,
 the same call as #194.
 #194 cleared in its reviewed merge revision,
 the same call as #192.
