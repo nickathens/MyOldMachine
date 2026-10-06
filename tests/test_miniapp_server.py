@@ -287,9 +287,10 @@ class TestClaudeModelCatalog(unittest.TestCase):
 
     def test_default_is_current_sonnet(self) -> None:
         # Opus/Fable entries must not hijack the recommended/default model;
-        # the default tracks the current Sonnet (Sonnet 5 since June 30, 2026).
-        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude"), "claude-sonnet-5")
-        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude-api"), "claude-sonnet-5")
+        # the default tracks the current Sonnet (Sonnet 5.5 since September
+        # 28, 2026, Sonnet 5 from June 30).
+        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude"), "claude-sonnet-5-5")
+        self.assertEqual(srv._WIZARD_DEFAULT_MODELS.get("claude-api"), "claude-sonnet-5-5")
 
 
 class TestPendingMediaGenTTL(unittest.TestCase):

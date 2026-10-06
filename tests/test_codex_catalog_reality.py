@@ -45,14 +45,14 @@ from core import model_efforts as me  # noqa: E402
 from install import wizard  # noqa: E402
 
 # Every id in the catalog Codex CLI itself fetched from OpenAI and cached at
-# ~/.codex/models_cache.json (client_version 0.158.0, fetched 2026-09-29).
+# ~/.codex/models_cache.json (client_version 0.160.0, fetched 2026-10-05).
 # Two are internal and are deliberately not offered: `gpt-reserve` is spare
-# capacity and `codex-auto-review` backs `codex review`. `gpt-6-sol` and
-# `gpt-6-luna` are served but not offered; adding one needs an effort row and
-# a live turn first.
+# capacity and `codex-auto-review` backs `codex review`. `gpt-5.5` is served
+# but no longer offered: see RETIRING_IDS.
 CODEX_CATALOG = frozenset({
-    "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-reserve", "gpt-5.6-sol",
-    "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "codex-auto-review",
+    "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-reserve",
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
+    "codex-auto-review",
 })
 
 # Ids that are valid on the OpenAI API and are NOT Codex models. Named rather
@@ -69,6 +69,14 @@ API_ONLY_IDS = frozenset({
 #     ChatGPT account.
 DROPPED_IDS = frozenset({"gpt-5.4-mini", "gpt-5.3-codex-spark"})
 
+# Ids Codex still runs but has scheduled for retirement in the catalog row
+# itself. gpt-5.5's row carries an `upgrade` field (2026-10-05):
+#     GPT-5.5 retires on October 14, 2026. Switch to GPT-6.1 Sol to
+#     continue working in Codex.
+# It was this picker's default until then, so it is named here rather than
+# merely absent: re-adding it would ship a default that dies on that date.
+RETIRING_IDS = frozenset({"gpt-5.5"})
+
 
 def offered() -> list[str]:
     return [mid for mid, _ in wizard.PROVIDER_MODELS["codex"]]
@@ -81,6 +89,13 @@ class CodexCatalogTests(unittest.TestCase):
             bad, [],
             "these are OpenAI API ids, and Codex answers HTTP 400 for each "
             f"on a ChatGPT account: {bad}")
+
+    def test_no_id_codex_is_retiring_is_offered(self):
+        bad = sorted(set(offered()) & RETIRING_IDS)
+        self.assertEqual(
+            bad, [],
+            "Codex's own catalog announces these are retiring; offering one "
+            f"hands a new install a model with a date on it: {bad}")
 
     def test_no_id_codex_has_dropped_is_offered(self):
         bad = sorted(set(offered()) & DROPPED_IDS)

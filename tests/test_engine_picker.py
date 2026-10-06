@@ -245,9 +245,9 @@ class MachineCatalogTests(unittest.TestCase):
     def test_a_row_resolves_by_alias_and_by_model_id(self):
         rows = engines.machine_engines("claude", "claude-opus-5-5")
         self.assertEqual(engines.machine_engine("sonnet", rows)["model"],
-                         "claude-sonnet-5")
-        self.assertEqual(engines.machine_engine("claude-sonnet-5", rows)["model"],
-                         "claude-sonnet-5")
+                         "claude-sonnet-5-5")
+        self.assertEqual(engines.machine_engine("claude-sonnet-5-5", rows)["model"],
+                         "claude-sonnet-5-5")
         self.assertIsNone(engines.machine_engine("nope", rows))
         self.assertIsNone(engines.machine_engine("", rows))
 
@@ -272,7 +272,10 @@ class MachineCatalogTests(unittest.TestCase):
         by_id = {r["id"]: r for r in rows}
         self.assertFalse(by_id["gpt-6-astra"]["available"])
         self.assertIn("0.153.1", by_id["gpt-6-astra"]["reason"])
-        self.assertTrue(by_id["gpt-5.5"]["available"])
+        # gpt-6.1-sol has its own, later floor, and says so in its own words.
+        self.assertFalse(by_id["gpt-6.1-sol"]["available"])
+        self.assertIn("0.159.0", by_id["gpt-6.1-sol"]["reason"])
+        self.assertTrue(by_id["gpt-6-luna"]["available"])
 
     def test_the_probe_cache_is_per_model_not_per_engine_id(self):
         # Two rows share the id "opus" in spirit (the curated engine and the
@@ -309,13 +312,13 @@ class MachineCatalogTests(unittest.TestCase):
               patch("core.engines.subprocess.run", side_effect=fake_run)):
             engines.probe_cache_clear()
             rows = engines.machine_engines("claude", "claude-opus-5-5")
-        self.assertIn("claude-sonnet-5", {r["id"] for r in rows})
+        self.assertIn("claude-sonnet-5-5", {r["id"] for r in rows})
         claude_calls = [a for a in seen if a[0].endswith("claude")]
         self.assertTrue(claude_calls)
         for args in claude_calls:
             self.assertEqual(args[1:], ["auth", "status", "--json"])
         self.assertTrue({r["id"] for r in rows if r["available"]}
-                        >= {"claude-sonnet-5", "claude-fable-5-1"})
+                        >= {"claude-sonnet-5-5", "claude-fable-5-1"})
 
 
 class _UserDirTestCase(unittest.TestCase):

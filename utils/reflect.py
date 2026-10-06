@@ -56,6 +56,12 @@ load_dotenv(BOT_DIR / ".env")
 
 from core.memory import VALID_BASIS, MemoryManager
 from core.config import DATA_DIR, get_llm_provider, get_llm_model, get_llm_api_key, get_ollama_base_url
+from core.model_efforts import (
+    KIMI_ACCEPTS_TEMPERATURE,
+    claude_accepts_temperature,
+    gemini_accepts_temperature,
+    openai_is_reasoning,
+)
 from core.credentials import claude_cli_env
 
 logger = logging.getLogger(__name__)
@@ -633,7 +639,7 @@ def _call_claude_cli(prompt: str) -> str:
         if configured_model.startswith("claude-"):
             cli_model = configured_model
         else:
-            cli_model = "claude-sonnet-5"
+            cli_model = "claude-sonnet-5-5"
         result = subprocess.run(
             ["claude", "-p", prompt, "--model", cli_model],
             capture_output=True, text=True, timeout=call_timeout,
@@ -745,9 +751,12 @@ def _call_api(prompt: str) -> str:
 
         elif provider in ("gemini", "google"):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            generation_config = {"maxOutputTokens": 4096}
+            if gemini_accepts_temperature(model):
+                generation_config["temperature"] = 0.3
             body = {
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.3},
+                "generationConfig": generation_config,
             }
             with httpx.Client(timeout=_call_timeout(120.0)) as client:
                 resp = client.post(url, headers={"x-goog-api-key": api_key}, json=body)
@@ -763,6 +772,13 @@ def _call_api(prompt: str) -> str:
             return ""
 
         elif provider == "claude-api":
+            claude_body = {
+                "model": model,
+                "max_tokens": 4096,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if claude_accepts_temperature(model):
+                claude_body["temperature"] = 0.3
             with httpx.Client(timeout=_call_timeout(120.0)) as client:
                 resp = client.post(
                     "https://api.anthropic.com/v1/messages",
@@ -771,12 +787,7 @@ def _call_api(prompt: str) -> str:
                         "anthropic-version": "2023-06-01",
                         "content-type": "application/json",
                     },
-                    json={
-                        "model": model,
-                        "max_tokens": 4096,
-                        "temperature": 0.3,
-                        "messages": [{"role": "user", "content": prompt}],
-                    },
+                    json=claude_body,
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -795,10 +806,7 @@ def _call_api(prompt: str) -> str:
                 headers[auth_header] = auth_value
 
             # Determine token parameter name and temperature support
-            is_openai_reasoning = provider == "openai" and (
-                model.startswith("gpt-5") or model.startswith("o1")
-                or model.startswith("o3") or model.startswith("o4")
-            )
+            is_openai_reasoning = provider == "openai" and openai_is_reasoning(model)
             is_grok_reasoning = provider == "grok" and (
                 ("reasoning" in model and "non-reasoning" not in model)
                 or (model.startswith("grok-4") and "fast" not in model)
@@ -807,7 +815,8 @@ def _call_api(prompt: str) -> str:
             is_deepseek_reasoner = provider == "deepseek" and "reasoner" in model
 
             uses_completion_tokens = is_openai_reasoning or is_grok_reasoning or provider == "openrouter"
-            rejects_temperature = is_openai_reasoning or is_grok_reasoning or is_deepseek_reasoner
+            rejects_temperature = (is_openai_reasoning or is_grok_reasoning or is_deepseek_reasoner
+                                   or (provider == "kimi" and not KIMI_ACCEPTS_TEMPERATURE))
 
             token_key = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
             body = {

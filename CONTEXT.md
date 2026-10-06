@@ -165,20 +165,22 @@ utils/
 
 | Provider | Tool-Use | Default Model | Notes |
 |----------|----------|---------------|-------|
-| Claude CLI | Native | claude-sonnet-4-6 | Full tool-use built into Claude's runtime |
-| Claude API | None | claude-sonnet-4-6 | Text-only, no machine control |
-| OpenAI | OpenAI-compat | gpt-5.5 | GPT-5.5 ($5/$30)/5.5 Pro/5.4 family/4.1. Vision + tools |
-| DeepSeek | OpenAI-compat | deepseek-v4-flash | V4 Flash ($0.14/$0.28)/Pro ($1.74/$3.48), V3.2 legacy. No vision |
-| Grok (xAI) | OpenAI-compat | grok-4-1-fast-non-reasoning | Vision on 4.1 Fast/4-0709. 4.1 Fast = 2M ctx |
-| Kimi (Moonshot) | OpenAI-compat | kimi-k2.6 | K2.6 $0.95/$4.00, K2.5 $0.60/$3.00. 256K ctx. Vision on K2.5 |
-| MiniMax | OpenAI-compat | MiniMax-M2.7 | Reasoning, 205K ctx. $0.30/$1.20/MTok. Vision on M2.5 |
-| Gemini | Native | gemini-3-flash-preview | Free tier on 3 Flash Preview, 3.1 Flash-Lite, 2.5 family. 3.1 Pro paid only |
-| Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark |
-| Ollama Cloud | OpenAI-compat | qwen3.5:cloud | Cloud-hosted, free, no local GPU needed |
-| OpenRouter | OpenAI-compat | nemotron-3-super-120b:free | ~15 free models w/tool-use, ~200 req/day |
-| FCC | Claude CLI + proxy | claude-sonnet-4-6 | Routes through free-claude-code proxy to any backend (Gemini, DeepSeek, Groq, etc.) |
+| Claude CLI | Native | claude-sonnet-5-5 | Full tool-use built into Claude's runtime. Also Fable 5.1, Opus 5.5 (needs Claude Code 2.1.280+) |
+| Codex CLI | Native | gpt-6.1-sol | ChatGPT plan. Also GPT-6 Astra/Luna/Sol and the 5.6 tiers. 6.1 Sol needs Codex CLI 0.159.0+ |
+| Claude API | None | claude-sonnet-5-5 | Text-only, no machine control. Temperature only to models that take it |
+| OpenAI | OpenAI-compat | gpt-5.6 | 5.6 Sol ($4/$20 promo), GPT-6 Astra/Luna/Sol, 5.5, 5.4 family, 4.1. GPT-6 Luna/Sol run tools with reasoning off; 6.1 Sol takes no tools on Chat Completions |
+| DeepSeek | OpenAI-compat | deepseek-flash | V4.1 Flash ($0.30/$1.20 peak, half off-peak, vision) / V4 Pro ($1.32/$3.96, text). reasoning_content echoed on tool steps |
+| Grok (xAI) | OpenAI-compat | grok-4.3 | Also 4.7, 4.6, 4.5, Build 0.1, 4.20 family. Vision on every Grok 4 model. 4.1 Fast retired 2026-05-15 |
+| Kimi (Moonshot) | OpenAI-compat | kimi-k2.7-code | K2.7-Code (+highspeed), K3 ($3/$15, 1M), K2.6. All take images. No temperature: every current model fixes it |
+| MiniMax | OpenAI-compat | MiniMax-M3 | M3 multimodal, 1M ctx, $0.30/$1.20/MTok. M3.1 Flash Preview on an M Plan key only. M2.7 text only |
+| Z.ai GLM | OpenAI-compat | glm-5.3 | GLM-5.3 text, $1.40/$4.40. GLM-5.3-Flash/FlashX multimodal, $0.15/$0.50 and $0.37/$1.25 |
+| Gemini | Native | gemini-3.8-flash | Free tier on every Flash (3.8, 3.7, 3.6, 3.5, 3.5 Flash-Lite). 3.1 Pro paid only. No temperature from Gemini 3 on |
+| Ollama | OpenAI-compat | llama3.1:8b | Local, free, auto-installs with hw benchmark (Qwen 3.5 small sizes, Qwen 3.6 at 27b/35b) |
+| Ollama Cloud | OpenAI-compat | glm-5.3-flash | Cloud-hosted, per-token credits, starter credits on the free plan. Ids are the names ollama.com/api/tags lists |
+| OpenRouter | OpenAI-compat | nemotron-3-super-120b:free | ~14 free models w/tool-use, ~200 req/day |
+| FCC | Claude CLI + proxy | claude-sonnet-5-5 | Routes through free-claude-code proxy to any backend (Gemini, DeepSeek, Groq, etc.) |
 
-**Total: 13 providers** (Claude CLI, Codex CLI, Claude API, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, OpenRouter, Ollama, Ollama Cloud, FCC).
+**Total: 14 providers** (Claude CLI, Codex CLI, Claude API, OpenAI, Gemini, Grok, Kimi, MiniMax, Z.ai GLM, DeepSeek, OpenRouter, Ollama, Ollama Cloud, FCC).
 
 ## Boot Persistence
 

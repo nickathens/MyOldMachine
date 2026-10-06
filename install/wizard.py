@@ -348,12 +348,12 @@ _ALL_LLM_PROVIDERS = [
     ("codex", "OpenAI Codex CLI — uses your ChatGPT Plus/Pro plan (no API key needed), full machine control"),
     ("claude-api", "Anthropic Claude API — requires paid API credits ($), chat only, no machine control"),
     ("openai", "OpenAI — requires API key ($), machine control via function calling"),
-    ("deepseek", "DeepSeek — extremely cheap ($0.14/$0.28 per MTok), 1M context, machine control"),
+    ("deepseek", "DeepSeek — very cheap ($0.30/$1.20 per MTok, half that off-peak), 1M context, machine control"),
     ("grok", "xAI Grok — $25 free credits on signup, machine control via function calling"),
     ("kimi", "Moonshot Kimi — K2.7-Code token-efficient agentic coding, 256K context, $0.95/$4.00 per MTok, machine control"),
     ("minimax", "MiniMax — M3 frontier coding, 1M context, $0.30/$1.20 per MTok, machine control"),
-    ("zai", "Z.ai GLM — GLM-5.2 open-weights, long-horizon coding/agentic, 1M context, $1.40/$4.40 per MTok, machine control"),
-    ("gemini", "Google Gemini — free tier available (5-15 RPM), machine control via function calling"),
+    ("zai", "Z.ai GLM — GLM-5.3 open-weights, long-horizon coding/agentic, 1M context, $1.40/$4.40 per MTok, machine control"),
+    ("gemini", "Google Gemini — free tier available, machine control via function calling"),
     ("ollama", "Ollama — free, runs locally on your machine, machine control via function calling"),
     ("ollama-cloud", "Ollama Cloud — cloud-hosted models (free tier available), no local GPU needed"),
     ("openrouter", "OpenRouter — many models, one API key (free models available), machine control"),
@@ -370,24 +370,46 @@ def _get_available_providers() -> list:
     return list(_ALL_LLM_PROVIDERS)
 
 DEFAULT_MODELS = {
-    "claude": "claude-sonnet-5",
-    "claude-api": "claude-sonnet-5",
-    "codex": "gpt-5.5",
+    "claude": "claude-sonnet-5-5",
+    "claude-api": "claude-sonnet-5-5",
+    "codex": "gpt-6.1-sol",
     "openai": "gpt-5.6",
-    "deepseek": "deepseek-v4-flash",
+    "deepseek": "deepseek-flash",
     "grok": "grok-4.3",
     "kimi": "kimi-k2.7-code",
     "minimax": "MiniMax-M3",
-    "zai": "glm-5.2",
-    "gemini": "gemini-3.5-flash",
+    "zai": "glm-5.3",
+    "gemini": "gemini-3.8-flash",
     "ollama": "llama3.1:8b",
-    "ollama-cloud": "qwen3.5:cloud",
+    "ollama-cloud": "glm-5.3-flash",
     "openrouter": "nvidia/nemotron-3-super-120b-a12b:free",
-    "fcc": "claude-sonnet-5",
+    "fcc": "claude-sonnet-5-5",
 }
 
 # Model lists per provider — shown as numbered options during setup.
 # First entry in each list is the default (recommended).
+# Last updated: October 6, 2026, every provider, each against its own live
+# source: platform.claude.com (models overview, deprecations, release notes),
+# the per-model pages on developers.openai.com, the catalog Codex itself
+# fetched (~/.codex/models_cache.json, client 0.160.0), xAI's public models
+# data, ai.google.dev (models, pricing, deprecations), api-docs.deepseek.com,
+# platform.kimi.ai, platform.minimax.io, docs.z.ai, ollama.com/api/tags and
+# openrouter.ai/api/v1/models. What changed beyond new rows:
+#   * Claude Sonnet 5.5 (claude-sonnet-5-5, 2026-09-28, $2/$10) replaces
+#     Sonnet 5 as the default, the way each Sonnet retires its predecessor.
+#     No CLI floor: Claude Code 2.1.278 and 2.1.283 both ran it with the
+#     bot's own argv, warning "unrecognized_model" on stderr and nothing else.
+#   * Codex retires gpt-5.5 on 2026-10-14 (its catalog row's `upgrade` field
+#     says so, and points at gpt-6.1-sol), so the Codex default moves.
+#   * Several rows here could never have worked through the endpoint the
+#     provider uses, and are gone rather than kept: gpt-5.5-pro answers on
+#     the Responses API only, and grok-4-1-fast-* were retired 2026-05-15
+#     (xAI redirects them to grok-4.3 and bills its rate). gpt-6.1-sol is not
+#     added to `openai` for the same reason: its page says Chat Completions
+#     is "supported without tool calling".
+#   * ollama-cloud ids are the names ollama.com/api/tags lists. The `:cloud`
+#     suffix is the Ollama app's spelling; the docs say API requests to
+#     ollama.com use the listed name, and this provider calls the API.
 # Last updated: September 2, 2026 (Fable row) — Claude Fable 5.1
 # (claude-fable-5-1) replaces Fable 5 in the same tier at the same $10/$50 per
 # MTok, the way each Opus retires its predecessor. It is not a drop-in: forced
@@ -449,7 +471,7 @@ def _codex_build_too_old_for(model: str):
 
 PROVIDER_MODELS = {
     "claude": [
-        ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, near-Opus performance, 1M ctx (recommended)"),
+        ("claude-sonnet-5-5", "Claude Sonnet 5.5 — newest Sonnet, best mix of speed and intelligence, 1M ctx (recommended)"),
         ("claude-fable-5-1", "Claude Fable 5.1 — next-gen flagship, hardest coding + agentic work, uses plan quota fast"),
         ("claude-opus-5-5", "Claude Opus 5.5 — long-running agentic coding and knowledge work, 1M ctx; needs Claude Code 2.1.280+"),
     ],
@@ -461,113 +483,161 @@ PROVIDER_MODELS = {
     #     The 'gpt-5.6' model is not supported when using Codex with a
     #     ChatGPT account.
     # Every id below is present in the catalog Codex itself fetches from
-    # OpenAI (~/.codex/models_cache.json), and all five were run end to end
-    # again on 2026-09-29 on CLI 0.158.0: five turns, five turn.completed.
+    # OpenAI (~/.codex/models_cache.json), and all seven were run end to end
+    # again on 2026-10-06 on CLI 0.160.1: seven turns, seven turn.completed.
     # Adding one from the `openai` list further down this file without a
     # live turn is exactly how the three above got here.
     # The catalog also shrinks. `gpt-5.4-mini` and `gpt-5.3-codex-spark` were
     # offered here and completed on 2026-09-07; by 2026-09-29 neither was in
     # the catalog and each answered the same HTTP 400, so they were removed.
+    # `gpt-5.5` was the default here until its catalog row announced its own
+    # end: "GPT-5.5 retires on October 14, 2026. Switch to GPT-6.1 Sol to
+    # continue working in Codex." It still completed on 2026-10-06, so an
+    # install already on it keeps working until that date, but it is no
+    # longer offered and it is no longer the default.
     "codex": [
-        ("gpt-5.5", "GPT-5.5 — Codex CLI default, vision + tools, 1M ctx (recommended)"),
+        ("gpt-6.1-sol", "GPT-6.1 Sol — near-Astra performance at lower cost, Codex CLI default, six effort levels incl. ultra; needs Codex CLI 0.159.0+ (recommended)"),
         ("gpt-6-astra", "GPT-6 Astra — most capable, six effort levels incl. ultra, 272K ctx; needs Codex CLI 0.153.1+ and a ChatGPT plan with Astra access"),
+        ("gpt-6-luna", "GPT-6 Luna — fast and affordable, for focused high-volume work, five effort levels up to max"),
+        ("gpt-6-sol", "GPT-6 Sol — previous-generation workhorse, six effort levels incl. ultra"),
         ("gpt-5.6-sol", "GPT-5.6 Sol — flagship 5.6 tier, best at long-horizon coding, six effort levels incl. ultra"),
         ("gpt-5.6-terra", "GPT-5.6 Terra — mid 5.6 tier, cheaper path for scoped work, six effort levels incl. ultra"),
         ("gpt-5.6-luna", "GPT-5.6 Luna — fastest, cheapest 5.6 tier, for high-volume routine work"),
     ],
     "claude-api": [
-        ("claude-sonnet-5", "Claude Sonnet 5 — newest Sonnet, 1M ctx, $3/$15 per MTok, intro $2/$10 through Aug 31 (recommended)"),
+        ("claude-sonnet-5-5", "Claude Sonnet 5.5 — newest Sonnet, best mix of speed and intelligence, 1M ctx, $2/$10 per MTok (recommended)"),
         ("claude-fable-5-1", "Claude Fable 5.1 — next-gen flagship, hardest coding + agentic work, $10/$50 per MTok"),
         ("claude-opus-5-5", "Claude Opus 5.5 — long-running agentic coding and knowledge work, 1M ctx, $4/$20 per MTok"),
         ("claude-haiku-4-5", "Claude Haiku 4.5 — fastest, cheapest, 200K ctx, $1/$5 per MTok"),
     ],
+    # OpenAIProvider speaks Chat Completions and always sends function tools,
+    # so a model is only offered here if its own page says Chat Completions
+    # takes tools. Three of OpenAI's current ids do not, as of 2026-10-06:
+    #   * gpt-6.1-sol: "Use the Responses API for tool calling. Chat
+    #     Completions is supported without tool calling." Not offered.
+    #   * gpt-5.5-pro: Responses API only, Chat Completions not supported at
+    #     all. It was offered here until today and could not have answered.
+    #   * gpt-6-sol and gpt-6-luna: "Chat Completions supports function
+    #     calling only with reasoning_effort set to none." Offered, and
+    #     OpenAIProvider sends exactly that for them (core/llm.py).
+    # gpt-5.4-nano is deprecated (2026-10-01, shutdown 2027-04-01, OpenAI
+    # names gpt-6-luna as its replacement) and leaves the same way.
     "openai": [
-        ("gpt-5.6", "GPT-5.6 — newest frontier, three tiers via aliases (Sol/Terra/Luna), vision + tools, 1M ctx, $5/$30 per MTok (recommended)"),
+        ("gpt-5.6", "GPT-5.6 Sol — the gpt-5.6 alias, vision + tools with full reasoning, 1M ctx, $4/$20 per MTok promo through Nov 21 (recommended)"),
+        ("gpt-6-astra", "GPT-6 Astra — most capable, vision + tools, 1M ctx, $10/$50 per MTok"),
+        ("gpt-6-luna", "GPT-6 Luna — cheapest GPT-6, vision + tools, reasoning off on this API, 1M ctx, $0.10/$0.50 per MTok"),
+        ("gpt-6-sol", "GPT-6 Sol — coding + agentic, vision + tools, reasoning off on this API, 1M ctx, $2/$10 per MTok"),
+        ("gpt-5.6-terra", "GPT-5.6 Terra — mid 5.6 tier, vision + tools, 1M ctx, $2/$12 per MTok"),
+        ("gpt-5.6-luna", "GPT-5.6 Luna — cheapest 5.6 tier, vision + tools, 1M ctx, $0.20/$1.20 per MTok"),
         ("gpt-5.5", "GPT-5.5 — prior frontier, vision + tools, 1M ctx, $5/$30 per MTok"),
-        ("gpt-5.5-pro", "GPT-5.5 Pro — max intelligence, 1M ctx, $30/$180 per MTok"),
-        ("gpt-5.4", "GPT-5.4 — fast frontier-class, vision + tools, 1.1M ctx, $2.50/$15 per MTok"),
-        ("gpt-5.4-mini", "GPT-5.4 Mini — fast, vision + tools, $0.75/$4.50 per MTok"),
-        ("gpt-5.4-nano", "GPT-5.4 Nano — cheapest 5.4-class, $0.20/$1.25 per MTok"),
+        ("gpt-5.4", "GPT-5.4 — fast frontier-class, vision + tools, 1M ctx, $2.50/$15 per MTok"),
+        ("gpt-5.4-mini", "GPT-5.4 Mini — fast, vision + tools, 400K ctx, $0.75/$4.50 per MTok"),
         ("gpt-4.1", "GPT-4.1 — smartest non-reasoning model, 1M context, $2/$8 per MTok"),
         ("gpt-4.1-mini", "GPT-4.1 Mini — good balance, 1M ctx, $0.40/$1.60 per MTok"),
     ],
+    # grok-4-1-fast-reasoning and -non-reasoning were retired 2026-05-15:
+    # the slugs still answer, but xAI serves them with grok-4.3 and bills
+    # grok-4.3's rate, so the "$0.20/$0.50" these rows promised was false.
     "grok": [
-        ("grok-4.3", "Grok 4.3 — flagship, 1M ctx, $1.25/$2.50 per MTok (recommended)"),
-        ("grok-4.5", "Grok 4.5 — newest flagship, native video, 500K ctx, $2/$6 per MTok"),
+        ("grok-4.3", "Grok 4.3 — fast flagship, vision + tools, 1M ctx, $1.25/$2.50 per MTok (recommended)"),
+        ("grok-4.7", "Grok 4.7 — newest flagship, xAI's pick for code and chat, vision + tools, 500K ctx, $2/$6 per MTok"),
+        ("grok-4.6", "Grok 4.6 — prior flagship, vision + tools, 500K ctx, $2/$6 per MTok"),
+        ("grok-4.5", "Grok 4.5 — earlier flagship, vision + tools, 500K ctx, $2/$6 per MTok"),
         ("grok-build-0.1", "Grok Build 0.1 — dedicated software-engineering model, 256K ctx, $1/$2 per MTok"),
-        ("grok-4-1-fast-non-reasoning", "Grok 4.1 Fast — cheapest, 2M ctx, $0.20/$0.50 per MTok"),
-        ("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning — chain-of-thought, 2M ctx, $0.20/$0.50"),
         ("grok-4.20-0309-non-reasoning", "Grok 4.20 — prior flagship, 1M ctx, vision + tools, $1.25/$2.50 per MTok"),
         ("grok-4.20-0309-reasoning", "Grok 4.20 Reasoning — prior flagship w/ reasoning, 1M ctx, $1.25/$2.50 per MTok"),
         ("grok-4.20-multi-agent-0309", "Grok 4.20 Multi-Agent — orchestrated agents, 1M ctx, $1.25/$2.50 per MTok"),
     ],
+    # Google closed the 2.5 models to new projects on 2026-09-18 ("For any
+    # new projects, use our latest models: 3.5 Flash-Lite or 3.8 Flash"), so
+    # a fresh install cannot pick them. gemini-3.1-flash-lite is deprecated
+    # (shutdown 2027-05-07, replacement gemini-3.5-flash-lite) and
+    # gemini-3-flash-preview is "our legacy Flash model" with 3.6 Flash named
+    # as its replacement. Every Flash below has a free tier.
     "gemini": [
-        ("gemini-3.5-flash", "Gemini 3.5 Flash — new frontier (May 2026), free tier, $1.50/$9 per MTok (recommended)"),
-        ("gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite — GA, cheapest next-gen, free tier, $0.25/$1.50"),
-        ("gemini-3-flash-preview", "Gemini 3 Flash Preview — prior frontier, free tier, $0.50/$3 per MTok"),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash — newest, most capable Flash, free tier, $0.75/$3.75 per MTok through Dec 31 then $1.50/$7.50 (recommended)"),
+        ("gemini-3.7-flash", "Gemini 3.7 Flash — prior Flash for coding + agents, free tier, $0.75/$3.75 per MTok through Dec 31"),
+        ("gemini-3.6-flash", "Gemini 3.6 Flash — token-efficient Flash, free tier, $0.75/$3.75 per MTok through Dec 31"),
+        ("gemini-3.5-flash", "Gemini 3.5 Flash — earlier Flash, free tier, $1.50/$9 per MTok"),
+        ("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite — fastest, cheapest, free tier, $0.30/$2.50 per MTok"),
         ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview — most capable, paid only, $2/$12 per MTok (≤200K)"),
-        ("gemini-2.5-flash", "Gemini 2.5 Flash — legacy, free tier, $0.30/$2.50 per MTok"),
-        ("gemini-2.5-pro", "Gemini 2.5 Pro — legacy, free tier, $1.25/$10 per MTok"),
-        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite — legacy budget, free tier, $0.10/$0.40 per MTok"),
     ],
+    # DeepSeek retired V4 Flash on 2026-09-10. The old id still answers but is
+    # served by V4.1 Flash, whose own id is deepseek-flash. Prices are the
+    # peak rates; off-peak is half (DeepSeek's pricing page).
     "deepseek": [
-        ("deepseek-v4-flash", "DeepSeek V4 Flash — 1M ctx, 384K output, $0.14/$0.28 per MTok (recommended)"),
-        ("deepseek-v4-pro", "DeepSeek V4 Pro — flagship, 1M ctx, 384K output, $1.74/$3.48 per MTok"),
+        ("deepseek-flash", "DeepSeek V4.1 Flash — newest, vision + tools, 1M ctx, 384K output, $0.30/$1.20 per MTok (recommended)"),
+        ("deepseek-v4-pro", "DeepSeek V4 Pro — flagship, text only, 1M ctx, 384K output, $1.32/$3.96 per MTok"),
     ],
     "kimi": [
-        ("kimi-k2.7-code", "Kimi K2.7-Code — token-efficient agentic coding, 256K ctx, $0.95/$4.00 per MTok (recommended)"),
-        ("kimi-k3", "Kimi K3 — newest flagship, native vision, 1M ctx"),
+        ("kimi-k2.7-code", "Kimi K2.7-Code — token-efficient agentic coding, vision + tools, 256K ctx, $0.95/$4.00 per MTok (recommended)"),
+        ("kimi-k2.7-code-highspeed", "Kimi K2.7-Code Highspeed — same model at about 180 tokens/s, 256K ctx, $1.90/$8.00 per MTok"),
+        ("kimi-k3", "Kimi K3 — newest flagship, native vision, 1M ctx, $3/$15 per MTok; unlocked by a $1 top-up"),
         ("kimi-k2.6", "Kimi K2.6 — general-purpose, vision + text, 256K ctx, $0.95/$4.00 per MTok"),
     ],
     "minimax": [
         ("MiniMax-M3", "MiniMax M3 — frontier coding + native multimodal, 1M ctx, $0.30/$1.20 per MTok (recommended)"),
+        ("MiniMax-M3.1-Flash-Preview", "MiniMax M3.1 Flash Preview — newest, multimodal, 1M ctx; needs an M Plan subscription key for now"),
         ("MiniMax-M2.7", "MiniMax M2.7 — prior flagship, 205K ctx, $0.30/$1.20 per MTok"),
         ("MiniMax-M2.7-highspeed", "MiniMax M2.7 Highspeed — faster variant, $0.60/$2.40 per MTok"),
     ],
     "zai": [
-        ("glm-5.2", "GLM-5.2 — Z.ai flagship, open-weights, long-horizon coding/agentic, 1M ctx, $1.40/$4.40 per MTok (recommended)"),
+        ("glm-5.3", "GLM-5.3 — Z.ai flagship, open-weights, strongest GLM for coding, text only, 1M ctx, $1.40/$4.40 per MTok (recommended)"),
+        ("glm-5.3-flash", "GLM-5.3-Flash — native multimodal, cheap, 1M ctx, $0.15/$0.50 per MTok"),
+        ("glm-5.3-flashx", "GLM-5.3-FlashX — faster Flash (about 200 tokens/s), multimodal, 1M ctx, $0.37/$1.25 per MTok"),
+        ("glm-5.2", "GLM-5.2 — prior flagship, long-horizon coding/agentic, 1M ctx, $1.40/$4.40 per MTok"),
     ],
+    # Exactly the names ollama.com/api/tags returned on 2026-10-06, which is
+    # what Ollama's cloud docs say an API request to ollama.com must use
+    # ("In the Ollama app or CLI, use gemma4:cloud"; this provider is the
+    # API). qwen3.5, glm-5.1 and deepseek-v4-flash are no longer served at
+    # all. Ollama Cloud now bills per token from credits; prices per MTok.
     "ollama-cloud": [
-        ("qwen3.5:cloud", "Qwen 3.5 Cloud — multimodal, strong reasoning (recommended)"),
-        ("minimax-m3:cloud", "MiniMax M3 — frontier coding, 1M ctx, native multimodal"),
-        ("nemotron-3-ultra:cloud", "Nemotron 3 Ultra — NVIDIA, high-throughput reasoning, long-running agents"),
-        ("glm-5.2:cloud", "GLM 5.2 — Zhipu AI, open-weights flagship, usable 1M ctx, long-horizon coding"),
-        ("glm-5.1:cloud", "GLM 5.1 — Zhipu AI, SOTA on SWE-Bench Pro, agentic engineering"),
-        ("kimi-k2.7-code:cloud", "Kimi K2.7-Code — Moonshot, token-efficient agentic coding"),
-        ("kimi-k2.6:cloud", "Kimi K2.6 — Moonshot, long-horizon coding agent"),
-        ("deepseek-v4-flash:cloud", "DeepSeek V4 Flash — 284B MoE, 1M ctx, efficient reasoning"),
-        ("deepseek-v4-pro:cloud", "DeepSeek V4 Pro — frontier MoE, 1M ctx, three reasoning modes"),
-        ("mistral-large-3:cloud", "Mistral Large 3 — frontier open model, reasoning + agentic"),
-        ("nemotron-3-super:cloud", "Nemotron 3 Super — NVIDIA, 120B MoE, strong tool-use"),
-        ("minimax-m2.7:cloud", "MiniMax M2.7 — fast, general-purpose"),
-        ("gemma4:cloud", "Gemma 4 — Google, reasoning + agentic"),
+        ("glm-5.3-flash", "GLM-5.3 Flash — Z.ai, native multimodal, 1M ctx, $0.15/$0.50 per MTok (recommended)"),
+        ("glm-5.3", "GLM-5.3 — Z.ai flagship, strongest GLM for coding, $1.40/$4.40 per MTok"),
+        ("kimi-k3", "Kimi K3 — Moonshot flagship, native vision, 1M ctx, $3/$15 per MTok"),
+        ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash — vision + tools, 1M ctx, $0.30/$1.20 per MTok"),
+        ("deepseek-v4-pro:0813", "DeepSeek V4 Pro — frontier MoE, 1M ctx, $1.32/$3.96 per MTok"),
+        ("minimax-m3", "MiniMax M3 — frontier coding, 1M ctx, native multimodal, $0.60/$2.40 per MTok"),
+        ("nemotron-3-ultra", "Nemotron 3 Ultra — NVIDIA, high-throughput reasoning, $0.10/$3 per MTok"),
+        ("glm-5.2", "GLM 5.2 — Zhipu AI, prior flagship, long-horizon coding, $1.40/$4.40 per MTok"),
+        ("kimi-k2.7-code", "Kimi K2.7-Code — Moonshot, token-efficient agentic coding, $0.95/$4 per MTok"),
+        ("kimi-k2.6", "Kimi K2.6 — Moonshot, long-horizon coding agent, $0.95/$4 per MTok"),
+        ("gpt-oss:120b", "GPT-OSS 120B — OpenAI open-weights, reasoning + tools, $0.15/$0.60 per MTok"),
+        ("gpt-oss:20b", "GPT-OSS 20B — OpenAI open-weights, small and cheap, $0.07/$0.30 per MTok"),
+        ("mistral-large-3:675b", "Mistral Large 3 — frontier open model, reasoning + agentic, $0.50/$1.50 per MTok"),
+        ("nemotron-3-super", "Nemotron 3 Super — NVIDIA, 120B MoE, strong tool-use, $0.015/$0.60 per MTok"),
+        ("nemotron-3-nano:30b", "Nemotron 3 Nano — NVIDIA, small and fast, $0.06/$0.24 per MTok"),
+        ("minimax-m2.7", "MiniMax M2.7 — fast, general-purpose, $0.30/$1.20 per MTok"),
+        ("gemma4:31b", "Gemma 4 31B — Google, vision, reasoning + agentic, $0.14/$0.40 per MTok"),
     ],
 }
 
 # Free models available on OpenRouter (no billing required)
-# Updated July 18, 2026: verified live against openrouter.ai/api/v1/models
+# Updated October 6, 2026: verified live against openrouter.ai/api/v1/models
 # (filtered: prompt+completion price 0 AND "tools" in supported_parameters).
 # IMPORTANT: Only models with tool-use/function-calling support are listed.
 # MyOldMachine needs tool-use to control the machine.
+# Three that passed the filter are left out on purpose: poolside/laguna-xs-2.1
+# and laguna-s-2.1 carry an expiration_date of 2026-10-31, and
+# inclusionai/ling-3.1-flash is priced 0 without a ":free" id, which is a
+# launch promotion on a paid model rather than a free one.
 # Rate limits: 20 requests/minute, 200 requests/day (1000/day with 10+ paid credits on file).
 OPENROUTER_FREE_MODELS = [
-    ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron 3 Super 120B — NVIDIA, tools + reasoning, 1M ctx (recommended)"),
+    ("nvidia/nemotron-3-super-120b-a12b:free", "Nemotron 3 Super 120B — NVIDIA, tools + reasoning, 262K ctx (recommended)"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "Nemotron 3 Ultra 550B — NVIDIA largest, tools + reasoning, 1M ctx"),
-    ("qwen/qwen3-coder:free", "Qwen3 Coder 480B — Alibaba, coding + tool-use, 1M ctx"),
-    ("poolside/laguna-m.1:free", "Poolside Laguna M.1 — coding agents, tools, 262K ctx"),
-    ("poolside/laguna-xs-2.1:free", "Poolside Laguna XS.2.1 — small fast coding model, tools, 262K ctx"),
+    ("thinkingmachines/inkling:free", "Inkling — Thinking Machines, vision + audio + tools, 1M ctx"),
+    ("thinkingmachines/inkling-small:free", "Inkling Small — Thinking Machines, vision + audio + tools, 1M ctx"),
+    ("nvidia/nemotron-3.5-lightning:free", "Nemotron 3.5 Lightning — NVIDIA, fast 30B MoE, tools, 1M ctx"),
     ("google/gemma-4-31b-it:free", "Gemma 4 31B — Google, vision + tools, 262K ctx"),
     ("google/gemma-4-26b-a4b-it:free", "Gemma 4 26B — Google, vision + tools, 262K ctx"),
-    ("qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3 Next 80B — large MoE, tool-use, 262K ctx"),
-    ("nvidia/nemotron-3-nano-30b-a3b:free", "Nemotron 3 Nano 30B — NVIDIA, tool-use, 256K ctx"),
+    ("dots-studio/dots-3-note-preview:free", "Dots3-Note Preview — vision + tools, 512K ctx, free until Dec 31"),
     ("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "Nemotron 3 Nano Omni — multimodal reasoning, tools, 256K ctx"),
-    ("cohere/north-mini-code:free", "Cohere North Mini Code — coding + tool-use"),
-    ("tencent/hy3:free", "Tencent Hunyuan 3 — tool-use, multilingual"),
+    ("apodex/apodex-1.1-mini:free", "Apodex 1.1 Mini — reasoning-first research model, tools, 262K ctx"),
+    ("cohere/north-mini-code:free", "Cohere North Mini Code — coding + tool-use, 256K ctx"),
+    ("inclusionai/ling-3.0-flash-sante:free", "Ling 3.0 Flash Sante — inclusionAI, health and medicine focus, tools, 262K ctx"),
+    ("liquid/lfm-2.5-2.6b:free", "LFM2.5 2.6B — Liquid AI, tiny, tools, 65K ctx (not for agentic coding)"),
     ("openrouter/free", "OpenRouter Free Router — auto-routes free models, vision + tools, 200K ctx"),
-    ("openai/gpt-oss-20b:free", "GPT-OSS 20B — OpenAI open-source, fast, tool-use, 131K ctx"),
-    ("nvidia/nemotron-nano-12b-v2-vl:free", "Nemotron Nano 12B VL — NVIDIA, vision + tool-use, 128K ctx"),
-    ("nvidia/nemotron-nano-9b-v2:free", "Nemotron Nano 9B — NVIDIA, tool-use, 128K ctx"),
-    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B — Meta, solid all-rounder, tool-use, 131K ctx"),
 ]
 
 # Providers that need an API key
@@ -630,13 +700,13 @@ API_KEY_GUIDES = {
         "steps": [
             "Go to platform.deepseek.com/api_keys",
             "Sign up with email, Google, or GitHub",
-            "Top up your balance (very cheap — V4 Flash at $0.14/$0.28 per MTok)",
+            "Top up your balance (very cheap — V4.1 Flash at $0.30/$1.20 per MTok, half off-peak)",
             "Click 'Create API Key', name it, and copy it immediately",
             "  The full key is shown only once — starts with sk-",
         ],
         "notes": [
             "Extremely affordable. $2 of credits lasts a long time.",
-            "90% discount on cached input tokens.",
+            "Cached input costs about 2% of the normal input price.",
         ],
     },
     "grok": {
@@ -666,7 +736,7 @@ API_KEY_GUIDES = {
         ],
         "notes": [
             "OpenAI-compatible API — same format, different base URL.",
-            "K2.5 supports vision and tool calling. 256K context.",
+            "Every current Kimi model takes images and tool calls. K3 unlocks after a $1 top-up.",
         ],
     },
     "minimax": {
@@ -681,8 +751,8 @@ API_KEY_GUIDES = {
         ],
         "notes": [
             "OpenAI-compatible API. Very competitive pricing.",
-            "M2.7: strong reasoning, 205K context, $0.30/$1.20 per MTok.",
-            "M2.5: multimodal (vision + tools).",
+            "M3: frontier coding, multimodal, 1M context, $0.30/$1.20 per MTok.",
+            "M3.1 Flash Preview works only with an M Plan subscription key for now.",
         ],
     },
     "zai": {
@@ -696,7 +766,8 @@ API_KEY_GUIDES = {
         ],
         "notes": [
             "OpenAI-compatible API — same format, different base URL.",
-            "GLM-5.2: open-weights flagship, 1M context, $1.40/$4.40 per MTok ($0.26 cached).",
+            "GLM-5.3: open-weights flagship, 1M context, $1.40/$4.40 per MTok ($0.26 cached).",
+            "GLM-5.3-Flash: multimodal, $0.15/$0.50 per MTok.",
         ],
     },
     "gemini": {
@@ -710,10 +781,8 @@ API_KEY_GUIDES = {
             "Copy the key — Google lets you view it again later",
         ],
         "notes": [
-            "Free tier available — no credit card required:",
-            "  Gemini 2.5 Pro:         5 RPM,  100 req/day",
-            "  Gemini 2.5 Flash:      10 RPM,  250 req/day",
-            "  Gemini 2.5 Flash-Lite: 15 RPM, 1000 req/day",
+            "Free tier available on every Flash model — no credit card required.",
+            "  Your per-model limits are shown in AI Studio (aistudio.google.com).",
         ],
     },
     "ollama-cloud": {
@@ -726,8 +795,9 @@ API_KEY_GUIDES = {
             "  API keys don't expire but can be revoked anytime",
         ],
         "notes": [
-            "Free tier available — session limits reset every 5 hours, weekly reset every 7 days.",
-            "Pro ($20/mo) and Max ($100/mo) tiers for heavier usage.",
+            "Free plan includes starter credits on a smaller set of starter models.",
+            "Usage is billed per token from credits; buying credits unlocks every model.",
+            "Pro ($20/mo, $60 of credits) and Max ($100/mo, $300 of credits) for heavier use.",
             "Same API as local Ollama — just runs in the cloud.",
         ],
     },

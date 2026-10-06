@@ -76,7 +76,7 @@ class MachineEngineReviewTests(unittest.TestCase):
         with patch("miniapp.server.atomic_env_write", side_effect=publish):
             server._set_machine_engine("sonnet")
         self.assertTrue(published)
-        self.assertTrue(all(pair == ("claude-cli", "claude-sonnet-5") for pair in published), published)
+        self.assertTrue(all(pair == ("claude-cli", "claude-sonnet-5-5") for pair in published), published)
         self.assertEqual(server._read_env_var("LLM_EFFORT"), "max")
         self.assertEqual(server._read_env_var("OTHER"), "keep")
         self.assertEqual(self.env.stat().st_mode & 0o777, 0o600)
@@ -100,7 +100,7 @@ class MachineEngineReviewTests(unittest.TestCase):
         payload = server._set_machine_engine("sonnet")
         status = asyncio.run(server.get_status(user={"_profile": {"role": "admin"}}))
         self.assertIn(payload["provider"], {r["id"] for r in status["available_providers"]})
-        self.assertIn("claude-sonnet-5", {r["id"] for r in status["available_models"]})
+        self.assertIn("claude-sonnet-5-5", {r["id"] for r in status["available_models"]})
 
     def test_machine_note_does_not_claim_to_override_ordinary_opus_default(self):
         with patch("core.config.is_admin", return_value=False):

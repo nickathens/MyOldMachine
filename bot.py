@@ -4089,7 +4089,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Current model: {get_llm_model()}\n"
             f"Provider: {get_llm_provider()}\n\n"
             f"Usage: /model <model-name>\n"
-            f"Example: /model gemini-3-flash-preview"
+            f"Example: /model gemini-3.8-flash"
         )
         return
 

@@ -213,7 +213,7 @@ def get_llm_provider() -> str:
 
 
 def get_llm_model() -> str:
-    return _env("LLM_MODEL", "claude-sonnet-5")
+    return _env("LLM_MODEL", "claude-sonnet-5-5")
 
 
 def get_llm_api_key() -> str:

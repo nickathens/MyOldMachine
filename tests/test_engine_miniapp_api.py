@@ -164,12 +164,12 @@ class AdminMachinePickerTests(_EngineCase):
         payload = asyncio.run(srv.set_engine(_FakeRequest({"engine": "sonnet"}),
                                              user=_user("7", "admin")))
         self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "claude-cli")
-        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-sonnet-5")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "claude-sonnet-5-5")
         # The preference store stays empty: an admin has no engine of their
         # own, so nothing here can outrank what was just written.
         self.assertEqual(engines.user_engine_id(7), "")
-        self.assertEqual(payload["effective"], "claude-sonnet-5")
-        self.assertEqual(payload["model"], "claude-sonnet-5")
+        self.assertEqual(payload["effective"], "claude-sonnet-5-5")
+        self.assertEqual(payload["model"], "claude-sonnet-5-5")
 
     def test_a_write_carries_what_the_rows_above_must_now_read(self):
         # Provider, Model and Effort are views of the value this just wrote.
@@ -185,16 +185,19 @@ class AdminMachinePickerTests(_EngineCase):
         asyncio.run(srv.set_engine(_FakeRequest({"engine": "luna"}),
                                    user=_user("7", "admin")))
         self.assertEqual(srv._read_env_var("LLM_PROVIDER"), "codex")
-        self.assertEqual(srv._read_env_var("LLM_MODEL"), "gpt-5.6-luna")
+        self.assertEqual(srv._read_env_var("LLM_MODEL"), "gpt-6-luna")
         self.assertEqual(srv._read_env_var("OTHER"), "keep-me")
 
     def test_the_stored_effort_is_left_alone_by_an_engine_switch(self):
         # Exactly as /api/model leaves it: the level is a preference every
         # reader clamps against the model about to run, so a trip through a
         # model with fewer levels must not burn the level to come back to.
-        asyncio.run(srv.set_engine(_FakeRequest({"engine": "gpt-5.5"}),
+        # gpt-6-luna stops at max, so a stored ultra is the level at risk.
+        self.env.write_text(self.env.read_text(encoding="utf-8").replace(
+            "LLM_EFFORT=max", "LLM_EFFORT=ultra"), encoding="utf-8")
+        asyncio.run(srv.set_engine(_FakeRequest({"engine": "gpt-6-luna"}),
                                    user=_user("7", "admin")))
-        self.assertEqual(srv._read_env_var("LLM_EFFORT"), "max")
+        self.assertEqual(srv._read_env_var("LLM_EFFORT"), "ultra")
 
     def test_an_unknown_engine_from_an_admin_writes_nothing(self):
         with self.assertRaises(HTTPException) as caught:
