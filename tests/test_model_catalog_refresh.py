@@ -340,5 +340,33 @@ class ClaudeSamplingGateTests(unittest.TestCase):
                 self.assertTrue(_claude_accepts_temperature(model))
 
 
+class LocalOllamaCatalogTests(unittest.TestCase):
+    """install/ollama_setup.MODEL_CATALOG, the local rungs.
+
+    recommend_model() takes the LAST row that fits, so the order is the whole
+    selection rule, and nothing checked it while the October refresh rewrote
+    the top two rows. Out of order, a machine is handed a smaller model than
+    it can hold, or one too big for it.
+    """
+
+    def test_rows_ascend_by_need_and_quality(self):
+        from install.ollama_setup import MODEL_CATALOG
+        for earlier, later in zip(MODEL_CATALOG, MODEL_CATALOG[1:]):
+            with self.subTest(row=later[0]):
+                self.assertLessEqual(earlier[1], later[1])  # disk
+                self.assertLessEqual(earlier[2], later[2])  # RAM
+                self.assertLess(earlier[3], later[3])  # quality
+
+    def test_each_machine_gets_the_best_model_it_can_hold(self):
+        from install.ollama_setup import MODEL_CATALOG, recommend_model
+        for ram_gb in (4, 8, 10, 16, 24, 30, 64):
+            fits = [row for row in MODEL_CATALOG if row[2] <= ram_gb - 2.0]
+            best = max(fits, key=lambda row: row[3])[0]
+            with self.subTest(ram_gb=ram_gb):
+                tag, _why = recommend_model(
+                    {"ram_gb": ram_gb, "disk_free_gb": 500, "gpu": {"type": "none"}})
+                self.assertEqual(tag, best)
+
+
 if __name__ == "__main__":
     unittest.main()

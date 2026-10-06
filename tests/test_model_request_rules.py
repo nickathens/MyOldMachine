@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import copy
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -98,8 +100,9 @@ class _Client(_AsyncClient):
         return _Reply(self._replies.pop(0))
 
 
-def _image_message(text="what is this?"):
+def _image_message(test, text="what is this?"):
     tmp = Path(tempfile.mkdtemp(prefix="mom-req-rules-"))
+    test.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
     img = tmp / "pixel.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\nnot-a-real-image")
     return Message(role="user", content=text, images=[str(img)])
@@ -186,7 +189,7 @@ class OpenAIRequestTests(_LoopCapture, unittest.IsolatedAsyncioTestCase):
             with self.subTest(model=model):
                 self.assertTrue(OpenAIProvider(model, "k").supports_vision)
         body = await self.body_for(OpenAIProvider("gpt-6-astra", "k"),
-                                   [_image_message()])
+                                   [_image_message(self)])
         content = body["messages"][-1]["content"]
         self.assertIsInstance(content, list)
         self.assertIn("image_url", {part.get("type") for part in content})
@@ -216,7 +219,7 @@ class DeepSeekRequestTests(_LoopCapture, unittest.IsolatedAsyncioTestCase):
 
     async def test_an_image_reaches_flash_as_an_image_part(self):
         body = await self.body_for(DeepSeekProvider("deepseek-flash", "k"),
-                                   [_image_message()])
+                                   [_image_message(self)])
         content = body["messages"][-1]["content"]
         self.assertIn("image_url", {part.get("type") for part in content})
 
@@ -372,6 +375,24 @@ class NightlyHelperRequestTests(unittest.TestCase):
             with self.subTest(helper=call.__name__):
                 body = call("gemini", "gemini-3.8-flash", self.GEMINI_REPLY)
                 self.assertNotIn("temperature", body["generationConfig"])
+
+    def test_the_claude_cli_fallbacks_are_models_the_picker_offers(self):
+        # When the install's own model is not a Claude one, both helpers run
+        # the claude binary on a fixed model of their own. Both are literals
+        # every Sonnet refresh has to remember, the same hand-copy drift as
+        # the request rules above, so each must still be a row of the claude
+        # picker.
+        from utils import email_triage, reflect
+        self.assertIn(email_triage.CLI_DRAFT_FALLBACK_MODEL, _ids("claude"))
+        done = subprocess.CompletedProcess(["claude"], 0, "ok", "")
+        with (patch.object(reflect, "_DEADLINE", None),
+              patch.object(reflect, "_PROCESS_DEADLINE", None),
+              patch.object(reflect, "which", return_value="/usr/bin/claude"),
+              patch.object(reflect, "get_llm_model", return_value="gpt-6.1-sol"),
+              patch("utils.reflect.subprocess.run", return_value=done) as run):
+            self.assertEqual(reflect._call_claude_cli("p"), "ok")
+        argv = run.call_args.args[0]
+        self.assertIn(argv[argv.index("--model") + 1], _ids("claude"))
 
 
 if __name__ == "__main__":
