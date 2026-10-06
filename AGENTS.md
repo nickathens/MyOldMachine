@@ -102,9 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-- [2026-10-06] mac: every provider's model catalog refreshed, plus the request rules the new models need (core/llm.py, core/model_efforts.py, install/wizard.py, bot.py) (PR #196)
-
-(Entries removed above: #194 cleared in its reviewed merge revision,
+(Entries removed above: #196 cleared in its reviewed merge revision,
+the same call as #194.
+#194 cleared in its reviewed merge revision,
 the same call as #192.
 #192 cleared in its reviewed merge revision,
 the same call as #190.
