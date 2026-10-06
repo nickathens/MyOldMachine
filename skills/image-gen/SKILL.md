@@ -206,7 +206,7 @@ python skills/image-gen/scripts/generate.py --balance
 |------|-------------|
 | `-o`, `--output` | Output file path (auto: .jpg for images, .mp4 for video) |
 | `-m`, `--model` | Model name or alias (auto-selects based on --video flag) |
-| `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21, plus the per-model 2:1, 1:2 and `auto` (the model's own schema refuses a ratio it does not take; `--cost` shows it free). Pollinations falls back to 768x768 for a ratio it has no size for |
+| `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21, plus the per-model 2:1, 1:2 and `auto` (the model's own schema refuses a ratio it does not take; `--cost` shows it free). Pollinations falls back to 768x768 for a ratio it has no size for. Leave it out and the model keeps its own, which is not always 1:1 or 16:9 |
 | `-r`, `--ref-image` | Reference image for image-to-image or image-to-video |
 | `--video` | Generate video instead of image |
 | `--threed` | Generate a 3D mesh (default output `.glb`) |
@@ -220,10 +220,11 @@ python skills/image-gen/scripts/generate.py --balance
 | `--voice-id`, `--voice-type` | Voice for speech / voice_change (preset or element); see `--list-voices` |
 | `--pitch`, `--speed` | Voice pitch/speed for speech (seed_audio) |
 | `--backend` | Backend: auto (default, tries Higgsfield then Pollinations), higgsfield, pollinations |
-| `--resolution` | Resolution: 1k, 2k, 4k (default: 2k, images only) |
+| `--resolution` | Image resolution: 1k, 2k, 4k, sent only to a model that has one. Leave it out and the model keeps its own, 1k on most (`--menu` lists each model's) |
 | `--duration` | Duration in seconds (video and music; model-dependent) |
 | `--extra` | JSON string of extra model params (e.g. `'{"quality":"high"}'`) |
 | `--list-models` | List all model aliases and exit |
+| `--menu` | The Mini App's image and video menu as JSON: every model's name, price range, ratios, resolutions, durations, reference image support and options. The app draws its menu from this, so a model added to the tables in `generate.py` reaches it with no app edit |
 | `--list-voices` | List text-to-speech voices and exit |
 | `--cost` | Estimate credits cost without generating |
 | `--balance` | Show account credits balance |
@@ -241,6 +242,8 @@ python skills/image-gen/scripts/generate.py --balance
 | `flux` | FLUX.2 | Precise prompt adherence |
 | `flux-kontext` | Flux Kontext | Context-aware generation |
 | `soul` | Higgsfield Soul V2 | Character consistency |
+| `soul-cinematic` | Soul Cinematic | Cinematic character stills |
+| `soul-location` | Soul Location | Places; takes no reference image |
 | `cinematic` | Cinematic Studio 2.5 | Cinematic frames |
 | `seedream` | Seedream 4.5 | High detail |
 | `seedream-lite` | Seedream V5 Lite | Fast, lightweight |
@@ -249,6 +252,10 @@ python skills/image-gen/scripts/generate.py --balance
 | `recraft` | Recraft V4.1 | Design, logos, vector (`--extra '{"model_type":"vector"}'`) |
 | `nano-lite` | Nano Banana 2 Lite | Cheapest Nano Pro tier (`thinking` MINIMAL/HIGH) |
 | `soul-cinema` | Soul Cinema Studio | Cinematic character frames |
+| `soul-cast` | Soul Cast | Casting stills, 16:9 only (a still model, not video) |
+| `ms` | MS Image | Quality and resolution both move the price, 0.5 to 12 |
+| `ms-studio` | Marketing Studio Image | Product and marketing stills |
+| `z` | Z Image | Cheapest stills; takes no reference image |
 | `auto` | Image Auto | Let Higgsfield pick |
 
 ## Video Model Aliases
@@ -267,14 +274,20 @@ python skills/image-gen/scripts/generate.py --balance
 | `seedance1.5` | Seedance 1.5 Pro | Previous gen |
 | `cinematic3` | Cinematic Studio 3.0 | Film-grade output |
 | `cinematic3.5` | Cinematic Studio Video 3.5 | Newest cinematic (forces English) |
-| `cinematic-video` | Cinematic Studio Video V2 | Stylized video |
+| `cinematic-video` | Cinematic Studio Video | Stylized video |
+| `cinematic-v2` | Cinematic Studio Video V2 | Genre presets, std and pro modes |
 | `grok-video` | Grok Video | Creative, distinctive |
 | `hailuo` | Minimax Hailuo | Fast, reliable |
 | `h3`, `hailuo3` | MiniMax H3 (Hailuo 3.0) | 2K + native audio; structured prompt format, priciest in the catalog |
 | `wan` | Wan 2.7 | Latest Wan model |
 | `wan2.6` | Wan 2.6 | Previous gen |
-| `soul-cast` | Soul Cast | Character-consistent video |
 | `marketing` | Marketing Studio Video | Product/marketing content |
+| `seedance2.5` | Seedance 2.5 | Edits and extends existing clips; read `seedance-2-5.md` first |
+| `flux-video`, `flux3-video` | FLUX 3 Video | A video reference more than doubles the price; read `flux-3-video.md` |
+| `grok-video1.5` | Grok Video 1.5 | No aspect ratio setting; 1080p is refused with reference media |
+| `happy-horse` | Happy Horse Video | 720p or 1080p |
+
+`soul-cast` is a still model, in the image table above.
 
 ## 3D + Audio Model Aliases
 
@@ -289,15 +302,16 @@ python skills/image-gen/scripts/generate.py --balance
 
 | Tier | Credits | Models |
 |------|---------|--------|
-| Image cheap | 1-1.5 | nano, nano2, recraft, nano-lite, soul-cinema |
-| Image mid | 2 | nano-pro, cinematic, flux, seedream, kling |
-| Image expensive | 7 | gpt, hazel |
+| Image near free | 0.12-0.5 | soul, soul-cinematic, soul-location, soul-cinema, soul-cast (0.12), z (0.15), kling (0.5) |
+| Image cheap | 1-1.5 | nano, nano2 at 1k, nano-lite, seedream, seedream-lite, flux (pro at 1k), flux-kontext, recraft (1k) |
+| Image mid | 2-4 | nano-pro, nano2 at 2k and 4k, cinematic, ms-studio, auto |
+| Image by setting | 0.5-12 | gpt and ms (quality times resolution), hazel (2-6), recraft at 2k (8-10), flux flex and max (3-6) |
 | Image free | 0 | Pollinations (`--backend pollinations`) |
-| Video | 7-60 | kling-turbo (7), kling (10), seedance-mini (12), seedance (22), veo3.1 (22), gemini (24), cinematic3 (25), cinematic3.5 (25), h3 (10 at the 5s minimum, 2/second since 2026-09-05, 30 at 15s) |
+| Video | 5-80 | seedance-mini (5 for 5 s at 720p), kling-turbo (7.5), h3 (8 at the 4 s minimum, 2 a second), kling (10), veo3 (22 a clip), seedance (22.5), gemini (24 for 8 s), cinematic3 (25), veo3.1 (32 for 8 s) |
 | 3D | 5 | text-to-3d, image-to-3d |
 | Audio | 1 | music, speech |
 
-Figures are approximate and vary by CLI version and account. Always run `--cost` before generating. Every Higgsfield generation auto-reports credits used and remaining balance.
+Image and video figures re-quoted 2026-10-06 at each model's default settings unless named; `--menu` has every model's cheapest to dearest range. Figures are approximate and vary by CLI version and account. Always run `--cost` before generating. Every Higgsfield generation auto-reports credits used and remaining balance.
 
 ## Prompt Refinement (MANDATORY for Mini App / structured flows)
 
@@ -348,20 +362,21 @@ rather than paying flagship rates to find a shot. Always confirm with `--cost` b
 
 | Credits/s | Models |
 |---|---|
-| 1.0 | `veo3-lite`, `hailuo` |
+| 1.0 | `hailuo`, `seedance-mini` at 720p (was 2.5 until October; 0.5 at 480p) |
 | 1.2 | `seedance1.5` |
-| 1.5 | `kling-turbo`, `wan`, `wan2.6` (was 2.6 until September), `grok-video`, `cinematic-v2` |
+| 1.5 | `kling-turbo`, `wan`, `wan2.6` (was 2.6 until September), `grok-video`, `cinematic-v2`, `veo3-lite` (was 1.0 until October) |
 | 2.0 | `kling`, `kling2.6`, `h3` (was 4.0 until September) |
-| 2.5 | `happy-horse`, `seedance-mini` |
-| 2.75 | `veo3.1` |
+| 2.5 | `happy-horse` |
 | 3.0 | `gemini` |
+| 4.0 | `veo3.1` (was 2.75 until October) |
 | 4.5 | `seedance`, `grok-video1.5` |
 | 5.0 | `cinematic3`, `cinematic3.5`, `marketing` |
 | 5.5 | `flux-video`, no video reference |
 | 7.0 | `seedance2.5` at 720p (3.0 at 480p, 12.0 at 1080p; a `video_edit` 3.5, 7.5, 12.0) |
 
 Re-quoted live on 2026-09-27: `seedance2.5` rose when ByteDance's 1080p promotion ended on
-17 September, `h3` halved in early September, and `wan2.6` fell to 1.5 at 720p.
+17 September, `h3` halved in early September, and `wan2.6` fell to 1.5 at 720p. Re-quoted again on
+2026-10-06: `veo3.1` rose to 4.0 and `veo3-lite` to 1.5, `seedance-mini` fell to 1.0, the rest held.
 
 `veo3` is priced per clip, not per second: 22 flat on `veo-3-fast`, 58 on `veo-3-preview`.
 Quality steps cost extra on top: `kling` 4k is 6.0/s, `seedance` 4k is 22/s, `cinematic3` 4k is 24/s.

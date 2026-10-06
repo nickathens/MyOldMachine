@@ -11,6 +11,7 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -223,27 +224,134 @@ class TestSlugValidation(unittest.TestCase):
                 srv._validate_slug(bad)
 
 
-class TestModelRatios(unittest.TestCase):
-    """Issue #1: per-model aspect ratio filtering must return model-specific data."""
+class TestMediaMenu(unittest.TestCase):
+    """The image and video menu is the image tool's own (generate.menu()).
 
-    def test_per_model_ratios_table_populated(self) -> None:
-        self.assertTrue(hasattr(srv, "_PER_MODEL_RATIOS"))
-        self.assertGreater(len(srv._PER_MODEL_RATIOS), 20)
+    This module kept a copy of every model's ratios (_PER_MODEL_RATIOS) and the
+    page a copy of the models; both drifted from the tool.
+    """
 
-    def test_hailuo_has_empty_ratios(self) -> None:
-        self.assertEqual(srv._PER_MODEL_RATIOS.get("minimax_hailuo"), [])
+    def test_endpoint_serves_the_tools_menu(self) -> None:
+        import asyncio
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gen_for_menu_test", srv.GENERATE_SCRIPT)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        served = asyncio.run(srv.media_menu({"_id": "1"}))
+        self.assertEqual(served, gen.menu())
+        self.assertEqual({c["id"] for c in served["video"]} & {"h3", "seedance2.5"}, {"h3", "seedance2.5"})
 
-    def test_veo3_only_two_ratios(self) -> None:
-        self.assertEqual(sorted(srv._PER_MODEL_RATIOS.get("veo3", [])), ["16:9", "9:16"])
+    def test_no_ratio_table_of_its_own(self) -> None:
+        self.assertFalse(hasattr(srv, "_PER_MODEL_RATIOS"))
 
-    def test_nano_banana_has_many_ratios(self) -> None:
-        ratios = srv._PER_MODEL_RATIOS.get("nano_banana", [])
-        self.assertGreater(len(ratios), 9)
 
-    def test_every_model_ratios_subset_of_all(self) -> None:
-        for model, ratios in srv._PER_MODEL_RATIOS.items():
-            for r in ratios:
-                self.assertIn(r, srv._ALL_RATIOS, msg=f"{model} has invalid ratio {r}")
+class _FakeLaunchRequest:
+    def __init__(self, body: dict):
+        self._body = body
+
+    async def json(self):
+        return self._body
+
+
+class TestMediaGenLaunch(unittest.TestCase):
+    """POST /api/launch with a media-gen config, driven through the endpoint.
+
+    The cost quote and the Telegram message are replaced; the menu is the real
+    tool's. The pending hand-off file is the real path, under a user id no
+    Telegram account can have, and removed afterwards.
+    """
+
+    UID = "mom-test-media-launch"
+
+    def setUp(self) -> None:
+        self.pending = Path(f"/tmp/media_gen_pending_{self.UID}.json")
+        self.assertFalse(self.pending.exists(), "a pending file from another run is in the way")
+        self.addCleanup(self.pending.unlink, missing_ok=True)
+        self.sent = []
+        send = unittest.mock.patch.object(srv, "_send_bot_message", side_effect=lambda uid, text: self.sent.append(text) or True)
+        send.start()
+        self.addCleanup(send.stop)
+        self.quotes = []
+
+        def fake_run(cmd, **kwargs):
+            self.quotes.append(cmd)
+            return unittest.mock.Mock(returncode=0, stdout=json.dumps({"credits": 2, "credits_remaining": 100}), stderr="")
+
+        run = unittest.mock.patch.object(srv.subprocess, "run", side_effect=fake_run)
+        run.start()
+        self.addCleanup(run.stop)
+
+    def launch(self, config: dict) -> dict:
+        import asyncio
+        body = {"skill": "media-gen", "config": config}
+        return asyncio.run(srv.launch_skill(_FakeLaunchRequest(body), {"_id": self.UID}))
+
+    def launch_refused(self, config: dict) -> int:
+        with self.assertRaises(HTTPException) as ctx:
+            self.launch(config)
+        return ctx.exception.status_code
+
+    def test_hailuo_as_the_old_page_sent_it_is_accepted(self) -> None:
+        # Hailuo has no ratio row, so the page sent aspect_ratio null and this
+        # endpoint answered "Invalid aspect ratio": the card could never run.
+        config = {"type": "video", "model": "hailuo", "aspect_ratio": None, "duration": 6, "prompt": "waves"}
+        self.assertTrue(self.launch(config)["ok"])
+        # and the null is not handed on: bot.py would print "Aspect Ratio: None"
+        self.assertNotIn("aspect_ratio", json.loads(self.pending.read_text()))
+
+    def test_no_ratio_invented_for_a_model_without_one(self) -> None:
+        self.launch({"type": "video", "model": "hailuo", "duration": 6, "prompt": "waves"})
+        handed = json.loads(self.pending.read_text())
+        self.assertNotIn("aspect_ratio", handed)
+        self.assertNotIn("-a", self.quotes[-1])
+        self.assertNotIn("Aspect:", self.sent[-1])
+
+    def test_unknown_model_refused(self) -> None:
+        self.assertEqual(self.launch_refused({"type": "image", "model": "bogus", "prompt": "a cat"}), 400)
+        self.assertFalse(self.pending.exists())
+
+    def test_a_still_model_is_not_a_video(self) -> None:
+        # The page listed Soul Cast under video for two months after the tool
+        # made it a still model.
+        self.assertEqual(self.launch_refused({"type": "video", "model": "soul-cast", "prompt": "a cast"}), 400)
+
+    def test_no_resolution_invented_for_a_model_without_one(self) -> None:
+        self.launch({"type": "image", "model": "soul", "aspect_ratio": "1:1", "prompt": "a face"})
+        handed = json.loads(self.pending.read_text())
+        self.assertNotIn("resolution", handed)
+        self.assertNotIn("--resolution", self.quotes[-1])
+        self.assertNotIn("Resolution:", self.sent[-1])
+
+    def test_message_names_the_card(self) -> None:
+        self.launch({"type": "video", "model": "kling", "aspect_ratio": "16:9", "duration": 5, "prompt": "a car"})
+        self.assertIn("using Kling 3.0", self.sent[-1])
+
+    def test_every_card_launches_with_what_the_page_preselects(self) -> None:
+        # What showMediaGenConfig and the render functions pick for each card:
+        # this type's usual shape where offered, the middle resolution, the
+        # default duration, every option at its default.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gen_for_launch_test", srv.GENERATE_SCRIPT)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        for kind, cards in gen.menu().items():
+            for card in cards:
+                with self.subTest(kind=kind, model=card["id"]):
+                    config = {"type": kind, "model": card["id"], "prompt": "a test"}
+                    usual = "1:1" if kind == "image" else "16:9"
+                    if card["ratios"]:
+                        config["aspect_ratio"] = usual if usual in card["ratios"] else card["ratios"][0]
+                    if card.get("resolutions"):
+                        res = card["resolutions"]
+                        config["resolution"] = res[1 if len(res) > 1 else 0]
+                    if card.get("duration"):
+                        config["duration"] = card["duration"]["default"]
+                    config["extra_params"] = {k: v["default"] for k, v in card["options"].items()}
+                    self.pending.unlink(missing_ok=True)
+                    self.assertTrue(self.launch(config)["ok"])
+                    quote = self.quotes[-1]
+                    self.assertEqual("-a" in quote, bool(card["ratios"]))
+                    self.assertEqual("--video" in quote, kind == "video")
 
 
 class TestClaudeModelCatalog(unittest.TestCase):

@@ -4699,8 +4699,10 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
             pending_mg.unlink()
             mg_type = mg.get("type", "image")
             mg_model = mg.get("model", "nano2")
-            mg_aspect = mg.get("aspect_ratio", "1:1")
-            mg_res = mg.get("resolution", "2k")
+            # Absent where the model has no such setting (Hailuo has no ratio,
+            # Soul no resolution): name neither, and the model keeps its own.
+            mg_aspect = mg.get("aspect_ratio")
+            mg_res = mg.get("resolution")
             mg_duration = mg.get("duration")
             mg_prompt = mg.get("prompt", "")
             mg_extra = mg.get("extra_params", {})
@@ -4746,9 +4748,10 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                 f"[Mini App Media Generation Request]\n"
                 f"Type: {mg_type}\n"
                 f"Model: {mg_model}\n"
-                f"Aspect Ratio: {mg_aspect}\n"
             )
-            if mg_type == "image":
+            if mg_aspect:
+                mg_context += f"Aspect Ratio: {mg_aspect}\n"
+            if mg_type == "image" and mg_res:
                 mg_context += f"Resolution: {mg_res}\n"
             if mg_type == "video" and mg_duration:
                 mg_context += f"Duration: {mg_duration}s\n"
@@ -4764,9 +4767,11 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                 f"Refine the user's prompt following that guide's techniques, structure, and length recommendations.\n\n"
                 f"Then estimate cost with:\n"
                 f"python skills/image-gen/scripts/generate.py "
-                f'"{mg_prompt[:80]}" --cost -m {mg_model} -a {mg_aspect}'
+                f'"{mg_prompt[:80]}" --cost -m {mg_model}'
             )
-            if mg_type == "image":
+            if mg_aspect:
+                mg_context += f" -a {mg_aspect}"
+            if mg_type == "image" and mg_res:
                 mg_context += f" --resolution {mg_res}"
             if mg_type == "video":
                 mg_context += " --video"

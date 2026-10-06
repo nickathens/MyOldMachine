@@ -3090,120 +3090,38 @@ body{
 
     // ── Launch View ──
 
-    var IMAGE_MODELS=[
-        {id:'nano2',name:'Nano 2',cost:'1 cr',def:true},
-        {id:'nano',name:'Nano',cost:'1 cr'},
-        {id:'nano-pro',name:'Nano Pro',cost:'2 cr'},
-        {id:'flux',name:'FLUX 2',cost:'1-4 cr'},
-        {id:'flux-kontext',name:'Kontext',cost:'1 cr'},
-        {id:'grok',name:'Grok',cost:'1-2 cr'},
-        {id:'soul',name:'Soul V2',cost:'1 cr'},
-        {id:'soul-cinematic',name:'Soul Cinematic',cost:'1 cr'},
-        {id:'soul-location',name:'Soul Location',cost:'1 cr'},
-        {id:'seedream',name:'Seedream 4.5',cost:'1 cr'},
-        {id:'seedream-lite',name:'Seedream Lite',cost:'1 cr'},
-        {id:'cinematic',name:'Cinematic 2.5',cost:'2 cr'},
-        {id:'kling',name:'Kling O1',cost:'1 cr'},
-        {id:'auto',name:'Auto',cost:'2 cr'},
-        {id:'ms',name:'MS Image',cost:'1 cr'},
-        {id:'ms-studio',name:'MS Studio',cost:'2 cr'},
-        {id:'z',name:'Z Image',cost:'1 cr'},
-        {id:'gpt',name:'GPT Image 2',cost:'1-12 cr'},
-        {id:'hazel',name:'Hazel',cost:'2-6 cr'},
-        {id:'recraft',name:'Recraft V4.1',cost:'1-2 cr'},
-        {id:'nano-lite',name:'Nano 2 Lite',cost:'1 cr'},
-        {id:'soul-cinema',name:'Soul Cinema',cost:'1 cr'}
-    ];
-
-    var VIDEO_MODELS=[
-        {id:'kling',name:'Kling 3.0',cost:'2 cr/s',def:true},
-        {id:'kling2.6',name:'Kling 2.6',cost:'~2 cr/s'},
-        {id:'wan',name:'Wan 2.7',cost:'~1.5 cr/s'},
-        {id:'wan2.6',name:'Wan 2.6',cost:'~1.5 cr/s'},
-        {id:'grok-video',name:'Grok',cost:'~1.5 cr/s'},
-        {id:'hailuo',name:'Hailuo',cost:'4-6 cr'},
-        {id:'soul-cast',name:'Soul Cast',cost:'1 cr'},
-        {id:'seedance1.5',name:'Seedance 1.5',cost:'varies'},
-        {id:'cinematic-video',name:'Cinematic Video',cost:'8 cr'},
-        {id:'cinematic-v2',name:'Cinematic V2',cost:'~1.5 cr/s'},
-        {id:'cinematic3',name:'Cinematic 3.0',cost:'5 cr/s'},
-        {id:'seedance',name:'Seedance 2.0',cost:'~4.5 cr/s'},
-        {id:'veo3',name:'Veo 3',cost:'varies'},
-        {id:'veo3.1',name:'Veo 3.1',cost:'11-48 cr'},
-        {id:'veo3-lite',name:'Veo 3.1 Lite',cost:'varies'},
-        {id:'marketing',name:'Marketing Studio',cost:'5 cr/s'},
-        {id:'kling-turbo',name:'Kling 3.0 Turbo',cost:'7 cr'},
-        {id:'seedance-mini',name:'Seedance 2.0 Mini',cost:'12 cr'},
-        {id:'gemini',name:'Gemini Omni',cost:'24 cr'},
-        {id:'cinematic3.5',name:'Cinematic Video 3.5',cost:'25 cr'}
-    ];
-
-    var MODEL_DURATIONS={
-        'kling':{type:'slider',def:5,min:3,max:15},
-        'kling2.6':{type:'preset',def:5,options:[5,10]},
-        'veo3':null,
-        'veo3.1':{type:'preset',def:8,options:[4,6,8]},
-        'veo3-lite':{type:'preset',def:8,options:[4,6,8]},
-        'seedance':{type:'slider',def:5,min:5,max:30},
-        'seedance1.5':{type:'preset',def:4,options:[4,8,12]},
-        'hailuo':{type:'preset',def:6,options:[6,10]},
-        'wan':{type:'slider',def:5,min:3,max:15},
-        'wan2.6':{type:'preset',def:5,options:[5,10,15]},
-        'grok-video':{type:'slider',def:5,min:1,max:15},
-        'soul-cast':null,
-        'cinematic3':{type:'slider',def:5,min:5,max:20},
-        'cinematic-video':{type:'preset',def:5,options:[5,10]},
-        'cinematic-v2':{type:'slider',def:5,min:3,max:10},
-        'marketing':{type:'slider',def:15,min:5,max:60},
-        'kling-turbo':{type:'slider',def:5,min:3,max:15},
-        'seedance-mini':{type:'slider',def:5,min:5,max:30},
-        'gemini':{type:'preset',def:8,options:[4,6,8]},
-        'cinematic3.5':{type:'slider',def:15,min:5,max:20}
-    };
-
-    var IMG_OPTIONS={};
-    var VID_OPTIONS={};
+    // The image and video menu is the image tool's own list (GET /api/media/menu,
+    // built by menu() in skills/image-gen/scripts/generate.py), so a model added
+    // to the tool shows up here with no edit to this page. Each card carries its
+    // label, price, ratios, resolutions, duration control, whether it takes a
+    // reference image, and its options. The hand-typed copy this replaced had
+    // drifted: five video models had no button and Soul Cast sat under video.
+    var mgMenu={image:[],video:[]};
+    var mgMenuLoaded=false;
     var mgExtraState={};
-    var modelParamsLoaded=false;
 
-    var ALL_ASPECTS=['1:1','16:9','9:16','4:3','3:4','3:2','2:3','5:4','4:5','21:9','9:21'];
-    var modelRatios={};
+    var mgState={type:'image',model:null,aspect:'1:1',resolution:'2k',duration:5};
 
-    var MODEL_RESOLUTIONS={
-        'nano2':['1k','2k','4k'],'nano-pro':['1k','2k','4k'],
-        'flux':['1k','2k'],'cinematic':['1k','2k','4k'],
-        'gpt':['1k','2k','4k'],'kling':['1k','2k'],
-        'ms-studio':['1k','2k','4k'],'recraft':['1k','2k']
-    };
+    function mgModels(){return mgMenu[mgState.type]||[];}
 
-    var mgState={type:'image',model:'nano2',aspect:'1:1',resolution:'2k',duration:5};
+    function mgCard(){
+        var ms=mgModels();
+        for(var i=0;i<ms.length;i++){if(ms[i].id===mgState.model)return ms[i];}
+        return null;
+    }
 
-    // Keep in sync with IMAGE_MODELS/VIDEO_MODELS above when adding models
-    var MODEL_INPUTS={
-        'nano':true,'nano2':true,'nano-pro':true,
-        'flux':true,'flux-kontext':true,
-        'gpt':true,'grok':true,
-        'soul':true,'soul-cinematic':true,
-        'seedream':true,'seedream-lite':true,
-        'cinematic':true,'kling':true,
-        'auto':true,'ms':true,'ms-studio':true,
-        'hazel':true,
-        'kling2.6':true,
-        'veo3':'required',
-        'veo3.1':true,'veo3-lite':true,
-        'seedance':true,'seedance1.5':true,
-        'hailuo':true,
-        'wan':true,'wan2.6':true,
-        'grok-video':true,
-        'cinematic-video':true,'cinematic-v2':true,'cinematic3':true,
-        'marketing':true
-    };
+    function mgDefaultModel(t){
+        var ms=mgMenu[t]||[];
+        for(var i=0;i<ms.length;i++){if(ms[i]['default'])return ms[i].id;}
+        return ms.length?ms[0].id:null;
+    }
 
     var mgAttachState={path:null,uploading:false};
 
     function renderMgAttach(){
         var sec=document.getElementById('mg-attach-section');
-        var support=MODEL_INPUTS[mgState.model];
+        var card=mgCard();
+        var support=card?card.ref:null;
         if(!support){
             sec.style.display='none';
             mgAttachState.path=null;
@@ -3309,33 +3227,16 @@ body{
         document.getElementById('media-gen-config').style.display='block';
         if(tg&&tg.HapticFeedback)tg.HapticFeedback.selectionChanged();
         loadBalance();
-        var needRatios=!Object.keys(modelRatios).length;
-        var needParams=!modelParamsLoaded;
-        var pending=0;
-        function done(){pending--;if(pending<=0)renderAllMg();}
-        if(!needRatios&&!needParams){renderAllMg();return;}
-        if(needRatios){
-            pending++;
-            api('/api/media/model-ratios').then(function(data){modelRatios=data;done();}).catch(done);
-        }
-        if(needParams){
-            pending++;
-            api('/api/media/model-params').then(function(data){
-                var params=data.model_params||{};
-                var imgA=data.image_aliases||{};
-                var vidA=data.video_aliases||{};
-                var imgRev={};var vidRev={};
-                Object.keys(imgA).forEach(function(a){imgRev[imgA[a]]=a;});
-                Object.keys(vidA).forEach(function(a){vidRev[vidA[a]]=a;});
-                Object.keys(params).forEach(function(internal){
-                    if(imgRev[internal])IMG_OPTIONS[imgRev[internal]]=params[internal];
-                    if(vidRev[internal])VID_OPTIONS[vidRev[internal]]=params[internal];
-                });
-                modelParamsLoaded=true;
-                done();
-            }).catch(done);
-        }
-        if(pending===0)renderAllMg();
+        renderAllMg();
+        if(mgMenuLoaded)return;
+        api('/api/media/menu').then(function(data){
+            mgMenu={image:data.image||[],video:data.video||[]};
+            mgMenuLoaded=true;
+            if(!mgCard())mgState.model=mgDefaultModel(mgState.type);
+            renderAllMg();
+        }).catch(function(e){
+            showError('Could not load the models: '+e.message);
+        });
     }
 
     function hideMediaGenConfig(){
@@ -3371,7 +3272,7 @@ body{
             btn.addEventListener('click',function(){
                 if(mgState.type===t)return;
                 mgState.type=t;
-                mgState.model=t==='image'?'nano2':'kling';
+                mgState.model=mgDefaultModel(t);
                 mgState.aspect=t==='image'?'1:1':'16:9';
                 mgState.duration=5;
                 mgExtraState={};
@@ -3385,7 +3286,14 @@ body{
     function renderMgModels(){
         var el=document.getElementById('mg-models');
         el.innerHTML='';
-        var models=mgState.type==='image'?IMAGE_MODELS:VIDEO_MODELS;
+        var models=mgModels();
+        if(!models.length){
+            var empty=document.createElement('div');
+            empty.className='mg-model-cost';
+            empty.textContent=mgMenuLoaded?'No models':'Loading models...';
+            el.appendChild(empty);
+            return;
+        }
         models.forEach(function(m){
             var card=document.createElement('div');
             card.className='mg-model-card'+(m.id===mgState.model?' selected':'');
@@ -3416,20 +3324,25 @@ body{
         });
     }
 
-    function getModelAspects(){
-        var ratios=modelRatios[mgState.model];
-        if(ratios)return ratios;
-        return mgState.type==='image'?['1:1','16:9','9:16','4:3','3:4','3:2','2:3','5:4','4:5','21:9']:['16:9','9:16','1:1'];
-    }
-
     function renderMgAspect(){
         var sec=document.getElementById('mg-aspect').parentElement;
         var el=document.getElementById('mg-aspect');
         el.innerHTML='';
-        var aspects=getModelAspects();
-        if(!aspects||!aspects.length){sec.style.display='none';mgState.aspect=null;return;}
+        var card=mgCard();
+        var aspects=card?card.ratios:[];
+        if(!aspects.length){
+            sec.style.display='none';
+            // A model with no ratio setting (Hailuo, Grok Video 1.5) gets none sent.
+            if(card)mgState.aspect=null;
+            return;
+        }
         sec.style.display='block';
-        if(!mgState.aspect||aspects.indexOf(mgState.aspect)===-1)mgState.aspect=aspects[0];
+        // Keep the choice where the new model takes it, else this type's usual
+        // shape: the ratios come in the tool's order, 1:1 first, even for video.
+        var preferred=mgState.type==='image'?'1:1':'16:9';
+        if(!mgState.aspect||aspects.indexOf(mgState.aspect)===-1){
+            mgState.aspect=aspects.indexOf(preferred)!==-1?preferred:aspects[0];
+        }
         aspects.forEach(function(a){
             var btn=document.createElement('button');
             btn.className='mg-pill'+(a===mgState.aspect?' selected':'');
@@ -3446,13 +3359,14 @@ body{
     function renderMgDuration(){
         var sec=document.getElementById('mg-dur-section');
         if(mgState.type!=='video'){sec.style.display='none';return;}
-        var dur=MODEL_DURATIONS[mgState.model];
+        var card=mgCard();
+        var dur=card?card.duration:null;
         if(!dur){sec.style.display='none';return;}
         sec.style.display='block';
         var el=document.getElementById('mg-dur');
         el.innerHTML='';
         if(dur.type==='slider'){
-            if(mgState.duration<dur.min||mgState.duration>dur.max)mgState.duration=dur.def;
+            if(mgState.duration<dur.min||mgState.duration>dur.max)mgState.duration=dur['default'];
             var wrap=document.createElement('div');
             wrap.className='mg-slider-wrap';
             var slider=document.createElement('input');
@@ -3476,7 +3390,7 @@ body{
             wrap.appendChild(val);
             el.appendChild(wrap);
         }else if(dur.type==='preset'){
-            if(dur.options.indexOf(mgState.duration)===-1)mgState.duration=dur.def;
+            if(dur.options.indexOf(mgState.duration)===-1)mgState.duration=dur['default'];
             dur.options.forEach(function(d){
                 var btn=document.createElement('button');
                 btn.className='mg-pill'+(d===mgState.duration?' selected':'');
@@ -3496,7 +3410,8 @@ body{
         // No choice for this model: clear the value too, or the previous
         // model's 4k rides along in the request (review of #156).
         if(mgState.type==='video'){sec.style.display='none';mgState.resolution=null;return;}
-        var resolutions=MODEL_RESOLUTIONS[mgState.model];
+        var card=mgCard();
+        var resolutions=card?card.resolutions:null;
         if(!resolutions||!resolutions.length){sec.style.display='none';mgState.resolution=null;return;}
         sec.style.display='block';
         var el=document.getElementById('mg-res');
@@ -3518,8 +3433,8 @@ body{
     function renderMgOptions(){
         var sec=document.getElementById('mg-options-section');
         var el=document.getElementById('mg-options');
-        var optsMap=mgState.type==='image'?IMG_OPTIONS:VID_OPTIONS;
-        var opts=optsMap[mgState.model];
+        var card=mgCard();
+        var opts=card?card.options:null;
         if(!opts||!Object.keys(opts).length){sec.style.display='none';return;}
         sec.style.display='block';
         el.innerHTML='';
@@ -3579,10 +3494,11 @@ body{
     function updateGenerateBtn(){
         var btn=document.getElementById('mg-generate');
         var prompt=document.getElementById('mg-prompt').value.trim();
-        var needsAttach=(MODEL_INPUTS[mgState.model]==='required')&&!mgAttachState.path;
+        var card=mgCard();
+        var needsAttach=!!card&&card.ref==='required'&&!mgAttachState.path;
         // A request sent while the reference is still uploading leaves that
         // reference out of the job (audit F17, 2026-09-06).
-        btn.disabled=!prompt||needsAttach||mgAttachState.uploading;
+        btn.disabled=!card||!prompt||needsAttach||mgAttachState.uploading;
     }
 
     document.getElementById('mg-back').addEventListener('click',hideMediaGenConfig);
@@ -3595,13 +3511,14 @@ body{
         var config={
             type:mgState.type,
             model:mgState.model,
-            aspect_ratio:mgState.aspect,
             prompt:prompt
         };
+        // Sent as null, a missing ratio made the server refuse Hailuo outright.
+        if(mgState.aspect)config.aspect_ratio=mgState.aspect;
         if(mgState.resolution)config.resolution=mgState.resolution;
         if(mgState.type==='video'){
-            var dur=MODEL_DURATIONS[mgState.model];
-            if(dur)config.duration=mgState.duration;
+            var card=mgCard();
+            if(card&&card.duration)config.duration=mgState.duration;
         }
         if(mgAttachState.path){
             config.ref_image=mgAttachState.path;

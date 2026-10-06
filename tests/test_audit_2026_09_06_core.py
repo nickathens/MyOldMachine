@@ -569,7 +569,9 @@ class MediaGenControlTests(unittest.TestCase):
 
     def _model_click_handler(self):
         start = self.source.index("function renderMgModels()")
-        end = self.source.index("function getModelAspects()")
+        # to the next named function: getModelAspects() went when the menu
+        # started coming from the image tool (/api/media/menu)
+        end = self.source.index("function ", start + 10)
         return self.source[start:end]
 
     def test_choosing_a_model_re_renders_every_dependent_control(self):
@@ -583,7 +585,8 @@ class MediaGenControlTests(unittest.TestCase):
         start = self.source.index("function updateGenerateBtn()")
         body = self.source[start:self.source.index("}", self.source.index("btn.disabled", start))]
         self.assertIn("mgAttachState.uploading", body)
-        self.assertIn("btn.disabled=!prompt||needsAttach||mgAttachState.uploading;", body)
+        # !card: nothing to send until the menu has loaded a model
+        self.assertIn("btn.disabled=!card||!prompt||needsAttach||mgAttachState.uploading;", body)
 
     def test_a_failed_upload_hands_control_back(self):
         upload = self.source.index("mgAttachState.uploading=true;")

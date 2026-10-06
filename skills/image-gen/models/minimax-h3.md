@@ -17,7 +17,7 @@ paid generation yet.
 ## What it actually is
 
 An omni-modal video model: text, images, video and audio all enter at the same level, and it returns
-one clip of 5-15 s with **native stereo audio generated in the same pass** — dialogue, room tone,
+one clip of 4-15 s with **native stereo audio generated in the same pass** — dialogue, room tone,
 foley, score. It is currently ranked #1 for video editing and #2 for text-to-video on Artificial
 Analysis.
 
@@ -41,7 +41,7 @@ structured form is our job, and that is what this file is for.
 
 | | MiniMax direct (official docs) | Higgsfield route (our CLI) |
 |---|---|---|
-| Duration | 4-15 s, integers | **5-15 s** — the floor is 5 here, not 4 **[live]** |
+| Duration | 4-15 s, integers | **4-15 s**, the same; the floor here was 5 until October **[live 2026-10-06]** |
 | Resolution | 768p native, 2K via Regenerate-2K | **2K only**, no cheaper tier exposed **[live]** |
 | Frame rate | 24 fps | same |
 | Audio | native, 32 kHz stereo, in-pass | same |
@@ -81,11 +81,12 @@ you ask for.
 
 What is still true, and is the real constraint: **there is no 768p draft tier on this route, so
 every roll is a full-price 2K roll.** Models below it in that table mostly have a cheap resolution
-step; H3 does not. Block the idea out on `kling-turbo` (7.5 for 5 s) or `seedance-mini` (12.5) and
+step; H3 does not. Block the idea out on `kling-turbo` (7.5 for 5 s) or `seedance-mini` (5) and
 bring only the settled shot here.
 
-Verified rejections **[live]**: `--duration 4` and `--duration 3` are refused with "Input should be
-greater than or equal to 5"; `--duration 16` with "less than or equal to 15".
+Verified rejections **[live 2026-10-06]**: `--duration 3` is refused with "Input should be greater
+than or equal to 4", and 4 quotes 8 credits (on 2026-08-07 the floor here was 5); `--duration 16` with
+"less than or equal to 15".
 
 ---
 
@@ -383,7 +384,8 @@ Official (authoritative):
 - https://www.minimax.io/news/minimax-h3-open-source — release announcement.
 
 Live probes on this machine (2026-08-07): `higgsfield model get minimax_h3`, `higgsfield generate
-cost minimax_h3 --duration {3,4,5,6,10,15,16}`. Source of every **[live]** marking.
+cost minimax_h3 --duration {3,4,5,6,10,15,16}`, the duration probe re-run 2026-10-06. Source of every
+**[live]** marking.
 
 Practitioner (cross-checked, lower trust):
 - https://huggingface.co/blog/ResterChed/minimax-h3-hailuo-3-0 — specs, pricing, ranking.
@@ -392,5 +394,5 @@ Practitioner (cross-checked, lower trust):
 
 **Flagged, not resolved:** whether Higgsfield runs Context-IR rewriting server-side before
 generation is undocumented — this guide assumes it does not and writes the structured form
-explicitly, which is safe either way. The 4 s floor in MiniMax's docs versus the 5 s floor measured
-on our route is unexplained; treat 5 s as the real minimum here.
+explicitly, which is safe either way. The 5 s floor measured on our route on 2026-08-07 had become
+MiniMax's documented 4 s by 2026-10-06; treat 4 s as the minimum now.

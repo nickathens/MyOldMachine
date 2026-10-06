@@ -211,10 +211,12 @@ class TestMiniMaxH3(unittest.TestCase):
     def test_old_hailuo_alias_unchanged(self):
         self.assertEqual(generate.resolve_model("hailuo", "video"), "minimax_hailuo")
 
-    def test_duration_floor_is_five_not_four(self):
-        # MiniMax's own docs say 4s; the Higgsfield route rejects anything under 5.
+    def test_duration_floor_is_four(self):
+        # MiniMax's own docs say 4s. The Higgsfield route refused anything under
+        # 5 on 2026-08-07 and takes 4 since: re-probed 2026-10-06, 4 s quotes 8
+        # credits and 3 s gives "Input should be greater than or equal to 4".
         dur = generate.VIDEO_DURATIONS["minimax_h3"]
-        self.assertEqual(dur["min"], 5)
+        self.assertEqual(dur["min"], 4)
         self.assertEqual(dur["max"], 15)
         self.assertEqual(dur["default"], 5)
 
@@ -268,13 +270,21 @@ class TestVideoCatalogAccuracy(unittest.TestCase):
             ("grok_video_v15", 2, 15),
             ("happy_horse_video", 3, 15),
             ("seedance_2_5", 4, 30),  # re-probed 2026-08-09; the sweep recorded 5
+            # re-probed 2026-10-06
+            ("gemini_omni", 4, 10),         # was presets 4/6/8; 5, 7, 9 and 10 quote
+            ("minimax_h3", 4, 15),          # was 5-15
+            ("cinematic_studio_3_0", 4, 20),         # floor was 5; no ceiling enforced
+            ("cinematic_studio_video_3_5", 4, 20),   # floor was 5; no ceiling enforced
+            ("marketing_studio_video", 4, 60),       # floor was 5; no ceiling enforced
         ):
             dur = generate.VIDEO_DURATIONS[job]
+            self.assertEqual(dur["type"], "slider", msg=job)
             self.assertEqual((dur["min"], dur["max"]), (lo, hi), msg=job)
 
     def test_variant_not_model_is_the_param_name(self):
-        # `--model` is rejected outright: "Unknown params: model".
-        for job in ("veo3", "veo3_1", "minimax_hailuo"):
+        # `--model` is rejected outright: "Unknown params: model". flux_2 joined
+        # them on 2026-10-06; the Mini App's FLUX 2 card sent model=pro.
+        for job in ("veo3", "veo3_1", "minimax_hailuo", "flux_2"):
             params = generate.MODEL_PARAMS[job]
             self.assertIn("variant", params, msg=f"{job} should expose `variant`")
             self.assertNotIn("model", params, msg=f"{job} still exposes `model`")

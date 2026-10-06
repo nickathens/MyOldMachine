@@ -15,7 +15,7 @@ Clear, descriptive prose. Natural language. Word order matters: put the most imp
 - **Priority ordering.** FLUX pays more attention to what comes first. Order: Main subject, key action, critical style, essential context, secondary details.
 - **No negative prompts.** FLUX does not support negative prompts. Describe what you want, not what you don't want. Instead of "no blur" write "sharp focus" or "crisp detail".
 - **Camera and film stocks.** "Shot on Fujifilm X-T5, 35mm f/1.4" produces more authentic results than "professional photo". Specify actual camera models and lenses.
-- **Typography.** FLUX 2.0 Flex is the strongest for readable text; `flux` runs Pro unless you pass `--extra '{"model": "flex"}'` (pro, flex or max). Enclose text in quotes. Specify font characteristics.
+- **Typography.** FLUX 2.0 Flex is the strongest for readable text; `flux` runs Pro unless you pass `--extra '{"variant": "flex"}'` (pro, flex or max; the param was `model` until Higgsfield renamed it, and `model` is now refused). Enclose text in quotes. Specify font characteristics.
 - **Hex color matching.** Supports hex codes for precise color control: "a #FF4500 orange button on a #1A1A1A dark background". Extremely useful for product and brand work.
 - **Multi-reference.** Flux Kontext maintains character consistency, product styling, and brand identity across generations using reference images.
 - **Aspect ratio.** Results improve when the aspect ratio matches the described scene. Landscapes in 16:9, portraits in 3:4, products in 1:1.

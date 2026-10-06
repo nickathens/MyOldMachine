@@ -1219,77 +1219,29 @@ async def unarchive_project(slug: str, user: dict = Depends(_get_user)):
 # ─── /api/media ──────────────────────────────────────────────────────
 
 
-_ALL_RATIOS = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"]
+def _media_menu() -> dict:
+    """The image tool's own menu, read fresh on every call: generate.menu().
 
-_PER_MODEL_RATIOS = {
-    "nano_banana": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
-    "nano_banana_flash": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"],
-    "nano_banana_2": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
-    "flux_2": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "flux_kontext": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "gpt_image_2": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
-    "imagegen_2_0": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
-    "grok_image": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "text2image_soul_v2": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
-    "soul_cinematic": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4"],
-    "soul_location": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "9:21"],
-    "seedream_v4_5": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4"],
-    "seedream_v5_lite": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "openai_hazel": ["1:1", "16:9", "9:16", "4:3"],
-    "cinematic_studio_2_5": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "kling_omni_image": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5"],
-    "image_auto": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "ms_image": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
-    "marketing_studio_image": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
-    "z_image": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "soul_cast": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"],
-    "kling3_0": ["1:1", "16:9", "9:16"],
-    "kling2_6": ["1:1", "16:9", "9:16"],
-    "veo3": ["16:9", "9:16"],
-    "veo3_1": ["16:9", "9:16"],
-    "veo3_1_lite": ["16:9", "9:16", "1:1"],
-    "seedance_2_0": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
-    "seedance1_5": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
-    "minimax_hailuo": [],
-    "wan2_7": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "wan2_6": ["1:1", "16:9", "9:16"],
-    "grok_video": ["1:1", "16:9", "9:16"],
-    "cinematic_studio_3_0": ["1:1", "16:9", "9:16"],
-    "cinematic_studio_video": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "cinematic_studio_video_v2": ["1:1", "16:9", "9:16", "4:3", "3:4"],
-    "marketing_studio_video": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
-}
+    The page carried a hand-typed copy of the model list and this module a copy
+    of every model's ratios, and both drifted from the tool: the five video
+    models the tool gained on 2026-08-07 never got a button, Soul Cast stayed on
+    the video list after the tool moved it to images, and models were offered
+    ratios they refuse (Soul Cast takes 16:9 alone and was offered eleven). An
+    edit to the tool now reaches the menu with no restart.
+    """
+    spec = importlib.util.spec_from_file_location("image_gen_generate", str(GENERATE_SCRIPT))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.menu()
 
 
-@app.get("/api/media/model-ratios")
-async def media_model_ratios(user: dict = Depends(_get_user)):
+@app.get("/api/media/menu")
+async def media_menu(user: dict = Depends(_get_user)):
     try:
-        spec = importlib.util.spec_from_file_location("generate", str(GENERATE_SCRIPT))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        aliases = {}
-        for alias, jst in mod.MODEL_ALIASES.items():
-            aliases[alias] = _PER_MODEL_RATIOS.get(jst, _ALL_RATIOS)
-        for alias, jst in mod.VIDEO_MODEL_ALIASES.items():
-            aliases[alias] = _PER_MODEL_RATIOS.get(jst, ["16:9", "9:16", "1:1"])
-        return aliases
+        return _media_menu()
     except Exception as e:
-        log.error("Model ratios failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/media/model-params")
-async def media_model_params(user: dict = Depends(_get_user)):
-    try:
-        result = subprocess.run(
-            [sys.executable, str(GENERATE_SCRIPT), "--model-params"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout)
-    except Exception as e:
-        log.error("Model params failed: %s", e)
-    raise HTTPException(status_code=500, detail="Could not fetch model params")
+        log.error("Media menu failed: %s", e)
+        raise HTTPException(status_code=500, detail="Could not read the model list")
 
 
 @app.get("/api/media/balance")
@@ -1451,12 +1403,25 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         model = mg.get("model", "nano2")
         if not model or not model.replace("-", "").replace(".", "").replace("_", "").isalnum():
             raise HTTPException(status_code=400, detail="Invalid model")
-        aspect = mg.get("aspect_ratio", "1:1")
+        # Only a model the menu offers for this type: the page and this check
+        # read the same list, so "soul-cast" as a video (a still model since
+        # 2026-08-07) is refused here rather than by Higgsfield after the turn.
+        try:
+            cards = {card["id"]: card for card in _media_menu()[mg_type]}
+        except Exception as e:
+            log.error("Media menu failed: %s", e)
+            raise HTTPException(status_code=503, detail="Could not read the model list")
+        if model not in cards:
+            raise HTTPException(status_code=400, detail=f"Unknown {mg_type} model")
+        # A model with no ratio or resolution setting (Hailuo and Grok Video 1.5
+        # have no ratio, Soul no resolution) gets no row for it, so the page
+        # sends none. Requiring one refused Hailuo outright.
+        aspect = mg.get("aspect_ratio") or None
         valid_aspects = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "9:21"}
-        if aspect not in valid_aspects:
+        if aspect is not None and aspect not in valid_aspects:
             raise HTTPException(status_code=400, detail="Invalid aspect ratio")
-        resolution = mg.get("resolution", "2k")
-        if resolution not in ("1k", "2k", "4k"):
+        resolution = mg.get("resolution") or None
+        if resolution is not None and resolution not in ("1k", "2k", "4k"):
             raise HTTPException(status_code=400, detail="Invalid resolution")
         duration = mg.get("duration")
         if duration is not None:
@@ -1495,8 +1460,10 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
 
         cost_info = ""
         try:
-            cost_cmd = [sys.executable, str(GENERATE_SCRIPT), prompt[:120], "--cost", "-m", model, "-a", aspect]
-            if mg_type == "image":
+            cost_cmd = [sys.executable, str(GENERATE_SCRIPT), prompt[:120], "--cost", "-m", model]
+            if aspect:
+                cost_cmd.extend(["-a", aspect])
+            if mg_type == "image" and resolution:
                 cost_cmd.extend(["--resolution", resolution])
             if mg_type == "video":
                 cost_cmd.append("--video")
@@ -1513,11 +1480,10 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         except Exception as e:
             log.warning("Cost estimation failed: %s", e)
 
-        lines = [
-            f"Media Gen: {mg_type.title()} using {model}",
-            f"Aspect: {aspect}",
-        ]
-        if mg_type == "image":
+        lines = [f"Media Gen: {mg_type.title()} using {cards[model]['name']}"]
+        if aspect:
+            lines.append(f"Aspect: {aspect}")
+        if mg_type == "image" and resolution:
             lines.append(f"Resolution: {resolution}")
         if mg_type == "video" and duration:
             lines.append(f"Duration: {duration}s")
@@ -1532,6 +1498,11 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         _send_bot_message(user_id, "\n".join(lines))
 
         mg["extra_params"] = safe_extra
+        # Unset stays unset in the hand-off too, so the turn passes the tool
+        # nothing and the model keeps its own setting.
+        for key in ("aspect_ratio", "resolution"):
+            if not mg.get(key):
+                mg.pop(key, None)
         if ref_image:
             mg["ref_image"] = str(ref_image)
         pending = Path(f"/tmp/media_gen_pending_{user_id}.json")
