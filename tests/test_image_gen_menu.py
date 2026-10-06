@@ -10,9 +10,16 @@ the tool used to drop on the way to Higgsfield. Offline: subprocess.run is
 replaced, nothing reaches Higgsfield.
 """
 
+import asyncio
 import importlib.util
+import inspect
 import json
+import os
 import re
+import shlex
+import shutil
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,6 +27,13 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "skills" / "image-gen" / "scripts" / "generate.py"
 PAGE = ROOT / "miniapp" / "static" / "index.html"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+os.environ["MOM_TEST"] = "1"  # keep test logging out of the production bot.log
+
+import bot  # noqa: E402
+import miniapp.server as srv  # noqa: E402
 
 
 def load():
@@ -190,6 +204,13 @@ class ChosenSettingsReachHiggsfield(unittest.TestCase):
         self.gen.estimate_cost("nano2", "a cat", resolution="2k", kind="image")
         self.assertEqual(self.flag(self.calls[-1], "--resolution"), "2k")
 
+    def test_2k_reaches_a_model_the_menu_does_not_list(self):
+        # Chat can name any Higgsfield job type. flux_3_image has no row here
+        # yet and defaults to 1k with 2k on offer (model get, 2026-10-06), so
+        # holding back an unknown model's resolution would buy 1K again.
+        self.gen.generate_higgsfield("a cat", "/tmp/x.jpg", model="flux_3_image", resolution="2k")
+        self.assertEqual(self.flag(self.calls[-1], "--resolution"), "2k")
+
     def test_no_resolution_to_a_model_without_one(self):
         # "Unknown params: resolution": a soul job asked for 4k failed outright
         self.gen.generate_higgsfield("a cat", "/tmp/x.jpg", model="soul", resolution="4k")
@@ -268,9 +289,14 @@ class BotHandOffNamesOnlyWhatWasSent(unittest.TestCase):
     every Hailuo and Soul request and put them in the cost command."""
 
     def setUp(self):
-        src = (ROOT / "bot.py").read_text(encoding="utf-8")
-        start = src.index('pending_mg = Path(f"/tmp/media_gen_pending_{user_id}.json")')
-        self.block = src[start:src.index("user_message = mg_context", start)]
+        self.block = inspect.getsource(bot._media_gen_turn)
+
+    def test_the_message_handler_builds_the_turn_with_it(self):
+        # EveryCardReachesTheToolIntact drives the helper itself; this pins
+        # that the handler still hands it the pending file it just read.
+        src = inspect.getsource(bot._process_single_inner)
+        self.assertIn("mg_context = _media_gen_turn(mg, user_id)\n", src)
+        self.assertIn('user_message = mg_context + ("\\n\\nUser says: " + user_message if user_message else "")', src)
 
     def test_no_invented_defaults(self):
         self.assertNotIn('mg.get("aspect_ratio", "1:1")', self.block)
@@ -288,6 +314,89 @@ class BotHandOffNamesOnlyWhatWasSent(unittest.TestCase):
         self.assertEqual(missing, [])
         for guide in guides:
             self.assertTrue((SCRIPT.parent.parent / "models" / guide).is_file(), guide)
+
+
+class EveryCardReachesTheToolIntact(unittest.TestCase):
+    """Page, server, bot turn, tool: each card as the page preselects it.
+
+    The request goes through /api/launch (the quote and the Telegram message
+    replaced), its pending file becomes the turn in bot._media_gen_turn, and
+    the cost command that turn tells the agent to run is parsed by
+    generate.py's own main(). The source checks above cannot see a turn that
+    reads "-a None" for Hailuo, which the tool's parser refuses.
+    """
+
+    UID = "mom-test-media-hand-off"
+
+    def setUp(self):
+        self.pending = Path(f"/tmp/media_gen_pending_{self.UID}.json")
+        self.assertFalse(self.pending.exists(), "a pending file from another run is in the way")
+        self.addCleanup(self.pending.unlink, missing_ok=True)
+        uploads = Path(tempfile.mkdtemp(prefix="mom-test-media-uploads-"))
+        self.addCleanup(shutil.rmtree, uploads, ignore_errors=True)
+        for obj, name, value in ((srv, "UPLOAD_DIR", uploads),
+                                 (srv, "_send_bot_message", mock.Mock(return_value=True)),
+                                 (srv.subprocess, "run", mock.Mock(return_value=mock.Mock(returncode=1, stdout="", stderr="")))):
+            patcher = mock.patch.object(obj, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def page_config(self, kind, card):
+        config = {"type": kind, "model": card["id"], "prompt": "a lighthouse at dusk"}
+        usual = "1:1" if kind == "image" else "16:9"
+        if card["ratios"]:
+            config["aspect_ratio"] = usual if usual in card["ratios"] else card["ratios"][0]
+        if card.get("resolutions"):
+            res = card["resolutions"]
+            config["resolution"] = res[1 if len(res) > 1 else 0]
+        if card.get("duration"):
+            config["duration"] = card["duration"]["default"]
+        if card["ref"] == "required":
+            ref = srv.UPLOAD_DIR / f"{self.UID}_ref.png"
+            ref.write_bytes(b"\x89PNG\r\n\x1a\n")
+            config["ref_image"] = str(ref)
+        options = {k: v["default"] for k, v in card["options"].items()}
+        if options:
+            config["extra_params"] = options
+        return config
+
+    def quote_args(self, turn):
+        line = next(ln for ln in turn.splitlines() if ln.startswith("python skills/image-gen/scripts/generate.py "))
+        argv = shlex.split(line)[2:]
+        tool = load()
+        with mock.patch.object(tool, "estimate_cost", return_value={}) as quote, \
+                mock.patch("sys.argv", ["generate.py", *argv]), mock.patch("builtins.print"):
+            tool.main()
+        return quote.call_args.kwargs
+
+    def test_every_card(self):
+        for kind, cards in gen.menu().items():
+            for card in cards:
+                with self.subTest(kind=kind, model=card["id"]):
+                    config = self.page_config(kind, card)
+                    # a copy, as the request body is: the server edits its config in place
+                    body = {"skill": "media-gen", "config": json.loads(json.dumps(config))}
+                    self.assertTrue(asyncio.run(srv.launch_skill(_Request(body), {"_id": self.UID}))["ok"])
+                    turn = bot._media_gen_turn(json.loads(self.pending.read_text()), self.UID)
+                    self.pending.unlink()
+                    sent = self.quote_args(turn)
+                    self.assertEqual(sent["kind"], kind)
+                    self.assertEqual(sent["aspect_ratio"], config.get("aspect_ratio"))
+                    self.assertEqual(sent["resolution"], config.get("resolution"))
+                    self.assertEqual(sent["duration"], config.get("duration"))
+                    self.assertEqual(sent["extra_params"], config.get("extra_params"))
+                    self.assertEqual(sent["ref_image"], config.get("ref_image"))
+                    for label, key in (("Aspect Ratio:", "aspect_ratio"), ("Resolution:", "resolution"),
+                                       ("Duration:", "duration")):
+                        self.assertEqual(label in turn, key in config, label)
+
+
+class _Request:
+    def __init__(self, body):
+        self._body = body
+
+    async def json(self):
+        return self._body
 
 
 @unittest.skipUnless(importlib.util.find_spec("playwright"), "needs Playwright with Chromium")

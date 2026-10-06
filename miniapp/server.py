@@ -1431,6 +1431,34 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
                     raise HTTPException(status_code=400, detail="Duration must be 1-60 seconds")
             except (ValueError, TypeError):
                 raise HTTPException(status_code=400, detail="Invalid duration")
+        # Hold the request to the card the page drew from. A setting the model
+        # does not have is dropped: a page loaded before an update offers every
+        # video the default ratios, and Hailuo's message then read "Aspect:
+        # 16:9". A value the model does not take is refused here, by name,
+        # rather than by Higgsfield after the turn (Soul Cast at 1:1, Nano 2
+        # Lite at 4K, Seedance 2.0 at 30 s, Veo 3.1 at 5 s).
+        card = cards[model]
+        if aspect is not None and not card["ratios"]:
+            aspect = None
+        elif aspect is not None and aspect not in card["ratios"]:
+            raise HTTPException(status_code=400, detail=f"{card['name']} takes {', '.join(card['ratios'])}")
+        resolutions = card.get("resolutions") or []
+        if resolution is not None and not resolutions:
+            resolution = None
+        elif resolution is not None and resolution not in resolutions:
+            raise HTTPException(status_code=400, detail=f"{card['name']} takes {', '.join(r.upper() for r in resolutions)}")
+        control = card.get("duration")
+        if duration is not None and not control:
+            duration = None
+        elif duration is not None:
+            if control["type"] == "slider":
+                allowed = f"{control['min']} to {control['max']} s"
+                taken = control["min"] <= duration <= control["max"]
+            else:
+                allowed = ", ".join(str(o) for o in control["options"]) + " s"
+                taken = duration in control["options"]
+            if not taken:
+                raise HTTPException(status_code=400, detail=f"{card['name']} takes {allowed}")
 
         prompt = mg.get("prompt", "").strip()
         if not prompt:
@@ -1448,6 +1476,10 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
                 raise HTTPException(status_code=403, detail="Reference image does not belong to you")
             if ref_path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
                 raise HTTPException(status_code=400, detail="Invalid image format")
+            if not card["ref"]:
+                raise HTTPException(status_code=400, detail=f"{card['name']} takes no reference image")
+        elif card["ref"] == "required":
+            raise HTTPException(status_code=400, detail=f"{card['name']} needs a reference image")
 
         extra_params = mg.get("extra_params", {})
         if extra_params and not isinstance(extra_params, dict):
@@ -1498,11 +1530,13 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         _send_bot_message(user_id, "\n".join(lines))
 
         mg["extra_params"] = safe_extra
-        # Unset stays unset in the hand-off too, so the turn passes the tool
-        # nothing and the model keeps its own setting.
-        for key in ("aspect_ratio", "resolution"):
-            if not mg.get(key):
+        # The hand-off carries what was checked above. Unset stays unset, so the
+        # turn passes the tool nothing and the model keeps its own setting.
+        for key, value in (("aspect_ratio", aspect), ("resolution", resolution), ("duration", duration)):
+            if value is None:
                 mg.pop(key, None)
+            else:
+                mg[key] = value
         if ref_image:
             mg["ref_image"] = str(ref_image)
         pending = Path(f"/tmp/media_gen_pending_{user_id}.json")

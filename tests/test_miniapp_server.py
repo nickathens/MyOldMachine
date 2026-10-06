@@ -8,6 +8,7 @@ helpers; covering the data scoping rules is what actually matters.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -244,6 +245,25 @@ class TestMediaMenu(unittest.TestCase):
     def test_no_ratio_table_of_its_own(self) -> None:
         self.assertFalse(hasattr(srv, "_PER_MODEL_RATIOS"))
 
+    def test_an_edit_to_the_tool_reaches_the_menu_without_a_restart(self) -> None:
+        # The menu is read from the file on every call, as _media_menu says. A
+        # copy cached at the first read would keep serving the old list until
+        # the Mini App restarted.
+        import asyncio
+        tmp = Path(tempfile.mkdtemp(prefix="mom-test-media-menu-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        edited = tmp / "generate.py"
+        source = srv.GENERATE_SCRIPT.read_text(encoding="utf-8")
+        old = '"name": "Nano 2", '
+        self.assertEqual(source.count(old), 1)
+        edited.write_text(source, encoding="utf-8")
+        with unittest.mock.patch.object(srv, "GENERATE_SCRIPT", edited):
+            before = asyncio.run(srv.media_menu({"_id": "1"}))
+            edited.write_text(source.replace(old, '"name": "Nano 2 (edited)", '), encoding="utf-8")
+            after = asyncio.run(srv.media_menu({"_id": "1"}))
+        nano2 = [[c["name"] for c in menu["image"] if c["id"] == "nano2"] for menu in (before, after)]
+        self.assertEqual(nano2, [["Nano 2"], ["Nano 2 (edited)"]])
+
 
 class _FakeLaunchRequest:
     def __init__(self, body: dict):
@@ -280,6 +300,17 @@ class TestMediaGenLaunch(unittest.TestCase):
         run = unittest.mock.patch.object(srv.subprocess, "run", side_effect=fake_run)
         run.start()
         self.addCleanup(run.stop)
+        uploads = Path(tempfile.mkdtemp(prefix="mom-test-media-uploads-"))
+        self.addCleanup(shutil.rmtree, uploads, ignore_errors=True)
+        upload_dir = unittest.mock.patch.object(srv, "UPLOAD_DIR", uploads)
+        upload_dir.start()
+        self.addCleanup(upload_dir.stop)
+
+    def upload(self) -> str:
+        """A reference image as /api/media/upload names it, in a temp upload dir."""
+        path = srv.UPLOAD_DIR / f"{self.UID}_ref.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return str(path)
 
     def launch(self, config: dict) -> dict:
         import asyncio
@@ -346,12 +377,69 @@ class TestMediaGenLaunch(unittest.TestCase):
                         config["resolution"] = res[1 if len(res) > 1 else 0]
                     if card.get("duration"):
                         config["duration"] = card["duration"]["default"]
+                    if card["ref"] == "required":
+                        # the page holds Generate until one is attached (Veo 3)
+                        config["ref_image"] = self.upload()
                     config["extra_params"] = {k: v["default"] for k, v in card["options"].items()}
                     self.pending.unlink(missing_ok=True)
                     self.assertTrue(self.launch(config)["ok"])
                     quote = self.quotes[-1]
                     self.assertEqual("-a" in quote, bool(card["ratios"]))
                     self.assertEqual("--video" in quote, kind == "video")
+
+    def test_a_setting_the_model_does_not_have_is_dropped(self) -> None:
+        # A page loaded before an update offers every video the default ratios,
+        # so it sent 16:9 for Hailuo and the message read "Aspect: 16:9". The
+        # tool drops it too, so dropping it here changes no job.
+        cases = (
+            ({"type": "video", "model": "hailuo", "aspect_ratio": "16:9", "duration": 6}, "aspect_ratio", "-a", "Aspect:"),
+            ({"type": "image", "model": "soul", "aspect_ratio": "1:1", "resolution": "4k"}, "resolution", "--resolution", "Resolution:"),
+            ({"type": "video", "model": "veo3", "aspect_ratio": "16:9", "duration": 8, "ref_image": None}, "duration", "--duration", "Duration:"),
+        )
+        for config, key, flag, label in cases:
+            with self.subTest(model=config["model"]):
+                if "ref_image" in config:
+                    config["ref_image"] = self.upload()
+                self.pending.unlink(missing_ok=True)
+                self.assertTrue(self.launch(dict(config, prompt="a test"))["ok"])
+                self.assertNotIn(key, json.loads(self.pending.read_text()))
+                self.assertNotIn(flag, self.quotes[-1])
+                self.assertNotIn(label, self.sent[-1])
+
+    def test_a_value_the_model_does_not_take_is_refused_by_name(self) -> None:
+        # Each of these was accepted and then refused by Higgsfield, at the
+        # quote and again after the turn.
+        cases = (
+            ({"type": "image", "model": "soul-cast", "aspect_ratio": "1:1"}, "Soul Cast takes 16:9"),
+            ({"type": "image", "model": "nano-lite", "aspect_ratio": "1:1", "resolution": "4k"}, "Nano 2 Lite takes 1K"),
+            ({"type": "video", "model": "seedance", "aspect_ratio": "16:9", "duration": 16}, "Seedance 2.0 takes 4 to 15 s"),
+            ({"type": "video", "model": "seedance", "aspect_ratio": "16:9", "duration": 3}, "Seedance 2.0 takes 4 to 15 s"),
+            ({"type": "video", "model": "veo3.1", "aspect_ratio": "16:9", "duration": 5}, "Veo 3.1 takes 4, 6, 8 s"),
+            ({"type": "image", "model": "z", "aspect_ratio": "1:1", "ref_image": None}, "Z Image takes no reference image"),
+            ({"type": "video", "model": "veo3", "aspect_ratio": "16:9"}, "Veo 3 needs a reference image"),
+        )
+        for config, detail in cases:
+            with self.subTest(model=config["model"]):
+                if "ref_image" in config:
+                    config["ref_image"] = self.upload()
+                with self.assertRaises(HTTPException) as ctx:
+                    self.launch(dict(config, prompt="a test"))
+                self.assertEqual((ctx.exception.status_code, ctx.exception.detail), (400, detail))
+                self.assertFalse(self.pending.exists())
+
+    def test_a_slider_takes_both_its_ends(self) -> None:
+        for seconds in (4, 15):
+            with self.subTest(seconds=seconds):
+                self.pending.unlink(missing_ok=True)
+                self.launch({"type": "video", "model": "seedance", "aspect_ratio": "16:9", "duration": seconds, "prompt": "a wave"})
+                self.assertEqual(json.loads(self.pending.read_text())["duration"], seconds)
+
+    def test_the_hand_off_carries_the_checked_values(self) -> None:
+        self.launch({"type": "video", "model": "kling", "aspect_ratio": "16:9", "duration": "7",
+                     "ref_image": self.upload(), "prompt": "a car"})
+        handed = json.loads(self.pending.read_text())
+        self.assertEqual((handed["aspect_ratio"], handed["duration"]), ("16:9", 7))
+        self.assertEqual(handed["ref_image"], str(srv.UPLOAD_DIR / f"{self.UID}_ref.png"))
 
 
 class TestClaudeModelCatalog(unittest.TestCase):
