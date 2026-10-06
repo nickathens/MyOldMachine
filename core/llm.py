@@ -39,7 +39,13 @@ from core.tools import (
     extract_tool_calls_from_text,
 )
 from core.model_efforts import (
+    KIMI_ACCEPTS_TEMPERATURE,
+    OPENAI_CHAT_TOOLS_NEED_NO_REASONING,
+    claude_accepts_temperature as _claude_accepts_temperature,
+    gemini_accepts_temperature,
     model_needs_newer_cli as _codex_model_needs_newer_cli,
+    model_version,
+    openai_is_reasoning,
 )
 from core.conversation_format import wrap_turn
 from core.prompt_security import wrap_tool_result
@@ -860,16 +866,9 @@ async def _http_get_health(
     return False, f"{provider_label}: HTTP {resp.status_code} {snippet}".rstrip()
 
 
-# Anthropic models that still accept a non-default ``temperature``. Sonnet 5,
-# Fable/Mythos 5, and Opus 4.7+ return HTTP 400 if sampling params are set,
-# while omitting the field is accepted by every model — so temperature is sent
-# only to legacy models known to take it.
-_CLAUDE_SAMPLING_OK = ("sonnet-4-", "opus-4-1", "opus-4-5", "opus-4-6", "haiku")
-
-
-def _claude_accepts_temperature(model: str) -> bool:
-    m = model.lower()
-    return any(tag in m for tag in _CLAUDE_SAMPLING_OK)
+# Which Claude models still take a temperature lives in core.model_efforts
+# (imported above as _claude_accepts_temperature), because the reflection and
+# email triage fallbacks build Anthropic requests too and need the same answer.
 
 
 # --- Multimodal image helpers ---
@@ -1012,7 +1011,7 @@ class ClaudeCLIProvider(LLMProvider):
     PROGRESS_SCHEDULE = ()
     PROGRESS_INTERVAL = 600  # flat 10-minute cadence, first update included
 
-    def __init__(self, model: str = "claude-sonnet-5", api_key: str = ""):
+    def __init__(self, model: str = "claude-sonnet-5-5", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
         # Resolve to an absolute path so sudoers can match it literally in
@@ -1878,7 +1877,7 @@ class CodexCLIProvider(LLMProvider):
     PROGRESS_SCHEDULE = ()
     PROGRESS_INTERVAL = 600  # flat 10-minute cadence, first update included
 
-    def __init__(self, model: str = "gpt-5.5", api_key: str = ""):
+    def __init__(self, model: str = "gpt-6.1-sol", api_key: str = ""):
         super().__init__(model, api_key)
         self._bot_dir = Path(__file__).parent.parent
         # Absolute path for sudoers literal command matching AND so launchd /
@@ -1945,7 +1944,8 @@ class CodexCLIProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # GPT-5.x and GPT-4o families used by Codex CLI all support vision input
+        # Every model Codex serves lists input_modalities ["text", "image"] in
+        # the catalog it fetches (all ten rows, 2026-10-05).
         return True
 
     @property
@@ -2562,7 +2562,7 @@ class FreeCCProvider(ClaudeCLIProvider):
 
     DEFAULT_PROXY_URL = "http://localhost:8082/v1"
 
-    def __init__(self, model: str = "claude-sonnet-5", api_key: str = ""):
+    def __init__(self, model: str = "claude-sonnet-5-5", api_key: str = ""):
         super().__init__(model, api_key)
         self._proxy_url = os.environ.get(
             "FCC_PROXY_URL", self.DEFAULT_PROXY_URL
@@ -2774,6 +2774,15 @@ async def _openai_tool_loop(
                 # Append the assistant message with tool_calls to conversation
                 assistant_msg = {"role": "assistant", "content": message.get("content") or ""}
                 assistant_msg["tool_calls"] = tool_calls
+                # Thinking models want their reasoning back on the next step.
+                # DeepSeek's thinking mode (its default) answers HTTP 400 "The
+                # `reasoning_content` in the thinking mode must be passed back
+                # to the API" without it, and Kimi K3 and K2.7-Code ask for the
+                # complete assistant message. Only an echo of what this very
+                # provider just sent, so a model that never sends it never
+                # gets the field.
+                if message.get("reasoning_content"):
+                    assistant_msg["reasoning_content"] = message["reasoning_content"]
                 messages.append(assistant_msg)
 
                 # Execute each tool call and append results
@@ -2818,8 +2827,12 @@ async def _openai_tool_loop(
                         f"from text response (attempt {fallback_attempts}/{MAX_FALLBACK_ATTEMPTS})"
                     )
 
-                    # Add the model's text as an assistant message
-                    messages.append({"role": "assistant", "content": text})
+                    # Add the model's text as an assistant message, with its
+                    # reasoning for the same reason as the tool-call branch
+                    assistant_msg = {"role": "assistant", "content": text}
+                    if message.get("reasoning_content"):
+                        assistant_msg["reasoning_content"] = message["reasoning_content"]
+                    messages.append(assistant_msg)
 
                     # Execute each extracted tool call and add results
                     results_text = []
@@ -2881,8 +2894,10 @@ class OpenAIProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # GPT-4o, GPT-4.1, GPT-5.x all support vision
-        return any(prefix in self.model for prefix in ("gpt-4", "gpt-5")) or "vision" in self.model
+        # GPT-4o and every GPT from 4.1 on take images, GPT-6 included. A
+        # prefix list ("gpt-4", "gpt-5") dropped every GPT-6 image unseen.
+        version = model_version(self.model, "gpt-")
+        return (version is not None and version >= (4, 0)) or "vision" in self.model
 
     async def health_check(self) -> tuple[bool, str]:
         if not self.api_key:
@@ -2895,18 +2910,11 @@ class OpenAIProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        # GPT-5.x and o-series models require max_completion_tokens, not max_tokens.
-        # o-series and GPT-5.x also reject the temperature parameter entirely.
-        is_reasoning = (
-            self.model.startswith("o1")
-            or self.model.startswith("o3")
-            or self.model.startswith("o4")
-        )
-        is_gpt5 = self.model.startswith("gpt-5")
-        uses_completion_tokens = is_reasoning or is_gpt5
-        rejects_temperature = is_reasoning or is_gpt5
+        # GPT-5 and later, and the o-series, require max_completion_tokens,
+        # not max_tokens, and reject the temperature parameter entirely.
+        is_reasoning = openai_is_reasoning(self.model)
 
-        token_key = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
+        token_key = "max_completion_tokens" if is_reasoning else "max_tokens"
         if _has_images(messages) and self.supports_vision:
             body_messages = _build_openai_messages(system_prompt, messages)
         else:
@@ -2919,8 +2927,12 @@ class OpenAIProvider(LLMProvider):
             token_key: max_tokens,
             "messages": body_messages,
         }
-        if not rejects_temperature:
+        if not is_reasoning:
             body["temperature"] = temperature
+        if self.model in OPENAI_CHAT_TOOLS_NEED_NO_REASONING:
+            # The tool loop below always sends tools, and these models take
+            # tools on Chat Completions only with reasoning off.
+            body["reasoning_effort"] = "none"
         return await _openai_tool_loop(
             url=f"{self.base_url}/chat/completions",
             headers=headers,
@@ -3021,13 +3033,13 @@ class GeminiProvider(LLMProvider):
                 role = "user" if m.role == "user" else "model"
                 contents.append({"role": role, "parts": [{"text": m.content}]})
 
+        generation_config = {"maxOutputTokens": max_tokens}
+        if gemini_accepts_temperature(self.model):
+            generation_config["temperature"] = temperature
         body = {
             "contents": contents,
             "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "generationConfig": {
-                "maxOutputTokens": max_tokens,
-                "temperature": temperature,
-            },
+            "generationConfig": generation_config,
             "tools": get_tools_gemini(),
         }
 
@@ -3111,12 +3123,17 @@ class GeminiProvider(LLMProvider):
                             result = result[:30000] + "\n\n[Truncated — full output was " + str(len(result)) + " chars]"
 
                         result = wrap_tool_result(func_name, result)
-                        response_parts.append({
-                            "functionResponse": {
-                                "name": func_name,
-                                "response": {"result": result},
-                            }
-                        })
+                        function_response = {
+                            "name": func_name,
+                            "response": {"result": result},
+                        }
+                        # The API reference: a call that carries an id must be
+                        # answered "with the matching id", and the Gemini 3.8
+                        # Flash migration checklist asks for every
+                        # FunctionResponse to include it on generateContent.
+                        if fc.get("id"):
+                            function_response["id"] = fc["id"]
+                        response_parts.append({"functionResponse": function_response})
 
                     # Append function responses as a user turn
                     contents.append({
@@ -3195,11 +3212,12 @@ class GeminiProvider(LLMProvider):
 class DeepSeekProvider(LLMProvider):
     """DeepSeek API — OpenAI-compatible with tool-use support.
 
-    Uses api.deepseek.com/v1 endpoint. DeepSeek V4 (Flash and Pro), V3.2 legacy.
-    V4 Flash: $0.14/$0.28 per MTok. V4 Pro: $1.74/$3.48 per MTok.
-    Cached input discounted ~90%. V4 has 1M context; V3.2 aliases have 128K.
-    deepseek-v4-flash/pro, deepseek-chat, deepseek-reasoner all support tool calls.
-    No vision support in the API.
+    Uses api.deepseek.com/v1 endpoint. deepseek-flash is V4.1 Flash (released
+    2026-09-10, native vision), deepseek-v4-pro is text only. Peak prices per
+    MTok: Flash $0.30/$1.20, Pro $1.32/$3.96; off-peak is half. 1M context.
+    The retired deepseek-v4-flash and deepseek-v4-flash-vision-exp ids still
+    answer and are served by V4.1 Flash, so they take images too.
+    Thinking mode is on by default and ignores temperature without an error.
     """
 
     BASE_URL = "https://api.deepseek.com/v1"
@@ -3213,7 +3231,9 @@ class DeepSeekProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        return False  # DeepSeek V4 API does not support vision
+        # Every Flash id is served by V4.1 Flash, which takes images in the
+        # OpenAI image_url format; V4 Pro does not.
+        return "flash" in self.model.lower()
 
     async def health_check(self) -> tuple[bool, str]:
         if not self.api_key:
@@ -3228,13 +3248,17 @@ class DeepSeekProvider(LLMProvider):
         }
         # deepseek-reasoner ignores temperature (no error, just no effect)
         is_reasoner = "reasoner" in self.model
+        if _has_images(messages) and self.supports_vision:
+            body_messages = _build_openai_messages(system_prompt, messages)
+        else:
+            body_messages = [
+                {"role": "system", "content": system_prompt},
+                *[{"role": m.role, "content": m.content} for m in messages],
+            ]
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                *[{"role": m.role, "content": m.content} for m in messages],
-            ],
+            "messages": body_messages,
         }
         if not is_reasoner:
             body["temperature"] = temperature
@@ -3265,13 +3289,14 @@ class GrokProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # Current Grok vision-capable: 4.5 (native video), 4.20 family, 4.1 Fast,
-        # 4-0709, any *vision* model.
-        m = self.model
-        return ("vision" in m or "grok-4-1-fast" in m or "grok-4-fast" in m
-                or m == "grok-4-0709"
-                or "grok-4.5" in m or "grok-4-5" in m
-                or "grok-4.20" in m or "grok-4-20" in m)
+        # Every Grok 4 model takes images, and so does grok-build-0.1: xAI's
+        # public model data lists inputModalities TEXT and IMAGE for all of
+        # them (2026-10-06). The old list named releases one by one and so
+        # answered False for the default, grok-4.3, and for 4.6 and 4.7.
+        m = self.model.lower()
+        version = model_version(m, "grok-")
+        return ("vision" in m or m.startswith("grok-build")
+                or (version is not None and version >= (4, 0)))
 
     def _is_reasoning_model(self) -> bool:
         """Check if this is a Grok reasoning model (uses max_completion_tokens, no temperature)."""
@@ -3328,11 +3353,13 @@ class KimiProvider(LLMProvider):
     """Moonshot Kimi API — OpenAI-compatible with tool-use support.
 
     Uses api.moonshot.ai/v1 endpoint (redirects to api.kimi.ai).
-    K2.7-Code is latest (token-efficient agentic coding), K2.6 prior long-horizon
-    coding agent, K2.5 multimodal (vision + tools), K2 Thinking for reasoning.
-    256K context. K2.7-Code/K2.6: $0.95/$4.00, K2.5: $0.60/$3.00, K2: $0.60/$2.50 per MTok.
-    Temperature clamped to [0, 1].
-    Note: kimi-latest was discontinued January 28, 2026.
+    Served as of 2026-10-06: kimi-k3 (flagship, 1M context, $3/$15 per MTok),
+    kimi-k2.7-code and its highspeed twin (agentic coding, $0.95/$4.00 and
+    $1.90/$8.00), kimi-k2.6 (general purpose, $0.95/$4.00), 256K context
+    below K3. All four take images and tool calls, and all four fix their
+    sampling: a temperature is an error, so none is sent. kimi-k2.5 and the
+    moonshot-v1 series were discontinued 2026-08-31, the kimi-k2 series
+    2026-05-25, kimi-latest 2026-01-28.
     """
 
     BASE_URL = "https://api.moonshot.ai/v1"
@@ -3346,8 +3373,10 @@ class KimiProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # K2.5 is multimodal (vision), K2 variants are text-only
-        return "k2.5" in self.model.lower()
+        # K2.5 onward take images (K3, the K2.7-Code pair, K2.6); the plain
+        # K2 series was text only.
+        version = model_version(self.model, "kimi-k")
+        return version is not None and version >= (2, 5)
 
     async def health_check(self) -> tuple[bool, str]:
         if not self.api_key:
@@ -3360,8 +3389,6 @@ class KimiProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        # Moonshot clamps temperature to [0, 1]
-        clamped_temp = max(0.0, min(1.0, temperature))
         if _has_images(messages) and self.supports_vision:
             body_messages = _build_openai_messages(system_prompt, messages)
         else:
@@ -3372,9 +3399,11 @@ class KimiProvider(LLMProvider):
         body = {
             "model": self.model,
             "max_tokens": max_tokens,
-            "temperature": clamped_temp,
             "messages": body_messages,
         }
+        if KIMI_ACCEPTS_TEMPERATURE:
+            # Moonshot clamps temperature to [0, 1]
+            body["temperature"] = max(0.0, min(1.0, temperature))
         return await _openai_tool_loop(
             url=f"{self.BASE_URL}/chat/completions",
             headers=headers,
@@ -3388,8 +3417,10 @@ class MiniMaxProvider(LLMProvider):
     """MiniMax API — OpenAI-compatible with tool-use support.
 
     Uses api.minimax.io/v1 endpoint.
+    M3: frontier coding, multimodal (image + video input), 1M ctx, $0.30/$1.20 per MTok.
+    M3.1-Flash-Preview: multimodal, 1M ctx; an M Plan subscription key only, for now.
     M2.7: text-only, strong reasoning, 205K ctx, $0.30/$1.20 per MTok.
-    M2.5: multimodal (vision + tools), 205K ctx.
+    M2.5: multimodal (vision + tools), 205K ctx, legacy.
     M2.7-highspeed: faster variant (~100 TPS).
     """
 
@@ -3404,8 +3435,9 @@ class MiniMaxProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # M2.5 is multimodal (vision), M2.7 and others are text-only
-        return "m2.5" in self.model.lower()
+        # The M3 family and the legacy M2.5 are multimodal; M2.7 is text-only
+        m = self.model.lower()
+        return "m2.5" in m or "-m3" in m
 
     async def health_check(self) -> tuple[bool, str]:
         if not self.api_key:
@@ -3446,12 +3478,14 @@ class MiniMaxProvider(LLMProvider):
 class ZaiProvider(LLMProvider):
     """Z.ai (Zhipu) GLM API — OpenAI-compatible with tool-use support.
 
-    Uses api.z.ai/api/paas/v4 endpoint. GLM-5.2 is the flagship: open-weights,
-    long-horizon coding/agentic, usable 1M context, two thinking-effort levels.
-    GLM-5.2: $1.40/$4.40 per MTok (cached input $0.26 per MTok).
+    Uses api.z.ai/api/paas/v4 endpoint. GLM-5.3 is the flagship (2026-08-18):
+    open-weights, long-horizon coding/agentic, 1M context, reasoning always on.
+    GLM-5.3 and GLM-5.2: $1.40/$4.40 per MTok (cached input $0.26 per MTok).
+    GLM-5.3-Flash ($0.15/$0.50) and FlashX ($0.37/$1.25) are the first native
+    multimodal GLM-5 models.
     Temperature must be within [0.0, 1.0] (per docs.z.ai) — clamped here.
-    GLM-5.2 and the other text models are text-only; z.ai vision models
-    (GLM-5V-Turbo, GLM-4.6V, GLM-4.5V) carry a 'V' marker.
+    GLM-5.3, GLM-5.2 and the other text models are text-only; the other z.ai
+    vision models (GLM-5V-Turbo, GLM-4.6V, GLM-4.5V) carry a 'V' marker.
     """
 
     BASE_URL = "https://api.z.ai/api/paas/v4"
@@ -3465,9 +3499,10 @@ class ZaiProvider(LLMProvider):
 
     @property
     def supports_vision(self) -> bool:
-        # z.ai vision models carry a 'V' marker (glm-5v-turbo, glm-4.6v, glm-4.5v).
+        # z.ai vision models carry a 'V' marker (glm-5v-turbo, glm-4.6v,
+        # glm-4.5v), except the GLM-5.3 Flash pair, which take images unmarked.
         m = self.model.lower()
-        return "v-turbo" in m or m.endswith("v")
+        return "v-turbo" in m or m.endswith("v") or m.startswith("glm-5.3-flash")
 
     async def health_check(self) -> tuple[bool, str]:
         if not self.api_key:

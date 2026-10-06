@@ -95,16 +95,16 @@ You pick your provider during setup, and you can switch anytime from Telegram, n
 | Provider | Free? | Notes |
 |----------|-------|-------|
 | **Ollama** | Yes | Runs AI locally on your machine. No API key. Needs macOS 12+ or a modern Linux kernel. |
-| **Ollama Cloud** | Free tier | The same models hosted in the cloud. No local GPU needed. |
+| **Ollama Cloud** | Starter credits | Open models hosted in the cloud, billed per token from credits. No local GPU needed. Default `glm-5.3-flash`. |
 | **OpenRouter** | Free models available | Many models behind one key, including free ones with tool use. Easy to start with. |
-| **Gemini** | Free tier | Google's models. Roughly 5 to 15 requests per minute on the free tier. Default `gemini-3.5-flash`. |
+| **Gemini** | Free tier | Google's models. Every Flash model has a free tier; your limits are shown in AI Studio. Default `gemini-3.8-flash`. |
 | **FCC (Free Claude Code)** | Depends on backend | Routes the Claude CLI through a [free-claude-code](https://github.com/Alishahryar1/free-claude-code) proxy, so you get full tool use on a free backend (Gemini, DeepSeek, Groq). |
 | **Grok** | $25 free credits | xAI's models, machine control via function calling. Default `grok-4.3`. |
-| **DeepSeek** | Paid, very cheap | V4 Flash at $0.14 / $0.28 per MTok, 1M context. The best value on the list. |
+| **DeepSeek** | Paid, very cheap | V4.1 Flash at $0.30 / $1.20 per MTok (half that off peak), 1M context, sees images. The best value on the list. |
 | **MiniMax** | Paid, cheap | M3 frontier coding, 1M context, $0.30 / $1.20 per MTok. |
 | **Kimi** | Paid | Moonshot K2.7 Code, token efficient agentic coding, 256K context, $0.95 / $4.00 per MTok. |
-| **Z.ai GLM** | Paid | GLM-5.2 open weights, long horizon agentic work, 1M context, $1.40 / $4.40 per MTok. |
-| **OpenAI** | Paid | GPT-5.6 and the GPT-5 family. Vision and tools via function calling. |
+| **Z.ai GLM** | Paid | GLM-5.3 open weights, long horizon agentic work, 1M context, $1.40 / $4.40 per MTok. |
+| **OpenAI** | Paid | GPT-5.6, GPT-6 Astra, Luna and Sol, and the GPT-5 family. Vision and tools via function calling. |
 | **Claude CLI** | With a Pro or Max plan | The most capable option. Uses your existing Anthropic subscription, no API key. Full machine control. |
 | **Codex CLI** | With a ChatGPT Plus or Pro plan | OpenAI's parallel to the Claude CLI. Same subprocess and JSON stream pattern, full machine control. |
 | **Claude API** | Paid | Pay per token. Chat only, no machine control. |
@@ -113,7 +113,7 @@ You pick your provider during setup, and you can switch anytime from Telegram, n
 
 **If you want the best quality:** Claude CLI with a Pro subscription, or OpenAI GPT-5.6.
 
-**If you want cheap and good:** DeepSeek V4 Flash at $0.14 / $0.28 per million tokens.
+**If you want cheap and good:** DeepSeek V4.1 Flash at $0.30 / $1.20 per million tokens, half that off peak.
 
 Switch anytime from Telegram:
 

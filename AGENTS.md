@@ -102,7 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-(Entries removed above: #194 cleared in its reviewed merge revision,
+(Entries removed above: #196 cleared in its reviewed merge revision,
+the same call as #194.
+#194 cleared in its reviewed merge revision,
 the same call as #192.
 #192 cleared in its reviewed merge revision,
 the same call as #190.

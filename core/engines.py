@@ -322,13 +322,16 @@ MACHINE_CLI_PROVIDERS: tuple[tuple[str, str, str], ...] = (
 # /engine claude-sonnet-5. The model id is always the real id; these are
 # aliases onto it, and a model with no alias is picked by its own id.
 MACHINE_ALIASES: dict[str, str] = {
+    # Each short name follows its line to the newest model in it, the way
+    # "opus" moved from Opus 5 to 5.5: "sol" and "luna" are GPT-6 since
+    # 2026-10-06, and the 5.6 pair stays reachable by its own id.
     "opus": "claude-opus-5-5",
-    "sonnet": "claude-sonnet-5",
+    "sonnet": "claude-sonnet-5-5",
     "fable": "claude-fable-5-1",
     "astra": "gpt-6-astra",
-    "sol": "gpt-5.6-sol",
+    "sol": "gpt-6.1-sol",
     "terra": "gpt-5.6-terra",
-    "luna": "gpt-5.6-luna",
+    "luna": "gpt-6-luna",
 }
 
 MACHINE_PICKER_NOTE = (

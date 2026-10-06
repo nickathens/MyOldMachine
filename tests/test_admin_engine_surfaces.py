@@ -157,8 +157,8 @@ class AdminEngineCommandTests(_BotSurface):
         # The complaint that produced this: a machine that runs ten engines
         # offering two. Every model the install catalog carries for a
         # subscription CLI is named here.
-        for label in ("Claude Sonnet 5", "Claude Fable 5.1", "GPT-6 Astra",
-                      "GPT-5.6 Sol", "GPT-5.6 Luna"):
+        for label in ("Claude Sonnet 5.5", "Claude Fable 5.1", "GPT-6 Astra",
+                      "GPT-6.1 Sol", "GPT-6 Luna", "GPT-5.6 Sol", "GPT-5.6 Luna"):
             with self.subTest(label=label):
                 self.assertIn(label, said)
         self.assertIn("(running now)", said)
@@ -176,9 +176,9 @@ class AdminEngineCommandTests(_BotSurface):
               patch("bot._build_llm_provider", return_value=self._stub_provider()),
               patch("bot._refresh_provider_health", health)):
             said = _said(self._run("/engine sonnet"))
-        self.assertEqual(written, [("claude-cli", "claude-sonnet-5")])
+        self.assertEqual(written, [("claude-cli", "claude-sonnet-5-5")])
         self.assertEqual(engines.user_engine_id(7), "")
-        self.assertIn("Claude Sonnet 5", said)
+        self.assertIn("Claude Sonnet 5.5", said)
         self.assertIn("Ordinary users keep their personal engine or available Opus default", said)
 
     def test_a_health_check_failure_is_reported_not_swallowed(self):

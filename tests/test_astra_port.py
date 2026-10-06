@@ -67,12 +67,19 @@ class EffortTableTests(unittest.TestCase):
         self.assertEqual(levels, ("low", "medium", "high", "xhigh", "max"))
         self.assertNotIn("ultra", levels)
 
-    def test_gpt_5_5_has_no_max(self):
-        # The concrete reason the table is per model: this repo's default
-        # Codex model does not accept the default effort this repo sends.
-        self.assertNotIn("max", me.efforts_for("codex", "gpt-5.5"))
-        self.assertEqual(me.efforts_for("codex", "gpt-5.5"),
-                         ("low", "medium", "high", "xhigh"))
+    def test_gpt_5_5_has_no_row_once_codex_retires_it(self):
+        # gpt-5.5 was the concrete reason the table is per model: it was the
+        # default and carried four levels, no max. Codex retires it on
+        # 2026-10-14 and the picker no longer offers it, so it has no row,
+        # and an install still on it sends no override (the CLI's own default
+        # applies) instead of a level read from a row nobody can pick.
+        self.assertEqual(me.efforts_for("codex", "gpt-5.5"), ())
+        self.assertEqual(me.clamp_effort("codex", "gpt-5.5", "max"), "")
+
+    def test_gpt_6_luna_has_no_ultra(self):
+        # The per-model reason that still stands: Luna stops at max.
+        self.assertEqual(me.efforts_for("codex", "gpt-6-luna"),
+                         ("low", "medium", "high", "xhigh", "max"))
 
     def test_every_level_has_a_label(self):
         # effort_options indexes EFFORT_LABELS; a missing one is a KeyError
@@ -81,8 +88,8 @@ class EffortTableTests(unittest.TestCase):
             self.assertIn(level, me.EFFORT_LABELS)
 
     def test_effort_order_is_a_superset_of_every_set(self):
-        for provider, model in (("claude", "claude-sonnet-5"),
-                                ("codex", ASTRA), ("codex", "gpt-5.5")):
+        for provider, model in (("claude", "claude-sonnet-5-5"),
+                                ("codex", ASTRA), ("codex", "gpt-6-luna")):
             with self.subTest(model=model):
                 for level in me.efforts_for(provider, model):
                     self.assertIn(level, me.EFFORT_ORDER)
@@ -132,13 +139,13 @@ class ClampTests(unittest.TestCase):
     def test_ultra_survives_on_astra(self):
         self.assertEqual(me.clamp_effort("codex", ASTRA, "ultra"), "ultra")
 
-    def test_max_steps_down_to_xhigh_on_gpt_5_5(self):
-        self.assertEqual(me.clamp_effort("codex", "gpt-5.5", "max"), "xhigh")
+    def test_ultra_steps_down_to_max_on_gpt_6_luna(self):
+        self.assertEqual(me.clamp_effort("codex", "gpt-6-luna", "ultra"), "max")
 
     def test_junk_falls_back_to_the_models_own_default(self):
         # Not to a shared "max": Astra's published default is medium.
         self.assertEqual(me.clamp_effort("codex", ASTRA, "nonsense"), "medium")
-        self.assertEqual(me.clamp_effort("codex", "gpt-5.5", ""), "medium")
+        self.assertEqual(me.clamp_effort("codex", "gpt-6.1-sol", ""), "low")
         self.assertEqual(
             me.clamp_effort("claude", "claude-sonnet-5", None), "max")
 
@@ -812,23 +819,23 @@ class MiniAppEffortTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.status_code, 400)
         self.assertEqual(self._stored("LLM_EFFORT"), "max")
 
-    async def test_max_is_refused_for_gpt_5_5(self):
+    async def test_ultra_is_refused_for_gpt_6_luna(self):
         from fastapi import HTTPException
         self.env.write_text(
-            "LLM_PROVIDER=codex\nLLM_MODEL=gpt-5.5\nLLM_EFFORT=high\n",
+            "LLM_PROVIDER=codex\nLLM_MODEL=gpt-6-luna\nLLM_EFFORT=high\n",
             encoding="utf-8")
         with self.assertRaises(HTTPException):
-            await self.srv.set_effort(_Body({"effort": "max"}), user=ADMIN)
+            await self.srv.set_effort(_Body({"effort": "ultra"}), user=ADMIN)
 
     async def test_switching_model_reports_the_clamped_effort(self):
-        # Astra at ultra, then down to gpt-5.5, which has neither ultra nor max.
+        # Astra at ultra, then down to gpt-6-luna, which stops at max.
         # The reply is what will run; the stored preference is NOT rewritten,
         # so coming back up to Astra finds ultra where the user left it.
-        result = await self.srv.set_model(_Body({"model": "gpt-5.5"}), user=ADMIN)
-        self.assertEqual(result["effort"], "xhigh")
+        result = await self.srv.set_model(_Body({"model": "gpt-6-luna"}), user=ADMIN)
+        self.assertEqual(result["effort"], "max")
         self.assertEqual(self._stored("LLM_EFFORT"), "ultra")
         data = await self.srv.get_status(user=ADMIN)
-        self.assertEqual(data["effort"], "xhigh")
+        self.assertEqual(data["effort"], "max")
 
     async def test_switching_provider_reports_the_clamped_effort(self):
         result = await self.srv.set_provider(_Body({"provider": "claude"}),
@@ -837,21 +844,22 @@ class MiniAppEffortTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._stored("LLM_EFFORT"), "ultra")
 
     async def test_a_round_trip_through_a_lower_model_keeps_the_setting(self):
-        # Claude at max, a look at gpt-5.5 (which has no max), and back. If
-        # the switch had rewritten .env, every later Claude turn would run at
-        # xhigh with nothing on screen but a different button lit: the same
+        # Astra at ultra, a look at Claude (which has no ultra), and back. If
+        # the switch had rewritten .env, every later Astra turn would run at
+        # max with nothing on screen but a different button lit: the same
         # silent downgrade the clamp exists to prevent, in the other direction.
-        self.env.write_text(
-            "LLM_PROVIDER=claude\nLLM_MODEL=claude-sonnet-5\nLLM_EFFORT=max\n",
-            encoding="utf-8")
-        await self.srv.set_provider(_Body({"provider": "codex"}), user=ADMIN)
-        data = await self.srv.get_status(user=ADMIN)
-        self.assertEqual(data["model"], "gpt-5.5")
-        self.assertEqual(data["effort"], "xhigh")
+        # This went through gpt-5.5 (no max) until Codex scheduled it for
+        # retirement; no model the picker offers now lacks max, so the lower
+        # model in the trip is Claude and the level at risk is ultra.
         await self.srv.set_provider(_Body({"provider": "claude"}), user=ADMIN)
         data = await self.srv.get_status(user=ADMIN)
+        self.assertEqual(data["model"], "claude-sonnet-5-5")
         self.assertEqual(data["effort"], "max")
-        self.assertEqual(self._stored("LLM_EFFORT"), "max")
+        await self.srv.set_provider(_Body({"provider": "codex"}), user=ADMIN)
+        await self.srv.set_model(_Body({"model": "gpt-6-astra"}), user=ADMIN)
+        data = await self.srv.get_status(user=ADMIN)
+        self.assertEqual(data["effort"], "ultra")
+        self.assertEqual(self._stored("LLM_EFFORT"), "ultra")
 
     async def test_switching_to_a_model_with_no_levels_keeps_the_preference(self):
         # Wiping it would cost the user their setting for the round trip.
@@ -1018,6 +1026,31 @@ class AstraStaysOptInTests(unittest.TestCase):
     def test_astra_is_gated_by_a_cli_floor(self):
         self.assertIn(self.ASTRA, me.MODEL_MIN_CLI)
 
-    def test_the_default_codex_model_needs_no_new_cli(self):
-        """A fresh install must never be told to upgrade for the default."""
-        self.assertNotIn(wizard.DEFAULT_MODELS["codex"], me.MODEL_MIN_CLI)
+    def test_setup_catches_a_codex_too_old_for_the_default(self):
+        """A fresh install must not be left on a default its codex cannot run.
+
+        This used to say the default could carry no floor at all, which held
+        while it was gpt-5.5. Codex retires gpt-5.5 on 2026-10-14 and its own
+        default is gpt-6.1-sol, which needs 0.159.0 (measured, see
+        core.model_efforts). What keeps that safe is the installer's check of
+        a codex already on PATH, which updates it through npm and re-checks
+        (StaleCliInstallTests pins both calls). So this pins that the check
+        fires for the actual default one build below its floor and stays
+        quiet on the floor itself.
+        """
+        default = wizard.DEFAULT_MODELS["codex"]
+        floor = me.MODEL_MIN_CLI.get(default)
+        if floor is None:
+            return
+        below = f"codex-cli {floor[0]}.{floor[1] - 1}.99\n"
+        at = "codex-cli {}.{}.{}\n".format(*floor)
+
+        def probe(stdout):
+            return patch.object(
+                wizard.subprocess, "run",
+                lambda cmd, *a, **kw: subprocess.CompletedProcess(cmd, 0, stdout, ""))
+
+        with probe(below):
+            self.assertIn(default, wizard._codex_build_too_old_for(default) or "")
+        with probe(at):
+            self.assertIsNone(wizard._codex_build_too_old_for(default))

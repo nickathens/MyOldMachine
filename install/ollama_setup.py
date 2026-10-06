@@ -207,6 +207,8 @@ def run_benchmark() -> dict:
 # Model catalog: name, size on disk (GB), RAM needed (GB), quality tier, tool-use reliability
 # Refreshed June 10, 2026: qwen3.5 disk sizes verified against ollama.com library tags;
 # RAM estimates follow the same disk+headroom slope as the prior calibration.
+# October 6, 2026: the top two rows are Qwen 3.6 (vision, tools, thinking), which
+# ships only at 27b and 35b (the 35b-a3b MoE); disk sizes from ollama.com/library/qwen3.6/tags.
 # Must stay sorted ascending by resource needs: recommend_model() picks the LAST row that fits.
 MODEL_CATALOG = [
     # (model_tag, disk_gb, ram_gb, quality, tool_use_reliable, description)
@@ -217,8 +219,8 @@ MODEL_CATALOG = [
     ("qwen3.5:4b",       3.4,  5.0,  5, True,  "Qwen 3.5 4B — lightest reliable tool-use"),
     ("llama3.1:8b",      4.7,  6.0,  6, True,  "Llama 3.1 8B — battle-tested tool-use"),
     ("qwen3.5:9b",       6.6,  8.0,  7, True,  "Qwen 3.5 9B — strong tool-use, recommended"),
-    ("qwen3.5:27b",      17.0, 20.0, 8, True,  "Qwen 3.5 27B — excellent quality"),
-    ("qwen3.5:35b",      24.0, 28.0, 9, True,  "Qwen 3.5 35B MoE — near-frontier quality"),
+    ("qwen3.6:27b",      18.0, 21.0, 8, True,  "Qwen 3.6 27B — excellent quality, stronger agentic coding"),
+    ("qwen3.6:35b",      23.0, 27.0, 9, True,  "Qwen 3.6 35B MoE — near-frontier quality"),
 ]
 
 

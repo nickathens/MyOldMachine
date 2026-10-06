@@ -92,12 +92,15 @@ class WizardRegistrationTests(unittest.TestCase):
         self.assertIn("zai", [p[0] for p in wizard._ALL_LLM_PROVIDERS])
 
     def test_default_model(self):
-        self.assertEqual(wizard.DEFAULT_MODELS["zai"], "glm-5.2")
+        # GLM-5.3 (2026-08-18) replaced GLM-5.2 as the flagship at the same
+        # $1.40/$4.40; 5.2 stays on offer below it.
+        self.assertEqual(wizard.DEFAULT_MODELS["zai"], "glm-5.3")
 
     def test_provider_models_list(self):
         entries = wizard.PROVIDER_MODELS["zai"]
         self.assertTrue(entries)
-        self.assertEqual(entries[0][0], "glm-5.2")
+        self.assertEqual(entries[0][0], "glm-5.3")
+        self.assertIn("glm-5.2", [mid for mid, _ in entries])
 
     def test_in_api_key_providers(self):
         self.assertIn("zai", wizard.API_KEY_PROVIDERS)
@@ -126,8 +129,11 @@ class WaveUpdateTests(unittest.TestCase):
         self.assertIn(wizard.DEFAULT_MODELS["kimi"], ids)
 
     def test_glm_5_2_on_ollama_cloud(self):
+        # By the name ollama.com/api/tags lists, which is what an API request
+        # to ollama.com takes; "glm-5.2:cloud" is the Ollama app's spelling.
         ids = [mid for mid, _ in wizard.PROVIDER_MODELS["ollama-cloud"]]
-        self.assertIn("glm-5.2:cloud", ids)
+        self.assertIn("glm-5.2", ids)
+        self.assertNotIn("glm-5.2:cloud", ids)
 
 
 class MiniAppRegistrationTests(unittest.TestCase):

@@ -65,6 +65,12 @@ from core.config import (  # noqa: E402
 )
 from core.users import resolve_user_dir  # noqa: E402
 from core.credentials import claude_cli_env  # noqa: E402
+from core.model_efforts import (  # noqa: E402
+    KIMI_ACCEPTS_TEMPERATURE,
+    claude_accepts_temperature,
+    gemini_accepts_temperature,
+    openai_is_reasoning,
+)
 from utils.safe_json import load_json, save_json  # noqa: E402
 
 logger = logging.getLogger("email_triage")
@@ -80,7 +86,7 @@ CLI_PROVIDERS = {"claude", "claude-cli", "fcc"}
 # Haiku so the loop never burns the premium chat model. API providers only
 # have one configured model, so they use it for both calls.
 CLI_CLASSIFY_MODEL = "claude-haiku-4-5-20251001"
-CLI_DRAFT_FALLBACK_MODEL = "claude-sonnet-5"
+CLI_DRAFT_FALLBACK_MODEL = "claude-sonnet-5-5"
 
 # Drafting writes outbound text in the owner's name, so the quality bar is
 # higher than classification. Weak providers still classify and ping; they
@@ -491,9 +497,12 @@ def _call_api(prompt: str, model: str, timeout: int) -> str:
 
     if provider in ("gemini", "google"):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        generation_config = {"maxOutputTokens": 4096}
+        if gemini_accepts_temperature(model):
+            generation_config["temperature"] = 0.2
         body = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.2},
+            "generationConfig": generation_config,
         }
         with httpx.Client(timeout=timeout) as client:
             resp = client.post(url, headers={"x-goog-api-key": api_key}, json=body)
@@ -504,6 +513,14 @@ def _call_api(prompt: str, model: str, timeout: int) -> str:
             return "".join(p.get("text", "") for p in parts)
 
     if provider == "claude-api":
+        claude_body = {
+            "model": model,
+            "max_tokens": 4096,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if claude_accepts_temperature(model):
+            claude_body["temperature"] = 0.2
         with httpx.Client(timeout=timeout) as client:
             resp = client.post(
                 "https://api.anthropic.com/v1/messages",
@@ -512,13 +529,7 @@ def _call_api(prompt: str, model: str, timeout: int) -> str:
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "max_tokens": 4096,
-                    "temperature": 0.2,
-                    "system": system,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
+                json=claude_body,
             )
             if resp.status_code != 200:
                 raise RuntimeError(f"claude API returned {resp.status_code}")
@@ -538,12 +549,10 @@ def _call_api(prompt: str, model: str, timeout: int) -> str:
     if provider not in api_urls:
         raise RuntimeError(f"provider {provider} not supported for email triage")
 
-    # Reasoning-model parameter quirks, mirrored from utils/reflect.py.
+    # Reasoning-model parameter quirks, mirrored from utils/reflect.py; the
+    # per-model rules themselves come from core.model_efforts.
     model_l = model.lower()
-    is_openai_reasoning = provider == "openai" and (
-        model_l.startswith("gpt-5") or model_l.startswith("o1")
-        or model_l.startswith("o3") or model_l.startswith("o4")
-    )
+    is_openai_reasoning = provider == "openai" and openai_is_reasoning(model_l)
     is_grok_reasoning = provider == "grok" and (
         ("reasoning" in model_l and "non-reasoning" not in model_l)
         or (model_l.startswith("grok-4") and "fast" not in model_l)
@@ -551,7 +560,8 @@ def _call_api(prompt: str, model: str, timeout: int) -> str:
     )
     is_deepseek_reasoner = provider == "deepseek" and "reasoner" in model_l
     uses_completion_tokens = is_openai_reasoning or is_grok_reasoning or provider == "openrouter"
-    rejects_temperature = is_openai_reasoning or is_grok_reasoning or is_deepseek_reasoner
+    rejects_temperature = (is_openai_reasoning or is_grok_reasoning or is_deepseek_reasoner
+                           or (provider == "kimi" and not KIMI_ACCEPTS_TEMPERATURE))
 
     token_key = "max_completion_tokens" if uses_completion_tokens else "max_tokens"
     body = {
