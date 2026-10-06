@@ -4639,6 +4639,105 @@ async def _process_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _process_single_inner(update, context, turn)
 
 
+def _media_gen_turn(mg: dict, user_id) -> str:
+    """The turn a Mini App image or video request becomes (its pending file).
+
+    It names only what the page sent: Hailuo has no ratio and Soul no
+    resolution, so neither gets a line or a flag. The agent runs the cost
+    command as written here, and "-a None" in it fails generate.py's parser.
+    """
+    mg_type = mg.get("type", "image")
+    mg_model = mg.get("model", "nano2")
+    # Absent where the model has no such setting (Hailuo has no ratio,
+    # Soul no resolution): name neither, and the model keeps its own.
+    mg_aspect = mg.get("aspect_ratio")
+    mg_res = mg.get("resolution")
+    mg_duration = mg.get("duration")
+    mg_prompt = mg.get("prompt", "")
+    mg_extra = mg.get("extra_params", {})
+    mg_ref = mg.get("ref_image", "")
+
+    _MODEL_GUIDES = {
+        "nano": "nano-banana.md", "nano2": "nano-banana.md", "nano-pro": "nano-banana.md",
+        "gpt": "gpt-image.md", "hazel": "gpt-image.md",
+        "flux": "flux.md", "flux-kontext": "flux.md",
+        "grok": "grok.md", "grok-video": "grok-video.md",
+        "soul": "soul.md", "soul-cinematic": "soul.md", "soul-location": "soul.md",
+        "cinematic": "cinematic-studio.md",
+        "seedream": "seedream.md", "seedream-lite": "seedream.md",
+        "kling": "kling-video.md" if mg_type == "video" else "nano-banana.md",
+        "kling2.6": "kling-video.md",
+        "veo3": "veo.md", "veo3.1": "veo.md", "veo3-lite": "veo.md",
+        "seedance": "seedance.md", "seedance1.5": "seedance.md",
+        "cinematic3": "cinematic-video.md", "cinematic-video": "cinematic-video.md",
+        "cinematic-v2": "cinematic-video.md",
+        "hailuo": "hailuo.md", "wan": "wan.md", "wan2.6": "wan.md",
+        "soul-cast": "soul-cast.md", "marketing": "marketing-studio.md",
+        "ms": "nano-banana.md", "ms-studio": "nano-banana.md",
+        "z": "nano-banana.md", "auto": "nano-banana.md",
+        # newer Higgsfield models: route each to its closest guide family
+        "recraft": "nano-banana.md", "nano-lite": "nano-banana.md", "soul-cinema": "soul.md",
+        "seedance-mini": "seedance.md", "kling-turbo": "kling-video.md",
+        "gemini": "gemini-omni.md", "cinematic3.5": "cinematic-video.md",
+        # MiniMax H3 is a different model from `hailuo` and wants a
+        # structured field format, so it gets its own guide, not hailuo.md.
+        "h3": "minimax-h3.md", "hailuo3": "minimax-h3.md",
+        # Added 2026-08-07. Each is a distinct model from the family it
+        # shares a name with, with its own limits and prompt grammar, so
+        # none of them route to the older sibling's guide.
+        "seedance2.5": "seedance-2-5.md",
+        "flux-video": "flux-3-video.md", "flux3-video": "flux-3-video.md",
+        "grok-video1.5": "grok-video-1-5.md",
+        "happy-horse": "happy-horse.md",
+    }
+    guide_file = _MODEL_GUIDES.get(mg_model, "nano-banana.md")
+    guide_path = f"skills/image-gen/models/{guide_file}"
+
+    mg_context = (
+        f"[Mini App Media Generation Request]\n"
+        f"Type: {mg_type}\n"
+        f"Model: {mg_model}\n"
+    )
+    if mg_aspect:
+        mg_context += f"Aspect Ratio: {mg_aspect}\n"
+    if mg_type == "image" and mg_res:
+        mg_context += f"Resolution: {mg_res}\n"
+    if mg_type == "video" and mg_duration:
+        mg_context += f"Duration: {mg_duration}s\n"
+    if mg_extra:
+        for ek, ev in mg_extra.items():
+            mg_context += f"{ek}: {ev}\n"
+
+    if mg_ref:
+        mg_context += f"Reference image: {mg_ref}\n"
+    mg_context += (
+        f"Prompt: {mg_prompt}\n\n"
+        f"MANDATORY: Read the prompt guide at {guide_path} before refining.\n"
+        f"Refine the user's prompt following that guide's techniques, structure, and length recommendations.\n\n"
+        f"Then estimate cost with:\n"
+        f"python skills/image-gen/scripts/generate.py "
+        f'"{mg_prompt[:80]}" --cost -m {mg_model}'
+    )
+    if mg_aspect:
+        mg_context += f" -a {mg_aspect}"
+    if mg_type == "image" and mg_res:
+        mg_context += f" --resolution {mg_res}"
+    if mg_type == "video":
+        mg_context += " --video"
+        if mg_duration:
+            mg_context += f" --duration {mg_duration}"
+    if mg_extra:
+        mg_context += f" --extra '{json.dumps(mg_extra)}'"
+    if mg_ref:
+        mg_context += f' -r "{mg_ref}"'
+    mg_context += (
+        f"\n\nPresent: original prompt, refined prompt for this specific model, estimated cost, and credits remaining. "
+        f"Ask the user to approve before generating. Do NOT generate without explicit approval. "
+        f"When generating, ALWAYS include --user {user_id} so the output is tracked for iteration."
+    )
+    return mg_context
+
+
 async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                 turn=None):
     """Inner handler for single message processing (runs under per-user lock)."""
@@ -4697,90 +4796,7 @@ async def _process_single_inner(update: Update, context: ContextTypes.DEFAULT_TY
                 raise ValueError("expired")
             mg = json.loads(pending_mg.read_text())
             pending_mg.unlink()
-            mg_type = mg.get("type", "image")
-            mg_model = mg.get("model", "nano2")
-            mg_aspect = mg.get("aspect_ratio", "1:1")
-            mg_res = mg.get("resolution", "2k")
-            mg_duration = mg.get("duration")
-            mg_prompt = mg.get("prompt", "")
-            mg_extra = mg.get("extra_params", {})
-            mg_ref = mg.get("ref_image", "")
-
-            _MODEL_GUIDES = {
-                "nano": "nano-banana.md", "nano2": "nano-banana.md", "nano-pro": "nano-banana.md",
-                "gpt": "gpt-image.md", "hazel": "gpt-image.md",
-                "flux": "flux.md", "flux-kontext": "flux.md",
-                "grok": "grok.md", "grok-video": "grok-video.md",
-                "soul": "soul.md", "soul-cinematic": "soul.md", "soul-location": "soul.md",
-                "cinematic": "cinematic-studio.md",
-                "seedream": "seedream.md", "seedream-lite": "seedream.md",
-                "kling": "kling-video.md" if mg_type == "video" else "nano-banana.md",
-                "kling2.6": "kling-video.md",
-                "veo3": "veo.md", "veo3.1": "veo.md", "veo3-lite": "veo.md",
-                "seedance": "seedance.md", "seedance1.5": "seedance.md",
-                "cinematic3": "cinematic-video.md", "cinematic-video": "cinematic-video.md",
-                "cinematic-v2": "cinematic-video.md",
-                "hailuo": "hailuo.md", "wan": "wan.md", "wan2.6": "wan.md",
-                "soul-cast": "soul-cast.md", "marketing": "marketing-studio.md",
-                "ms": "nano-banana.md", "ms-studio": "nano-banana.md",
-                "z": "nano-banana.md", "auto": "nano-banana.md",
-                # newer Higgsfield models: route each to its closest guide family
-                "recraft": "nano-banana.md", "nano-lite": "nano-banana.md", "soul-cinema": "soul.md",
-                "seedance-mini": "seedance.md", "kling-turbo": "kling-video.md",
-                "gemini": "gemini-omni.md", "cinematic3.5": "cinematic-video.md",
-                # MiniMax H3 is a different model from `hailuo` and wants a
-                # structured field format, so it gets its own guide, not hailuo.md.
-                "h3": "minimax-h3.md", "hailuo3": "minimax-h3.md",
-                # Added 2026-08-07. Each is a distinct model from the family it
-                # shares a name with, with its own limits and prompt grammar, so
-                # none of them route to the older sibling's guide.
-                "seedance2.5": "seedance-2-5.md",
-                "flux-video": "flux-3-video.md", "flux3-video": "flux-3-video.md",
-                "grok-video1.5": "grok-video-1-5.md",
-                "happy-horse": "happy-horse.md",
-            }
-            guide_file = _MODEL_GUIDES.get(mg_model, "nano-banana.md")
-            guide_path = f"skills/image-gen/models/{guide_file}"
-
-            mg_context = (
-                f"[Mini App Media Generation Request]\n"
-                f"Type: {mg_type}\n"
-                f"Model: {mg_model}\n"
-                f"Aspect Ratio: {mg_aspect}\n"
-            )
-            if mg_type == "image":
-                mg_context += f"Resolution: {mg_res}\n"
-            if mg_type == "video" and mg_duration:
-                mg_context += f"Duration: {mg_duration}s\n"
-            if mg_extra:
-                for ek, ev in mg_extra.items():
-                    mg_context += f"{ek}: {ev}\n"
-
-            if mg_ref:
-                mg_context += f"Reference image: {mg_ref}\n"
-            mg_context += (
-                f"Prompt: {mg_prompt}\n\n"
-                f"MANDATORY: Read the prompt guide at {guide_path} before refining.\n"
-                f"Refine the user's prompt following that guide's techniques, structure, and length recommendations.\n\n"
-                f"Then estimate cost with:\n"
-                f"python skills/image-gen/scripts/generate.py "
-                f'"{mg_prompt[:80]}" --cost -m {mg_model} -a {mg_aspect}'
-            )
-            if mg_type == "image":
-                mg_context += f" --resolution {mg_res}"
-            if mg_type == "video":
-                mg_context += " --video"
-                if mg_duration:
-                    mg_context += f" --duration {mg_duration}"
-            if mg_extra:
-                mg_context += f" --extra '{json.dumps(mg_extra)}'"
-            if mg_ref:
-                mg_context += f' -r "{mg_ref}"'
-            mg_context += (
-                f"\n\nPresent: original prompt, refined prompt for this specific model, estimated cost, and credits remaining. "
-                f"Ask the user to approve before generating. Do NOT generate without explicit approval. "
-                f"When generating, ALWAYS include --user {user_id} so the output is tracked for iteration."
-            )
+            mg_context = _media_gen_turn(mg, user_id)
             user_message = mg_context + ("\n\nUser says: " + user_message if user_message else "")
         except Exception:
             pending_mg.unlink(missing_ok=True)

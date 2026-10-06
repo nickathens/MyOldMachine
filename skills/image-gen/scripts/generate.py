@@ -98,10 +98,79 @@ VIDEO_MODEL_ALIASES = {
     "seedance2.5": "seedance_2_5",
 }
 
+# What the Mini App's image and video menu shows for each model, in the menu's
+# own order. The app keeps no list of its own (GET /api/media/menu reads menu()
+# below), so a model aliased above reaches the menu with no edit to the app, and
+# tests/test_image_gen_menu.py fails until it has a row here.
+#   name         the card's label
+#   credits      (cheapest, dearest) across the settings that move the price:
+#                per image, per second for a video with a duration, per clip for
+#                one without (veo3)
+#   ratios       the model's aspect_ratio values, [] where it has no such param
+#   resolutions  images only: the model's resolution values, [] where it has none
+#   ref          "optional" or "required" where the model takes a reference
+#                image, None where it refuses one ("Model does not accept media
+#                inputs")
+# Read off `higgsfield model get` and priced with `higgsfield generate cost`
+# (free, no job) on CLI 1.1.26, 2026-10-06. veo3 needs a start image to quote at
+# all; a placeholder upload id is enough for the price and uploads nothing.
+MODEL_MENU = {
+    # --- images ---
+    "nano_banana_flash": {"name": "Nano 2", "credits": (1.5, 3), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "nano_banana": {"name": "Nano", "credits": (1, 1), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"], "resolutions": [], "ref": "optional"},
+    "nano_banana_2": {"name": "Nano Pro", "credits": (2, 4), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "nano_banana_2_lite": {"name": "Nano 2 Lite", "credits": (1, 1), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k"], "ref": "optional"},
+    "gpt_image_2": {"name": "GPT Image 2", "credits": (0.5, 11), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "openai_hazel": {"name": "Hazel", "credits": (2, 6), "ratios": ["1:1", "3:2", "2:3", "auto"], "resolutions": [], "ref": "optional"},
+    "flux_2": {"name": "FLUX 2", "credits": (1, 6), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "resolutions": ["1k", "2k"], "ref": "optional"},
+    "flux_kontext": {"name": "Kontext", "credits": (1.5, 1.5), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "resolutions": [], "ref": "optional"},
+    "grok_image": {"name": "Grok", "credits": (1, 2), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "auto"], "resolutions": ["1k", "2k"], "ref": "optional"},
+    "text2image_soul_v2": {"name": "Soul V2", "credits": (0.12, 0.12), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], "resolutions": [], "ref": "optional"},
+    "soul_cinematic": {"name": "Soul Cinematic", "credits": (0.12, 0.12), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"], "resolutions": [], "ref": "optional"},
+    "soul_location": {"name": "Soul Location", "credits": (0.12, 0.12), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "9:21"], "resolutions": [], "ref": None},
+    "soul_cinema_studio": {"name": "Soul Cinema", "credits": (0.12, 0.12), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"], "resolutions": [], "ref": "optional"},
+    "soul_cast": {"name": "Soul Cast", "credits": (0.12, 0.12), "ratios": ["16:9"], "resolutions": [], "ref": None},
+    "seedream_v4_5": {"name": "Seedream 4.5", "credits": (1, 1), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"], "resolutions": [], "ref": "optional"},
+    "seedream_v5_lite": {"name": "Seedream Lite", "credits": (1, 1), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"], "resolutions": [], "ref": "optional"},
+    "cinematic_studio_2_5": {"name": "Cinematic 2.5", "credits": (2, 4), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "kling_omni_image": {"name": "Kling O1", "credits": (0.5, 0.5), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "auto"], "resolutions": ["1k", "2k"], "ref": "optional"},
+    "recraft_v4_1": {"name": "Recraft V4.1", "credits": (1.25, 10), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5"], "resolutions": ["1k", "2k"], "ref": None},
+    "ms_image": {"name": "MS Image", "credits": (0.5, 12), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "marketing_studio_image": {"name": "MS Studio", "credits": (2, 4), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "z_image": {"name": "Z Image", "credits": (0.15, 0.15), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "resolutions": [], "ref": None},
+    "image_auto": {"name": "Auto", "credits": (2, 2), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "resolutions": [], "ref": "optional"},
+    # --- video ---
+    "kling3_0": {"name": "Kling 3.0", "credits": (1.5, 6), "ratios": ["1:1", "16:9", "9:16"], "ref": "optional"},
+    "kling3_0_turbo": {"name": "Kling 3.0 Turbo", "credits": (1.5, 2), "ratios": ["1:1", "16:9", "9:16"], "ref": "optional"},
+    "kling2_6": {"name": "Kling 2.6", "credits": (1, 2), "ratios": ["1:1", "16:9", "9:16"], "ref": "optional"},
+    "veo3_1": {"name": "Veo 3.1", "credits": (4, 15), "ratios": ["16:9", "9:16"], "ref": "optional"},
+    "veo3_1_lite": {"name": "Veo 3.1 Lite", "credits": (1.5, 1.5), "ratios": ["16:9", "9:16", "auto"], "ref": "optional"},
+    "veo3": {"name": "Veo 3", "credits": (22, 58), "ratios": ["16:9", "9:16"], "ref": "required"},
+    "seedance_2_5": {"name": "Seedance 2.5", "credits": (3, 12), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+    "seedance_2_0": {"name": "Seedance 2.0", "credits": (1, 22), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+    "seedance_2_0_mini": {"name": "Seedance 2.0 Mini", "credits": (0.5, 1), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+    "seedance1_5": {"name": "Seedance 1.5", "credits": (0.6, 3), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+    "minimax_h3": {"name": "MiniMax H3", "credits": (2, 2), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+    "minimax_hailuo": {"name": "Hailuo", "credits": (1, 1), "ratios": [], "ref": "optional"},
+    "wan2_7": {"name": "Wan 2.7", "credits": (1.5, 2.5), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "ref": "optional"},
+    "wan2_6": {"name": "Wan 2.6", "credits": (1.5, 2), "ratios": ["1:1", "16:9", "9:16"], "ref": "optional"},
+    "grok_video_v15": {"name": "Grok Video 1.5", "credits": (2.5, 8), "ratios": [], "ref": "optional"},
+    "grok_video": {"name": "Grok Video", "credits": (1.5, 1.5), "ratios": ["1:1", "16:9", "9:16"], "ref": "optional"},
+    "flux_3_video": {"name": "FLUX 3 Video", "credits": (5.5, 9), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "2:1", "auto"], "ref": "optional"},
+    "happy_horse_video": {"name": "Happy Horse", "credits": (2.5, 4.5), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "ref": "optional"},
+    "gemini_omni": {"name": "Gemini Omni", "credits": (3, 3), "ratios": ["16:9", "9:16"], "ref": "optional"},
+    "cinematic_studio_3_0": {"name": "Cinematic 3.0", "credits": (3.5, 24), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+    "cinematic_studio_video_3_5": {"name": "Cinematic Video 3.5", "credits": (3.5, 10), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+    "cinematic_studio_video_v2": {"name": "Cinematic V2", "credits": (1.5, 2), "ratios": ["1:1", "16:9", "9:16"], "ref": "optional"},
+    "cinematic_studio_video": {"name": "Cinematic Video", "credits": (1, 1.6), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "ref": "optional"},
+    "marketing_studio_video": {"name": "Marketing Studio", "credits": (3.5, 10), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+}
+
 # Video models whose live schema has no `aspect_ratio` param at all. Sending it
 # is a hard rejection ("Unknown params: aspect_ratio"), which broke every cost
-# check on `hailuo` because main() defaults video to 16:9. Measured 2026-08-07.
-NO_ASPECT_RATIO_MODELS = {"minimax_hailuo", "grok_video_v15"}
+# check on `hailuo` while main() defaulted video to 16:9. Measured 2026-08-07;
+# read off MODEL_MENU since 2026-10-06, so the two cannot disagree.
+NO_ASPECT_RATIO_MODELS = {job for job, row in MODEL_MENU.items() if not row["ratios"]}
 
 # Params the API refuses to default for you: omitting them fails the model's own
 # CEL rules even though `model get` prints a default. `minimax_hailuo` rejects
@@ -168,18 +237,24 @@ VIDEO_DURATIONS = {
     "wan2_7": {"type": "slider", "default": 5, "min": 2, "max": 15},
     "wan2_6": {"type": "preset", "default": 5, "options": [5, 10, 15]},
     "grok_video": {"type": "slider", "default": 5, "min": 1, "max": 15},
-    "cinematic_studio_3_0": {"type": "slider", "default": 5, "min": 5, "max": 20},
+    # The floor of these three is 4, not 5 ("Input should be greater than or
+    # equal to 4", re-probed 2026-10-06). The validator sets them no ceiling at
+    # all (100 s quotes 500 credits), so the ceilings here are unchanged.
+    "cinematic_studio_3_0": {"type": "slider", "default": 5, "min": 4, "max": 20},
     "cinematic_studio_video": {"type": "preset", "default": 5, "options": [5, 10]},
     "cinematic_studio_video_v2": {"type": "slider", "default": 5, "min": 3, "max": 12},
-    "marketing_studio_video": {"type": "slider", "default": 15, "min": 5, "max": 60},
+    "marketing_studio_video": {"type": "slider", "default": 15, "min": 4, "max": 60},
     # --- new video/audio models ---
     "seedance_2_0_mini": {"type": "slider", "default": 5, "min": 4, "max": 15},
     "kling3_0_turbo": {"type": "slider", "default": 5, "min": 3, "max": 15},
-    "gemini_omni": {"type": "preset", "default": 8, "options": [4, 6, 8]},
-    # MiniMax documents a 4s floor; the Higgsfield route rejects anything under 5
-    # ("Input should be greater than or equal to 5"), measured 2026-08-07.
-    "minimax_h3": {"type": "slider", "default": 5, "min": 5, "max": 15},
-    "cinematic_studio_video_3_5": {"type": "slider", "default": 15, "min": 5, "max": 20},
+    # Any whole second from 4 to 10, not the 4/6/8 presets this said until
+    # 2026-10-06: 5, 7, 9 and 10 all quote, 3 and 11 are refused.
+    "gemini_omni": {"type": "slider", "default": 8, "min": 4, "max": 10},
+    # MiniMax documents a 4s floor. The Higgsfield route refused anything under 5
+    # on 2026-08-07 and takes 4 since: re-probed 2026-10-06, 4 s quotes 8
+    # credits and 3 s gives "Input should be greater than or equal to 4".
+    "minimax_h3": {"type": "slider", "default": 5, "min": 4, "max": 15},
+    "cinematic_studio_video_3_5": {"type": "slider", "default": 15, "min": 4, "max": 20},
     "sonilo_music": {"type": "slider", "default": 10, "min": 5, "max": 60},
     # --- added 2026-08-07 ---
     "flux_3_video": {"type": "slider", "default": 5, "min": 5, "max": 20},
@@ -193,7 +268,10 @@ VIDEO_DURATIONS = {
 }
 
 MODEL_PARAMS = {
-    "flux_2": {"model": {"options": ["pro", "flex", "max"], "default": "pro"}},
+    # `variant`, not `model`: "Unknown params: model" (re-probed 2026-10-06),
+    # the same rename veo3 and minimax_hailuo had, so the Mini App's FLUX 2
+    # card failed every request with the default it sent.
+    "flux_2": {"variant": {"options": ["pro", "flex", "max"], "default": "pro"}},
     "gpt_image_2": {"quality": {"options": ["low", "medium", "high"], "default": "high"}},
     "imagegen_2_0": {"quality": {"options": ["low", "medium", "high"], "default": "high"}},
     "grok_image": {"mode": {"options": ["std", "quality"], "default": "std"}},
@@ -323,6 +401,87 @@ ASPECT_RATIOS = {
 }
 
 
+def _credits_label(lo: float, hi: float, per_second: bool) -> str:
+    span = f"{lo:g}" if lo == hi else f"{lo:g}-{hi:g}"
+    return f"{span} cr/s" if per_second else f"{span} cr"
+
+
+def menu() -> dict:
+    """The Mini App's image and video menu: one card per model, in MODEL_MENU order.
+
+    A card carries everything the app draws, so the app keeps no copy of any of
+    it: the alias to send back, the label and price, the ratios, resolutions and
+    durations it may offer, whether a reference image is taken, and the model's
+    own options. Ratios are cut to the eleven ASPECT_RATIOS, the set the Mini App
+    server accepts.
+    """
+    kinds = (("image", MODEL_ALIASES, DEFAULT_MODEL), ("video", VIDEO_MODEL_ALIASES, DEFAULT_VIDEO_MODEL))
+    cards = {"image": [], "video": []}
+    for job, row in MODEL_MENU.items():
+        for kind, aliases, default in kinds:
+            # The first alias wins where a model has two (h3 and hailuo3).
+            alias = next((a for a, j in aliases.items() if j == job), None)
+            if alias is None:
+                continue
+            duration = VIDEO_DURATIONS.get(job) if kind == "video" else None
+            # The app preselects every option it shows and sends it, so one with
+            # no default would go out on every request: seedance_2_5's
+            # extension_mode is refused outside mode video_extension. An image's
+            # resolution has its own row, so recraft's copy here would draw twice.
+            options = {k: v for k, v in MODEL_PARAMS.get(job, {}).items()
+                       if v.get("default") is not None and not (kind == "image" and k == "resolution")}
+            card = {
+                "id": alias,
+                "name": row["name"],
+                "cost": _credits_label(*row["credits"], per_second=bool(duration)),
+                "ratios": [r for r in row["ratios"] if r in ASPECT_RATIOS],
+                "ref": row["ref"],
+                "options": options,
+            }
+            if kind == "image":
+                card["resolutions"] = row["resolutions"]
+            else:
+                card["duration"] = duration
+            if job == default:
+                card["default"] = True
+            cards[kind].append(card)
+    return cards
+
+
+def _aspect_args(job: str, aspect_ratio: str | None) -> list[str]:
+    """--aspect_ratio for a ratio somebody chose, unless the model has none.
+
+    Nothing is held back as "the default" any more. Until 2026-10-06 1:1 (an
+    image) and 16:9 (a video) were never sent, on the theory that every model
+    defaults to them, and five do not: soul_cinema_studio defaults to 16:9,
+    marketing_studio_video to 9:16, and minimax_h3, flux_3_video and
+    cinematic_studio_video_3_5 to auto. A square Soul Cinema or a landscape
+    Marketing Studio picked in the Mini App came out in the other shape.
+    """
+    if not aspect_ratio or job in NO_ASPECT_RATIO_MODELS:
+        return []
+    return ["--aspect_ratio", aspect_ratio]
+
+
+def _resolution_args(job: str, resolution: str | None) -> list[str]:
+    """--resolution for an image, where the model has a resolution at all.
+
+    2k used to be held back as "the default", and eight of the image models
+    that offer 2k default to 1k: nano_banana_flash quotes 1.5 credits with no
+    resolution, the same as 1k, and 2 at 2k (2026-10-06). 2K is what the Mini
+    App preselects, so it bought a 1K picture. A model with no resolution
+    setting (soul, seedream, ...) refuses the flag outright, "Unknown params:
+    resolution", so it is never sent there; one the menu does not know is sent
+    whatever was asked.
+    """
+    if not resolution:
+        return []
+    known = MODEL_MENU.get(job)
+    if known is not None and not known.get("resolutions"):
+        return []
+    return ["--resolution", resolution]
+
+
 def get_account_status() -> dict:
     try:
         result = subprocess.run(
@@ -368,10 +527,9 @@ def estimate_cost(model: str, prompt: str = "test", aspect_ratio: str | None = N
     """
     resolved = resolve_model(model, kind)
     cmd = ["higgsfield", "generate", "cost", resolved, "--prompt", prompt, "--json"]
-    if aspect_ratio and resolved not in NO_ASPECT_RATIO_MODELS:
-        cmd.extend(["--aspect_ratio", aspect_ratio])
-    if resolution and resolution != "2k":
-        cmd.extend(["--resolution", resolution])
+    cmd.extend(_aspect_args(resolved, aspect_ratio))
+    if kind == "image":
+        cmd.extend(_resolution_args(resolved, resolution))
     # as create sends it: a video model without a duration param (veo3) takes none
     if duration is not None and (resolved == "sonilo_music"
                                  or (kind == "video" and VIDEO_DURATIONS.get(resolved))):
@@ -404,8 +562,8 @@ def generate_higgsfield(
     prompt: str,
     output_path: str,
     model: str = DEFAULT_MODEL,
-    aspect_ratio: str = "1:1",
-    resolution: str = "2k",
+    aspect_ratio: str | None = None,
+    resolution: str | None = None,
     ref_image: str | None = None,
     extra_params: dict | None = None,
 ) -> dict:
@@ -418,11 +576,9 @@ def generate_higgsfield(
         "--json",
     ]
 
-    if aspect_ratio and aspect_ratio != "1:1":
-        cmd.extend(["--aspect_ratio", aspect_ratio])
-
-    if resolution and resolution != "2k":
-        cmd.extend(["--resolution", resolution])
+    # None is the model's own default; anything chosen is sent.
+    cmd.extend(_aspect_args(resolved, aspect_ratio))
+    cmd.extend(_resolution_args(resolved, resolution))
 
     if ref_image:
         cmd.extend(["--image", ref_image])
@@ -496,7 +652,7 @@ def generate_video(
     prompt: str,
     output_path: str,
     model: str = DEFAULT_VIDEO_MODEL,
-    aspect_ratio: str = "16:9",
+    aspect_ratio: str | None = None,
     duration: int | None = None,
     ref_image: str | None = None,
     extra_params: dict | None = None,
@@ -515,8 +671,7 @@ def generate_video(
         "--json",
     ]
 
-    if aspect_ratio and aspect_ratio != "16:9" and resolved not in NO_ASPECT_RATIO_MODELS:
-        cmd.extend(["--aspect_ratio", aspect_ratio])
+    cmd.extend(_aspect_args(resolved, aspect_ratio))
 
     dur_info = VIDEO_DURATIONS.get(resolved)
     if duration and dur_info:
@@ -871,9 +1026,10 @@ def main():
     # model's own schema is what refuses a ratio it does not take.
     parser.add_argument("-a", "--aspect-ratio", default=None,
                         choices=sorted({*ASPECT_RATIOS, "auto", "1:2", "2:1"}),
-                        help="Aspect ratio (includes per-model values like 'auto' and '2:1')")
+                        help="Aspect ratio (includes per-model values like 'auto' and '2:1'; default: the model's own)")
     parser.add_argument("-r", "--ref-image", default=None, help="Reference image path for image-to-image or image-to-video")
-    parser.add_argument("--resolution", default="2k", choices=["1k", "2k", "4k"], help="Resolution (default: 2k)")
+    parser.add_argument("--resolution", default=None, choices=["1k", "2k", "4k"],
+                        help="Image resolution, where the model has one (default: the model's own, 1k on most)")
     parser.add_argument("--backend", default="auto", choices=["higgsfield", "pollinations", "auto"], help="Backend (default: auto, tries Higgsfield then Pollinations)")
     parser.add_argument("--video", action="store_true", help="Generate video instead of image")
     parser.add_argument("--threed", "--3d", action="store_true", dest="threed", help="Generate a 3D asset (mesh) instead of an image")
@@ -883,6 +1039,8 @@ def main():
     parser.add_argument("--cost", action="store_true", help="Estimate credits cost without generating")
     parser.add_argument("--balance", action="store_true", help="Show account credits balance and exit")
     parser.add_argument("--model-params", action="store_true", help="Print MODEL_PARAMS as JSON and exit")
+    parser.add_argument("--menu", action="store_true",
+                        help="Print the Mini App's image and video menu (names, prices, settings) as JSON and exit")
     parser.add_argument("--extra", default=None, help="JSON string of extra model params (e.g. '{\"quality\":\"high\"}')")
     parser.add_argument("--user", default=None, help="User ID for per-user generation tracking")
     parser.add_argument("-W", "--width", type=int, default=768, help="Width for Pollinations (max 768)")
@@ -924,6 +1082,10 @@ def main():
             "threed_aliases": THREED_MODEL_ALIASES,
             "audio_aliases": AUDIO_MODEL_ALIASES,
         }, indent=2))
+        return
+
+    if args.menu:
+        print(json.dumps(menu(), indent=2))
         return
 
     if args.list_models:
@@ -1021,8 +1183,9 @@ def main():
             "image": DEFAULT_MODEL,
         }[kind]
 
-    if args.aspect_ratio is None and kind in ("image", "video"):
-        args.aspect_ratio = "16:9" if kind == "video" else "1:1"
+    # No -a means the model's own ratio. 1:1 and 16:9 used to be filled in here
+    # and then withheld as if every model defaulted to them (see _aspect_args),
+    # so leaving it unset sends the same as before and a chosen ratio is sent.
 
     # Music (sonilo_music) requires a duration; default to 10s if the user did not set one.
     if kind == "audio" and resolve_model(args.model, "audio") == "sonilo_music" and args.duration is None:

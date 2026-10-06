@@ -27,7 +27,7 @@ who remembers the last take. The value lives in turns 2, 3 and 4 — not in turn
 
 | | Google direct (official docs) | Higgsfield route (our CLI) |
 |---|---|---|
-| Duration | 3–10 s | presets **4 / 6 / 8 s** (`gemini_omni`) |
+| Duration | 3–10 s | **4–10 s**, any whole second (`gemini_omni`; read as 4 / 6 / 8 presets until 2026-10-06) |
 | Resolution | 720p, 24 fps | 720p native; platform offers 1080p upscale as post |
 | Aspect | 16:9 (default), 9:16 | 16:9, 9:16 (platform also advertises 1:1, 4:5) |
 | Audio | generated natively, in-pass | same |
@@ -276,5 +276,5 @@ Practitioner (cross-checked, lower trust):
 
 **Contested points, flagged rather than resolved:** audio-reference upload (official: unsupported;
 resellers: "rolling out"), text-rendering quality (Google: strength; users: weak), and clip
-duration (Google: 3–10 s; Higgsfield: 4/6/8 presets; Higgsfield marketing: 60 s via continuation).
+duration (Google: 3–10 s; Higgsfield: 4–10 s; Higgsfield marketing: 60 s via continuation).
 Nothing here has been verified by an actual generation on this machine.
