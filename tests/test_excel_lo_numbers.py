@@ -207,5 +207,63 @@ class Commands(unittest.TestCase):
         self.assertEqual((args.decimal, args.as_text), ("comma", True))
 
 
+class DatesReadAsDates(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: read returned a date cell as the serial it
+    is stored as (7 October 2026 came back as 46302), so a date column of an
+    invoice or expenses sheet read as plain numbers."""
+
+    NULL = (1899, 12, 30)
+
+    def test_serial_to_iso(self):
+        cases = [
+            ((46302, True, False), "2026-10-07"),
+            ((46295.58680555555, True, True), "2026-09-30 14:05:00"),
+            ((0.5868055555555556, False, True), "14:05:00"),
+            ((1.5, False, True), None),        # a 36 hour duration, not a clock time
+            ((46302, False, False), None),     # not a date format: stays a number
+            ((float("nan"), True, False), None),
+            ((1e12, True, False), None),       # beyond any calendar: stays a number
+        ]
+        for (value, has_date, has_time), want in cases:
+            with self.subTest(value=value, date=has_date, time=has_time):
+                self.assertEqual(xl.serial_to_iso(value, self.NULL, has_date, has_time), want)
+
+    def test_a_nan_or_inf_cell_reads_instead_of_ending_the_read(self):
+        # val == int(val) raised ValueError on NaN and OverflowError on inf.
+        self.assertEqual(xl._num(3.0), 3)
+        self.assertEqual(xl._num(2.5), 2.5)
+        self.assertEqual(xl._num(float("inf")), float("inf"))
+        self.assertNotEqual(xl._num(float("nan")), xl._num(float("nan")))
+
+    def test_a_document_with_another_day_zero(self):
+        # The 1904 date system of old Mac workbooks.
+        self.assertEqual(xl.serial_to_iso(0, (1904, 1, 1), True, False), "1904-01-01")
+
+    def test_read_through_real_libreoffice(self):
+        import shutil
+        import subprocess
+        python = "/usr/bin/python3"
+        if not shutil.which("soffice") or subprocess.run(
+                [python, "-c", "import uno"], capture_output=True).returncode != 0:
+            self.skipTest("LibreOffice with python3-uno is not installed")
+        import datetime
+        import openpyxl
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "dates.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "S"
+            ws["A1"] = datetime.date(2026, 10, 7)
+            ws["B1"] = datetime.datetime(2026, 9, 30, 14, 5)
+            ws["C1"] = 1234.56
+            ws["D1"] = "0012"
+            wb.save(path)
+            out = subprocess.run([python, str(SCRIPT), "read", str(path), "--sheet", "S"],
+                                 capture_output=True, text=True, timeout=120)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(json.loads(out.stdout),
+                             [["2026-10-07", "2026-09-30 14:05:00", 1234.56, "0012"]])
+
+
 if __name__ == "__main__":
     unittest.main()

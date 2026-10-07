@@ -67,8 +67,12 @@ def save_sync_state(user_dir: Path, state: dict) -> None:
     os.replace(tmp, str(path))
 
 
-def export_messages(user_dir: Path, cutoff_date: str | None = None) -> dict[str, list[dict]]:
-    """Export messages grouped by ISO date (YYYY-MM-DD)."""
+def export_messages(user_dir: Path, cutoff_date: str | None = None) -> dict[str, list[dict]] | None:
+    """Export messages grouped by ISO date (YYYY-MM-DD).
+
+    None when the log exists but cannot be read; a missing log is {}, since a
+    user with nothing logged yet is not a failure.
+    """
     db_path = _message_log(user_dir)
     if not db_path.exists():
         return {}
@@ -91,7 +95,7 @@ def export_messages(user_dir: Path, cutoff_date: str | None = None) -> dict[str,
             conn.close()
     except sqlite3.Error as e:
         print(f"  ERROR: Could not read {db_path}: {e}", flush=True)
-        return {}
+        return None
 
     by_date: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
@@ -162,7 +166,7 @@ def mine_sessions(user_dir: Path, dry_run: bool = False, force_today: bool = Fal
     return {"total_drawers": total}
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Per-user MemPalace sync")
     parser.add_argument("--user-dir", required=True, help="The user's data directory")
     parser.add_argument("--force-today", action="store_true", help="Re-mine today's session")
@@ -176,7 +180,7 @@ def main() -> None:
 
     if not _message_log(user_dir).exists():
         print(f"No message_log.db in {user_dir}. Nothing to sync.", flush=True)
-        return
+        return 0
 
     start = datetime.now()
     wing = _wing_for(user_dir)
@@ -184,9 +188,15 @@ def main() -> None:
 
     cutoff = datetime.now().strftime("%Y-%m-%d") if args.force_today else None
 
+    # A failed export or mining run printed ERROR and still exited 0, so the
+    # scheduler never said the palace had stopped growing (Linux bot sweep
+    # 2026-10-07). Either one now fails the job, which the scheduler reports.
+    failed = []
     print("  Exporting messages...", flush=True)
     by_date = export_messages(user_dir, cutoff_date=cutoff)
-    if by_date:
+    if by_date is None:
+        failed.append("the message log could not be read")
+    elif by_date:
         write_session_files(by_date, _convos_dir(user_dir))
         msg_count = sum(len(v) for v in by_date.values())
         print(f"  {len(by_date)} day(s), {msg_count} messages", flush=True)
@@ -195,6 +205,8 @@ def main() -> None:
 
     print(f"  Mining into palace at {_palace_path(user_dir)}...", flush=True)
     stats = mine_sessions(user_dir, dry_run=args.dry_run, force_today=args.force_today)
+    if stats.get("error"):
+        failed.append(f"mining failed ({stats['error'][:120]})")
 
     if not args.dry_run:
         state = load_sync_state(user_dir)
@@ -205,7 +217,11 @@ def main() -> None:
     elapsed = (datetime.now() - start).total_seconds()
     print(f"\n[{datetime.now().isoformat()}] Sync complete in {elapsed:.1f}s", flush=True)
     print(f"  Total drawers in palace: {stats.get('total_drawers', 'unknown')}", flush=True)
+    if failed:
+        print("SYNC FAILED: " + "; ".join(failed), flush=True)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -11,9 +11,22 @@ Outputs: vocals.wav, drums.wav, bass.wav, other.wav
 """
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Demucs keeps the whole input and all four stems in memory as float32, about
+# 1.4 MB per second of stereo on top of the model: 5 minutes peaked at 2.3 GB
+# (measured 2026-09-27) and an hour needs 7 to 8 GB. On Linux the run is a child
+# of the bot's service, and when the kernel OOM-kills a process in a unit,
+# systemd's default OOMPolicy=stop takes the whole unit down with it. So the run
+# goes into its own memory-capped user scope (the voice skill's pattern), and on
+# Linux where no scope can be made, only inputs a song long are run (Linux bot
+# sweep 2026-10-07). macOS has no scope and no such policy; it runs as before.
+MEM_MAX = os.environ.get("STEMS_MEM_MAX", "6G")
+UNPROTECTED_MAX_SECONDS = 20 * 60
 
 
 # demucs 4.0.1 writes stems with torchaudio.save, and torchaudio 2.9 and later
@@ -54,6 +67,30 @@ def pick_device(python: str = sys.executable) -> str:
     return "cuda" if result.returncode == 0 else "cpu"
 
 
+def _scope_prefix():
+    """systemd-run argv for a memory-capped user scope, or None when none can be made here."""
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        return None
+    prefix = [systemd_run, "--user", "--scope", "--quiet", "--collect",
+              "-p", f"MemoryMax={MEM_MAX}", "-p", "MemorySwapMax=0", "--"]
+    try:
+        probe = subprocess.run(prefix + ["true"], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return prefix if probe.returncode == 0 else None
+
+
+def _duration(path) -> float | None:
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "csv=p=0", str(path)], capture_output=True, text=True, timeout=60)
+        return float(r.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def separate_stems(input_path: str, output_dir: str = None, model: str = "htdemucs",
                    device: str = "auto") -> dict:
     """Separate audio into stems using Demucs."""
@@ -74,7 +111,15 @@ def separate_stems(input_path: str, output_dir: str = None, model: str = "htdemu
         # Run demucs
         if device == "auto":
             device = pick_device()
-        cmd = [
+        prefix = _scope_prefix()
+        if prefix is None and sys.platform.startswith("linux"):
+            seconds = _duration(input_path)
+            if seconds is None or seconds > UNPROTECTED_MAX_SECONDS:
+                return {"error": "no memory-capped scope can be made here, and this input is "
+                                 + ("of unknown length" if seconds is None else f"{seconds / 60:.0f} minutes long")
+                                 + f"; without the cap only {UNPROTECTED_MAX_SECONDS // 60} minutes run. "
+                                 "Split it with ffmpeg (-ss/-t) and separate each part"}
+        cmd = (prefix or []) + [
             sys.executable, "-c", DEMUCS_RUNNER,
             "--out", str(output_dir),
             "--name", model,
@@ -85,6 +130,10 @@ def separate_stems(input_path: str, output_dir: str = None, model: str = "htdemu
         print(f"Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)  # 30 min timeout
 
+        if result.returncode < 0:
+            return {"error": f"Demucs was killed by signal {-result.returncode}, most likely by the "
+                             f"{MEM_MAX} memory cap: split the audio with ffmpeg (-ss/-t) and separate "
+                             "each part"}
         if result.returncode != 0:
             return {"error": f"Demucs failed: {result.stderr}"}
 

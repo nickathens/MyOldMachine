@@ -434,6 +434,9 @@ def main():
     parser.add_argument('--engine', default='EEVEE', choices=['EEVEE', 'CYCLES'])
     parser.add_argument('--samples', type=int, default=64)
     args = parser.parse_args(argv)
+    # Blender cannot write a relative path with no .blend file to anchor it:
+    # a still rendered in full and then failed to save as 'out.png'
+    args.output = os.path.abspath(args.output)
     if args.animation and not args.output.lower().endswith(('.mp4', '.mov', '.mkv')):
         # the default output is a .png name; a movie written under it misleads
         args.output = os.path.splitext(args.output)[0] + '.mp4'
@@ -454,6 +457,12 @@ def main():
 
     # Override settings if specified
     setup_render(args.width, args.height, args.engine, args.samples)
+    if args.animation:
+        # --frames is the length of every animation: the scenes without their
+        # own keyframes kept Blender's default 1 to 250, so a 'glass_sphere'
+        # video rendered 250 frames whatever --frames said
+        bpy.context.scene.frame_start = 1
+        bpy.context.scene.frame_end = args.frames
 
     # Render
     if args.animation:

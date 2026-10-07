@@ -140,5 +140,26 @@ class CliTests(unittest.TestCase):
         self.assertIn("δεν αποφαίνεται", out)
 
 
+class PlainSentenceRoutingTests(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: find matched only when the WHOLE query was a
+    substring of one guide, so the module's own examples («ο σπιτονοικοκύρης
+    κρατάει την εγγύηση», «με απέλυσαν») and two word queries found nothing."""
+
+    def test_the_docstrings_own_examples_route(self):
+        self.assertEqual(od.find("ο σπιτονοικοκύρης κρατάει την εγγύηση")[0]["slug"], "misthosi-engyisi")
+        self.assertEqual(od.find("με απέλυσαν")[0]["slug"], "apolysi-ergasia")
+
+    def test_two_words_from_different_keywords(self):
+        self.assertEqual(od.find("εγγύηση ενοικίου")[0]["slug"], "misthosi-engyisi")
+
+    def test_short_words_alone_route_nowhere(self):
+        self.assertEqual(od.find("με την"), [])
+
+    def test_consumer_ombudsman_is_not_given_the_ministry_line(self):
+        steps = " ".join(od.get("katanalotis")["steps"])
+        self.assertNotIn("Συνήγορος του Καταναλωτή: δωρεάν εξωδικαστική επίλυση. Γραμμή 1520", steps)
+        self.assertIn("210 6460862", steps)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -109,6 +109,10 @@ class AudioToMidiTest(unittest.TestCase):
         if str(model) in self.unloadable:
             raise ValueError(f"File {model} cannot be loaded into either "
                              "TensorFlow, CoreML, TFLite or ONNX.")
+        if getattr(self, "undecodable", False):
+            class NoBackendError(Exception):   # audioread's, raised with no message
+                pass
+            raise NoBackendError()
         stem = Path(audio_paths[0]).stem
         target = Path(output_directory) / f"{stem}_basic_pitch.mid"
         target.write_bytes(b"MThd")
@@ -139,6 +143,14 @@ class AudioToMidiTest(unittest.TestCase):
         result = self.script.transcribe_audio(str(self.audio), str(self.tmp))
 
         self.assertIn("cannot be loaded", result.get("error", ""))
+
+    def test_an_error_with_no_message_still_says_what_failed(self):
+        # Linux bot sweep 2026-10-07: an undecodable file raises audioread's
+        # NoBackendError with an empty message, and the script printed
+        # "Error: " and nothing else
+        self.undecodable = True
+        result = self.script.transcribe_audio(str(self.audio), str(self.tmp))
+        self.assertIn("NoBackendError", result.get("error", ""))
 
     def test_explicit_output_filename_is_honoured(self):
         wanted = self.tmp / "renders" / "take.mid"

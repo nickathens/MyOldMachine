@@ -189,6 +189,38 @@ class LibraryTests(unittest.TestCase):
 #  Merge with apply_reference (treatment wins)
 # ─────────────────────────────────────────────
 
+class ReadabilityTests(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: text colours unreadable on their own bg."""
+
+    def test_contrast_matches_wcag(self):
+        self.assertAlmostEqual(design_md.contrast("#ffffff", "#000000"), 21.0, places=2)
+        self.assertAlmostEqual(design_md.contrast("#000", "#000"), 1.0, places=2)
+        self.assertAlmostEqual(design_md.contrast("rgba(255,255,255,0.5)", "#000000"),
+                               design_md.contrast("#808080", "#000000"), places=1)
+        self.assertIsNone(design_md.contrast("not a colour", "#000"))
+
+    def test_runway_keeps_no_unreadable_text_mid(self):
+        # its prose names Charcoal #404040 "body text on light surfaces and
+        # secondary text": 2.0:1 as text_mid on its black page
+        palette = design_md.load_design("runway")["color_palette"]
+        self.assertEqual(palette["bg"], "#000000")
+        self.assertNotIn("text_mid", palette)
+
+    def test_unreadable_slots_drop_and_readable_ones_stay(self):
+        kept = design_md.drop_unreadable({"bg": "#efeae0", "text": "#0a0a0a", "accent": "#d6c93a",
+                                          "cream": "#efeae0", "brand_color": "#d6c93a"})
+        self.assertEqual(kept, {"bg": "#efeae0", "text": "#0a0a0a", "brand_color": "#d6c93a"})
+        self.assertEqual(design_md.drop_unreadable({"text": "#fff"}), {"text": "#fff"})
+
+    def test_every_library_palette_reads(self):
+        for name in design_md.list_library():
+            palette = design_md.load_design(name)["color_palette"]
+            for slot, minimum in design_md.READABLE.items():
+                if palette.get(slot) and palette.get("bg"):
+                    with self.subTest(design=name, slot=slot):
+                        self.assertGreaterEqual(design_md.contrast(palette[slot], palette["bg"]), minimum)
+
+
 class MergeTests(unittest.TestCase):
     def test_treatment_wins_on_palette_keys(self):
         design = design_md.load_design("linear")

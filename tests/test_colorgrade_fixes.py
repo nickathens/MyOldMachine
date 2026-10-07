@@ -156,5 +156,66 @@ class ZeroIterations(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr[-800:])
 
 
+class StillsAsSeen(unittest.TestCase):
+    """Linux bot sweep 2026-10-07:
+    cg.py still ignored EXIF orientation and the colour profile, and graded
+    the whole photo at once in float (12 MP peaked at 2.1 GB)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cg_still", SKILL / "scripts" / "cg.py")
+        cls.cg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.cg)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _still(self, src, *extra):
+        out = self.d / "out.png"
+        self.assertEqual(self.cg.main(["still", str(src), "--out", str(out), *extra]), 0)
+        from PIL import Image
+        return Image.open(out)
+
+    def test_a_portrait_phone_photo_stays_upright(self):
+        from PIL import Image
+        im = Image.new("RGB", (64, 32), (200, 30, 30))
+        im.paste((30, 30, 200), (0, 0, 16, 32))
+        exif = Image.Exif()
+        exif[0x0112] = 6
+        src = self.d / "phone.jpg"
+        im.save(src, exif=exif.tobytes(), quality=95)
+        out = self._still(src, "--look", "neutral")
+        self.assertEqual(out.size, (32, 64))
+        r, g, b = out.convert("RGB").getpixel((16, 4))   # the band on the left as stored is on top
+        self.assertGreater(b, r)
+
+    @unittest.skipUnless(Path("/usr/share/color/icc/colord/AdobeRGB1998.icc").exists(),
+                         "needs colord's AdobeRGB profile")
+    def test_a_wide_gamut_photo_is_converted_to_srgb_first(self):
+        from PIL import Image, ImageCms
+        icc = Path("/usr/share/color/icc/colord/AdobeRGB1998.icc").read_bytes()
+        src = self.d / "adobe.png"
+        Image.new("RGB", (8, 8), (60, 160, 70)).save(src, icc_profile=icc)
+        want = ImageCms.profileToProfile(Image.open(src), ImageCms.ImageCmsProfile(
+            __import__("io").BytesIO(icc)), ImageCms.createProfile("sRGB"), outputMode="RGB").getpixel((4, 4))
+        got = self._still(src, "--look", "neutral").convert("RGB").getpixel((4, 4))
+        self.assertNotEqual(want, (60, 160, 70))
+        for a, b in zip(got, want):
+            self.assertLessEqual(abs(a - b), 1, (got, want))
+
+    def test_banding_changes_nothing(self):
+        rng = np.random.default_rng(5)
+        img = rng.integers(0, 256, (97, 131, 3), dtype=np.uint8)
+        g = C.Grade(look=C.load_look("teal_orange", str(SKILL / "looks")))
+        whole = np.clip(C.apply_grade(img.astype(np.float32) / 255.0, g) * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        banded = self.cg.grade_still(img, g, band_pixels=1000)
+        np.testing.assert_array_equal(banded, whole)
+
+
 if __name__ == "__main__":
     unittest.main()

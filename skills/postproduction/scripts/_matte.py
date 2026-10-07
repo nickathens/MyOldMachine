@@ -344,11 +344,14 @@ def triangulate(fg1, fg2, bk1, bk2):
     against two backings that differ anywhere, the matting problem stops being
     underdetermined and has one answer:
 
-        alpha = 1 - (sum(Cf1) - sum(Cf2)) / (sum(Ck1) - sum(Ck2))
+        alpha = 1 - ((Cf1 - Cf2) . (Ck1 - Ck2)) / |Ck1 - Ck2|^2
         Co    = Cf1 - (1 - alpha) * Ck1
 
     The backings do not have to be constant, or clean, or even the same hue;
-    they only have to differ. In a studio the cheap version is one pass with the
+    they only have to differ. (A ratio of channel SUMS, used here before
+    2026-10-07, needs them to differ in brightness: a blue and a green pass of
+    the same total left every pixel unsolved. The projection onto the backing
+    difference is Smith and Blinn's own form and is the least squares answer.) In a studio the cheap version is one pass with the
     cyc lit and one with it dark. Where the two backings happen to be identical
     at a pixel the denominator vanishes and that pixel is UNSOLVED, which the
     result marks rather than filling in.
@@ -360,10 +363,11 @@ def triangulate(fg1, fg2, bk1, bk2):
     if not (a1.shape == a2.shape == k1.shape == k2.shape):
         raise ValueError("all four plates must be the same raster")
 
-    den = (k1 - k2).sum(axis=2)
-    solved = np.abs(den) > 1e-4
+    dk = k1 - k2
+    den = (dk * dk).sum(axis=2)
+    solved = den > 1e-8
     alpha = np.where(solved,
-                     1.0 - (a1 - a2).sum(axis=2) / np.where(solved, den, 1.0),
+                     1.0 - ((a1 - a2) * dk).sum(axis=2) / np.where(solved, den, 1.0),
                      np.nan)
     alpha_c = np.clip(np.nan_to_num(alpha, nan=0.0), 0.0, 1.0)
     co = a1 - (1.0 - alpha_c)[..., None] * k1

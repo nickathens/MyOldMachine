@@ -268,6 +268,11 @@ def find(query):
     """
     q = _fold(query)
     if not q.strip():
+        if query.strip():
+            # a Greek phrase folds to nothing here, and was told it was empty
+            raise ValueError("The router matches English keywords and nothing in this "
+                             "phrase is one (a phrase in Greek routes nowhere). Put it in "
+                             "English, or pick the department from 'route.py list'.")
         raise ValueError("Give a phrase to route.")
     hits = []
     for slug, d in DEPARTMENTS.items():

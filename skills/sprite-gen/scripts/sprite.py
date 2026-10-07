@@ -91,13 +91,16 @@ def resize_sprite(input_path, output_path, scale=2):
 
 
 def pixelate(input_path, output_path, pixel_size=8):
-    """Pixelate an image."""
+    """Pixelate an image: each block takes the mean colour of its pixels."""
     img = Image.open(input_path)
+    if pixel_size < 1:
+        sys.exit("Error: --pixel-size must be 1 or more")
 
-    # Shrink
+    # Shrink with a box average (NEAREST took one pixel per block, so a fine
+    # pattern came out speckled instead of its mean)
     small = img.resize(
-        (img.width // pixel_size, img.height // pixel_size),
-        Image.Resampling.NEAREST
+        (max(1, img.width // pixel_size), max(1, img.height // pixel_size)),
+        Image.Resampling.BOX
     )
 
     # Enlarge back

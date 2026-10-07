@@ -115,7 +115,9 @@ class TestDiavgeia(unittest.TestCase):
         self.assertEqual(captured["params"]["size"], 5)
         self.assertEqual(captured["params"]["page"], 1)
         self.assertEqual(captured["params"]["from_issue_date"], "2024-01-01")
-        self.assertEqual(captured["params"]["to_issue_date"], "2024-03-31")
+        # the API stops at the START of to_issue_date (Athens midnight), so the
+        # day after is sent and its acts dropped (Linux bot sweep 2026-10-07)
+        self.assertEqual(captured["params"]["to_issue_date"], "2024-04-01")
 
     def test_search_omits_dates_when_absent(self):
         captured = {}
@@ -145,6 +147,25 @@ class TestDiavgeia(unittest.TestCase):
         # 1 782 432 000 000 ms is 2026-06-26 UTC
         self.assertEqual(diavgeia._fmt_date(1782432000000), "2026-06-26")
         self.assertEqual(diavgeia._fmt_date(None), "")
+
+    def test_fmt_date_reads_the_day_in_athens(self):
+        # Διαύγεια stores some dates at Athens midnight: 2024-03-27T22:00Z is
+        # the act of 28 March, which UTC printed as the 27th
+        self.assertEqual(diavgeia._fmt_date(1711576800000), "2024-03-28")
+        self.assertEqual(diavgeia._fmt_date(1711584000000), "2024-03-28")   # UTC midnight
+
+    def test_to_date_keeps_its_whole_day_and_drops_the_next(self):
+        utc_midnight_28 = 1711584000000      # 2024-03-28T00:00Z
+        athens_midnight_29 = 1711663200000   # 2024-03-29T00:00+02:00
+
+        def fake_get(url, *, params=None, accept_json=False):
+            return FakeResponse(json_data={"info": {"total": 2}, "decisions": [
+                {"ada": "A", "issueDate": utc_midnight_28},
+                {"ada": "B", "issueDate": athens_midnight_29}]})
+
+        with mock.patch.object(diavgeia._common, "http_get", side_effect=fake_get):
+            data = diavgeia.search("x", from_date="2024-03-28", to_date="2024-03-28")
+        self.assertEqual([d["ada"] for d in data["decisions"]], ["A"])
 
     def test_summarize_handles_empty(self):
         out = diavgeia.summarize({"decisions": [], "info": {"total": 0}})

@@ -43,7 +43,10 @@ from pathlib import Path
 
 DISPLAY_NUM = ":0"
 XAUTHORITY = "/run/user/1000/gdm/Xauthority"
-MAX_WAIT = 600
+# The wait for the autoplay is sized from the deck (expected_seconds) with this
+# floor. It was a flat 600 s: a long deck was cut at ten minutes, and a page
+# whose autoplay never started was filmed standing still for all ten.
+MIN_WAIT = 60
 POLL_INTERVAL = 2
 LOCK_PATH = "/tmp/claude_video_recording.lock"
 # Seconds between the page's load event and the start of the capture: the
@@ -258,6 +261,49 @@ def _capture_area_is_clear(page, width: int, height: int, out_png: Path) -> bool
     return False
 
 
+def autoplay_problem(page) -> str | None:
+    """Why the page's autoplay cannot run, or None when it is armed.
+
+    The autoplay rides on GSAP from cdn.jsdelivr.net. With the network or the
+    CDN down the page threw "gsap is not defined" before arming itself, and
+    the recorder filmed the still cover until its wait ran out, then reported
+    success (2026-10-07)."""
+    state = page.evaluate("""() => ({
+        wants_gsap: !!document.querySelector('script[src*="gsap"]'),
+        gsap: typeof gsap !== 'undefined' && typeof ScrollToPlugin !== 'undefined',
+        armed: typeof window.__autoplayDone === 'boolean'})""")
+    if state["armed"] and state["gsap"]:
+        return None
+    if state["wants_gsap"] and not state["gsap"]:
+        return ("the page's animation library (GSAP, from cdn.jsdelivr.net) did not load, so "
+                "autoplay cannot scroll it; the recording needs the network")
+    return ("the page has no autoplay controller: record a deck built by "
+            "create_presentation.py, or its script failed (open it in a browser and check the console)")
+
+
+def expected_seconds(page, delay: float) -> float:
+    """How long the autoplay should run: the opening delay, every section's
+    hold, and at most 4.5 s per section to scroll to it and pan through it."""
+    holds = page.evaluate("""() => [...document.querySelectorAll('[data-duration]')]
+        .reduce((total, el) => total + (parseFloat(el.dataset.duration) || 3) + 4.5, 0)""")
+    return float(delay) + float(holds or 0)
+
+
+# x11grab hands over RGB, and ffmpeg 6.1 turns RGB into YUV with the BT.601
+# matrix unless told otherwise and tags nothing, so an HD player, which takes an
+# untagged file for BT.709, showed the brand gold C9A84C as (204, 164, 71)
+# (2026-10-07). Name BT.709 for the conversion and tag the file with it.
+ENCODE_ARGS = [
+    "-vf", "scale=out_color_matrix=bt709:out_range=tv",
+    "-c:v", "libx264",
+    "-crf", "20",
+    "-preset", "fast",
+    "-pix_fmt", "yuv420p",
+    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+    "-color_range", "tv",
+]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Record presentation HTML as video")
     parser.add_argument("--html", required=True, help="Path to presentation HTML")
@@ -350,6 +396,11 @@ def main():
         except Exception:
             pass
         time.sleep(SETTLE_AFTER_LOAD)
+        problem = autoplay_problem(page)
+        if problem:
+            print(f"Error: {problem}", file=sys.stderr)
+            sys.exit(1)
+        wait_limit = max(MIN_WAIT, int(expected_seconds(page, args.delay) * 1.5) + 30)
 
         print(f"[3/5] Starting ffmpeg x11grab ({args.fps}fps, H.264)...")
         with open(ffmpeg_log, "wb") as log:
@@ -363,10 +414,7 @@ def main():
                     "-framerate", str(args.fps),
                     "-video_size", f"{args.width}x{args.height}",
                     "-i", f"{DISPLAY_NUM}+0,0",
-                    "-c:v", "libx264",
-                    "-crf", "20",
-                    "-preset", "fast",
-                    "-pix_fmt", "yuv420p",
+                    *ENCODE_ARGS,
                     raw_output,
                 ],
                 stdin=subprocess.PIPE,
@@ -381,9 +429,10 @@ def main():
             print(f"Error: ffmpeg failed to start: {err[-500:]}", file=sys.stderr)
             sys.exit(1)
 
-        print("[4/5] Waiting for autoplay to complete...")
+        print(f"[4/5] Waiting for autoplay to complete (at most {wait_limit}s)...")
         elapsed = 0
-        while elapsed < MAX_WAIT:
+        finished = False
+        while elapsed < wait_limit:
             try:
                 if not browser.is_connected():
                     print("     Warning: Chromium disconnected")
@@ -394,13 +443,12 @@ def main():
                 done = page.evaluate("() => window.__autoplayDone === true")
                 if done:
                     print(f"     Autoplay finished after {elapsed}s")
+                    finished = True
                     break
             except Exception:
                 pass
             time.sleep(POLL_INTERVAL)
             elapsed += POLL_INTERVAL
-        else:
-            print(f"     Warning: autoplay did not finish within {MAX_WAIT}s")
 
         time.sleep(3)
 
@@ -472,7 +520,11 @@ def main():
                 print(f"Warning: Audio not found: {audio_path}", file=sys.stderr)
                 shutil.move(raw_output, str(output_path))
 
-        success = True
+        success = finished
+        if not finished:
+            # the file is kept so it can be looked at, but it is not the video
+            print(f"Error: the autoplay did not finish within {wait_limit}s, so {output_path} "
+                  "is incomplete", file=sys.stderr)
     finally:
         if browser is not None:
             try:

@@ -63,6 +63,77 @@ def shoelace(points):
     return abs(s) / 2.0
 
 
+def _cross(o, a, b):
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _segments_cross(p1, p2, q1, q2):
+    """Γνήσια τομή δύο τμημάτων (όχι απλή επαφή σε άκρο ή σε συνευθειακό κομμάτι)."""
+    d1, d2 = _cross(q1, q2, p1), _cross(q1, q2, p2)
+    d3, d4 = _cross(p1, p2, q1), _cross(p1, p2, q2)
+    return ((d1 > 0 > d2) or (d1 < 0 < d2)) and ((d3 > 0 > d4) or (d3 < 0 < d4))
+
+
+def emvadon_aplou(points):
+    """Shoelace μόνο για απλό πολύγωνο: πλευρές που τέμνονται αρνούνται.
+
+    Ο κανόνας των παπουτσιών προϋποθέτει απλό πολύγωνο, και κανείς δεν το
+    έλεγχε: κορυφές σε λάθος σειρά έδιναν λάθος εμβαδόν χωρίς λέξη (ένα
+    «παπιγιόν» δίνει μηδέν).
+    """
+    n = len(points)
+    if n >= 4:
+        for i in range(n):
+            a1, a2 = points[i], points[(i + 1) % n]
+            for j in range(i + 2, n):
+                if i == 0 and j == n - 1:
+                    continue  # γειτονικές πλευρές, μοιράζονται την κορυφή 0
+                b1, b2 = points[j], points[(j + 1) % n]
+                if _segments_cross(a1, a2, b1, b2):
+                    raise ValueError(
+                        f"Οι πλευρές {i + 1} και {j + 1} τέμνονται: δώσε τις κορυφές με τη "
+                        "σειρά του περιγράμματος, όχι χιαστί.")
+    return shoelace(points)
+
+
+def _on_segment(p, a, b, tol=1e-9):
+    return (abs(_cross(a, b, p)) <= tol * max(1.0, abs(b[0] - a[0]) + abs(b[1] - a[1]))
+            and min(a[0], b[0]) - tol <= p[0] <= max(a[0], b[0]) + tol
+            and min(a[1], b[1]) - tol <= p[1] <= max(a[1], b[1]) + tol)
+
+
+def _inside_or_on(p, poly):
+    n = len(poly)
+    for i in range(n):
+        if _on_segment(p, poly[i], poly[(i + 1) % n]):
+            return True
+    inside = False
+    for i in range(n):
+        (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % n]
+        if (y1 > p[1]) != (y2 > p[1]):
+            if p[0] < x1 + (p[1] - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+    return inside
+
+
+def elegxos_entos(oikopedo_pts, ktirio_pts):
+    """Το κτίριο μέσα στο οικόπεδο: κορυφές μέσα ή πάνω στο όριο, χωρίς τομή πλευρών.
+
+    Κτίριο στην οικοδομική γραμμή ή στο όριο (μηδενική απόσταση) γίνεται δεκτό.
+    """
+    for k, p in enumerate(ktirio_pts, 1):
+        if not _inside_or_on(p, oikopedo_pts):
+            raise ValueError(f"Η κορυφή {k} του κτιρίου ({p[0]:g}, {p[1]:g}) είναι έξω από "
+                             "το οικόπεδο: έλεγξε τις συντεταγμένες.")
+    n, m = len(oikopedo_pts), len(ktirio_pts)
+    for i in range(m):
+        for j in range(n):
+            if _segments_cross(ktirio_pts[i], ktirio_pts[(i + 1) % m],
+                               oikopedo_pts[j], oikopedo_pts[(j + 1) % n]):
+                raise ValueError("Το περίγραμμα του κτιρίου τέμνει το όριο του οικοπέδου: "
+                                 "έλεγξε τις συντεταγμένες.")
+
+
 def centroid(points):
     """Κεντροειδές πολυγώνου για την τοποθέτηση ετικέτας."""
     n = len(points)
@@ -117,10 +188,11 @@ def diagramma(oikopedo_pts, ktirio_pts, out_path):
 
     Επιστρέφει τα μεγέθη και γράφει το DXF, επιβεβαιωμένο με audit επανάγνωσης.
     """
-    e_oik = shoelace(oikopedo_pts)
-    e_kti = shoelace(ktirio_pts)
+    e_oik = emvadon_aplou(oikopedo_pts)
+    e_kti = emvadon_aplou(ktirio_pts)
     if e_kti > e_oik:
         raise ValueError("Το κτίριο βγαίνει μεγαλύτερο από το οικόπεδο: έλεγξε τα σημεία.")
+    elegxos_entos(oikopedo_pts, ktirio_pts)
     kalypsi_pct = e_kti / e_oik * 100.0
 
     ezdxf = _require_ezdxf()
@@ -230,7 +302,7 @@ def main(argv=None):
         r = plano(parse_rooms(args.domatia), args.out, args.toixos)
     else:
         pts = parse_points(args.polygono)
-        r = {"simeia": len(pts), "emvadon_m2": round(shoelace(pts), 3)}
+        r = {"simeia": len(pts), "emvadon_m2": round(emvadon_aplou(pts), 3)}
 
     if args.json:
         print(json.dumps(r, ensure_ascii=False, indent=2))

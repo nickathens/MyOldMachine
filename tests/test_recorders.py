@@ -104,5 +104,83 @@ class LiveCapture(unittest.TestCase):
         self.assertIn("smaller than", run.stderr)
 
 
+GSAP_STUB = """
+window.gsap = {registerPlugin: function() {}, set: function() {}, to: function() { return {}; },
+  timeline: function() { var t = {to: function() { return t; }}; return t; }};
+window.ScrollTrigger = {create: function() {}};
+window.ScrollToPlugin = {};
+"""
+
+
+def _playwright():
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+    return sync_playwright
+
+
+@unittest.skipUnless(_playwright(), "playwright not installed")
+class AutoplayChecks(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: with GSAP missing (no network, CDN down) the
+    autoplay never armed, and the recorder filmed the still cover for its
+    whole 600 s wait, then reported success. Headless, no display needed."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rp = _load(RECORD_PRES, "rp_autoplay")
+        cls.tmp = Path(tempfile.mkdtemp(prefix="rec-autoplay-"))
+        spec = {"title": "t", "cover": {"brand": "B", "title": "Cover", "duration": 4.0},
+                "sections": [{"type": "divider", "number": "01", "title": "One"}, {"type": "hr"}]}
+        (cls.tmp / "t.json").write_text(__import__("json").dumps(spec), encoding="utf-8")
+        subprocess.run([sys.executable, str(ROOT / "skills/presentations/scripts/create_presentation.py"),
+                        "--json", str(cls.tmp / "t.json"), "--output", str(cls.tmp / "t.html")],
+                       check=True, capture_output=True, timeout=120)
+        (cls.tmp / "plain.html").write_text("<html><body>no controller</body></html>")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, True)
+
+    def _on_page(self, name, gsap, check):
+        with _playwright()() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page()
+
+                def cdn(route):
+                    if gsap and route.request.url.endswith("/gsap.min.js"):
+                        route.fulfill(status=200, content_type="text/javascript", body=GSAP_STUB)
+                    elif gsap:
+                        route.fulfill(status=200, content_type="text/javascript", body="")
+                    else:
+                        route.abort()
+                page.route("**/cdn.jsdelivr.net/**", cdn)
+                page.route("**/fonts.googleapis.com/**", lambda route: route.abort())
+                page.goto((self.tmp / name).as_uri() + "?autoplay=1&delay=1", wait_until="load")
+                page.wait_for_timeout(300)
+                return check(page)
+            finally:
+                browser.close()
+
+    def test_missing_gsap_is_named_before_anything_is_filmed(self):
+        problem = self._on_page("t.html", False, self.rp.autoplay_problem)
+        self.assertIsNotNone(problem)
+        self.assertIn("GSAP", problem)
+
+    def test_an_armed_deck_passes(self):
+        self.assertIsNone(self._on_page("t.html", True, self.rp.autoplay_problem))
+
+    def test_a_page_without_the_controller_is_refused(self):
+        problem = self._on_page("plain.html", True, self.rp.autoplay_problem)
+        self.assertIn("no autoplay controller", problem)
+
+    def test_the_wait_is_sized_from_the_deck(self):
+        # cover 4.0 s, divider 2.5 s, hr 1.0 s, each plus 4.5 s of scrolling,
+        # plus the 1 s opening delay
+        seconds = self._on_page("t.html", True, lambda page: self.rp.expected_seconds(page, 1.0))
+        self.assertAlmostEqual(seconds, 1.0 + 4.0 + 2.5 + 1.0 + 3 * 4.5, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()

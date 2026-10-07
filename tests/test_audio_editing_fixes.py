@@ -76,5 +76,42 @@ class AudioEditing(unittest.TestCase):
         self.assertGreaterEqual(int(out.strip()), 256000, "re-encoded at ffmpeg's 128k default")
 
 
+class FloatWav(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: pydub reads a WAV's samples as integers
+    whatever its format tag says, so a 32-bit float WAV (a DAW export) came
+    out of cut, fade, volume and convert as distortion: a -24 dBFS sine came
+    back with 8 times the RMS and odd harmonics up to 3960 Hz."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.d = Path(self.tmp.name)
+        self.src = self.d / "f32.wav"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                        "-ac", "2", "-ar", "48000", "-c:a", "pcm_f32le", str(self.src)], check=True)
+
+    def test_a_cut_of_a_float_wav_is_the_same_audio(self):
+        import numpy as np
+        import soundfile as sf
+        out = self.d / "cut.wav"
+        r = run("cut", self.src, out, "--start", "1", "--end", "2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        src, sr = sf.read(self.src)
+        cut, _ = sf.read(out)
+        self.assertEqual(len(cut), sr)
+        self.assertLess(float(np.max(np.abs(cut - src[sr:2 * sr]))), 1e-6)
+
+    def test_info_reads_the_real_level(self):
+        import json
+        r = run("info", self.src)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        info = json.loads(r.stdout)
+        import numpy as np
+        import soundfile as sf
+        src, _ = sf.read(self.src)
+        self.assertAlmostEqual(info["peak_dBFS"], 20 * np.log10(np.max(np.abs(src))), delta=0.1)
+
+
 if __name__ == "__main__":
     unittest.main()

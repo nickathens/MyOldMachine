@@ -11,7 +11,9 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -327,9 +329,20 @@ class TestExchangeResolution(unittest.TestCase):
     def test_known_exchange_instantiated(self):
         instance = object()
         fake_ccxt = mock.Mock()
+        fake_ccxt.exchanges = ["kraken"]  # the real module lists its ids here
         fake_ccxt.kraken = mock.Mock(return_value=instance)
         with mock.patch.object(tc, "lazy_import", return_value=fake_ccxt):
             self.assertIs(tc.ccxt_exchange("kraken"), instance)
+
+    def test_a_module_attribute_is_not_an_exchange(self):
+        # "exchanges" and "Exchange" are attributes of ccxt too; getattr alone
+        # would have called them (Linux bot sweep 2026-10-07)
+        fake_ccxt = mock.Mock()
+        fake_ccxt.exchanges = ["kraken"]
+        with mock.patch.object(tc, "lazy_import", return_value=fake_ccxt):
+            for name in ("exchanges", "Exchange"):
+                with self.assertRaises(ValueError):
+                    tc.ccxt_exchange(name)
 
 
 class TestRegistries(unittest.TestCase):
@@ -347,3 +360,50 @@ class TestRegistries(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_PANDAS, "pandas not installed (finance stack self installs on use)")
+class CryptoHistoryPagesPastShortPages(unittest.TestCase):
+    """Full Linux bot sweep 2026-10-07: okx and coinbase cap a call at 300
+    candles, kraken at 720. Paging stopped at the first page under 1000, so
+    a 2y daily request came back as the OLDEST 300 days, the newest candle
+    430 days old, and the watchlist's RSI and crosses were computed on it."""
+
+    DAY = 86_400_000
+
+    def setUp(self):
+        now = int(time.time() * 1000)
+        self.now = now
+        start = (now // self.DAY - 3000) * self.DAY
+        self.candles = [[t, 1.0, 2.0, 0.5, 1.5, 10.0] for t in range(start, now, self.DAY)]
+
+    def _exchange(self, cap, honours_since=True):
+        candles = self.candles
+
+        class Fake:
+            def parse_timeframe(self, timeframe):
+                return 86400
+
+            def fetch_ohlcv(self, symbol, timeframe, since, limit):
+                if not honours_since:  # kraken: the newest `cap`, whatever was asked
+                    return candles[-min(limit, cap):]
+                return [c for c in candles if c[0] >= since][:min(limit, cap)]
+        return Fake()
+
+    def _fetch(self, exchange, days=730):
+        err = io.StringIO()
+        with mock.patch.object(tc, "ccxt_exchange", return_value=exchange), redirect_stderr(err):
+            df = tc._fetch_crypto("ETH/EUR", days, "1d", "okx")
+        return df, err.getvalue()
+
+    def test_a_300_candle_exchange_reaches_today(self):
+        df, _ = self._fetch(self._exchange(300))
+        newest = int(df.index[-1].timestamp() * 1000)
+        self.assertLess(self.now - newest, 2 * self.DAY)
+        self.assertEqual(len(df), 730)
+        self.assertTrue(df.index.is_unique)
+
+    def test_an_exchange_with_a_short_memory_says_so(self):
+        df, err = self._fetch(self._exchange(720, honours_since=False), days=1825)
+        self.assertEqual(len(df), 720)
+        self.assertIn("only has ETH/EUR history from", err)

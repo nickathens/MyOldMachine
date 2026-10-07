@@ -6,7 +6,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { FONT } from "./font";
+import { FONT, capsLang } from "./font";
 
 export const barChartDefaults = {
   title: "Render time by method",
@@ -130,6 +130,7 @@ export const BarChartBuild: React.FC<Props> = ({
               {unit}
             </div>
             <div
+              lang={capsLang(d.label)}
               style={{
                 position: "absolute",
                 left: cx - slot / 2,

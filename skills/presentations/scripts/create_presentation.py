@@ -740,8 +740,8 @@ def render_content(s: dict) -> str:
         parts.append(f'        {_caption_html(caption)}')
     if heading:
         parts.append(
-            f'        <h3 style="font-family: var(--font-heading); font-size: 1.3rem; '
-            f'font-weight: 600; color: #fff; margin-bottom: 1.5rem;">{md_inline(heading)}</h3>'
+            f'        <h3 class="content-heading" style="font-family: var(--font-heading); font-size: 1.3rem; '
+            f'font-weight: 600; margin-bottom: 1.5rem;">{md_inline(heading)}</h3>'
         )
     for t in texts:
         parts.append(
@@ -1007,11 +1007,30 @@ def _css_string(name: str) -> str:
     return "'" + str(name).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def build_font_css(fonts: dict, subsets: list | None = None) -> str:
+def theme_fonts(theme_css: str) -> dict:
+    """The first family of each --font-heading/body/serif the theme declares:
+    the fonts a deck that names none of its own is drawn in."""
+    out = {}
+    for role in ("heading", "body", "serif"):
+        m = re.search(rf"--font-{role}\s*:\s*([^;]+);", theme_css or "")
+        if m:
+            first = m.group(1).split(",")[0].strip().strip("'\"")
+            if first and first not in ("sans-serif", "serif", "monospace"):
+                out[role] = first
+    return out
+
+
+def build_font_css(fonts: dict, subsets: list | None = None, defaults: dict | None = None) -> str:
     """Build CSS font-family overrides. Greek/Cyrillic subsets get companion-font fallbacks."""
+    companions = _companion_fonts_for(subsets or [])
+    if companions:
+        # The companions have to be in the stacks even when the deck names no
+        # fonts: the link loaded Manrope and Inter for a Greek deck, but the
+        # theme's own stacks never named them, and its Greek fell to the
+        # system font (Liberation Sans and Serif on Linux, 2026-10-07).
+        fonts = {**(defaults or {}), **(fonts or {})}
     if not fonts:
         return ""
-    companions = _companion_fonts_for(subsets or [])
     sans_companions = ", ".join(_css_string(n) for n, role in companions if role == "sans")
     serif_companions = ", ".join(_css_string(n) for n, role in companions if role in ("sans", "serif"))
     sans_chain = f", {sans_companions}" if sans_companions else ""
@@ -1045,6 +1064,7 @@ html { scrollbar-color: rgba(0,0,0,0.15) transparent; }
 .cover-scroll span { color: rgba(0,0,0,0.3); }
 .scroll-line { background: linear-gradient(to bottom, rgba(0,0,0,0.3), transparent); }
 .section-title { color: var(--text); }
+.content-heading { color: var(--text); }
 .note-text { color: rgba(0,0,0,0.7); }
 .note-text em { color: var(--cream); }
 .comp-table th { border-bottom-color: rgba(0,0,0,0.12); }
@@ -1792,12 +1812,56 @@ AUTOPLAY_JS = """
 #  HTML BUILDER
 # ═══════════════════════════════════════════════
 
+_GREEK = re.compile(r"[\u0370-\u03ff\u1f00-\u1fff]")
+_LATIN = re.compile(r"[A-Za-z\u00c0-\u024f]")
+# Keys whose values are paths, links, code or styling, not words a reader sees.
+_NOT_TEXT = {"src", "image", "logo", "background", "brand_logo", "url", "brand_url", "company_url",
+             "href", "poster", "logo_filter", "style", "dialogue_style", "scheme", "fonts",
+             "font_subsets", "extra_head", "extra_body", "type", "mode", "animation", "nav",
+             "aspect_ratio", "design_md"}
+
+
+def detect_lang(data: dict) -> str:
+    """"el" when most of the deck's letters are Greek, else "en".
+
+    A Greek deck built without "lang" was marked English: its captions and
+    nav, set in capitals by CSS, kept the tonos (ΚΑΛΗΜΈΡΑ; Chromium drops it
+    only under lang="el"), and no Greek font subset or companion was loaded.
+    """
+    counts = {"greek": 0, "latin": 0}
+
+    def walk(value, key=None):
+        if key in _NOT_TEXT:
+            return
+        if isinstance(value, str):
+            counts["greek"] += len(_GREEK.findall(value))
+            counts["latin"] += len(_LATIN.findall(value))
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                walk(v, k)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+
+    walk(data)
+    if counts["greek"] > counts["latin"]:
+        print('No "lang" given and the text is mostly Greek, so the page is lang="el" '
+              '(Greek capitals and fonts); set "lang" to change it.', file=sys.stderr)
+        return "el"
+    return "en"
+
+
 def build_html(data: dict, theme_css: str) -> str:
     """Build the complete scroll-based HTML document."""
     title = html_lib.escape(data.get("title", "Treatment"))
-    lang = html_lib.escape(data.get("lang", "en"))
+    lang = html_lib.escape(data.get("lang") or detect_lang(data))
     particles = data.get("particles", True)
-    mode = data.get("mode", "dark")
+    # A deck that names no mode takes the surface its background asks for. A
+    # white canvas from --design-md (Apple, Notion, Stripe, Vercel) or a light
+    # scheme stayed in dark mode, whose titles, cards and tables are white:
+    # 1.0:1, an invisible deck (2026-10-07).
+    bg_luminance = _design_md().luminance((data.get("scheme") or {}).get("bg", ""))
+    mode = data.get("mode") or ("light" if bg_luminance is not None and bg_luminance > 0.4 else "dark")
     animation = data.get("animation", "fade")
     nav_type = data.get("nav", "none")
 
@@ -1810,7 +1874,7 @@ def build_html(data: dict, theme_css: str) -> str:
     font_url = build_font_link(fonts, subsets=subsets if subsets else None)
     mode_css = build_mode_css(mode)
     scheme_css = build_scheme_css(data.get("scheme", {}))
-    font_css = build_font_css(fonts, subsets=subsets if subsets else None)
+    font_css = build_font_css(fonts, subsets=subsets if subsets else None, defaults=theme_fonts(theme_css))
     nav_css = build_nav_css(nav_type, mode)
     overrides = "\n".join(filter(None, [mode_css, scheme_css, font_css, nav_css, NO_GSAP_CSS]))
 
@@ -1998,6 +2062,8 @@ def main():
         try:
             from references import load_reference, apply_reference
             ref = load_reference(args.aesthetic)
+            # the same readability floor as a design system's palette
+            ref["color_palette"] = _design_md().drop_unreadable(ref.get("color_palette") or {})
             data = apply_reference(data, ref)
             print(f"Applied aesthetic reference: {args.aesthetic}")
         except Exception as e:

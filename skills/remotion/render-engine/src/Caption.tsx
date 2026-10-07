@@ -2,8 +2,11 @@
 // at 93fe427, 2026-07-27. See ../../references/NOTICE.md.
 // Local change: explicit React import (our tsconfig types components as React.FC
 // and this engine ships no typescript compiler, so the namespace must be real).
+// Local change: the strip names its language, so Greek in capitals drops its
+// tonos (capsLang in ./font.ts).
 import React from "react";
 import { interpolate, useCurrentFrame } from 'remotion';
+import { capsLang } from './font';
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 const AMBER = 'oklch(52% 0.115 65)';
@@ -52,7 +55,7 @@ export const Caption: React.FC<{ text: string; duration: number; bottom?: number
       }}
     >
       <span style={{ width: 6, height: 6, background: AMBER, display: 'inline-block' }} />
-      <span>{text}</span>
+      <span lang={capsLang(text)}>{text}</span>
     </div>
   );
 };

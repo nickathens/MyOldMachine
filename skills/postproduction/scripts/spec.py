@@ -212,8 +212,17 @@ def probe(path):
 
     for a in auds:
         depth = a.get("bits_per_raw_sample") or a.get("bits_per_sample")
+        if a.get("codec_tag_string") in ("ipcm", "fpcm"):
+            # FFmpeg 6 writes PCM into an MP4 this way (ISO 23003-5). Players
+            # largely cannot read it, and a 24 bit track written so decoded
+            # 12.7 dB too loud in FFmpeg 6.1 (2026-10-07).
+            flags.append(f"Audio stream {a.get('index')} is PCM inside an MP4 "
+                         f"('{a.get('codec_tag_string')}'). Most players cannot read "
+                         "it and FFmpeg 6 decodes a 24 bit one wrongly: deliver PCM "
+                         "in a .mov or .mxf, or the MP4 with AAC.")
         out["audio"].append({
             "index": a.get("index"), "codec": a.get("codec_name"),
+            "codec_tag": a.get("codec_tag_string"),
             "sample_rate": int(a.get("sample_rate", 0) or 0) or None,
             "channels": a.get("channels"),
             "layout": a.get("channel_layout"),

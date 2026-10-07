@@ -6,8 +6,10 @@ Audio editing operations using pydub, with loudness work done by ffmpeg.
 import argparse
 import json
 import math
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from pydub import AudioSegment
@@ -18,12 +20,31 @@ DEFAULT_BITRATE = {'mp3': '320k', 'm4a': '256k', 'aac': '256k', 'mp4': '256k',
                    'ogg': '256k', 'opus': '192k'}
 
 
+def _float_pcm(path) -> bool:
+    """True for a WAV that holds float samples (pcm_f32le, a usual DAW export)."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                        "stream=codec_name", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+    return r.stdout.strip().startswith("pcm_f")
+
+
 def load_audio(path: str) -> AudioSegment:
     """Load audio file, auto-detecting format."""
     suffix = Path(path).suffix.lower().lstrip('.')
     format_map = {'mp3': 'mp3', 'wav': 'wav', 'flac': 'flac',
                   'ogg': 'ogg', 'm4a': 'mp4', 'aac': 'aac'}
     fmt = format_map.get(suffix, suffix)
+    if fmt == 'wav' and _float_pcm(path):
+        # pydub reads a WAV's samples as integers whatever its format tag
+        # says: a float WAV came back as distortion (a -24 dBFS sine at 8x
+        # the RMS). Decode to 32 bit integer PCM first; values past full
+        # scale, which only float can hold, are clipped there.
+        with tempfile.TemporaryDirectory() as tmp:
+            pcm = os.path.join(tmp, "pcm.wav")
+            r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(path), "-map", "0:a:0",
+                                "-c:a", "pcm_s32le", pcm], capture_output=True, text=True)
+            if r.returncode != 0:
+                fail(f"cannot decode {path}: {r.stderr.strip()[-300:]}")
+            return AudioSegment.from_file(pcm, format="wav")
     return AudioSegment.from_file(path, format=fmt)
 
 
@@ -228,7 +249,7 @@ def cmd_info(args):
         "true_peak_dBTP": number(loud.get("input_tp")),
         "loudness_range_LU": number(loud.get("input_lra")),
     }
-    print(json.dumps(info, indent=2))
+    print(json.dumps(info, indent=2, ensure_ascii=False))
 
 
 def main():

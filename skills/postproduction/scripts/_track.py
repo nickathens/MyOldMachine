@@ -184,8 +184,12 @@ def cadence(clip, scale=1.0, limit=None, region=None):
     if best and best["ratio"] > 1.30 and best["separation"] > 3.0:
         p, ph = best["period"], best["phase"]
         # True time: the lurch frame covers `ratio` times as much source time.
+        # mags[j] is the step from frame j to j + 1, and t[j + 1] - t[j] is
+        # step[j], so the lurch steps found at phase `ph` are step[ph::p]. This
+        # was step[ph + 1::p] until 2026-10-07: the long step landed one frame
+        # after the real one, the slide against the bezel this exists to stop.
         step = np.ones(int(info["frames"]) or n + 1)
-        step[ph + 1::p] = best["ratio"]
+        step[ph::p] = best["ratio"]
         t = np.concatenate([[0.0], np.cumsum(step[:-1])])
         t = t / t[-1] if t[-1] > 0 else t
         out.update({"verdict": "CONFORMED",

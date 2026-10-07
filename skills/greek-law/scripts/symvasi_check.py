@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import unicodedata
 
@@ -266,7 +267,8 @@ def scan_text(text):
     Returns a dict with the risk-control patterns detected and the essential clauses that
     appear absent. It reports presence and apparent absence only; it assigns no colour.
     """
-    hay = normalize(text)
+    # one space everywhere: text out of a PDF breaks lines inside a phrase
+    hay = re.sub(r"\s+", " ", normalize(text))
     detected = []
     for c in RISK_CONTROLS:
         for sig in c["signatures"]:

@@ -55,8 +55,11 @@ def perigramma(emvadon, sd, kalypsi_pct, ypsos, orofos_ypsos=OROFOS_YPSOS_DEFAUL
 
     max_domisi = emvadon * sd
     max_kalypsi = emvadon * kalypsi_pct / 100.0
-    orofoi_apo_ypsos = max(1, math.floor(ypsos / orofos_ypsos))
-    orofoi_apo_domisi = max(1, math.ceil(max_domisi / max_kalypsi))
+    # Ένας λόγος που στο δεκαδικό είναι ακέραιος βγαίνει στο δυαδικό λίγο
+    # κάτω ή λίγο πάνω του: 9.6 / 3.2 = 2.9999999999999996, και το floor έχανε
+    # όροφο. Η ανοχή 1e-9 είναι πολύ κάτω από κάθε πραγματική διαφορά.
+    orofoi_apo_ypsos = max(1, math.floor(ypsos / orofos_ypsos + 1e-9))
+    orofoi_apo_domisi = max(1, math.ceil(max_domisi / max_kalypsi - 1e-9))
     endeiktikoi_orofoi = min(orofoi_apo_ypsos, max(orofoi_apo_domisi, 1))
     apotypoma_gia_orofous = max_domisi / orofoi_apo_ypsos
     # Το αποτύπωμα εξάντλησης δεν επιτρέπεται να υπονοεί αδύνατο κτίριο: αν

@@ -143,6 +143,10 @@ def circular_fill(vals, valid):
     n = len(vals)
     if valid.all():
         return vals
+    if not valid.any():
+        # numpy's "argmin of an empty sequence" said nothing about why.
+        raise SystemExit("no point on the centerline found the mark: check that the "
+                         "seeds sit on the stroke, and --lum-thresh / --roi / the exclusions")
     idx = np.where(valid)[0]
     out = vals.copy()
     for i in np.where(~valid)[0]:

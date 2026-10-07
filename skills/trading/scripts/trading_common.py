@@ -99,10 +99,11 @@ def ccxt_exchange(name: str):
     on an unknown id so a typo'd exchange stays a per-symbol error in the
     alert sweep instead of killing the whole run."""
     ccxt = lazy_import("ccxt")
-    try:
-        return getattr(ccxt, name)()
-    except AttributeError:
+    # ccxt's own list, not any attribute: "exchanges" or "Exchange" exist on
+    # the module too and would have been called as if they were one.
+    if name not in getattr(ccxt, "exchanges", ()):
         raise ValueError(f"unknown exchange {name!r} (ccxt id expected, e.g. binance, kraken)")
+    return getattr(ccxt, name)()
 
 
 def validate_interval(symbol: str, interval: str) -> None:
@@ -193,25 +194,45 @@ def _fetch_stock(symbol: str, period: str, days, interval: str):
 
 
 def _fetch_crypto(symbol: str, days, interval: str, exchange: str):
+    """Page through the exchange's candles from the start of the period to now.
+
+    A short page is not the end of the history: okx and coinbase cap a call
+    at 300 candles and kraken at 720, so stopping at the first page under
+    1000 handed back the OLDEST 300 days of a 2y request, ending 14 months
+    ago, and the watchlist computed its RSI and crosses on them (Linux bot
+    sweep 2026-10-07). Paging stops when the newest candle is in, when the
+    candles stop advancing, or at the 60,000 row ceiling.
+    """
     pd = lazy_import("pandas")
     ex = ccxt_exchange(exchange)
     timeframe = CCXT_TIMEFRAMES[interval]
+    step_ms = int(ex.parse_timeframe(timeframe) * 1000)
     now_ms = int(time.time() * 1000)
     since = CRYPTO_MAX_EPOCH_MS if days is None else now_ms - days * 86_400_000
+    asked_from = since
     rows = []
     while True:
         batch = ex.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=1000)
         if not batch:
             break
         rows.extend(batch)
-        if len(batch) < 1000:
+        newest = batch[-1][0]
+        if newest + step_ms > now_ms or newest + 1 <= since or len(rows) > 60_000:
             break
-        since = batch[-1][0] + 1
-        if since >= now_ms or len(rows) > 60_000:
-            break
+        since = newest + 1
     if not rows:
         return None
+    if rows[-1][0] + 2 * step_ms < now_ms:
+        print(f"note: {exchange} stopped sending {symbol} candles at "
+              f"{time.strftime('%Y-%m-%d %H:%M', time.gmtime(rows[-1][0] / 1000))} UTC; "
+              f"the newest data here is that old", file=sys.stderr)
+    if days is not None and rows[0][0] > asked_from + 2 * step_ms:
+        print(f"note: {exchange} only has {symbol} history from "
+              f"{time.strftime('%Y-%m-%d', time.gmtime(rows[0][0] / 1000))}, "
+              f"later than the period asked for", file=sys.stderr)
     df = pd.DataFrame(rows, columns=["ts", "Open", "High", "Low", "Close", "Volume"])
+    # an exchange that re-sends the edge candle of a page must not count it twice
+    df = df.drop_duplicates(subset="ts", keep="last")
     df.index = pd.to_datetime(df.pop("ts"), unit="ms", utc=True)
     df.index.name = "Date"
     return df

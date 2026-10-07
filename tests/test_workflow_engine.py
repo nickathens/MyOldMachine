@@ -36,7 +36,8 @@ class Isolated(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         for name, value in (("STATE_DIR", self.tmp / "state"),
                             ("HISTORY_FILE", self.tmp / "state" / "history.json"),
-                            ("WORKFLOW_DIR", self.tmp / "workflows")):
+                            ("WORKFLOW_DIR", self.tmp / "workflows"),
+                            ("RUN_ROOT", self.tmp)):
             patcher = mock.patch.object(wf, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)

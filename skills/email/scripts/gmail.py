@@ -17,8 +17,10 @@ First run will open browser for OAuth authentication.
 import argparse
 import base64
 import os
+import re
 import sys
-from email.mime.text import MIMEText
+from email.message import EmailMessage
+from html.parser import HTMLParser
 from pathlib import Path
 
 from google.auth.transport.requests import Request
@@ -109,9 +111,12 @@ def send_email(to: str, subject: str, body: str) -> dict:
     """Send an email."""
     service = get_gmail_service()
 
-    message = MIMEText(body)
-    message['to'] = to
-    message['subject'] = subject
+    # EmailMessage for the same reason as create_draft: MIMEText put a To
+    # header holding any Greek, address included, into one encoded word.
+    message = EmailMessage()
+    message['To'] = to
+    message['Subject'] = subject
+    message.set_content(body)
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     result = service.users().messages().send(
@@ -125,9 +130,8 @@ def send_email(to: str, subject: str, body: str) -> dict:
 def _header_map(headers) -> dict:
     """Header name to value, keyed in lower case.
 
-    Header names are case insensitive, and MIMEText (this script's own
-    drafts) writes 'to' and 'subject' in lower case, so a draft listed with
-    an exact 'To' lookup came back with no recipient and no subject.
+    Header names are case insensitive, and this script's drafts from before
+    2026-10-07 (MIMEText) carry 'to' and 'subject' in lower case.
     """
     return {h['name'].lower(): h['value'] for h in headers}
 
@@ -165,21 +169,81 @@ def get_inbox(limit: int = 10) -> list:
     return emails
 
 
-def _extract_body(payload):
-    """Extract plain text body from message payload, handling nested parts."""
-    if 'parts' in payload:
-        for part in payload['parts']:
-            if part['mimeType'] == 'text/plain':
-                data = part['body'].get('data', '')
-                if data:
-                    return base64.urlsafe_b64decode(data).decode('utf-8', errors='replace')
-            elif part['mimeType'].startswith('multipart/'):
-                result = _extract_body(part)
-                if result:
-                    return result
-    elif 'body' in payload and 'data' in payload['body']:
-        return base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8', errors='replace')
+class _HtmlText(HTMLParser):
+    """The words of an HTML body, a line break per block, no script or style."""
+
+    BLOCKS = {"br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4", "table", "blockquote"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self._hidden = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "head"):
+            self._hidden += 1
+        elif tag in self.BLOCKS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "head") and self._hidden:
+            self._hidden -= 1
+        elif tag in self.BLOCKS:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self._hidden:
+            self.parts.append(data)
+
+
+def _html_to_text(html: str) -> str:
+    parser = _HtmlText()
+    parser.feed(html)
+    text = re.sub(r"[ \t\r\f\v]+", " ", "".join(parser.parts))
+    return re.sub(r"\n\s*\n+", "\n\n", text).strip()
+
+
+def _decode_part(part) -> str:
+    """A part's text in its own charset. Gmail hands back the original bytes,
+    so a Greek mail in windows-1253 or iso-8859-7 read as utf-8 was noise."""
+    data = (part.get('body') or {}).get('data')
+    if not data:
+        return ""
+    raw = base64.urlsafe_b64decode(data)
+    ctype = next((h['value'] for h in part.get('headers') or []
+                  if h['name'].lower() == 'content-type'), "")
+    m = re.search(r'charset="?([^";\s]+)', ctype, re.I)
+    try:
+        return raw.decode(m.group(1) if m else 'utf-8', errors='replace')
+    except LookupError:
+        return raw.decode('utf-8', errors='replace')
+
+
+def _find_part(payload, mime: str) -> str:
+    """Text of the first body part of this type, depth first. A part with a
+    filename is an attachment (a .txt or .html file), not the body."""
+    if payload.get('mimeType') == mime and not payload.get('filename'):
+        text = _decode_part(payload)
+        if text:
+            return text
+    for part in payload.get('parts') or []:
+        text = _find_part(part, mime)
+        if text:
+            return text
     return ""
+
+
+def _extract_body(payload):
+    """The message's plain text part, else its HTML part as text.
+
+    Only text/plain used to count: a mail whose body is HTML alone, as most
+    invoices with a PDF attached are (multipart/mixed of text/html and the
+    file), read back as empty (Linux bot sweep 2026-10-07).
+    """
+    plain = _find_part(payload, 'text/plain')
+    if plain:
+        return plain
+    html = _find_part(payload, 'text/html')
+    return _html_to_text(html) if html else ""
 
 
 def _resolve_message_id(service, message_id: str, label: str = None) -> str:
@@ -202,6 +266,9 @@ def _resolve_message_id(service, message_id: str, label: str = None) -> str:
             return msg['id']
 
     return None
+
+
+BODY_LIMIT = 5000
 
 
 def read_email(message_id: str) -> dict:
@@ -227,7 +294,9 @@ def read_email(message_id: str) -> dict:
         "to": headers.get('to', ''),
         "subject": headers.get('subject', '(no subject)'),
         "date": headers.get('date', ''),
-        "body": body[:5000]
+        # Say so when the body is cut, or the reader takes the cut for the end.
+        "body": body if len(body) <= BODY_LIMIT
+        else body[:BODY_LIMIT] + f"\n[cut here: the mail goes on for {len(body) - BODY_LIMIT} more characters]"
     }
 
 
@@ -268,9 +337,15 @@ def create_draft(to: str, subject: str, body: str) -> dict:
     """Create a draft email (does NOT send it)."""
     service = get_gmail_service()
 
-    message = MIMEText(body)
-    message['to'] = to
-    message['subject'] = subject
+    # EmailMessage, not MIMEText: MIMEText put the WHOLE To header in one
+    # encoded word as soon as any of it was Greek, address included, so
+    # "Ελένη <eleni@x.com>" reached Gmail as a name with no valid address
+    # (Linux bot sweep 2026-10-07). This encodes the name and leaves the
+    # address readable.
+    message = EmailMessage()
+    message['To'] = to
+    message['Subject'] = subject
+    message.set_content(body)
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     draft = service.users().drafts().create(

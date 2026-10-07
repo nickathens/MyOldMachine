@@ -88,6 +88,10 @@ def batch_process(input_dir, output_dir, operation, **kwargs):
     """Process all images in directory"""
     input_path = Path(input_dir)
     output_path = Path(output_dir)
+    if output_path.resolve() == input_path.resolve():
+        # each result would be written over its original
+        sys.exit(f"Error: the output folder is the input folder ({input_dir}); every original "
+                 "would be overwritten. Give a different output folder.")
     output_path.mkdir(parents=True, exist_ok=True)
 
     extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.tiff', '.bmp'}

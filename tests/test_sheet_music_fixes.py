@@ -70,5 +70,58 @@ class SheetMusic(unittest.TestCase):
         self.assertIn("success", result, result)
 
 
+def _notes(path):
+    """(start, end, note) of every note in track 0, in ticks."""
+    t, sounding, out = 0, {}, []
+    for msg in mido.MidiFile(path).tracks[0]:
+        t += msg.time
+        if msg.type == "note_on" and msg.velocity:
+            sounding[msg.note] = t
+        elif msg.type in ("note_off", "note_on") and msg.note in sounding:
+            out.append((sounding.pop(msg.note), t, msg.note))
+    return sorted(out)
+
+
+class HeldNotesStayHeld(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: tidy_midi ran every note on to the next
+    onset when the gap was under a grid step, and an OVERLAP counts as a
+    negative gap, so a bass note held under a moving melody was cut at the
+    melody's next note (any piano part, and every audio-to-midi take)."""
+
+    def _write(self, path, notes, tpb=480):
+        mid = mido.MidiFile(ticks_per_beat=tpb)
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        events = sorted([(s, 1, n) for s, e, n in notes] + [(e, 0, n) for s, e, n in notes])
+        last = 0
+        for when, on, note in events:
+            track.append(mido.Message("note_on" if on else "note_off", note=note, velocity=80 if on else 0,
+                                      time=when - last))
+            last = when
+        mid.save(path)
+
+    def test_a_bass_held_under_a_melody_keeps_its_length(self):
+        sheet = load()
+        with tempfile.TemporaryDirectory() as d:
+            src, out = Path(d, "in.mid"), Path(d, "out.mid")
+            bass = (0, 1920, 48)                                   # a whole note
+            melody = [(i * 480, i * 480 + 470, 64 + i) for i in range(4)]   # quarters, released early
+            self._write(src, [bass, *melody])
+            sheet.tidy_midi(str(src), str(out), 16)
+            got = _notes(out)
+        self.assertIn((0, 1920, 48), got, got)
+        # the small gaps in the melody still close up (the tidy's purpose)
+        self.assertIn((0, 480, 64), got, got)
+
+    def test_a_sloppy_release_just_past_the_next_note_is_still_trimmed(self):
+        sheet = load()
+        with tempfile.TemporaryDirectory() as d:
+            src, out = Path(d, "in.mid"), Path(d, "out.mid")
+            self._write(src, [(0, 500, 60), (480, 960, 62)])        # 20 ticks of overlap
+            sheet.tidy_midi(str(src), str(out), 16)
+            got = _notes(out)
+        self.assertIn((0, 480, 60), got, got)
+
+
 if __name__ == "__main__":
     unittest.main()

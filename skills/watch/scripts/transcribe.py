@@ -98,8 +98,10 @@ def filter_range(
 def format_transcript(segments: list[dict]) -> str:
     lines = []
     for seg in segments:
-        start = int(seg["start"])
-        stamp = f"[{start // 60:02d}:{start % 60:02d}]"
+        # the same shape as the frame list's t=: H:MM:SS past an hour
+        hours, rem = divmod(int(seg["start"]), 3600)
+        minutes, seconds = divmod(rem, 60)
+        stamp = f"[{hours}:{minutes:02d}:{seconds:02d}]" if hours else f"[{minutes:02d}:{seconds:02d}]"
         lines.append(f"{stamp} {seg['text']}")
     return "\n".join(lines)
 

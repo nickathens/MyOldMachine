@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import unicodedata
 
@@ -80,7 +81,7 @@ GUIDES = [
         "slug": "apolysi-ergasia",
         "title": "Απόλυση και εργασιακά δικαιώματα",
         "area": "Εργατικό",
-        "keywords": ["απολυση", "αποζημιωση απολυσης", "δεδουλευμενα", "μισθος",
+        "keywords": ["απολυση", "απελυσαν", "απολυθηκα", "αποζημιωση απολυσης", "δεδουλευμενα", "μισθος",
                      "εργοδοτης", "καταγγελια", "υπερωριες", "δωρο", "επιδομα αδειας",
                      "αδηλωτη εργασια", "ενσημα", "οφειλομενοι μισθοι"],
         "summary": "Τι δικαιούσαι όταν σε απολύουν ή δεν σε πληρώνουν.",
@@ -132,7 +133,10 @@ GUIDES = [
         ],
         "steps": [
             "Πρώτα γραπτό παράπονο στον πωλητή, με σαφές αίτημα και προθεσμία.",
-            "Συνήγορος του Καταναλωτή: δωρεάν εξωδικαστική επίλυση. Γραμμή 1520.",
+            "Συνήγορος του Καταναλωτή: δωρεάν εξωδικαστική επίλυση "
+            "(synigoroskatanaloti.gr, 210 6460862 " + _VERIFY + ").",
+            "Καταγγελία στη Γραμμή Καταναλωτή 1520 της Γενικής Διεύθυνσης Αγοράς "
+            "και Προστασίας Καταναλωτή, τις εργάσιμες 09:00 έως 15:00 " + _VERIFY + ".",
             "Ενώσεις καταναλωτών για υποστήριξη.",
             "Κράτα: απόδειξη, την παραγγελία, την επικοινωνία, φωτογραφίες του "
             "ελαττώματος.",
@@ -284,15 +288,33 @@ def get(slug):
     return _BY_SLUG.get(slug)
 
 
+def _haystack(g):
+    return normalize(" ".join([g["title"], g["summary"], " ".join(g["keywords"])]))
+
+
 def find(term):
-    """Return guides whose title, keywords or summary match the term (accent fold)."""
+    """Return guides whose title, keywords or summary match the term (accent fold).
+
+    The whole phrase first. Failing that, the guides that share the most words
+    with it, so a plain sentence («ο σπιτονοικοκύρης κρατάει την εγγύηση»)
+    still routes.
+    """
     q = normalize(term)
-    hits = []
+    hits = [g for g in GUIDES if q in _haystack(g)]
+    if hits:
+        return hits
+    # ponytail: a word matches on a crude stem (all but its last two letters,
+    # at least four), and words under four letters (με, την) never count. A
+    # verb form far from the noun (απέλυσαν, απόλυση) needs its own keyword.
+    stems = {w[:max(4, len(w) - 2)] for w in re.findall(r"\w+", q) if len(w) >= 4}
+    scored = []
     for g in GUIDES:
-        haystack = " ".join([g["title"], g["summary"], " ".join(g["keywords"])])
-        if q in normalize(haystack):
-            hits.append(g)
-    return hits
+        words = re.findall(r"\w+", _haystack(g))
+        n = sum(1 for st in stems if any(w.startswith(st) for w in words))
+        if n:
+            scored.append((n, g))
+    scored.sort(key=lambda x: -x[0])   # stable: registry order breaks a tie
+    return [g for _, g in scored]
 
 
 def legal_aid_check(eisodima, orio_anaforas=None):

@@ -27,6 +27,11 @@ PUPPETEER_CONFIG = SCRIPT_DIR / "puppeteer.json"
 # own default, and turned the radial mindmap into a flat tree. On 11 the
 # file changes nothing. A diagram's own front matter still wins, so one
 # diagram can ask for `layout: elk` or `look: neo`.
+# It also gives edge labels 3 px either side (themeCSS, 2026-10-07): Mermaid
+# 11 and 12 size an edge label's box to the text's exact advance width and
+# clip what is outside, so the last letter lost its right edge ("Ναι", "Όχι",
+# "No"). The padding is measured into the box; diagrams without edge labels
+# render pixel identical.
 MERMAID_CONFIG = SCRIPT_DIR / "mermaid.json"
 
 THEMES = ("default", "dark", "forest", "neutral")
@@ -205,7 +210,11 @@ def main() -> int:
     if not args.source or args.source == "-":
         source_text = sys.stdin.read()
     else:
-        source_text = Path(args.source).read_text(encoding="utf-8")
+        try:
+            source_text = Path(args.source).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"Cannot read {args.source}: {exc}", file=sys.stderr)
+            return 2
 
     if not source_text.strip():
         print("Empty diagram source.", file=sys.stderr)

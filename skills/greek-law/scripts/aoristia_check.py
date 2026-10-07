@@ -42,12 +42,15 @@ def normalize(text):
     return stripped.upper()
 
 
-# Patterns, all in normalized (accent free, uppercase) form.
-_AFM_NUM = re.compile(r"ΑΦΜ\D{0,8}\d{9}")
-_AMOUNT = re.compile(r"\d[\d.\s]*[,.]?\d*\s*(?:ΕΥΡΩ|EUR|€)")
+# Patterns, all in normalized (accent free, uppercase, one space) form.
+# ΑΦΜ is also written with dots (Α.Φ.Μ.), an amount with the sign in front
+# (€ 1.500,00) and a day as an ordinal (15η Μαΐου).
+_AFM = re.compile(r"\bΑ\.?\s?Φ\.?\s?Μ\b")
+_AFM_NUM = re.compile(r"\bΑ\.?\s?Φ\.?\s?Μ\b\.?\D{0,8}\d{9}(?!\d)")
+_AMOUNT = re.compile(r"\d[\d.\s]*[,.]?\d*\s*(?:ΕΥΡΩ|EUR|€)|(?:€|EUR)\s*\d")
 _DATE = re.compile(
     r"\b\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}\b"
-    r"|\b\d{1,2}\s+(?:ΙΑΝΟΥΑΡΙΟΥ|ΦΕΒΡΟΥΑΡΙΟΥ|ΜΑΡΤΙΟΥ|ΑΠΡΙΛΙΟΥ|ΜΑΙΟΥ|ΙΟΥΝΙΟΥ"
+    r"|\b\d{1,2}(?:ΗΣ|Η)?\s+(?:ΙΑΝΟΥΑΡΙΟΥ|ΦΕΒΡΟΥΑΡΙΟΥ|ΜΑΡΤΙΟΥ|ΑΠΡΙΛΙΟΥ|ΜΑΙΟΥ|ΙΟΥΝΙΟΥ"
     r"|ΙΟΥΛΙΟΥ|ΑΥΓΟΥΣΤΟΥ|ΣΕΠΤΕΜΒΡΙΟΥ|ΟΚΤΩΒΡΙΟΥ|ΝΟΕΜΒΡΙΟΥ|ΔΕΚΕΜΒΡΙΟΥ)\s+\d{4}\b"
 )
 _MONEY_CLAIM = ("ΑΠΟΖΗΜΙΩΣ", "ΚΑΤΑΒΑΛ", "ΟΦΕΙΛ", "ΧΡΗΜΑΤΙΚ", "ΠΟΣΟ")
@@ -65,7 +68,8 @@ def check(text, doc_type="agogi"):
     """Return the structural findings for a draft. Each finding is a dict with
     code, label, status (ok|weak|missing), severity (critical|warning|info),
     article and a Greek note."""
-    norm = normalize(text)
+    # one space everywhere, so a heading wrapped over two lines still reads
+    norm = re.sub(r"\s+", " ", normalize(text))
     line_set = {normalize(ln).strip() for ln in text.splitlines()}
     findings = []
 
@@ -105,7 +109,7 @@ def check(text, doc_type="agogi"):
     # ΚΠολΔ 118: the ΑΦΜ of the parties.
     if _AFM_NUM.search(norm):
         add("afm", "ΑΦΜ διαδίκων", "ok", "warning", "ΚΠολΔ 118")
-    elif "ΑΦΜ" in norm:
+    elif _AFM.search(norm):
         add("afm", "ΑΦΜ διαδίκων", "weak", "warning", "ΚΠολΔ 118",
             "Αναφέρεται ΑΦΜ χωρίς εννέα ψηφία κοντά του.")
     else:

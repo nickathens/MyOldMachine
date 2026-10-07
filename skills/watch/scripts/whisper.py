@@ -53,6 +53,37 @@ SAFE_MODELS = {
     "tiny.en", "base.en", "small.en", "medium.en",
 }
 
+# The file setup.py scaffolds. Besides the API keys it is where its template
+# tells you to set WATCH_LOCAL_WHISPER_MODEL / _DEVICE.
+CONFIG_ENV = Path.home() / ".config" / "watch" / ".env"
+
+
+def _dotenv_value(path: Path, name: str) -> str | None:
+    """NAME=value from a .env file (quotes stripped), or None."""
+    if not path.exists():
+        return None
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() != name:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            return value or None
+    except OSError:
+        return None
+    return None
+
+
+def _setting(name: str, default: str) -> str:
+    """The environment first, then the watch config file, then the default."""
+    value = (os.environ.get(name) or "").strip()
+    return value or _dotenv_value(CONFIG_ENV, name) or default
+
 
 def whisper_bin() -> str | None:
     """The whisper CLI: on PATH, or beside this Python (a service's PATH
@@ -79,27 +110,8 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         value = os.environ.get(name)
         return value.strip() if value else None
 
-    def _from_dotenv(path: Path, name: str) -> str | None:
-        if not path.exists():
-            return None
-        try:
-            for line in path.read_text().splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                if key.strip() != name:
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-                    value = value[1:-1]
-                return value or None
-        except OSError:
-            return None
-        return None
-
     dotenv_paths = [
-        Path.home() / ".config" / "watch" / ".env",
+        CONFIG_ENV,
         Path.cwd() / ".env",
     ]
 
@@ -111,7 +123,7 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         value = _from_env(key_name)
         if not value:
             for candidate in dotenv_paths:
-                value = _from_dotenv(candidate, key_name)
+                value = _dotenv_value(candidate, key_name)
                 if value:
                     break
         if value:
@@ -223,7 +235,8 @@ def _transcribe_local(audio_path: Path) -> dict:
     """Run the local `whisper` CLI on the audio file, return verbose-JSON-shape dict.
 
     Defaults: model `base`, device `cpu`. Override via WATCH_LOCAL_WHISPER_MODEL
-    and WATCH_LOCAL_WHISPER_DEVICE environment variables. CPU is the default
+    and WATCH_LOCAL_WHISPER_DEVICE, in the environment or in the watch config
+    file (the environment wins). CPU is the default
     because most machines either lack CUDA or have a GPU too old for current
     PyTorch (e.g. Maxwell-era cards).
     """
@@ -234,8 +247,8 @@ def _transcribe_local(audio_path: Path) -> dict:
             "or set GROQ_API_KEY / OPENAI_API_KEY in ~/.config/watch/.env"
         )
 
-    model = os.environ.get("WATCH_LOCAL_WHISPER_MODEL", LOCAL_DEFAULT_MODEL)
-    device = os.environ.get("WATCH_LOCAL_WHISPER_DEVICE", LOCAL_DEFAULT_DEVICE)
+    model = _setting("WATCH_LOCAL_WHISPER_MODEL", LOCAL_DEFAULT_MODEL)
+    device = _setting("WATCH_LOCAL_WHISPER_DEVICE", LOCAL_DEFAULT_DEVICE)
 
     out_dir = audio_path.parent
     cmd = [

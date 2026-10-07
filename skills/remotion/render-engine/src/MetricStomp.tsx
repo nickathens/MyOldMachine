@@ -7,7 +7,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { FONT } from "./font";
+import { FONT, capsLang } from "./font";
 import { DigitRoll } from "./DigitRoll";
 import { FlashCut } from "./FlashCut";
 import { Caption } from "./Caption";
@@ -96,6 +96,7 @@ export const MetricStomp: React.FC<Props> = ({
 
       <div style={{ transform: `scale(${groupScale})`, textAlign: "center" }}>
         <div
+          lang={capsLang(label)}
           style={{
             color: accent,
             fontWeight: 600,

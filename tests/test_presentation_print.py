@@ -145,6 +145,28 @@ class InTheBrowser(unittest.TestCase):
         self.assertFalse(no_gsap)
         self.assertEqual(note_opacity, "0")
 
+    def test_content_heading_reads_on_a_light_page(self):
+        # inline #fff drew it white on the light modes' cream
+        spec = dict(TREATMENT, mode="light", sections=[
+            {"type": "content", "heading": "The heading", "texts": ["Body."]}])
+
+        def check(page):
+            return page.evaluate("getComputedStyle(document.querySelector('.content-heading')).color")
+        self.assertEqual(self._page_run(spec, gsap=False, action=check), "rgb(26, 26, 26)")
+
+    def test_a_white_design_system_reads(self):
+        # --design-md stripe on a deck with no mode drew white on white
+        spec = dict(TREATMENT, design_md="stripe")
+
+        def check(page):
+            return page.evaluate("""() => [getComputedStyle(document.body).backgroundColor,
+                getComputedStyle(document.querySelector('.section-title')).color,
+                getComputedStyle(document.querySelector('.gap-card-name')).color]""")
+        bg, title, card = self._page_run(spec, gsap=False, action=check)
+        self.assertEqual(bg, "rgb(255, 255, 255)")
+        self.assertNotEqual(title, "rgb(255, 255, 255)")
+        self.assertNotEqual(card, "rgb(255, 255, 255)")
+
     def test_menu_link_with_a_dotted_number_scrolls(self):
         spec = dict(TREATMENT, sections=[
             {"type": "divider", "number": "1.1", "title": "First"},

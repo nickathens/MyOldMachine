@@ -87,7 +87,9 @@ ROUTES = {
         "does": "Enlarges a STILL, keeping the model only where there are edges.",
         "fixes": "Softness on edges and lettering, with the flat areas left as "
                 "Lanczos truth so no micro texture is invented.",
-        "cost": "Free, on machine, about 4 seconds a megapixel at 2x.",
+        "cost": "Free, on machine: about 4 seconds a megapixel at 2x on an Apple "
+                "GPU, about a minute a megapixel on a CPU (1.5 MP at 2x took 90 s "
+                "with --tile 256 on a CPU only Linux box).",
         "stage": "10, master, and STILLS ONLY.",
         "licence": "BSD-3 (Real-ESRGAN weights).",
         "when": "One frame, a card, a logo, a poster. Measured 39.96 dB "
@@ -187,6 +189,35 @@ def _require_same_clock(a, b, what):
             f"{what} cannot run: the frame count differs ({a['frames']} against "
             f"{b['frames']}), so the two files do not describe the same span of "
             "time. An enlargement must not touch the clock.")
+
+
+# What verify and temporal hold at once, measured 2026-10-07 on a 1080p source
+# against a UHD candidate: 3.48 GB for 8 frames and 8.93 GB for 24, about 0.76
+# GB plus three float frames at the candidate's raster and two at the
+# source's for every frame sampled. Inside the bot an out of memory kill takes
+# the whole bot down, and the default 8 already holds 3.5 GB (Linux bot sweep
+# 2026-10-07).
+HOLD_BASE_BYTES = int(0.76 * 2**30)
+HOLD_OUT_FRAMES, HOLD_SRC_FRAMES = 3, 2
+
+
+def _check_fits(a, b, n, what):
+    """Size the frames a pixel check holds BEFORE decoding them, as
+    `comp.py track` does, and refuse a span past half the headroom."""
+    import _pix as P
+    per = (HOLD_OUT_FRAMES * b["width"] * b["height"] * 12
+           + HOLD_SRC_FRAMES * a["width"] * a["height"] * 12)
+    need = HOLD_BASE_BYTES + n * per
+    room = P.memory_headroom()
+    if need > room // 2:
+        fits = max(int((room // 2 - HOLD_BASE_BYTES) // per), 0)
+        raise MemoryError(
+            f"{what} on {n} frames at {b['width']}x{b['height']} holds about "
+            f"{need / 2**30:.1f} GB, and this process has {room / 2**30:.1f} GB "
+            f"before it is killed. Give --frames {max(fits, 2)} or fewer"
+            + (" (even 2 do not fit here)" if fits < 2 else "")
+            + ", or run it outside the bot: systemd-run --user --wait --pipe "
+              "-p MemoryMax=12G ~/.venvs/post/bin/python upres.py ...")
 
 
 def _sample(path, start, count, bits=8):
@@ -377,6 +408,7 @@ def temporal(src, cand, frames=8, start=None, bits=8):
     a, b = P.clip_info(src), P.clip_info(cand)
     _require_same_clock(a, b, "The temporal measurement")
     n = max(2, int(frames))
+    _check_fits(a, b, n, "The temporal measurement")
     if start is None:
         total = min(a["frames"] or n, b["frames"] or n)
         start = max(0, (total - n) // 2)
@@ -593,6 +625,7 @@ def verify(src, cand, frames=8, start=None, bits=8):
 
     # ---- pixels
     n = max(2, int(frames))
+    _check_fits(a, b, n, "verify")
     if start is None:
         total = min(a["frames"] or n, b["frames"] or n)
         start = max(0, (total - n) // 2)

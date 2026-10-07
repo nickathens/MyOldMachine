@@ -181,6 +181,9 @@ class CommandTests(unittest.TestCase):
         # the --theme flag, because mmdc merges the file over {theme} from -t.
         self.assertNotIn("layout", config)
         self.assertNotIn("theme", config)
+        # Linux bot sweep 2026-10-07: room for an edge label's last letter
+        self.assertIn(".edgeLabel p", config["themeCSS"])
+        self.assertIn("padding", config["themeCSS"])
 
     def test_render_hands_mmdc_the_source_then_cleans_up(self):
         run, renders = fake_mmdc("12.0.0\n", returncode=1)
@@ -285,6 +288,26 @@ class LiveRenderTests(unittest.TestCase):
                     r'<rect class="basic label-container"[^>]*width="([\d.]+)"', svg)]
                 self.assertEqual(len(widths), 2, "node boxes not found in the SVG")
                 self.assertLess(max(widths), 100)
+
+    def test_a_missing_source_file_is_named_not_a_traceback(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.tmp / "missing.mmd"),
+                                 "-o", str(self.tmp / "m.png")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("missing.mmd", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_edge_labels_get_room_for_their_last_letter(self):
+        # the label box was the text's exact advance width and clipped
+        # the ink past it, so "Ναι" lost half its final iota. Front matter
+        # that takes the padding away shows the natural width to compare.
+        flow = "graph LR\n    A -->|Ναι| B\n"
+        natural = "---\nconfig:\n  themeCSS: '.edgeLabel p { padding: 0; }'\n---\n" + flow
+        widths = []
+        for name, source in (("padded.svg", flow), ("natural.svg", natural)):
+            svg = self.render(source, name).read_text(encoding="utf-8")
+            found = re.findall(r'<g class="edgeLabel"[^>]*>(?:(?!</g>).)*?<foreignObject width="([\d.]+)"', svg)
+            widths.append(max(float(w) for w in found))
+        self.assertGreaterEqual(widths[0] - widths[1], 5, widths)
 
     def test_a_mindmap_still_fans_out_around_its_root(self):
         # Under a global `layout: dagre` every node hung below the root (0 of

@@ -198,10 +198,14 @@ def read_edl(path, rate=None, drop=None):
             events[-1]["comments"].append(line.strip())
     if drop is None:
         drop = bool(fcm_drop)
+    # A rate given as text is read the way --fps is everywhere else, so
+    # "29.97df" works here too; it used to reach the plain rate parser and stop
+    # at "Invalid literal for Fraction: '29.97df'" in both edl commands.
+    supplied = parse_rate(rate)[0] if isinstance(rate, str) else rate
     return {"file": os.path.abspath(path), "title": title,
-            "fcm_drop_frame": fcm_drop, "events": events,
+            "fcm_drop_frame": fcm_drop, "drop_frame": drop, "events": events,
             "count": len(events), "header_comments": comments,
-            "rate_supplied": str(C.rate(rate)) if rate else None,
+            "rate_supplied": str(C.rate(supplied)) if supplied else None,
             "note": "The rate is not in a CMX 3600 EDL. FCM says drop frame or "
                     "not, and nothing says 24 against 25. Supply it with --fps "
                     "and confirm it against the cut."}
@@ -447,8 +451,11 @@ def main(argv=None):
                        f"{e['rec_out']}") for e in d["events"][:30]],
                 print(f"  {d['note']}")))
         rate, drop = parse_rate(args.fps)
-        doc = read_edl(args.file, args.fps, drop)
-        res = check_edl(doc, rate, drop)
+        # A rate that does not say df or nd leaves drop frame to the EDL's own
+        # FCM line, which is the only place an EDL records it.
+        said = args.fps.strip().lower().endswith(("df", "nd"))
+        doc = read_edl(args.file, rate, drop if said else None)
+        res = check_edl(doc, rate, doc["drop_frame"])
         return C.emit(res, args.json, lambda r: (
             print(f"{os.path.basename(r['file'])}: {r['events']} events at "
                   f"{r['rate']}{' drop frame' if r['drop_frame'] else ''}"),

@@ -272,6 +272,10 @@ def main_guard(fn, argv=None):
         fail(str(exc))
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         fail(str(exc))
+    except MemoryError as exc:
+        # the memory guards say what fits and how to run outside the bot; that
+        # message used to arrive as the last line of a traceback
+        fail(f"Not enough memory: {exc}")
     except BrokenPipeError:
         return 0
 

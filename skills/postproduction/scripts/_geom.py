@@ -54,7 +54,10 @@ def apply_h(H, pts):
     """Apply a 3x3 homography to Nx2 points."""
     q = homog(pts) @ np.asarray(H, dtype=np.float64).T
     w = q[:, 2:3]
-    w = np.where(np.abs(w) < 1e-12, np.sign(w) * 1e-12 + 1e-12, w)
+    # Clamp a vanishing w away from zero keeping its sign. The old form,
+    # sign(w) * 1e-12 + 1e-12, gave 2e-12 for a tiny positive w and exactly 0
+    # for a tiny negative one: a division by zero on the far side of the line.
+    w = np.where(np.abs(w) < 1e-12, np.where(w < 0, -1e-12, 1e-12), w)
     return q[:, :2] / w
 
 

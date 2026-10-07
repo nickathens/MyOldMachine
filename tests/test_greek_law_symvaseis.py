@@ -184,5 +184,22 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(json.loads(out)), len(sc.RISK_CONTROLS))
 
 
+class WrappedLinesTests(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: text taken out of a PDF breaks lines inside a
+    phrase. «ποινική\\nρήτρα» and «δεν\\nευθύνεται» found nothing, and the
+    scan then said no risky clause was present."""
+
+    def test_a_phrase_broken_over_lines_is_still_found(self):
+        text = ("Σε περίπτωση καθυστέρησης ο μισθωτής καταβάλλει ποινική\nρήτρα 500 ευρώ.\n"
+                "Ο εκμισθωτής δεν\nευθύνεται για καμία ζημία. Ρήτρα μη\n  ανταγωνισμού.")
+        ids = {c["id"] for c in sc.scan_text(text)["detected"]}
+        self.assertEqual(ids, {"poiniki-ritra", "apallaktiki-ritra", "mi-antagonismos"})
+
+    def test_an_essential_broken_over_lines_is_not_reported_absent(self):
+        text = "Το εφαρμοστέο\nδίκαιο είναι το ελληνικό."
+        names = {e["name"] for e in sc.scan_text(text)["absent"]}
+        self.assertNotIn("Εφαρμοστέο δίκαιο και αρμοδιότητα", names)
+
+
 if __name__ == "__main__":
     unittest.main()

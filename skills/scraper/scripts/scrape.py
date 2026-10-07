@@ -13,6 +13,7 @@ Usage:
 import argparse
 import sys
 
+CONTENT_LIMIT = 15000
 
 def _goto(page, url):
     """Open the page, then give late requests a short chance to settle.
@@ -56,15 +57,22 @@ def get_content(url: str, selector: str = None) -> dict:
             page = browser.new_page()
             _goto(page, url)
 
+            # inner_text, not text_content: the rendered text, with a line
+            # break between blocks and hidden elements left out. text_content
+            # glued "<h1>Title</h1><p>First.</p>" into "TitleFirst." and kept
+            # display:none text.
             if selector:
                 elements = page.query_selector_all(selector)
-                content = [el.text_content().strip() for el in elements]
+                content = [el.inner_text().strip() for el in elements]
             else:
                 # Get main content, removing scripts and styles
                 page.evaluate("""
                     document.querySelectorAll('script, style, nav, footer, header').forEach(el => el.remove());
                 """)
-                content = page.locator("body").text_content()
+                content = page.locator("body").inner_text()
+                if len(content) > CONTENT_LIMIT:
+                    content = (content[:CONTENT_LIMIT]
+                               + f"\n[truncated: {CONTENT_LIMIT:,} of {len(content):,} characters shown]")
 
             title = page.title()
             browser.close()
@@ -73,7 +81,7 @@ def get_content(url: str, selector: str = None) -> dict:
             "success": True,
             "url": url,
             "title": title,
-            "content": content if isinstance(content, list) else content[:15000]
+            "content": content,
         }
     except Exception as e:
         return {"error": str(e)}

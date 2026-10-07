@@ -61,15 +61,42 @@ def node_to_data(element: ET.Element) -> dict:
     return {"tag": tag, "attrs": clean_attrs(element.attrib), "children": children}
 
 
-def html_for(svg_data: dict, title: str) -> str:
-    payload = json.dumps(svg_data, ensure_ascii=False, separators=(",", ":"))
-    safe_title = re.sub(r"[<>]", "", title)
+# Absolute SVG lengths in CSS px (96 per inch). A relative width (100%, em)
+# says nothing about the drawing's size, so the viewBox decides then.
+_UNIT_PX = {"": 1.0, "px": 1.0, "pt": 96 / 72, "pc": 16.0, "mm": 96 / 25.4, "cm": 96 / 2.54, "in": 96.0}
+
+
+def _length_px(value: str) -> float | None:
+    m = re.fullmatch(r"\s*([0-9]*\.?[0-9]+)\s*([a-zA-Z]*)\s*", value or "")
+    if not m or m.group(2).lower() not in _UNIT_PX:
+        return None
+    return float(m.group(1)) * _UNIT_PX[m.group(2).lower()]
+
+
+def max_width_for(svg_data: dict) -> str:
+    """The drawing's natural width in px.
+
+    The digits used to be pulled out of the width whatever its unit, so
+    width="100%" made a 100 px logo, shown at 70 px, and "297mm" (Inkscape's
+    default unit) one of 297 instead of 1123 (Linux bot sweep 2026-10-07).
+    """
     attrs = svg_data.get("attrs", {})
-    max_width = re.sub(r"[^0-9.]", "", attrs.get("width", "")) or "1196"
-    if not attrs.get("width") and attrs.get("viewBox"):
+    px = _length_px(attrs.get("width", ""))
+    if px:
+        return f"{px:.3f}".rstrip("0").rstrip(".")
+    if attrs.get("viewBox"):
         values = re.findall(r"[-+]?(?:\d*\.\d+|\d+)", attrs["viewBox"])
         if len(values) == 4:
-            max_width = values[2]
+            return values[2]
+    return "1196"
+
+
+def html_for(svg_data: dict, title: str) -> str:
+    # "</" in an SVG text would end the page's <script> early; the showcase
+    # builder escaped it and this one did not (Linux bot sweep 2026-10-07).
+    payload = json.dumps(svg_data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    safe_title = re.sub(r"[<>]", "", title)
+    max_width = max_width_for(svg_data)
     return f"""<!doctype html>
 <html lang="en">
 <head>

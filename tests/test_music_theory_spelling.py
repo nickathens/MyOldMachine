@@ -57,5 +57,26 @@ class Spelling(unittest.TestCase):
                          "Bbm7b5 Eb7/G Abm")
 
 
+@unittest.skipUnless(HAVE_M21, "music21 not installed")
+class ChordNames(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: `chords` passed music21's pitchedCommonName
+    ("C-major triad", root, dash, name) through the flat-sign helper, so
+    the dash became a flat: C F G read "Cbmajor triad", "Fbmajor triad",
+    "Gbmajor triad", and Bb read "Bbbmajor triad"."""
+
+    def test_detected_chords_are_named_by_their_real_root(self):
+        import tempfile
+        from music21 import chord, stream
+        with tempfile.TemporaryDirectory() as d:
+            midi = Path(d, "prog.mid")
+            s = stream.Stream()
+            for names in (["C4", "E4", "G4"], ["F4", "A4", "C5"], ["B-3", "D4", "F4"], ["D4", "F#4", "A4", "C5"]):
+                s.append(chord.Chord(names, quarterLength=4))
+            s.write("midi", fp=str(midi))
+            out = run("chords", str(midi))
+        self.assertEqual(out["chords"], ["C major triad", "F major triad", "Bb major triad",
+                                         "D dominant seventh chord"])
+
+
 if __name__ == "__main__":
     unittest.main()

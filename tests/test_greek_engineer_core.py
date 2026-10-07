@@ -14,6 +14,7 @@ import json
 import re
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "greek-engineer"
@@ -427,6 +428,17 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("katastasi", json.loads(out))
         self.assertTrue(self.run_cli(kanonismoi, ["freshness"]).strip())
         self.assertTrue(self.run_cli(kanonismoi, ["list"]).strip())
+
+    def test_kanonismoi_show_says_when_the_picture_is_stale(self):
+        # Linux bot sweep 2026-10-07: only `freshness` said a domain was old;
+        # `show`, the command the skill tells you to run, did not
+        as_of = dt.date.fromisoformat(kanonismoi.DOMAINS["nok"]["as_of"])
+        with mock.patch.object(kanonismoi, "_today", return_value=as_of + dt.timedelta(days=kanonismoi.STALE_DAYS + 1)):
+            self.assertIn("ΞΕΠΕΡΑΣΜΕΝΟ", self.run_cli(kanonismoi, ["show", "nok"]))
+            self.assertTrue(json.loads(self.run_cli(kanonismoi, ["show", "nok", "--json"]))["stale"])
+        with mock.patch.object(kanonismoi, "_today", return_value=as_of):
+            self.assertNotIn("ΞΕΠΕΡΑΣΜΕΝΟ", self.run_cli(kanonismoi, ["show", "nok"]))
+            self.assertFalse(json.loads(self.run_cli(kanonismoi, ["show", "nok", "--json"]))["stale"])
 
     def test_domisi_cli(self):
         out = self.run_cli(domisi, ["perigramma", "--emvadon", "500", "--sd", "0.8",

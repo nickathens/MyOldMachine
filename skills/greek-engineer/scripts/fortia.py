@@ -191,7 +191,16 @@ def fasma(zoni, edafos, q, gamma_i="II", td_override=None):
     gi = IMPORTANCE.get(gamma_i.upper())
     if gi is None:
         raise ValueError(f"Άγνωστη κατηγορία σπουδαιότητας {gamma_i}. Διαθέσιμες: I, II, III, IV.")
+    # Οι ίδιοι έλεγχοι με την sd(): χωρίς αυτούς το `fasma --q 0.5` τύπωνε
+    # πλατό πέντε φορές το ελαστικό, και μια TD κάτω από την TC έδινε φάσμα
+    # που πέφτει απότομα στην TC.
+    if q < 1.0:
+        raise ValueError("Ο συντελεστής συμπεριφοράς q δεν μπορεί να είναι μικρότερος του 1.0.")
     td = td_override if td_override is not None else soil["TD"]
+    if td <= soil["TC"]:
+        raise ValueError(
+            f"Η TD ({td} s) πρέπει να είναι μεγαλύτερη από την TC ({soil['TC']} s) του "
+            f"εδάφους {edafos.upper()}: αλλιώς ο κλάδος TC έως TD δεν υπάρχει.")
     ag = gi * z["agr_g"]  # σε g
     plateau = ag * soil["S"] * 2.5 / q
     return {

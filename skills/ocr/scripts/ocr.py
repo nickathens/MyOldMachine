@@ -157,7 +157,7 @@ def main():
         print(f"Error: {result['error']}", file=sys.stderr)
         sys.exit(1)
 
-    output = json.dumps(result, indent=2) if args.json else result["text"]
+    output = json.dumps(result, indent=2, ensure_ascii=False) if args.json else result["text"]
 
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)

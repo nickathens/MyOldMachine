@@ -166,6 +166,18 @@ def sweep(keep_ledger, condemned, restore_map=None, execute=False,
         report["gates"].append({
             "gate": "survivors verified", "pass": verified["failures"] == 0,
             "detail": verified["verdict"]})
+        # A file cannot be both kept and condemned. Every gate passed when the
+        # condemned file was the survivor the keep ledger names, and the
+        # dependency gate misses it when that ledger sits in the same folder
+        # (2026-10-07).
+        kept = {os.path.realpath(e["path"]) for e in verified["entries"]}
+        both = sorted(p for p in report["condemned_requested"] if os.path.realpath(p) in kept)
+        report["gates"].append({
+            "gate": "nothing condemned is a survivor", "pass": not both,
+            "detail": ("none of the condemned files is in the keep ledger" if not both else
+                       f"{len(both)} condemned file(s) are listed as SURVIVORS in the keep "
+                       "ledger: " + ", ".join(os.path.basename(p) for p in both)
+                       + ". Deleting them deletes what the ledger says is kept.")})
 
     # Gate two: hash the condemned before they go.
     condemned_rows = []
@@ -389,7 +401,9 @@ def main(argv=None):
             restore[k] = v
         res = sweep(args.keep_ledger, args.condemn, restore, args.execute,
                     args.ledger_out)
-        return C.emit(res, args.json, _print_sweep)
+        C.emit(res, args.json, _print_sweep)
+        # STOP used to exit 0, the same as a pass, to anything checking the code
+        return 0 if res["pass"] else 1
     return 0
 
 

@@ -50,5 +50,27 @@ class Batch(unittest.TestCase):
         self.assertTrue((self.d / "out" / "a.jpg").exists())
 
 
+class BatchKeepsOriginals(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: a batch whose output folder was its input
+    folder wrote every result over its original: `resize photos photos
+    --width 50` left 50 px copies and no photos."""
+
+    def test_the_input_folder_as_output_is_refused(self):
+        import subprocess
+        import sys
+        import tempfile
+        from PIL import Image
+        script = Path(__file__).resolve().parent.parent / "skills" / "gimp" / "scripts" / "batch.py"
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d, "photos")
+            folder.mkdir()
+            Image.new("RGB", (300, 200), "red").save(folder / "a.png")
+            r = subprocess.run([sys.executable, str(script), "resize", str(folder), str(Path(d, ".", "photos")),
+                                "--width", "50"], capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("original", r.stderr)
+            self.assertEqual(Image.open(folder / "a.png").size, (300, 200))
+
+
 if __name__ == "__main__":
     unittest.main()

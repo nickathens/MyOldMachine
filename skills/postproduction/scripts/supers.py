@@ -316,6 +316,7 @@ def audit(frame_path, spec, block_id=None, ring=6):
             below = float(sorted_w[sorted_de < DE_FLOOR].sum())
             per_line.append({
                 "line": line["line"], "ink": line["ink"],
+                "missing_glyphs": line["missing_glyphs"],
                 "surround_pixels": count,
                 "de_median": round(median, 2),
                 "de_5th_percentile": round(p05, 2),
@@ -349,6 +350,11 @@ def _raster(text):
     if not m:
         raise ValueError("Raster looks like 1920x1080")
     return int(m.group(1)), int(m.group(2))
+
+
+MISSING = ("MISSING GLYPHS: {}. This face cannot draw them: they render as the "
+           "notdef box, so this line's ink box, safe verdict and contrast are the "
+           "box's, not the real line's. Pick a face that covers the copy.")
 
 
 def main(argv=None):
@@ -446,7 +452,7 @@ def _print_metrics(out):
                   f"{m['ink_right']:.2f} ({m['ink_right'] - m['ink_left']:.2f} wide), "
                   f"height {m['ink_top']:.2f} to {m['ink_bottom']:.2f}")
         if m["missing_glyphs"]:
-            print(f"  MISSING GLYPHS: {''.join(m['missing_glyphs'])}. They will "
+            print(f"  MISSING GLYPHS: {''.join(dict.fromkeys(m['missing_glyphs']))}. They will "
                   "render as the notdef box, and nothing about the width below "
                   "is right.")
         print("  advance widths are UNKERNED")
@@ -459,6 +465,11 @@ def _print_plan(p):
         print(f"  block {b['id']}  ({b['align']})")
         for line in b["lines"]:
             print(f"    '{line['line']}'  ink {line['ink']}")
+            # Recorded in the plan all along, and never printed: a Greek line in
+            # a Latin-only face came back placed, "inside" both safe areas, with
+            # no word that every glyph was a notdef box (2026-10-07).
+            if line["missing_glyphs"]:
+                print("      " + MISSING.format("".join(dict.fromkeys(line["missing_glyphs"]))))
             print(f"      draw at x {line['origin_x']:.2f}, y {line['em_top']:.2f} "
                   f"(Pillow anchor 'la'), baseline {line['baseline']:.2f}")
             box = line["ink_box"]
@@ -490,6 +501,8 @@ def _print_audit(r):
             if "error" in line:
                 print(f"    '{line['line']}': {line['error']}")
                 continue
+            if line.get("missing_glyphs"):
+                print("    " + MISSING.format("".join(dict.fromkeys(line["missing_glyphs"]))))
             print(f"    '{line['line']}' in {line['ink']}: median dE "
                   f"{line['de_median']}, 5th percentile {line['de_5th_percentile']}, "
                   f"{line['fraction_below_floor'] * 100:.1f} per cent below floor")
