@@ -102,6 +102,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-10-07] linux: port of the Linux bot's 2026-10-07 sweep, core and skills
+
 (Entries removed above: #197 cleared in its reviewed merge revision,
 the same call as #196.
 #196 cleared in its reviewed merge revision,
