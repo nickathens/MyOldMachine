@@ -5,7 +5,7 @@ that turns gestures and data into per-frame CLI arguments, the SVG converter,
 the render plans and ffmpeg commands, the lint, the fonts, audio and recipe
 maths, the templates' structure, the manifests and the docs. The live half
 builds, captures and renders with the real Rive CLI and skips wherever
-`rive` is not on PATH (CI has none; this Mac has 1.3.0), so the costs and
+`rive` is not on PATH (CI has none; this Mac has 1.4.0), so the costs and
 behaviours the scripts depend on are re-proved against the binary itself.
 
 Numbers asserted here were measured on Rive CLI 1.1.1 on 25 Sep 2026 and are
@@ -111,6 +111,50 @@ def scene_time(args: list[str]) -> float:
         elif a.startswith("--semantic-action="):
             total += 2 / 60
     return total
+
+
+def premultiplied_gap(a: bytes, b: bytes) -> int:
+    """The largest difference between two RGBA pictures in alpha, or in colour
+    laid over black. Straight colour is no measure where alpha is near 0: a
+    one-code wobble there reads as up to 255."""
+    if a == b:
+        return 0
+    worst = 0
+    for i in range(0, len(a), 4):
+        if a[i:i + 4] != b[i:i + 4]:
+            alpha_a, alpha_b = a[i + 3], b[i + 3]
+            worst = max(worst, abs(alpha_a - alpha_b),
+                        *(abs(a[i + c] * alpha_a - b[i + c] * alpha_b) // 255 for c in range(3)))
+    return worst
+
+
+def stroke_probe(folder: Path) -> Path:
+    """Three 200 px squares on black with a 40 px white stroke: inside, centred
+    (no position, the default) and outside their edge."""
+    shapes = "".join(
+        f'<Shape x="{x}" y="200" name="{name}"><Rectangle width="200" height="200" name="R"/>'
+        f'<Stroke thickness="40"{attr} name="{name} stroke"><SolidColor colorValue="FFFFFFFF" name="C"/>'
+        "</Stroke></Shape>"
+        for x, name, attr in ((150, "Inside", ' position="inside"'), (450, "Centre", ""),
+                              (750, "Outside", ' position="outside"')))
+    proj = folder / "strokes"
+    proj.mkdir()
+    (proj / "rive.yaml").write_text("name: strokes\nmain: Probe\n")
+    (proj / "scene.rml").write_text(
+        '<Rive version="1" kind="fragment"><Artboard width="900" height="400" name="Probe" id="0:2">'
+        f'<Fill name="Ground"><SolidColor colorValue="FF000000" name="G"/></Fill>{shapes}</Artboard></Rive>')
+    return proj
+
+
+def stroke_widths(png: Path) -> list[int]:
+    """The outer width of the white stroke in each third of the middle row."""
+    width, height, raw = L.png_rgba(png)
+    row = raw[(height // 2) * width * 4:(height // 2 + 1) * width * 4]
+    widths = []
+    for third in range(3):
+        lit = [x for x in range(third * width // 3, (third + 1) * width // 3) if row[4 * x] > 128]
+        widths.append(max(lit) - min(lit) + 1 if lit else 0)
+    return widths
 
 
 # ==========================================================================
@@ -285,6 +329,9 @@ class LibTests(TempDir):
         # 1.3.0 passed the doctor on the Mac on 4 Oct 2026 and was rendered
         # against 1.2.0 frame by frame (references/rendering.md)
         self.assertIsNone(L.version_note("1.3.0"))
+        # 1.4.0 passed the doctor on the Mac on 7 Oct 2026 and was rendered
+        # against 1.3.0 frame by frame (references/rendering.md)
+        self.assertIsNone(L.version_note("1.4.0"))
         self.assertIn("not a version", L.version_note("9.9.9"))
         self.assertIsNotNone(L.version_note(None))
 
@@ -591,13 +638,18 @@ class AlphaCheckTests(TempDir):
         self.assertIn("frame 0 off by up to 143 codes", report["warnings"][0])
         self.assertIn("written anyway because of --allow-bad-alpha", report["warnings"][0])
 
-    def main_with(self, *extra: str) -> tuple[int, str, Path]:
+    def main_with(self, *extra: str, out_name: str = "still.png", gaps: dict | None = None,
+                  again: dict | None = None, recomposite: dict | None = None) -> tuple[int, str, Path]:
         """R.main end to end with the CLI, ffmpeg and the recomposite faked:
-        every capture is the same red and clear frame, the solve is 143 codes off."""
+        every capture is the same red and clear frame, the solve is 143 codes
+        off unless `recomposite` says otherwise, and the passes agree unless
+        `gaps` (the solve) and `again` (a frame solved again) say otherwise.
+        Every capture is recorded in self.captures."""
         proj = self.tmp / "proj"
         proj.mkdir(exist_ok=True)
         (proj / "rive.yaml").write_text("name: proj\n")
-        out = self.tmp / "still.png"
+        out = self.tmp / out_name
+        captures = self.captures = []
 
         class Engine:
             def __init__(self, project, args, report):
@@ -606,20 +658,26 @@ class AlphaCheckTests(TempDir):
                 self.source, self.workdir = project, project
 
             def capture(self, pass_name, t, timeline, out_png):
+                captures.append((pass_name, out_png.name))
                 write_png(out_png, 4, 4, lambda x, y: (200, 0, 0, 255) if x < 2 else (0, 0, 0, 0))
                 return T.FrameArgs(args=[], capture_time=t)
 
             def close(self):
                 pass
 
-        def solve(black, white, out_dir, fps, pad):
+        def solve(black, white, out_dir, fps, pad, frame=None):
             for p in black.iterdir():
                 shutil.copy2(p, out_dir / p.name)
+            if frame is not None:
+                return {frame: (again or {}).get(frame, 0)}
+            return dict(gaps) if gaps is not None else {k: 0 for k in range(len(list(black.iterdir())))}
+
+        result = recomposite or {"max": 143.0, "mean": 14.0}
 
         err = io.StringIO()
         # the blank check reads frames with ffprobe, which CI does not have
         with mock.patch.object(R, "CliEngine", Engine), mock.patch.object(R, "solve_alpha", solve), \
-                mock.patch.object(R, "recomposite_error", lambda rgba, ref: {"max": 143.0, "mean": 14.0}), \
+                mock.patch.object(R, "recomposite_error", lambda rgba, ref: dict(result)), \
                 mock.patch.object(R, "check_blank", lambda *a: None), \
                 mock.patch.object(R.L, "snapshot_project", return_value=proj), \
                 contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
@@ -639,6 +697,174 @@ class AlphaCheckTests(TempDir):
         self.assertTrue(out.is_file())
         report = json.loads(Path(str(out) + ".render.json").read_text())
         self.assertTrue(any("--allow-bad-alpha" in w for w in report["warnings"]), report["warnings"])
+
+    def test_a_frame_whose_passes_still_disagree_joins_the_recomposite_check(self):
+        # five frames: the recomposite samples 0, 2 and 4. Frame 1's passes
+        # disagree, and again when captured again, so it is compared as well
+        clean = {"max": 1.0, "mean": 0.1}
+        code, err, out = self.main_with("--frames", "5", out_name="seq", gaps={0: 0, 1: 60, 2: 1, 3: 0, 4: 2},
+                                        again={1: 60}, recomposite=clean)
+        self.assertEqual(code, 0, err)
+        report = json.loads(Path(str(out) + ".render.json").read_text())
+        self.assertEqual([c["frame"] for c in report["alpha_check"]], [0, 1, 2, 4])
+        self.assertEqual(report["pass_check"]["over"], {"1": 60})
+        self.assertEqual(report["pass_check"]["recaptured"], {"1": 60})
+        # once in the parallel pool (in either order) and once more each
+        recaptured = sorted(c for c in self.captures if c[1] == "f00001.png")
+        self.assertEqual(recaptured, [("black", "f00001.png")] * 2 + [("white", "f00001.png")] * 2)
+
+    def test_a_broken_pair_that_comes_back_right_is_kept_with_a_warning(self):
+        code, err, out = self.main_with("--frames", "5", out_name="seq", gaps={0: 0, 1: 0, 2: 1, 3: 238, 4: 2},
+                                        again={3: 1}, recomposite={"max": 1.0, "mean": 0.1})
+        self.assertEqual(code, 0, err)
+        report = json.loads(Path(str(out) + ".render.json").read_text())
+        self.assertEqual([c["frame"] for c in report["alpha_check"]], [0, 2, 4])
+        self.assertTrue(any("frame 3 by 238 codes" in w and "the new capture agreed" in w
+                            for w in report["warnings"]), report["warnings"])
+
+
+@NEEDS_FFMPEG
+class PassGapGraphTests(TempDir):
+    """ALPHA_GRAPH measures every frame's pass gap as it solves: the widest
+    difference between white minus black on R, G and B. Over black a pixel is
+    c x a and over white c x a + 255 x (1 - a), so for passes of one picture
+    the three agree. Pairs written by hand, so every expected gap is exact."""
+
+    # the solve before the pass check joined the graph (main at cd574d9)
+    OLD_GRAPH = ("[0:v]format=gbrp,split[b1][b2];[1:v]format=gbrp[w];"
+                 "[w][b1]blend=all_expr='255-(A-B)',split[a3a][a3b];"
+                 "[b2][a3a]blend=all_expr='if(gt(B,0),min(255,(A*255+B/2)/B),0)'[c];"
+                 "[a3b]extractplanes=g[a];[c][a]alphamerge,format=rgba[rgba]")
+
+    # (black, white) for the right half of each frame; the left half is clear
+    PAIRS = [((100, 50, 25), (220, 170, 145)),   # one picture, 47% covered: gap 0
+             ((100, 50, 25), (220, 170, 153)),   # blue 8 off: at the limit
+             ((100, 50, 25), (220, 170, 154)),   # blue 9 off: over it
+             ((100, 50, 25), (255, 255, 255)),   # the white pass missed the picture: 75
+             ((90, 160, 30), (90, 160, 30))]     # opaque: gap 0
+    GAPS = {0: 0, 1: 8, 2: 9, 3: 75, 4: 0}
+
+    def passes(self) -> tuple[Path, Path, Path]:
+        black, white, rgba = self.tmp / "black", self.tmp / "white", self.tmp / "rgba"
+        for folder in (black, white, rgba):
+            folder.mkdir()
+        for k, (b, w) in enumerate(self.PAIRS):
+            write_png(black / f"f{k:05d}.png", 4, 2, lambda x, y: (0, 0, 0, 255) if x < 2 else (*b, 255))
+            write_png(white / f"f{k:05d}.png", 4, 2, lambda x, y: (255, 255, 255, 255) if x < 2 else (*w, 255))
+        return black, white, rgba
+
+    def test_every_frame_gets_its_exact_gap(self):
+        black, white, rgba = self.passes()
+        self.assertEqual(R.solve_alpha(black, white, rgba, 25.0, 5), self.GAPS)
+        self.assertEqual(sorted(p.name for p in rgba.iterdir()), [f"f{k:05d}.png" for k in range(5)])
+        self.assertEqual([k for k, gap in self.GAPS.items() if gap > R.PASS_LIMIT], [2, 3])
+
+    def test_the_solve_itself_is_unchanged(self):
+        black, white, rgba = self.passes()
+        R.solve_alpha(black, white, rgba, 25.0, 5)
+        old = self.tmp / "old"
+        old.mkdir()
+        subprocess.run([L.ffmpeg_bin(), "-v", "error", "-y", "-framerate", "25", "-i", str(black / "f%05d.png"),
+                        "-framerate", "25", "-i", str(white / "f%05d.png"), "-filter_complex", self.OLD_GRAPH,
+                        "-map", "[rgba]", "-start_number", "0", str(old / "f%05d.png")], check=True)
+        for k in range(len(self.PAIRS)):
+            with self.subTest(frame=k):
+                self.assertEqual(L.png_rgba(rgba / f"f{k:05d}.png"), L.png_rgba(old / f"f{k:05d}.png"))
+
+    def test_one_frame_is_solved_again_in_place(self):
+        black, white, rgba = self.passes()
+        whole = self.tmp / "whole"
+        whole.mkdir()
+        R.solve_alpha(black, white, whole, 25.0, 5)
+        self.assertEqual(R.solve_alpha(black, white, rgba, 25.0, 5, frame=3), {3: 75})
+        self.assertEqual([p.name for p in rgba.iterdir()], ["f00003.png"])
+        self.assertEqual(L.png_rgba(rgba / "f00003.png"), L.png_rgba(whole / "f00003.png"))
+
+
+class PassGapLogTests(unittest.TestCase):
+    # what ffmpeg 9.0.2 prints around the metadata filter's lines
+    LOG = """Input #0, image2, from '/tmp/x/black/f%05d.png':
+[Parsed_metadata_20 @ 0x802c16100] frame:0    pts:0       pts_time:0
+[Parsed_metadata_20 @ 0x802c16100] lavfi.signalstats.YMAX=0
+Output #0, image2, to '/tmp/x/rgba/f%05d.png':
+[Parsed_metadata_20 @ 0x802c16100] frame:1    pts:1       pts_time:0.04
+[Parsed_metadata_20 @ 0x802c16100] lavfi.signalstats.YMAX=238
+"""
+
+    def test_the_log_is_read_frame_by_frame(self):
+        self.assertEqual(R.pass_gaps(self.LOG), {0: 0, 1: 238})
+        # a frame solved again on its own counts from where it starts
+        self.assertEqual(R.pass_gaps(self.LOG, start=16), {16: 0, 17: 238})
+        # a number with no frame line before it belongs to no frame
+        self.assertEqual(R.pass_gaps("lavfi.signalstats.YMAX=9\n"), {})
+
+
+class PassCheckTests(TempDir):
+    """check_passes, with the captures and the solve faked. 7 Oct 2026: one
+    broken black and white pair in about 8,300 captures (logo animation 3,
+    frame 16, CLI 1.3.0) passed the three-frame recomposite check; a second
+    one, in 350 captures beside another render, was the first thing this
+    check caught. Both came back right when captured again."""
+
+    def run_check(self, gaps: dict, again: dict | None = None, frames: int | None = None,
+                  allow_bad: bool = False):
+        folders = {p: self.tmp / p for p in ("black", "white", "rgba")}
+        captured, solved = [], []
+        engine = mock.Mock()
+        engine.capture.side_effect = lambda p, t, timeline, out: captured.append((p, out.name))
+
+        def solve(black, white, out_dir, fps, pad, frame=None):
+            solved.append(frame)
+            return {frame: again[frame]} if again and frame in again else {}
+
+        report = {"warnings": []}
+        with mock.patch.object(R, "solve_alpha", solve):
+            apart = R.check_passes(engine, T.Timeline(), [k / 25 for k in range(frames or len(gaps))], folders,
+                                   dict(gaps), 25.0, 5, report, allow_bad=allow_bad)
+        return apart, report, captured, solved
+
+    def test_passes_that_agree_cost_nothing(self):
+        apart, report, captured, solved = self.run_check({0: 0, 1: 7, 2: 8})
+        self.assertEqual((apart, captured, solved, report["warnings"]), ([], [], [], []))
+        self.assertEqual(report["pass_check"], {"limit": 8, "max": 8, "frame": 2})
+
+    def test_a_broken_pair_is_captured_again_and_kept_when_it_agrees(self):
+        apart, report, captured, solved = self.run_check({0: 1, 1: 255, 2: 2}, again={1: 1})
+        self.assertEqual(apart, [])
+        self.assertEqual(captured, [("black", "f00001.png"), ("white", "f00001.png")])
+        self.assertEqual(solved, [1])
+        self.assertEqual(report["pass_check"]["over"], {"1": 255})
+        self.assertEqual(report["pass_check"]["recaptured"], {"1": 1})
+        self.assertEqual(len(report["warnings"]), 1)
+        self.assertIn("frame 1 by 255 codes", report["warnings"][0])
+        self.assertIn("the new capture agreed", report["warnings"][0])
+
+    def test_a_frame_that_still_disagrees_goes_to_the_recomposite_check(self):
+        apart, report, captured, _ = self.run_check({0: 0, 1: 40}, again={1: 40})
+        self.assertEqual(apart, [1])
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(report["warnings"], [])
+        # a gap the second solve could not read is no pass either
+        apart, report, _, _ = self.run_check({0: 0, 1: 40}, again={})
+        self.assertEqual(apart, [1])
+        self.assertEqual(report["pass_check"]["recaptured"], {"1": None})
+
+    def test_the_worst_are_captured_again_and_no_more_than_the_limit(self):
+        gaps = {k: 20 + k if k < R.RECAPTURE_LIMIT + 3 else 0 for k in range(100)}
+        apart, report, captured, _ = self.run_check(gaps, again={k: 50 for k in gaps})
+        worst = sorted(gaps, key=lambda k: -gaps[k])[:R.RECAPTURE_LIMIT]
+        self.assertEqual(apart, worst)
+        self.assertEqual(sorted({name for _, name in captured}), sorted(f"f{k:05d}.png" for k in worst))
+        self.assertEqual(report["pass_check"]["not_recaptured"], [0, 1, 2])
+
+    def test_a_frame_the_check_did_not_read_stops_the_render(self):
+        with self.assertRaises(L.RiveError) as caught:
+            self.run_check({0: 0, 2: 0}, frames=3)
+        self.assertIn("the pass check read 2 of 3 frames (first missing: frame 1)", str(caught.exception))
+        self.assertIn("--allow-bad-alpha", caught.exception.hint)
+        apart, report, captured, _ = self.run_check({0: 0, 2: 0}, frames=3, allow_bad=True)
+        self.assertEqual((apart, captured), ([], []))
+        self.assertIn("written anyway because of --allow-bad-alpha", report["warnings"][0])
 
 
 class RecompositeFallbackTests(TempDir):
@@ -987,6 +1213,27 @@ class LintTests(TempDir):
             self.assertTrue(C.lint_tree(tree)[0]["message"].startswith(opening))
             # an error, so the gate exits 1 on a fill that draws nothing
             self.assertEqual(C.lint_tree(tree)[0]["severity"], "error")
+
+    def test_a_stroke_off_its_centre_is_flagged_for_the_web(self):
+        # measured 7 Oct 2026: CLI 1.4.0 draws a 40 px stroke on a 200 px
+        # square 200, 240 or 280 px wide by its position, and the web runtime
+        # draws all three centred, so a page and a render of one scene differ
+        rect = {"type": "Rectangle", "width": 200, "height": 200}
+        for position, number, flagged in (("inside", 0, True), ("center", 1, False), ("outside", 2, True)):
+            with self.subTest(position):
+                stroke = {"type": "Stroke", "line": 7, "name": "Edge", "position": number,
+                          "enums": {"position": position}}
+                found = C.lint_tree({"artboards": [{"type": "Artboard", "children": [
+                    {"type": "Shape", "children": [rect, stroke]}]}]})
+                self.assertEqual([f["kind"] for f in found], ["stroke-position-web"] if flagged else [])
+                if flagged:
+                    self.assertEqual(found[0]["severity"], "warning")
+                    self.assertIn(f"the Stroke 'Edge' on line 7 sits {position} its edge", found[0]["message"])
+                    self.assertIn(f"web runtime {C.STROKE_POSITION_WEB} ignores", found[0]["message"])
+        # the number alone resolves too; no position at all is centred, as before 1.4.0
+        self.assertEqual(self.tree_kinds({"type": "Shape", "children": [rect, {"type": "Stroke", "position": 2}]}),
+                         ["stroke-position-web"])
+        self.assertEqual(self.tree_kinds({"type": "Shape", "children": [rect, {"type": "Stroke"}]}), [])
 
     def test_a_feathered_text_fill_draws_under_any_rule(self):
         # a text style's Fill, and its background's, feathered on nonZero: both
@@ -1687,7 +1934,11 @@ class DocTests(unittest.TestCase):
         pins = json.loads((SCRIPTS / "web_runtime.json").read_text())
         versions = {pin["version"] for pin in pins["packages"].values()}
         self.assertEqual(len(versions), 1, "bump webgl2 and canvas together")
-        version = re.escape(versions.pop())
+        pinned = versions.pop()
+        # the stroke position lint names the runtime it was measured on: a new
+        # pin means measuring it again (LiveWebTests) before this moves
+        self.assertEqual(C.STROKE_POSITION_WEB, pinned)
+        version = re.escape(pinned)
         refs = SKILL / "references"
         for path, pattern in [
             (SKILL / "SKILL.md", rf"Rive's web runtime \(@rive-app/webgl2 {version}\)"),
@@ -1928,6 +2179,30 @@ class LiveFeatherTests(unittest.TestCase):
 
 
 @LIVE
+class LiveStrokeTests(unittest.TestCase):
+    """A Stroke's position (inside, center, outside), new in CLI 1.4.0: the
+    CLI draws it, and the lint says the web runtime does not (LiveWebTests
+    holds the web side). Measured 7 Oct 2026."""
+
+    def setUp(self):
+        if L.cli_version() in ("1.1.1", "1.2.0", "1.3.0"):
+            self.skipTest("a Stroke's position arrived in CLI 1.4.0; older CLIs refuse the attribute")
+
+    def test_the_cli_draws_a_stroke_inside_centred_and_outside_its_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = stroke_probe(Path(tmp))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                C.main([str(proj), "--out", str(Path(tmp) / "o"), "--json"])
+            report = json.loads(buf.getvalue())
+            self.assertIn("at", report["images"], report["errors"])
+            self.assertEqual(stroke_widths(Path(report["images"]["at"])), [200, 240, 280])
+            flagged = [f for f in report["lint"] if f["kind"] == "stroke-position-web"]
+            self.assertEqual(sorted(f["message"].split(" sits ")[1].split()[0] for f in flagged),
+                             ["inside", "outside"], report["lint"])
+
+
+@LIVE
 class LiveTimingTests(unittest.TestCase):
     def dump_last_frame(self, args):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2040,6 +2315,44 @@ class LiveRenderTests(unittest.TestCase):
             report = json.loads(Path(str(out) + ".render.json").read_text())
             self.assertEqual(report["probe"]["profile"], "4444")
             self.assertTrue(any("written anyway" in w for w in report["warnings"]), report["warnings"])
+            # the difference blend parts the passes' channels too, and does so
+            # again when captured again: the scene, not the capture
+            check = report["pass_check"]
+            self.assertTrue(check.get("over"), check)
+            self.assertTrue(all(gap > R.PASS_LIMIT for gap in check["recaptured"].values()), check)
+
+    def test_a_capture_that_goes_wrong_is_captured_again(self):
+        # 7 Oct 2026: a black and white pair showing two different pictures
+        # passed the three-frame recomposite check once in about 8,300
+        # captures. Here the white pass of one frame is captured 0.3 s late,
+        # once, while the lower third slides in; its gold bar has colour
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["--alpha", "--frames", "6", "--start", "0.1", "--fps", "25", "--workers", "2"]
+            clean, fixed = Path(tmp) / "clean", Path(tmp) / "fixed"
+            code = self.render([str(TEMPLATES / "lower_third"), "-o", str(clean), *argv])
+            self.assertEqual(code, 0, self.stderr.getvalue())
+            real, late = R.CliEngine.capture, []
+
+            def capture(engine, pass_name, t, timeline, out_png):
+                if pass_name == "white" and out_png.name == "f00004.png" and not late:
+                    late.append(t)
+                    t += 0.3
+                return real(engine, pass_name, t, timeline, out_png)
+
+            with mock.patch.object(R.CliEngine, "capture", capture):
+                code = self.render([str(TEMPLATES / "lower_third"), "-o", str(fixed), *argv])
+            self.assertEqual(code, 0, self.stderr.getvalue())
+            self.assertEqual(len(late), 1)
+            report = json.loads(Path(str(fixed) + ".render.json").read_text())
+            check = report["pass_check"]
+            self.assertGreater(check["over"]["4"], 30, check)
+            self.assertLessEqual(check["recaptured"]["4"], R.PASS_LIMIT, check)
+            self.assertTrue(any("frame 4 by" in w for w in report["warnings"]), report["warnings"])
+            for k in range(6):
+                with self.subTest(frame=k):
+                    ours, theirs = (L.png_rgba(folder / f"f{k:05d}.png")[2] for folder in (fixed, clean))
+                    # a repeat capture can move a glow by a code or two (rendering.md, determinism)
+                    self.assertLessEqual(premultiplied_gap(ours, theirs), 2)
 
     def test_opaque_background_refuses_alpha(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2069,6 +2382,23 @@ class LiveRenderTests(unittest.TestCase):
 @unittest.skipUnless(RIVE and FFMPEG and importlib.util.find_spec("playwright"),
                      "needs the Rive CLI, ffmpeg and Playwright with Chromium")
 class LiveWebTests(unittest.TestCase):
+    def test_the_web_runtime_draws_every_stroke_centred(self):
+        # measured 7 Oct 2026 on 2.44.0, though the .riv carries the setting
+        # (key 470). When the pin moves and this fails, the runtime has learned
+        # it: update rive_check.STROKE_POSITION_WEB, web.md and rml.md
+        if L.cli_version() in ("1.1.1", "1.2.0", "1.3.0"):
+            self.skipTest("a Stroke's position arrived in CLI 1.4.0")
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = stroke_probe(Path(tmp))
+            self.assertEqual(L.run_rive([str(proj), "--once", "--quiet"], timeout=120).returncode, 0)
+            riv = next((proj / "build").glob("*.riv"))
+            with W.WebSession(riv, width=900, height=400) as session:
+                session.setup(width=900, height=400)
+                png, _ = session.frame_png(0.5)
+            shot = Path(tmp) / "web.png"
+            shot.write_bytes(png)
+            self.assertEqual(stroke_widths(shot), [240, 240, 240])
+
     def test_a_page_built_without_a_state_machine_name_answers_a_click(self):
         with tempfile.TemporaryDirectory() as tmp:
             proj = N.create("button", Path(tmp) / "b", [])

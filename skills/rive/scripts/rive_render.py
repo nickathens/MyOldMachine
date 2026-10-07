@@ -328,20 +328,68 @@ class WebEngine:
 # within 2 codes (mean 0.10). ffmpeg's unpremultiply=inplace=1 after
 # alphamerge did NOT un-premultiply here (errors up to 65 codes), so the
 # division is done with blend.
+#
+# The same graph measures every frame's pass gap: the widest difference
+# between the R, G and B coverage (the alpha keeps only green's). Over black
+# a pixel is c x a and over white c x a + 255 x (1 - a), so white minus black
+# is the same on all three channels, and two passes that show different
+# pictures part wherever the picture has colour. signalstats reads it as the
+# Y plane's maximum; mergeplanes puts it there, because signalstats takes no
+# gray input and an automatic conversion may squeeze the codes into video
+# range on the way.
 ALPHA_GRAPH = ("[0:v]format=gbrp,split[b1][b2];[1:v]format=gbrp[w];"
-               "[w][b1]blend=all_expr='255-(A-B)',split[a3a][a3b];"
+               "[w][b1]blend=all_expr='255-(A-B)',split=3[a3a][a3b][a3c];"
                "[b2][a3a]blend=all_expr='if(gt(B,0),min(255,(A*255+B/2)/B),0)'[c];"
-               "[a3b]extractplanes=g[a];[c][a]alphamerge,format=rgba[rgba]")
+               "[a3b]extractplanes=g[a];[c][a]alphamerge,format=rgba[rgba];"
+               "[a3c]extractplanes=r+g+b[pr][pg][pb];[pr]split[pr1][pr2];[pg]split[pg1][pg2];"
+               "[pb]split[pb1][pb2];[pr1][pg1]blend=all_mode=difference[rg];"
+               "[pg2][pb1]blend=all_mode=difference[gb];[pr2][pb2]blend=all_mode=difference[rb];"
+               "[rg][gb]blend=all_mode=lighten[gap];[gap][rb]blend=all_mode=lighten,"
+               "mergeplanes=format=yuv444p,signalstats,metadata=mode=print:key=lavfi.signalstats.YMAX[gaps]")
+
+# Measured 7 Oct 2026 on every frame of the alpha renders of the button, logo
+# reveal and lower third templates and of three logo animations made with
+# this skill, at 1080p and 4K: correct passes part by 7 codes at most (stacked
+# glows, each layer rounded to 8 bits). A broken pair turned up twice that day:
+# once on a frame the recomposite check below does not sample, which went
+# through, and once 255 codes apart. So the gap is checked on every frame.
+PASS_LIMIT = 8
+
+# Broken captures are rare: two in about 13,000 on 7 Oct 2026. More frames
+# than this over the limit in one render is the scene, not the capture.
+RECAPTURE_LIMIT = 10
 
 
-def solve_alpha(black: Path, white: Path, out_dir: Path, fps: float, pad: int) -> None:
-    cmd = [L.ffmpeg_bin(), "-v", "error", "-y", "-framerate", str(fps), "-i", str(black / f"f%0{pad}d.png"),
-           "-framerate", str(fps), "-i", str(white / f"f%0{pad}d.png"),
-           "-filter_complex", ALPHA_GRAPH, "-map", "[rgba]", "-start_number", "0",
-           str(out_dir / f"f%0{pad}d.png")]
+def solve_alpha(black: Path, white: Path, out_dir: Path, fps: float, pad: int,
+                frame: int | None = None) -> dict[int, int]:
+    """Solve every frame, or just `frame`, into out_dir and return each one's
+    pass gap in codes. One frame is read as its own two files: a sequence cut
+    to one frame with -frames:v still let a second through the gap branch now
+    and then (measured)."""
+    name = f"f%0{pad}d.png" if frame is None else f"f{frame:0{pad}d}.png"
+    cmd = [L.ffmpeg_bin(), "-hide_banner", "-nostats", "-v", "info", "-y"]
+    for folder in (black, white):
+        cmd += ["-framerate", str(fps), "-i", str(folder / name)]
+    cmd += ["-filter_complex", ALPHA_GRAPH, "-map", "[rgba]",
+            *(["-start_number", "0"] if frame is None else ["-update", "1"]), str(out_dir / name),
+            "-map", "[gaps]", "-f", "null", "-"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise L.RiveError("alpha solve failed: " + result.stderr[-500:])
+        errors = [s for s in result.stderr.splitlines() if "rror" in s]
+        raise L.RiveError("alpha solve failed: " + ("\n".join(errors) or result.stderr)[-500:])
+    return pass_gaps(result.stderr, frame or 0)
+
+
+def pass_gaps(log: str, start: int = 0) -> dict[int, int]:
+    """Frame number -> pass gap, read from the lines ALPHA_GRAPH's metadata filter prints."""
+    gaps: dict[int, int] = {}
+    frame = None
+    for line in log.splitlines():
+        if m := re.search(r"\bframe:(\d+)\s+pts:", line):
+            frame = start + int(m.group(1))
+        elif (m := re.search(r"lavfi\.signalstats\.YMAX=(\d+)", line)) and frame is not None:
+            gaps[frame] = int(m.group(1))
+    return gaps
 
 
 def recomposite_error(rgba_png: Path, reference_png: Path, backdrop=L.CLEAR_RGB) -> dict:
@@ -553,9 +601,12 @@ def render(args) -> dict:
             if args.alpha:
                 folders["rgba"] = work / "rgba"
                 folders["rgba"].mkdir()
-                solve_alpha(folders["black"], folders["white"], folders["rgba"], args.fps, pad)
+                gaps = solve_alpha(folders["black"], folders["white"], folders["rgba"], args.fps, pad)
+                apart = check_passes(engine, timeline, times, folders, gaps, args.fps, pad, report,
+                                     allow_bad=args.allow_bad_alpha)
                 final = folders["rgba"]
-                check_alpha(engine, timeline, times, final, work, pad, report, allow_bad=args.allow_bad_alpha)
+                check_alpha(engine, timeline, times, final, work, pad, report, allow_bad=args.allow_bad_alpha,
+                            extra=apart)
             else:
                 final = folders["main"]
             report["sample_args"] = {str(k): timeline.frame_args(times[k]).args
@@ -621,18 +672,65 @@ def flatten(folder: Path, background: str, pad: int, fps: float, report: dict) -
     report["background"] = "#" + background.upper()
 
 
+def check_passes(engine: CliEngine, timeline, times, folders: dict, gaps: dict, fps: float, pad: int,
+                 report: dict, allow_bad: bool = False) -> list[int]:
+    """Every frame's black and white passes must show one picture (PASS_LIMIT).
+
+    A frame over the limit is captured again, both passes, the worst
+    RECAPTURE_LIMIT at most, and solved again. A capture that went wrong comes
+    back agreeing. A frame that still disagrees is what the scene draws (a
+    blend mode over transparency, or something that changes from run to run),
+    so it is returned for the recomposite check to judge against a single-pass
+    capture. Byte equality between the two captures is not the test: a repeat
+    capture moved a glow by a code or two, twice in about a thousand frames
+    (measured 7 Oct 2026).
+    """
+    missing = [k for k in range(len(times)) if k not in gaps]
+    if missing:
+        problem = (f"the pass check read {len(times) - len(missing)} of {len(times)} frames "
+                   f"(first missing: frame {missing[0]})")
+        if not allow_bad:
+            raise L.RiveError(problem, "render again; pass --allow-bad-alpha to write it unchecked")
+        report["warnings"].append(problem + "; written anyway because of --allow-bad-alpha")
+        return []
+    worst = max(gaps, key=lambda k: (gaps[k], -k))
+    check: dict = {"limit": PASS_LIMIT, "max": gaps[worst], "frame": worst}
+    report["pass_check"] = check
+    over = sorted((k for k in gaps if gaps[k] > PASS_LIMIT), key=lambda k: (-gaps[k], k))
+    if not over:
+        return []
+    check["over"] = {str(k): gaps[k] for k in sorted(over)}
+    healed, apart = [], []
+    for k in over[:RECAPTURE_LIMIT]:
+        for p in ("black", "white"):
+            engine.capture(p, times[k], timeline, folders[p] / f"f{k:0{pad}d}.png")
+        gap = solve_alpha(folders["black"], folders["white"], folders["rgba"], fps, pad, frame=k).get(k)
+        check.setdefault("recaptured", {})[str(k)] = gap
+        (healed if gap is not None and gap <= PASS_LIMIT else apart).append(k)
+    if over[RECAPTURE_LIMIT:]:
+        check["not_recaptured"] = sorted(over[RECAPTURE_LIMIT:])
+    if healed:
+        report["warnings"].append(
+            f"{len(healed)} frame{'s' if len(healed) > 1 else ''} captured again because the black and white "
+            "passes showed different pictures (" + ", ".join(f"frame {k} by {gaps[k]} codes" for k in sorted(healed))
+            + "); the new capture agreed")
+    return apart
+
+
 def check_alpha(engine: CliEngine, timeline, times, rgba: Path, work: Path, pad: int, report: dict,
-                allow_bad: bool = False) -> None:
+                allow_bad: bool = False, extra=()) -> None:
     """Re-render a few frames single-pass and compare the solved alpha against them.
 
     A failure stops the render, like a blank one: a mis-solved frame looks
     finished, so a warning alone lets it go out. Measured on a difference
     blend over a 50% fill: 143 codes off, and a warning-only check still
-    wrote the file and exited 0.
+    wrote the file and exited 0. The frames are the first, the middle and the
+    last, plus any `extra` (frames whose passes still disagreed when captured
+    again).
     """
     ref_snap = L.snapshot_project(engine.source, engine.workdir)
     engine.passes["reference"] = ref_snap
-    samples = sorted({0, len(times) // 2, len(times) - 1})
+    samples = sorted({0, len(times) // 2, len(times) - 1, *extra})
     results = []
     for k in samples:
         ref = work / f"ref_{k}.png"
@@ -658,7 +756,7 @@ def check_alpha(engine: CliEngine, timeline, times, rgba: Path, work: Path, pad:
     else:
         problem = ("the solved alpha does not recomposite onto the single-pass render (" + worst +
                    "; the limit is 8 codes, or 40 dB): something in the scene is not plain src-over "
-                   "(a blend mode over transparency?)")
+                   "(a blend mode over transparency?), or does not draw the same on every run")
     if not allow_bad:
         raise L.RiveError(problem, "render it opaque (drop --alpha, or put the blend on an opaque plate), "
                                    "or pass --allow-bad-alpha to write it anyway and check the frames by eye")
