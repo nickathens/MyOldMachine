@@ -707,13 +707,27 @@ def check_passes(engine: CliEngine, timeline, times, folders: dict, gaps: dict, 
         gap = solve_alpha(folders["black"], folders["white"], folders["rgba"], fps, pad, frame=k).get(k)
         check.setdefault("recaptured", {})[str(k)] = gap
         (healed if gap is not None and gap <= PASS_LIMIT else apart).append(k)
-    if over[RECAPTURE_LIMIT:]:
-        check["not_recaptured"] = sorted(over[RECAPTURE_LIMIT:])
+    rest = sorted(over[RECAPTURE_LIMIT:])
+    if rest:
+        check["not_recaptured"] = rest
     if healed:
         report["warnings"].append(
             f"{len(healed)} frame{'s' if len(healed) > 1 else ''} captured again because the black and white "
             "passes showed different pictures (" + ", ".join(f"frame {k} by {gaps[k]} codes" for k in sorted(healed))
             + "); the new capture agreed")
+    if rest and healed:
+        # A frame that agrees when captured again was the capture going wrong,
+        # not the scene, so the frames past the limit cannot be taken for the
+        # scene either: without this they went out unchecked, with exit 0.
+        shown = ", ".join(f"frame {k} by {gaps[k]} codes" for k in rest[:RECAPTURE_LIMIT])
+        more = f" and {len(rest) - RECAPTURE_LIMIT} more" if len(rest) > RECAPTURE_LIMIT else ""
+        problem = (f"the black and white passes of {len(rest)} more frame{'s' if len(rest) > 1 else ''} showed "
+                   f"different pictures ({shown}{more}), and only the worst {RECAPTURE_LIMIT} are captured again: "
+                   f"{len(healed)} of those came back agreeing, so captures went wrong in this render")
+        if not allow_bad:
+            raise L.RiveError(problem, "render again; pass --allow-bad-alpha to write it anyway and check those "
+                                       "frames by eye")
+        report["warnings"].append(problem + "; written anyway because of --allow-bad-alpha")
     return apart
 
 

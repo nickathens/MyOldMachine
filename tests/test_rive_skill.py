@@ -722,6 +722,16 @@ class AlphaCheckTests(TempDir):
         self.assertTrue(any("frame 3 by 238 codes" in w and "the new capture agreed" in w
                             for w in report["warnings"]), report["warnings"])
 
+    def test_broken_pairs_past_the_recapture_limit_stop_the_render(self):
+        broken = {k: 200 + k for k in range(1, 13)}
+        code, err, out = self.main_with("--frames", "14", out_name="seq",
+                                        gaps={k: broken.get(k, 1) for k in range(14)},
+                                        again=dict.fromkeys(broken, 1), recomposite={"max": 1.0, "mean": 0.1})
+        self.assertEqual(code, 1, err)
+        self.assertIn("frame 1 by 201 codes, frame 2 by 202 codes", err)
+        self.assertFalse(out.exists())
+        self.assertFalse(Path(str(out) + ".render.json").exists())
+
 
 @NEEDS_FFMPEG
 class PassGapGraphTests(TempDir):
@@ -856,6 +866,36 @@ class PassCheckTests(TempDir):
         self.assertEqual(apart, worst)
         self.assertEqual(sorted({name for _, name in captured}), sorted(f"f{k:05d}.png" for k in worst))
         self.assertEqual(report["pass_check"]["not_recaptured"], [0, 1, 2])
+
+    def test_a_frame_captured_again_at_the_limit_agrees(self):
+        # the limit itself is agreement, on the second capture as on the first
+        apart, report, _, _ = self.run_check({0: 0, 1: 40}, again={1: R.PASS_LIMIT})
+        self.assertEqual(apart, [])
+        self.assertIn("frame 1 by 40 codes", report["warnings"][0])
+
+    def test_frames_past_the_limit_stop_the_render_once_one_of_the_worst_comes_back_right(self):
+        # twelve broken pairs that would each come back right. A frame that
+        # agrees when captured again was the capture, not the scene, so the two
+        # past the limit are suspect too: on 48b904f they went out with exit 0,
+        # neither captured again nor compared
+        gaps = {k: 200 + k if 1 <= k <= 12 else 1 for k in range(14)}
+        healing = dict.fromkeys(gaps, 1)
+        with self.assertRaises(L.RiveError) as caught:
+            self.run_check(gaps, again=healing)
+        self.assertIn("2 more frames", str(caught.exception))
+        self.assertIn("(frame 1 by 201 codes, frame 2 by 202 codes)", str(caught.exception))
+        self.assertIn("10 of those came back agreeing", str(caught.exception))
+        self.assertIn("--allow-bad-alpha", caught.exception.hint)
+        apart, report, _, _ = self.run_check(gaps, again=healing, allow_bad=True)
+        self.assertEqual((apart, report["pass_check"]["not_recaptured"]), ([], [1, 2]))
+        self.assertIn("written anyway because of --allow-bad-alpha", report["warnings"][-1])
+        # one of the ten coming back is enough
+        with self.assertRaises(L.RiveError) as caught:
+            self.run_check(gaps, again={**dict.fromkeys(gaps, 50), 12: 1})
+        self.assertIn("1 of those came back agreeing", str(caught.exception))
+        # none coming back is the scene: the recomposite check judges the ten
+        apart, report, _, _ = self.run_check(gaps, again=dict.fromkeys(gaps, 50))
+        self.assertEqual((len(apart), report["warnings"]), (R.RECAPTURE_LIMIT, []))
 
     def test_a_frame_the_check_did_not_read_stops_the_render(self):
         with self.assertRaises(L.RiveError) as caught:
