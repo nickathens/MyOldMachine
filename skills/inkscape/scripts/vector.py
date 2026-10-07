@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -126,6 +127,25 @@ def add_text_fit(svg, x, y, text, font_size, max_width, max_lines=3, fill='#ffff
     return step * len(lines)
 
 
+def upper(text):
+    """Capitals the way Greek sets them: no tonos, and a tonos that kept two
+    vowels apart (τσάι, ρολόι, άυλος) becomes a diaeresis on the second
+    (ΤΣΑΪ, ΡΟΛΟΪ, ΑΫΛΟΣ). str.upper() kept the tonos ("ΚΑΛΗΜΈΡΑ"), an error
+    any Greek reader sees. Other scripts upper-case as usual (CAFÉ)."""
+    out, split = [], False
+    for i, ch in enumerate(text):
+        parts = unicodedata.normalize("NFD", ch)
+        base, marks = parts[0], parts[1:]
+        if split and base.lower() in "ιυ" and "\u0308" not in marks:
+            marks += "\u0308"
+        split = False
+        if ("\u0370" <= base <= "\u03ff" or "\u1f00" <= base <= "\u1fff") and "\u0301" in marks:
+            marks = marks.replace("\u0301", "")
+            split = base.lower() in "αεηου" and text[i + 1:i + 2].lower() in ("ι", "υ")
+        out.append(unicodedata.normalize("NFC", base + marks).upper())
+    return "".join(out)
+
+
 def add_line(svg, x1, y1, x2, y2, stroke='#ffffff', stroke_width=2):
     """Add line to SVG"""
     return ET.SubElement(svg, 'line', {
@@ -241,7 +261,7 @@ def template_album_cover(title, artist, bg_color='#0f0f0f', accent='#ff6b6b'):
     add_circle(svg, 700, 700, 200, fill='none', stroke=accent, stroke_width=1)
 
     # Title at bottom
-    add_text_fit(svg, 700, 1200, title.upper(), 64, 1200, max_lines=1)
+    add_text_fit(svg, 700, 1200, upper(title), 64, 1200, max_lines=1)
     add_text_fit(svg, 700, 1280, artist, 32, 1200, max_lines=1, fill='#888888')
 
     return svg
@@ -249,7 +269,7 @@ def template_album_cover(title, artist, bg_color='#0f0f0f', accent='#ff6b6b'):
 def template_logo_minimal(text, bg_color='#000000', text_color='#ffffff'):
     """Create minimal text logo"""
     svg = create_svg(800, 400, bg_color)
-    add_text_fit(svg, 400, 200, text.upper(), 96, 720, max_lines=2, fill=text_color)
+    add_text_fit(svg, 400, 200, upper(text), 96, 720, max_lines=2, fill=text_color)
     return svg
 
 if __name__ == '__main__':

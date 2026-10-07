@@ -111,9 +111,14 @@ def get_credentials():
             try:
                 creds = flow.run_local_server(port=8085, timeout_seconds=300)
             except Exception as exc:
+                # Say which sign-in is missing and what really happened: with
+                # no browser (any chat turn) the flow fails at once, it does
+                # not wait five minutes.
                 print(
-                    "Error: Google sign-in did not complete within 5 minutes "
-                    f"({exc.__class__.__name__}). Re-run the command to try again.",
+                    f"Error: no usable Google Calendar sign-in at {TOKEN_FILE}, and the "
+                    f"browser sign-in failed ({exc.__class__.__name__}: {exc}). Signing in "
+                    "needs a browser on the bot's own desktop: run `gcal.py auth` there "
+                    "with the same JARVIS_USER_DIR.",
                     file=sys.stderr,
                 )
                 sys.exit(2)
@@ -171,7 +176,10 @@ def list_events(days=7, max_results=10, calendar_id="primary"):
                 dt = datetime.fromisoformat(start)
                 formatted = dt.strftime("%a %b %d (all day)")
 
-            print(f"- {formatted}: {summary} [id:{event_id[:8]}]")
+            # Every occurrence of a repeating event starts with the series id,
+            # so 8 characters would name them all: show an occurrence whole.
+            shown = event_id if event.get("recurringEventId") else event_id[:8]
+            print(f"- {formatted}: {summary} [id:{shown}]")
 
             # Show location if present
             if event.get("location"):
@@ -231,31 +239,51 @@ def add_event(summary, start_time, end_time=None, description=None, location=Non
         sys.exit(1)
 
 
+def _resolve_partial_id(service, calendar_id, partial, time_min):
+    """The one event whose id starts with `partial`, searched from time_min.
+
+    Several matches (the occurrences of a repeating event all start with the
+    series id) are refused with the list of them, never settled by taking
+    the first: that deleted the wrong occurrence."""
+    matches = []
+    page_token = None
+    for _ in range(5):  # up to 250 events
+        try:
+            result = service.events().list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                maxResults=50,
+                singleEvents=True,
+                pageToken=page_token,
+            ).execute()
+        except HttpError as error:
+            print(f"Error searching: {error}", file=sys.stderr)
+            sys.exit(1)
+        matches += [e for e in result.get("items", []) if e["id"].startswith(partial)]
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+    if not matches:
+        print(f"No event found starting with ID: {partial}", file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"ID {partial} matches {len(matches)} events; give the full id of the one you mean:",
+              file=sys.stderr)
+        for e in matches:
+            start = e["start"].get("dateTime", e["start"].get("date"))
+            print(f"  {start}  {e.get('summary', '(No title)')}  [id:{e['id']}]", file=sys.stderr)
+        sys.exit(2)
+    return matches[0]["id"]
+
+
 def delete_event(event_id, calendar_id="primary"):
     """Delete an event by ID (can be partial ID)."""
     service = get_service()
 
     # If partial ID, search for matching event
     if len(event_id) < 20:
-        try:
-            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            events_result = service.events().list(
-                calendarId=calendar_id,
-                timeMin=now,
-                maxResults=50,
-                singleEvents=True,
-            ).execute()
-
-            for event in events_result.get("items", []):
-                if event["id"].startswith(event_id):
-                    event_id = event["id"]
-                    break
-            else:
-                print(f"No event found starting with ID: {event_id}", file=sys.stderr)
-                sys.exit(1)
-        except HttpError as error:
-            print(f"Error searching: {error}", file=sys.stderr)
-            sys.exit(1)
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        event_id = _resolve_partial_id(service, calendar_id, event_id, now)
 
     try:
         service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
@@ -271,25 +299,8 @@ def show_event(event_id, calendar_id="primary"):
 
     # If partial ID, search for matching event
     if len(event_id) < 20:
-        try:
-            now = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat().replace("+00:00", "Z")
-            events_result = service.events().list(
-                calendarId=calendar_id,
-                timeMin=now,
-                maxResults=100,
-                singleEvents=True,
-            ).execute()
-
-            for event in events_result.get("items", []):
-                if event["id"].startswith(event_id):
-                    event_id = event["id"]
-                    break
-            else:
-                print(f"No event found starting with ID: {event_id}", file=sys.stderr)
-                sys.exit(1)
-        except HttpError as error:
-            print(f"Error searching: {error}", file=sys.stderr)
-            sys.exit(1)
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat().replace("+00:00", "Z")
+        event_id = _resolve_partial_id(service, calendar_id, event_id, since)
 
     try:
         event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
@@ -307,6 +318,9 @@ def show_event(event_id, calendar_id="primary"):
             print(f"Description: {event['description']}")
 
         print(f"ID: {event['id']}")
+        if event.get("recurringEventId"):
+            print(f"Repeats: series id {event['recurringEventId']} "
+                  "(deleting that id removes every occurrence)")
         print(f"Link: {event.get('htmlLink')}")
 
     except HttpError as error:

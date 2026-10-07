@@ -271,6 +271,8 @@ def _find_lexical_match(new_content: str, existing_lines: list,
 # never auto-inferred, because a wrong permanent anchor is worse than drift.
 
 _ANCHOR_RE = re.compile(r'^- \[id:([\w-]+)\]\s*(?:\(([\w-]+)\)\s*)?(.+)$')
+# What an id or a category may hold: exactly what _ANCHOR_RE reads back.
+_ANCHOR_TOKEN_RE = re.compile(r'[\w-]+')
 
 ANCHORS_HEADER = (
     "# Anchored Facts\n\n"
@@ -421,6 +423,14 @@ class MemoryManager:
         text = " ".join(text.split())
         if not text:
             return {"status": "error", "reason": "empty"}
+        # An id or category the reader cannot parse ("my fact") was written,
+        # reported as added, and then lost: parse_anchor_line skipped the line,
+        # so the fact never reached the context and the next write dropped it
+        # (Linux bot sweep 2026-10-07). Same character class as _ANCHOR_RE.
+        if anchor_id and not _ANCHOR_TOKEN_RE.fullmatch(anchor_id):
+            return {"status": "error", "reason": "bad_id"}
+        if category and not _ANCHOR_TOKEN_RE.fullmatch(category):
+            return {"status": "error", "reason": "bad_category"}
         anchors = self.load_anchors(user_id)
         if not anchor_id:
             base = _slugify(text)

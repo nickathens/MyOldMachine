@@ -61,6 +61,24 @@ def pdf_text(data):
         return MarkItDown().convert(tmp.name).text_content
 
 
+# Past this a link is not an article or a document worth reading here. The
+# body is streamed and the type checked first: httpx.get used to read the whole
+# thing into memory, inside the bot's process, before refusing it (Linux bot
+# sweep 2026-10-07: a 40 MB video link pulled all 40 MB to say "unsupported").
+MAX_BYTES = 50 * 1024 * 1024
+
+
+def _read_capped(response, limit: int):
+    """The body, or None as soon as it passes limit bytes."""
+    chunks, total = [], 0
+    for chunk in response.iter_bytes():
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def fetch_url(url):
     parsed = urlparse(url)
     if not parsed.scheme:
@@ -70,38 +88,43 @@ def fetch_url(url):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        response = httpx.get(url, headers=headers, follow_redirects=True, timeout=30)
-        response.raise_for_status()
-        content_type = response.headers.get('content-type', '')
+        with httpx.stream("GET", url, headers=headers, follow_redirects=True, timeout=30) as response:
+            response.raise_for_status()
+            content_type = response.headers.get('content-type', '')
+            final_url = str(response.url)
+            is_html = 'text/html' in content_type or 'xhtml' in content_type
+            is_pdf = 'application/pdf' in content_type or final_url.lower().endswith('.pdf')
+            is_json = 'application/json' in content_type
+            if not (is_html or is_pdf or is_json or 'text/' in content_type):
+                return {"error": f"Unsupported content type: {content_type}", "url": final_url}
+            data = _read_capped(response, MAX_BYTES)
+            if data is None:
+                return {"error": f"The page is larger than {MAX_BYTES // (1024 * 1024)} MB; "
+                                 "download it with the downloads skill instead", "url": final_url}
+            charset = response.charset_encoding
 
-        if 'text/html' in content_type or 'xhtml' in content_type:
+        if is_html:
             # Bytes, so BeautifulSoup can honour a <meta charset> when the
             # header names none (httpx alone assumes UTF-8)
-            soup = BeautifulSoup(response.content, 'html.parser', from_encoding=response.charset_encoding)
+            soup = BeautifulSoup(data, 'html.parser', from_encoding=charset)
             title = soup.title.get_text(strip=True) if soup.title else None
             meta_desc = (soup.find('meta', attrs={'name': 'description'})
                          or soup.find('meta', attrs={'property': 'og:description'}))
             description = meta_desc.get('content') if meta_desc else None
             return {
-                "url": str(response.url), "title": title,
+                "url": final_url, "title": title,
                 "description": description, "content": extract_article_content(soup),
                 "content_type": "html"
             }
-        elif 'application/pdf' in content_type or str(response.url).lower().endswith('.pdf'):
-            return {"url": str(response.url), "content": clean_text(pdf_text(response.content)),
-                    "content_type": "pdf"}
-        elif 'application/json' in content_type:
-            return {"url": str(response.url), "content": response.text, "content_type": "json"}
-        elif 'text/' in content_type:
-            return {"url": str(response.url), "content": response.text, "content_type": "text"}
-        else:
-            return {"error": f"Unsupported content type: {content_type}"}
+        if is_pdf:
+            return {"url": final_url, "content": clean_text(pdf_text(data)), "content_type": "pdf"}
+        return {"url": final_url, "content": data.decode(charset or "utf-8", errors="replace"),
+                "content_type": "json" if is_json else "text"}
 
     except httpx.HTTPStatusError as e:
         return {"error": f"HTTP {e.response.status_code}"}
     except Exception as e:
         return {"error": str(e)}
-
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch a URL and print its main text")

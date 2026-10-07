@@ -44,6 +44,7 @@ The script manages the LibreOffice process automatically (starts/stops as needed
 """
 
 import argparse
+import datetime
 import json
 import math
 import os
@@ -225,29 +226,90 @@ def _cell_name(col, row):
     return f"{letters}{row + 1}"
 
 
-def get_cell_value(cell):
-    """Get the display value of a cell."""
+def _num(val):
+    """Whole-number floats become ints; NaN and inf pass through untouched.
+
+    Guards the bare ``val == int(val)`` comparison, which raises ValueError on
+    NaN and OverflowError on inf, so one such cell no longer ends the whole read.
+    """
+    if math.isfinite(val) and val == int(val):
+        return int(val)
+    return val
+
+
+def serial_to_iso(value, null_date, has_date, has_time):
+    """A spreadsheet date serial as ISO text, or None to keep the number.
+
+    ``null_date`` is the document's day zero as (year, month, day): LibreOffice
+    and Excel both use 1899-12-30 unless a file says otherwise. Rounded to the
+    second, because 14:05 is stored as 0.58680555... A time-only cell of a day
+    or more is a duration ([HH]:MM), which a clock time would misstate, so it
+    stays a number.
+    """
+    if not (has_date or has_time) or not math.isfinite(value):
+        return None
+    if has_time and not has_date and not 0 <= value < 1:
+        return None
+    try:
+        moment = (datetime.datetime(*null_date)
+                  + datetime.timedelta(seconds=round(value * 86400)))
+    except (OverflowError, ValueError):
+        return None
+    if has_date and not has_time:
+        return moment.date().isoformat()
+    if has_time and not has_date:
+        return moment.time().isoformat()
+    return moment.isoformat(sep=" ")
+
+
+def _date_text(cell, doc):
+    """ISO text for a cell formatted as a date, time or both; None otherwise."""
+    if doc is None:
+        return None
+    try:
+        from com.sun.star.util.NumberFormat import DATE, TIME
+        kind = doc.getNumberFormats().getByKey(cell.NumberFormat).Type
+        null = doc.NullDate
+    except Exception:
+        return None
+    return serial_to_iso(cell.getValue(), (null.Year, null.Month, null.Day),
+                         bool(kind & DATE), bool(kind & TIME))
+
+
+def get_cell_value(cell, doc=None):
+    """Get the display value of a cell.
+
+    A cell formatted as a date comes back as ISO text ("2026-10-07"), not the
+    serial number it is stored as: read on an invoice or expenses sheet, 46302
+    is not a date anyone can check (Linux bot sweep 2026-10-07). ``doc``
+    supplies the number formats and the document's day zero.
+    """
     from com.sun.star.table.CellContentType import EMPTY, VALUE, TEXT, FORMULA
     ctype = cell.getType()
     if ctype == EMPTY:
         return ""
     elif ctype == VALUE:
-        val = cell.getValue()
-        # Return int if it's a whole number
-        if val == int(val):
-            return int(val)
-        return val
+        dated = _date_text(cell, doc)
+        return dated if dated is not None else _num(cell.getValue())
     elif ctype == TEXT:
         return cell.getString()
     elif ctype == FORMULA:
-        # Return the computed value
-        val = cell.getValue()
+        # A numeric result in a date format reads as ISO text; its display
+        # string ("10/08/26") is a locale's guess at month and day order.
+        try:
+            from com.sun.star.sheet.FormulaResult import VALUE as NUMERIC_RESULT
+            numeric = cell.FormulaResultType2 == NUMERIC_RESULT
+        except Exception:
+            numeric = False
+        if numeric:
+            dated = _date_text(cell, doc)
+            if dated is not None:
+                return dated
+        # Computed value; return the string form if the result is non-numeric text.
         s = cell.getString()
         if s and not s.replace('.', '').replace(',', '').replace('-', '').isdigit():
             return s
-        if val == int(val):
-            return int(val)
-        return val
+        return _num(cell.getValue())
     return cell.getString()
 
 
@@ -304,7 +366,7 @@ def cmd_read(args):
             row_data = []
             for col in range(c1, c2 + 1):
                 cell = sheet.getCellByPosition(col, row)
-                row_data.append(get_cell_value(cell))
+                row_data.append(get_cell_value(cell, doc))
             data.append(row_data)
 
         print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -425,7 +487,7 @@ def cmd_formula(args):
         doc.store()
 
         # Read back computed value
-        computed = get_cell_value(cell)
+        computed = get_cell_value(cell, doc)
         print(json.dumps({
             "status": "ok",
             "cell": args.cell,

@@ -99,7 +99,7 @@ def cmd_info(args):
     if hasattr(img, 'n_frames'):
         info["frames"] = img.n_frames
 
-    print(json.dumps(info, indent=2))
+    print(json.dumps(info, indent=2, ensure_ascii=False))
 
 
 def cmd_resize(args):

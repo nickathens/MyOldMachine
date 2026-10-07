@@ -27,6 +27,16 @@ def run(cmd, **kw):
 # ---------------------------------------------------------------- probe
 
 
+_YUV_MATRICES = {"bt709", "smpte170m", "bt470bg", "bt2020nc", "bt2020c",
+                 "smpte240m", "fcc"}
+# The labels go on the frames as well as in the output options: ffmpeg 7 and
+# later write a file's colour from its frames, so on 9.0.2 -color_primaries and
+# -color_trc were dropped, and an HDR source's own BT.2020 and PQ labels came
+# through onto the graded BT.709 file (measured 2026-10-07; pixels identical).
+ENCODE_MATRIX = ("scale=out_color_matrix=bt709:out_range=tv,"
+                 "setparams=colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709")
+
+
 @dataclass
 class Media:
     path: str
@@ -41,6 +51,27 @@ class Media:
     color_primaries: str
     codec: str
     has_audio: bool
+    audio_codecs: tuple = ()
+    color_range: str = ""
+
+    @property
+    def decode_params(self):
+        """`setparams` naming this source's YUV matrix and range, or "" for RGB.
+
+        ffmpeg 6.1 decodes UNTAGGED YUV with BT.601 while players take an
+        untagged HD file for BT.709, and it converts RGB back to YUV with BT.601
+        unless the graph names another: an identity LUT through `render` came
+        back at 22 dB on luma (2026-10-07). The analysis and the render both
+        read through this, and the render encodes with ENCODE_MATRIX, the
+        matrix its output is tagged with.
+        """
+        space = self.color_space or ""
+        if space in ("gbr", "rgb"):
+            return ""
+        if space not in _YUV_MATRICES:
+            space = "bt709" if self.height >= 720 else "smpte170m"
+        rng = "pc" if self.color_range in ("pc", "jpeg", "full") else "tv"
+        return f"setparams=colorspace={space}:range={rng}"
 
     @property
     def is_log_flagged(self):
@@ -54,7 +85,8 @@ def probe(path) -> Media:
     ]).stdout
     d = json.loads(out)
     v = next(s for s in d["streams"] if s.get("codec_type") == "video")
-    has_audio = any(s.get("codec_type") == "audio" for s in d["streams"])
+    audio_codecs = tuple(s.get("codec_name", "") for s in d["streams"] if s.get("codec_type") == "audio")
+    has_audio = bool(audio_codecs)
     num, den = (v.get("r_frame_rate") or "25/1").split("/")
     fps = float(num) / float(den or 1)
     dur = float(d["format"].get("duration") or v.get("duration") or 0.0)
@@ -69,6 +101,8 @@ def probe(path) -> Media:
         color_primaries=v.get("color_primaries", ""),
         codec=v.get("codec_name", ""),
         has_audio=has_audio,
+        audio_codecs=audio_codecs,
+        color_range=v.get("color_range", ""),
     )
 
 
@@ -144,6 +178,8 @@ def sample_frames(media: Media, width=320, every=1, max_frames=None):
     vf = f"scale={width}:{h}:flags=bilinear"
     if every > 1:
         vf = f"select=not(mod(n\\,{every})),{vf}"
+    if media.decode_params:
+        vf = f"{media.decode_params},{vf}"
     cmd = [FFMPEG, "-v", "error", "-i", media.path, "-vf", vf,
            "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     frame_bytes = width * h * 3
@@ -209,11 +245,12 @@ def collect_shot_samples(media: Media, shots: list[Shot], per_shot=8, width=320)
 
 def grab_frame(media: Media, t: float, width=None):
     """Single frame at time t, full resolution unless `width` is given."""
-    vf = []
+    chain = [media.decode_params] if media.decode_params else []
     if width:
         h = int(round(media.height * width / media.width))
         h += h % 2
-        vf = ["-vf", f"scale={width}:{h}"]
+        chain.append(f"scale={width}:{h}")
+    vf = ["-vf", ",".join(chain)] if chain else []
     cmd = [FFMPEG, "-v", "error", "-ss", f"{max(t, 0):.4f}", "-i", media.path,
            "-frames:v", "1", *vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     out = subprocess.run(cmd, capture_output=True).stdout
@@ -234,9 +271,13 @@ def write_png(path, img01):
 # ---------------------------------------------------------------- render
 
 
-def build_graph(shots, lut_paths: dict, extra_vf=None) -> str:
+def build_graph(shots, lut_paths: dict, extra_vf=None, decode="") -> str:
     """The filter_complex string `render` runs. Split out so the shape can be
     tested without decoding anything.
+
+    `decode` names the source's matrix (Media.decode_params) ahead of the
+    LUTs, and the chain always ends in ENCODE_MATRIX, so the LUTs see the RGB
+    the analysis measured and the file holds the matrix it is tagged with.
     """
     if not shots:
         raise ValueError("no shots to render")
@@ -259,7 +300,27 @@ def build_graph(shots, lut_paths: dict, extra_vf=None) -> str:
                      f":enable='between(n,{s.start_frame},{s.end_frame - 1})'")
     if extra_vf:
         chain.append(extra_vf)
-    return "[0:v]" + ",".join(chain or ["null"]) + "[vout]"
+    return "[0:v]" + ",".join(([decode] if decode else []) + chain + [ENCODE_MATRIX]) + "[vout]"
+
+
+# Audio an .mp4 can carry for every player. FFmpeg 6 also writes PCM into an
+# .mp4 (the ISO 23003-5 'ipcm' entry), and the ProRes .mov a camera or an edit
+# hands over usually carries PCM, but players largely cannot read it there:
+# GStreamer's demuxer has no mapping for 'ipcm' at all (2026-10-07).
+MP4_SAFE_AUDIO = {"aac", "mp3", "ac3", "eac3"}
+
+
+def audio_args(media: Media, out_path) -> list[str]:
+    """ffmpeg audio options: copy when the output can carry the source audio
+    for every player, otherwise AAC at 320k (and say so)."""
+    if not media.has_audio:
+        return []
+    mp4 = os.path.splitext(str(out_path))[1].lower() in (".mp4", ".m4v")
+    if not mp4 or all(c in MP4_SAFE_AUDIO for c in media.audio_codecs):
+        return ["-map", "0:a", "-c:a", "copy"]
+    print(f"audio is {', '.join(media.audio_codecs)}, which an .mp4 does not carry for every "
+          "player: encoding AAC 320k (give a .mov output to copy it untouched)", file=sys.stderr)
+    return ["-map", "0:a", "-c:a", "aac", "-b:a", "320k"]
 
 
 def render(media: Media, shots, lut_paths: dict, out_path, crf=16, preset="medium",
@@ -279,16 +340,15 @@ def render(media: Media, shots, lut_paths: dict, out_path, crf=16, preset="mediu
     capped service that is the difference between a render and a dead bot.
     """
     with _staged_luts(lut_paths) as staged:
-        graph = build_graph(shots, staged, extra_vf=extra_vf)
+        graph = build_graph(shots, staged, extra_vf=extra_vf, decode=media.decode_params)
 
         cmd = [FFMPEG, "-y", "-v", "error", "-stats", "-i", media.path,
                "-filter_complex", graph, "-map", "[vout]"]
-        if media.has_audio:
-            cmd += ["-map", "0:a", "-c:a", "copy"]
+        cmd += audio_args(media, out_path)
         cmd += ["-c:v", codec, "-preset", preset, "-crf", str(crf),
                 "-pix_fmt", "yuv420p",
                 "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
-                "-movflags", "+faststart", out_path]
+                "-color_range", "tv", "-movflags", "+faststart", out_path]
         proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg render failed:\n{proc.stderr[-4000:]}")

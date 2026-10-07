@@ -8,7 +8,7 @@ Covers: `marketing` (Marketing Studio Video)
 
 | | |
 |---|---|
-| Duration | 15 s default, **5 s and up** (see the caution below) |
+| Duration | 15 s default, **4 s and up** (3 s refused, 4 s quotes 20; re-probed 2026-10-07, it was 5 in August; see the caution below) |
 | Aspect | **9:16 by default**, plus 21:9, 16:9, 4:3, 1:1, 3:4, auto |
 | Resolution | 480p, 720p (default), 1080p |
 | Audio | `generate_audio`, **off by default** |

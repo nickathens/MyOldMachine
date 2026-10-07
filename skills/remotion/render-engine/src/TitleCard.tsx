@@ -6,7 +6,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { FONT } from "./font";
+import { FONT, capsLang } from "./font";
 
 export const titleCardDefaults = {
   title: "REMOTION",
@@ -116,6 +116,7 @@ export const TitleCard: React.FC<Props> = ({
           }}
         />
         <div
+          lang={capsLang(subtitle)}
           style={{
             marginTop: 30,
             color: accent,

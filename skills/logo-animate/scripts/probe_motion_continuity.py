@@ -18,7 +18,8 @@ playwright: pip install playwright && playwright install chromium):
 
 2. Ink-delta continuity sweep — screenshots #logo-root at every step and
    reports dark-pixel ("ink") counts and per-step deltas. A flatline followed
-   by a jump is the stall+pop signature (e.g. round-cap handoffs); a single
+   by a jump is the stall+pop signature (e.g. round-cap handoffs), and a drop
+   is ink lost between two steps of a draw-on (a cap popping back); a single
    near-zero sample at a known paint-under-ink transit is physical and should
    be bridged perceptually (tip glint), not left bare.
 
@@ -50,6 +51,36 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--scale", type=float, default=1.0, help="Device scale factor.")
     p.add_argument("--report", type=pathlib.Path, default=None, help="Optional JSON report path.")
     return p.parse_args()
+
+
+def classify_ink(times: list[int], inks: list[int]) -> dict:
+    """Per-step ink deltas, each step's mark, and flatline-then-jump stalls.
+
+    A step within the flat tolerance either way is a flatline; ink LOST past
+    it is a drop (a cap popping back), which the old test, "delta at or under
+    the tolerance", reported as a flatline.
+    """
+    deltas = [inks[i] - inks[i - 1] for i in range(1, len(inks))]
+    moving = sorted(d for d in deltas if d > 0)
+    med = moving[len(moving) // 2] if moving else 0
+    flat = max(2, med * 0.05)
+    marks = [""] * len(times)
+    flags = []
+    for i, t in enumerate(times):
+        d = deltas[i - 1] if i else 0
+        if i and med:
+            if abs(d) <= flat:
+                marks[i] = "flatline"
+            elif d < 0:
+                marks[i] = "drop"
+            elif d > med * 3:
+                marks[i] = "jump"
+        if marks[i]:
+            flags.append({"t": t, "delta": d, "kind": marks[i]})
+    stalls = [times[i] for i in range(1, len(deltas))
+              if abs(deltas[i - 1]) <= flat and deltas[i] > med * 3]
+    return {"deltas": deltas, "median_delta": med, "marks": marks, "flags": flags,
+            "stalls": stalls}
 
 
 def main() -> int:
@@ -121,28 +152,19 @@ def main() -> int:
                 png = page.locator(args.root).screenshot()
                 arr = np.array(Image.open(io.BytesIO(png)).convert("RGB"))
                 inks.append(int((arr.mean(axis=2) < args.threshold).sum()))
-            deltas = [inks[i] - inks[i - 1] for i in range(1, len(inks))]
-            moving = sorted(d for d in deltas if d > 0)
-            med = moving[len(moving) // 2] if moving else 0
+            result = classify_ink(times, inks)
+            deltas, med, marks = result["deltas"], result["median_delta"], result["marks"]
             print(f"\n{'t(ms)':>7} {'ink px':>9} {'delta':>8}")
-            flags = []
             for i, t in enumerate(times):
                 d = deltas[i - 1] if i else 0
-                mark = ""
-                if i and med:
-                    if d <= max(2, med * 0.05):
-                        mark = "  <- flatline"
-                    elif d > med * 3:
-                        mark = "  <- jump"
-                if mark:
-                    flags.append({"t": t, "delta": d, "kind": mark.strip(" <-")})
+                mark = f"  <- {marks[i]}" if marks[i] else ""
                 print(f"{t:>7} {inks[i]:>9} {d:>8}{mark}")
-            stalls = [i for i in range(1, len(deltas))
-                      if deltas[i - 1] <= max(2, med * 0.05) and deltas[i] > med * 3]
+            stalls = result["stalls"]
+            flags = result["flags"]
             print(f"\nmedian positive delta: {med}")
             if stalls:
                 print("WARNING: flatline-then-jump pattern detected (stall+pop signature) at:",
-                      ", ".join(f"t≈{times[i]}ms" for i in stalls))
+                      ", ".join(f"t≈{t}ms" for t in stalls))
             else:
                 print("No stall+pop signature. Isolated flatlines at known paint-under-ink")
                 print("transits are physical; bridge them perceptually (tip glint).")

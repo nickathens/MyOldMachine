@@ -290,15 +290,15 @@ The document is defined by a top-level object with metadata, a cover, and an arr
 ### Top-Level Fields
 
 - `title` — HTML page title
-- `lang` — Language code (default: `en`)
+- `lang` — Language code (default: `el` when most of the text is Greek, else `en`). It matters for Greek: captions, labels and nav are set in capitals by CSS, and the browser drops the tonos (ΚΑΛΗΜΕΡΑ, not ΚΑΛΗΜΈΡΑ) only under `el`
 - `particles` — Enable floating particle background (default: `true`)
-- `mode` — Display mode: `dark` (default), `light`, `editorial`, `minimal`
+- `mode` — Display mode: `dark`, `light`, `editorial`, `minimal`. Default: `light` when the scheme's background is light (a white `--design-md` canvas, a paper-coloured `--aesthetic`), else `dark`; a dark mode on a light background drew every title, card and table in white on white
 - `animation` — Animation preset: `fade` (default), `slide`, `scale`, `blur`, `clip`, `smooth`
 - `nav` — Navigation type: `none` (default), `sidebar`, `topbar`, `dots`, `progress`
 - `cover` — Cover section (see below). Top-level, not inside `sections`.
 - `scheme` — Color scheme overrides. Auto-derives `accent_dim`, `accent_light`, `brand_glow` from base colors if not set.
 - `fonts` — Font overrides. Accepts any Google Font name (curated fonts get optimized specs, unknown fonts get default weights). A commercial typeface that Google does not serve (Neue Haas Grotesk, GT Sectra, SF Pro, Canela, Tiempos...) is kept first in the CSS stack and a free stand-in is loaded after it (map in `scripts/design_md.py`), so a viewer without the real typeface sees the stand-in rather than the browser default
-- `font_subsets` — Extra Google Fonts subsets, e.g. `["greek"]` (added automatically for `lang: el`, `cyrillic` for ru/uk/bg/sr)
+- `font_subsets` — Extra Google Fonts subsets, e.g. `["greek"]` (added automatically for `lang: el`, `cyrillic` for ru/uk/bg/sr). Each brings Greek-capable companions (Manrope, Inter) into every font stack, the theme's defaults included, so Greek letters missing from a Latin-only face such as Space Grotesk or Outfit are drawn in them
 - `brand_mark` — Persistent top-left wordmark: `{"text": "studio", "accent_letters": [2], "suffix": "AI", "url": "https://..."}`
 - `extra_head` / `extra_body` — Raw HTML appended to `<head>` / the end of `<body>` (custom scripts, analytics, hand-written counters). Inserted verbatim, never escaped
 
@@ -835,6 +835,8 @@ python scripts/create_presentation.py \
 **Adding your own:** Drop a `<slug>.md` (or `<slug>/DESIGN.md`) into `design_library/`. See `design_library/README.md` for the full schema. Run `python scripts/design_md.py show <slug>` to verify what the parser extracts.
 
 `--design-md` and `--aesthetic` can be combined — design_md wins on overlapping keys. Both lose to anything explicitly set in the treatment JSON.
+
+Both libraries pass a readability floor: a text colour (`text`, `text_mid`, `text_dim`, `accent`, `cream`, all of which colour text in the theme) that cannot be read on the palette's own background (under 4.5:1, or 3:1 for `text_dim` and `accent`) is left out, so the deck's mode supplies its own. Runway's `text_mid` (#404040, meant for light surfaces, 2.0:1 on its black) and cahiers' journal-yellow accent (1.4:1 on its cream) and paper-coloured `cream` are dropped this way; cahiers keeps the yellow as `brand_color`. A colour set in the treatment JSON itself is never touched.
 
 ## Output
 

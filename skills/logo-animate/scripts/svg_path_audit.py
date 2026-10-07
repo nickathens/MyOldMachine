@@ -49,6 +49,9 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
     subpath_start = (0.0, 0.0)
     segments: list[dict] = []
     closed = False
+    # Each segment carries the subpath it belongs to, and the one a Z ends
+    # carries "closes", so the report can check every closed loop's corner.
+    subpath = 0
 
     while index < len(tokens):
         if is_command(tokens[index]):
@@ -73,6 +76,8 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
                 y += current[1]
             current = (x, y)
             subpath_start = current
+            if segments and segments[-1]["subpath"] == subpath:
+                subpath += 1
             command = "l" if relative else "L"
             continue
 
@@ -83,7 +88,7 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
                 x += current[0]
                 y += current[1]
             end = (x, y)
-            segments.append({"type": "L", "p0": current, "p3": end})
+            segments.append({"type": "L", "p0": current, "p3": end, "subpath": subpath})
             current = end
             continue
 
@@ -92,7 +97,7 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
             if relative:
                 x += current[0]
             end = (x, current[1])
-            segments.append({"type": "L", "p0": current, "p3": end})
+            segments.append({"type": "L", "p0": current, "p3": end, "subpath": subpath})
             current = end
             continue
 
@@ -101,7 +106,7 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
             if relative:
                 y += current[1]
             end = (current[0], y)
-            segments.append({"type": "L", "p0": current, "p3": end})
+            segments.append({"type": "L", "p0": current, "p3": end, "subpath": subpath})
             current = end
             continue
 
@@ -117,7 +122,7 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
                 c1 = (c1[0] + current[0], c1[1] + current[1])
                 c2 = (c2[0] + current[0], c2[1] + current[1])
                 end = (end[0] + current[0], end[1] + current[1])
-            segments.append({"type": "C", "p0": current, "c1": c1, "c2": c2, "p3": end})
+            segments.append({"type": "C", "p0": current, "c1": c1, "c2": c2, "p3": end, "subpath": subpath})
             current = end
             continue
 
@@ -133,7 +138,8 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
                 end = (end[0] + current[0], end[1] + current[1])
             c1 = (current[0] + (2.0 / 3.0) * (q[0] - current[0]), current[1] + (2.0 / 3.0) * (q[1] - current[1]))
             c2 = (end[0] + (2.0 / 3.0) * (q[0] - end[0]), end[1] + (2.0 / 3.0) * (q[1] - end[1]))
-            segments.append({"type": "C", "p0": current, "c1": c1, "c2": c2, "p3": end, "source": "Q"})
+            segments.append({"type": "C", "p0": current, "c1": c1, "c2": c2, "p3": end, "source": "Q",
+                             "subpath": subpath})
             current = end
             continue
 
@@ -143,7 +149,10 @@ def parse_path(d: str) -> tuple[list[dict], bool]:
             # It was never counted, so "M0 0 L10 0 L10 10 Z" audited as two
             # segments and the corner at the close was never checked.
             if math.dist(current, subpath_start) > 1e-9:
-                segments.append({"type": "L", "p0": current, "p3": subpath_start, "source": "Z"})
+                segments.append({"type": "L", "p0": current, "p3": subpath_start, "source": "Z",
+                                 "subpath": subpath})
+            if segments and segments[-1]["subpath"] == subpath:
+                segments[-1]["closes"] = True
             current = subpath_start
             command = ""
             continue
@@ -270,10 +279,24 @@ def build_report(segments: list[dict], closed: bool, budget: int | None, angle_t
     median_length = sorted(lengths)[len(lengths) // 2] if lengths else 0.0
 
     join_warnings = []
-    pairs = list(zip(segments, segments[1:]))
-    if closed and len(segments) > 1:
-        pairs.append((segments[-1], segments[0]))
-    for index, (left, right) in enumerate(pairs, start=1):
+    # (number of the segment the join comes after, it, the one after it)
+    pairs = [(i, left, right) for i, (left, right) in enumerate(zip(segments, segments[1:]), start=1)]
+    # The corner where each closed loop meets its own start. Only the last
+    # segment and the very first were paired before, so in a path of several
+    # loops (every letter with a counter) no closing corner was checked: the
+    # last loop's end is not the first loop's start (Linux bot sweep 2026-10-07).
+    first_of = {}
+    for segment in segments:
+        first_of.setdefault(segment.get("subpath", 0), segment)
+    closers = [segment for segment in segments if segment.get("closes")]
+    if not closers and closed and segments:
+        closers = [segments[-1]]  # segments built by hand, without the marks
+    number = {id(segment): i for i, segment in enumerate(segments, start=1)}
+    for segment in closers:
+        first = first_of[segment.get("subpath", 0)]
+        if first is not segment:
+            pairs.append((number[id(segment)], segment, first))
+    for index, left, right in pairs:
         if math.dist(left["p3"], right["p0"]) > 0.5:
             continue
         angle = angle_between(tangent_end(left), tangent_start(right))

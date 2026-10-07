@@ -115,13 +115,17 @@ class GraphEdgeCaseTest(unittest.TestCase):
         """An empty chain is a filtergraph syntax error, so it has to be an
         explicit passthrough. Reachable via --normalize off with no look."""
         g = V.build_graph(shots((0, 50), (50, 120)), {})
-        self.assertEqual(g, "[0:v]null[vout]")
+        # Since the Linux bot sweep (2026-10-07) every graph ends by naming the BT.709 matrix
+        # its output is tagged with, so even no LUT is a real filter, not null.
+        self.assertEqual(g, f"[0:v]{V.ENCODE_MATRIX}[vout]")
 
     def test_extra_vf_is_appended_once_not_per_shot(self):
         g = V.build_graph(shots((0, 50), (50, 120), (120, 300)), luts(3),
                           extra_vf="scale=1920:-2")
         self.assertEqual(g.count("scale=1920:-2"), 1)
-        self.assertTrue(g.endswith("scale=1920:-2[vout]"))
+        # The extra filter is the last one the grade owns; the encode matrix
+        # follows it.
+        self.assertTrue(g.endswith(f"scale=1920:-2,{V.ENCODE_MATRIX}[vout]"))
 
     def test_lut_path_special_characters_are_escaped(self):
         """A colon separates filter options and a comma separates filters. An
@@ -129,6 +133,50 @@ class GraphEdgeCaseTest(unittest.TestCase):
         g = V.build_graph(shots((0, 50)), {0: "/tmp/od d,ball:2/shot.cube"})
         self.assertIn(r"/tmp/od d\,ball\:2/shot.cube", g)
         self.assertEqual(g.count("lut3d="), 1)
+
+
+def media(*audio, path="/x/in.mov"):
+    # by keyword: MOM's Media carries color_primaries, which the Linux bot's has not
+    return V.Media(path=path, width=640, height=360, fps=25.0, nb_frames=100, duration=4.0,
+                   pix_fmt="yuv422p10le", color_space="bt709", color_transfer="bt709",
+                   color_primaries="bt709", codec="prores", has_audio=bool(audio),
+                   audio_codecs=tuple(audio))
+
+
+@unittest.skipIf(V is None, "cgvideo needs numpy")
+class AudioIntoMp4(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: the audio was
+    always copied, and a ProRes .mov's PCM went into the .mp4 as an 'ipcm'
+    entry that players largely cannot read (GStreamer has no mapping)."""
+
+    def test_pcm_into_mp4_becomes_aac(self):
+        self.assertEqual(V.audio_args(media("pcm_s24le"), "/o/out.mp4"),
+                         ["-map", "0:a", "-c:a", "aac", "-b:a", "320k"])
+
+    def test_safe_audio_and_other_containers_are_copied(self):
+        self.assertEqual(V.audio_args(media("aac"), "/o/out.mp4"), ["-map", "0:a", "-c:a", "copy"])
+        self.assertEqual(V.audio_args(media("pcm_s24le"), "/o/out.mov"), ["-map", "0:a", "-c:a", "copy"])
+        self.assertEqual(V.audio_args(media(), "/o/out.mp4"), [])
+
+    @unittest.skipUnless(__import__("shutil").which("ffmpeg"), "needs ffmpeg")
+    def test_a_rendered_mp4_carries_aac(self):
+        import json
+        import subprocess
+        import tempfile
+        import cgcore as C
+        with tempfile.TemporaryDirectory() as d:
+            src, out, lut = Path(d, "in.mov"), Path(d, "out.mp4"), Path(d, "id.cube")
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=160x90:r=25:d=1",
+                            "-f", "lavfi", "-i", "sine=d=1", "-c:v", "prores_ks", "-c:a", "pcm_s24le",
+                            "-shortest", str(src)], check=True)
+            C.write_cube(str(lut), C.identity_lattice(2), 2)
+            m = V.probe(str(src))
+            self.assertEqual(m.audio_codecs, ("pcm_s24le",))
+            V.render(m, [V.Shot(0, 0, m.nb_frames, 0.0, m.duration)], {0: str(lut)}, str(out), preset="ultrafast")
+            probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+                                    "stream=codec_name", "-of", "json", str(out)],
+                                   capture_output=True, text=True, check=True)
+            self.assertEqual(json.loads(probe.stdout)["streams"][0]["codec_name"], "aac")
 
 
 class SourceTextTest(unittest.TestCase):

@@ -54,6 +54,15 @@ class Ocr(unittest.TestCase):
         r = run(self.d / "doc.pdf", "--lang", "gre")
         self.assertEqual(r.returncode, 1, "empty output with exit 0")
 
+    def test_json_keeps_greek_readable(self):
+        # Linux bot sweep 2026-10-07: json.dumps escaped every Greek letter
+        # (\u03a4\u03b9...), six characters each for whoever reads it
+        import json
+        out = run(self.d / "upright.png", "--json").stdout
+        self.assertIn("Τιμολόγιο", out)
+        self.assertNotIn("\\u03", out)
+        self.assertIn("Τιμολόγιο", json.loads(out)["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,9 @@ import yaml
 
 # Directories
 WORKFLOW_DIR = Path(__file__).parent.parent / "workflows"
+# Each run gets RUN_ROOT/wf_<run id>. A constant so tests can keep their runs
+# out of /tmp (they left 21 folders behind on 2026-10-07).
+RUN_ROOT = Path("/tmp")
 STATE_DIR = Path("/tmp/workflow_runs")
 HISTORY_FILE = STATE_DIR / "history.json"
 
@@ -356,7 +359,7 @@ class WorkflowEngine:
             self.log(f"Starting workflow '{run.name}' (run {run.run_id})")
 
         # Create temp dir for this run
-        run_dir = Path(f"/tmp/wf_{run.run_id}")
+        run_dir = RUN_ROOT / f"wf_{run.run_id}"
         run_dir.mkdir(parents=True, exist_ok=True)
         run.variables["run_dir"] = str(run_dir)
 

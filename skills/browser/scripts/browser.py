@@ -78,6 +78,18 @@ INTERACTIVE_ROLES = {
     "slider", "spinbutton", "switch", "tab", "treeitem",
 }
 
+def _write_private(path, text: str) -> None:
+    """Write a cookie jar readable by its owner only.
+
+    The storage state is every logged-in session's cookies, and with the usual
+    umask it landed in /tmp as 0644, readable by any account on the machine.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)  # an older file keeps its mode through O_CREAT
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 # ---------------------------------------------------------------------------
 # Browser instance limiter -- prevents RAM exhaustion from concurrent Chromiums
 # ---------------------------------------------------------------------------
@@ -345,7 +357,7 @@ class BrowserDaemon:
         if ctx:
             try:
                 storage = await ctx.storage_state()
-                Path(STORAGE_FILE).write_text(json.dumps(storage, indent=2), encoding="utf-8")
+                _write_private(STORAGE_FILE, json.dumps(storage, indent=2))
             except Exception:
                 pass
 
@@ -744,10 +756,23 @@ def daemon_is_running() -> bool:
     return False
 
 
-def ensure_daemon(url: str = None):
-    """Start daemon if not running."""
+# How long a new daemon may take to launch Chromium and open its socket.
+DAEMON_START_WAIT = 15.0
+
+
+def ensure_daemon(url: str = None) -> bool:
+    """Start the daemon if it is not running. True once it answers.
+
+    The daemon starts on a blank page and the caller sends the URL as an
+    ordinary goto. It used to navigate first and only then open its socket,
+    while this waited 5 s: any page whose network took longer to settle (most
+    real sites; networkidle alone may wait 30 s) left the first goto with
+    "Daemon may not have started properly" and a FileNotFoundError traceback,
+    and a daemon nobody had asked for kept running (Linux bot sweep
+    2026-10-07). url is accepted and ignored, for old callers.
+    """
     if daemon_is_running():
-        return
+        return True
 
     # Fork a daemon process
     pid = os.fork()
@@ -768,18 +793,21 @@ def ensure_daemon(url: str = None):
         sys.stderr = open(2, 'w')
 
         try:
-            asyncio.run(run_daemon(url))
+            asyncio.run(run_daemon())
         except Exception:
             pass
         finally:
             os._exit(0)
     else:
         # Parent -- wait for daemon to be ready
-        for _ in range(50):  # 5 seconds max
+        deadline = time.monotonic() + DAEMON_START_WAIT
+        while time.monotonic() < deadline:
             time.sleep(0.1)
             if daemon_is_running():
-                return
-        print("Warning: Daemon may not have started properly", file=sys.stderr)
+                return True
+        print(f"Error: the browser daemon did not start within {DAEMON_START_WAIT:.0f} s",
+              file=sys.stderr)
+        return False
 
 
 def stop_daemon():
@@ -910,7 +938,7 @@ async def legacy_click(args):
 
             if session_file:
                 storage = await ctx.storage_state()
-                session_file.write_text(json.dumps(storage, indent=2), encoding="utf-8")
+                _write_private(session_file, json.dumps(storage, indent=2))
 
             print(f"Clicked: {args.selector}")
             print(f"Current URL: {page.url}")
@@ -956,7 +984,7 @@ async def legacy_fill(args):
 
             if session_file:
                 storage = await ctx.storage_state()
-                session_file.write_text(json.dumps(storage, indent=2), encoding="utf-8")
+                _write_private(session_file, json.dumps(storage, indent=2))
 
             if args.submit:
                 await page.click(args.submit, timeout=10000)
@@ -985,7 +1013,7 @@ async def legacy_eval(args):
                 await page.goto(args.url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(1)
             result = await page.evaluate(args.javascript)
-            print(json.dumps(result, indent=2, default=str))
+            print(json.dumps(result, indent=2, default=str, ensure_ascii=False))
             await browser.close()
 
 
@@ -1016,7 +1044,7 @@ async def legacy_session(args):
 
             if session_file:
                 storage = await ctx.storage_state()
-                session_file.write_text(json.dumps(storage, indent=2), encoding="utf-8")
+                _write_private(session_file, json.dumps(storage, indent=2))
 
             print(f"Session started: {args.url}")
             print(f"Session file: {session_file}")
@@ -1198,17 +1226,15 @@ def main():
     if cmd == "start":
         if daemon_is_running():
             print("Daemon already running")
-            result = send_command({"action": "status"})
-            print(json.dumps(result, indent=2, default=str))
-        else:
-            ensure_daemon(args.url)
-            # Show status
-            time.sleep(0.5)
-            if daemon_is_running():
-                result = send_command({"action": "status"})
-                print(json.dumps(result, indent=2, default=str))
-            else:
-                print("Daemon started")
+        elif not ensure_daemon():
+            sys.exit(1)
+        if args.url:
+            result = send_command({"action": "goto", "url": args.url}, timeout=90.0)
+            if "error" in result:
+                print(f"Error: {result['error']}", file=sys.stderr)
+                sys.exit(1)
+        result = send_command({"action": "status"})
+        print(json.dumps(result, indent=2, default=str, ensure_ascii=False))
         return
 
     if cmd == "stop":
@@ -1220,21 +1246,13 @@ def main():
             print(json.dumps({"running": False}))
             return
         result = send_command({"action": "status"})
-        print(json.dumps(result, indent=2, default=str))
+        print(json.dumps(result, indent=2, default=str, ensure_ascii=False))
         return
 
-    # For all other v2 commands, ensure daemon is running
-    if not daemon_is_running():
-        # Auto-start daemon
-        url = None
-        if cmd == "goto":
-            url = args.url
-        ensure_daemon(url)
-        if cmd == "goto":
-            # Already navigated during startup
-            result = send_command({"action": "status"})
-            print(json.dumps(result, indent=2, default=str))
-            return
+    # For all other v2 commands, ensure daemon is running; a goto that starts
+    # it is then sent like any other goto
+    if not ensure_daemon():
+        sys.exit(1)
 
     # Build command dict
     command_map = {
@@ -1268,8 +1286,9 @@ def main():
 
     payload = builder()
 
-    # Special: for extract in v2 mode, print content directly
-    result = send_command(payload, timeout=60.0)
+    # A goto may wait 30 s for the network to settle and 30 more for the
+    # fallback, so it gets longer than the rest.
+    result = send_command(payload, timeout=90.0 if cmd == "goto" else 60.0)
 
     if "error" in result:
         print(f"Error: {result['error']}", file=sys.stderr)
@@ -1284,9 +1303,9 @@ def main():
     elif cmd == "extract":
         print(result.get("content", ""))
     elif cmd == "eval":
-        print(json.dumps(result.get("result"), indent=2, default=str))
+        print(json.dumps(result.get("result"), indent=2, default=str, ensure_ascii=False))
     else:
-        print(json.dumps(result, indent=2, default=str))
+        print(json.dumps(result, indent=2, default=str, ensure_ascii=False))
 
 
 if __name__ == "__main__":

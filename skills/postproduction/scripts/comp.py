@@ -832,7 +832,7 @@ def cmd_warp(args):
 
     res = P.write_clip(args.out, frames(), info["rate"],
                        source_audio=args.clip, crf=args.crf,
-                       transfer=args.transfer)
+                       transfer=args.transfer, colour=info["colour"])
     out = {"clip": info["path"], "art": os.path.abspath(args.art),
            "track": os.path.abspath(args.track),
            "anisotropy_R": R, "artwork_laid_out_at": f"{src_w}x{src_h}",
@@ -1486,13 +1486,24 @@ def _verify_rank(args):
 
 def cmd_holdout(args):
     tr = _load_track(args.track)
-    quads = P.load_json(args.detections) if args.detections else None
+    if not args.detections:
+        # Without detections the quads ARE the track's warps applied to its own
+        # corners, and pulled back through the same warps they agree to zero:
+        # a track of random warps passed at 1e-13 px (2026-10-07). That is the
+        # solve compared with itself, so refuse to call it a measurement.
+        return emit({"track": os.path.abspath(args.track),
+                     "verdict": "UNPROVEN",
+                     "reason": ("no --detections given. The track's own quads are "
+                                "its warps applied to its corners, and pulled back "
+                                "through those warps they agree to zero whatever "
+                                "the plate did. Measure each frame's quad on its "
+                                "own (comp.py quad on that frame's matte), save "
+                                "them as {frame: [[x, y] x 4]}, and pass that file "
+                                "as --detections.")}, args.json)
+    quads = P.load_json(args.detections)
     frames = sorted(tr["warps"])
-    if quads is None:
-        qs = [tr["quads"].get(i) for i in frames]
-    else:
-        qs = [np.array(quads[str(i)], dtype=np.float64) if quads.get(str(i))
-              else None for i in frames]
+    qs = [np.array(quads[str(i)], dtype=np.float64) if quads.get(str(i))
+          else None for i in frames]
     ws = [tr["warps"].get(i) for i in frames]
 
     anch = G.anchored_shape([q for q in qs if q is not None],
@@ -1721,7 +1732,9 @@ def build_parser():
 
     p = sub.add_parser("holdout", help="Leave one out on the rigid shape")
     p.add_argument("--track", required=True)
-    p.add_argument("--detections", help="per frame measured quads, as JSON")
+    p.add_argument("--detections", help="per frame measured quads, as JSON "
+                   "(required for a verdict: without them the track is compared "
+                   "with itself)")
     p.add_argument("--tolerance", type=float, default=1.0)
     C.add_json(p)
     p.set_defaults(fn=cmd_holdout)

@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
@@ -103,12 +104,45 @@ def fmt_time(seconds, sep=","):
 
 # ---------------------------------------------------------------- read
 
+_GREEK = re.compile(r"[\u0370-\u03ff\u1f00-\u1fff]")
+_LATIN = re.compile(r"[A-Za-z\u00c0-\u024f]")
+ENCODING_NAMES = {"utf-8": "UTF-8", "utf-16": "UTF-16", "cp1253": "Windows-1253 (Greek)",
+                  "iso-8859-7": "ISO-8859-7 (Greek)", "cp1252": "Windows-1252 (Western)"}
+
+
+def decode(raw):
+    """Subtitle bytes as text, and the encoding they were read in.
+
+    UTF-8 only used to be accepted, and a Greek SRT saved the way Greek
+    Windows tools save it, Windows-1253 or ISO-8859-7, or as UTF-16 by
+    Notepad, stopped at "'utf-8' codec can't decode byte 0xca" (2026-10-07).
+    The legacy reading is chosen by the text it produces: Greek when most of
+    its letters are Greek, otherwise Western. Windows-1253 keeps quotes,
+    dashes and the ellipsis in 0x80 to 0x9F, where ISO-8859-7 has only
+    control codes, and the two put the capital alpha with tonos at 0xA2 and
+    0xB6, so those bytes tell them apart.
+    """
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw[3:].decode("utf-8"), "utf-8"
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16"), "utf-16"
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+    iso = b"\xb6" in raw and b"\xa2" not in raw and not any(0x80 <= b <= 0x9F for b in raw)
+    greek = "iso-8859-7" if iso else "cp1253"
+    text = raw.decode(greek, errors="replace")
+    if len(_GREEK.findall(text)) > len(_LATIN.findall(text)):
+        return text, greek
+    return raw.decode("cp1252", errors="replace"), "cp1252"
+
 
 def read(path):
     """Read any supported format into one shape."""
     ext = os.path.splitext(path)[1].lower()
-    with open(path, encoding="utf-8-sig") as fh:
-        text = fh.read()
+    with open(path, "rb") as fh:
+        text, encoding = decode(fh.read())
     if ext in (".ttml", ".itt", ".xml", ".dfxp"):
         events = _read_ttml(text)
         fmt = "ttml"
@@ -122,16 +156,20 @@ def read(path):
         e["index"] = i + 1
     out_of_order = [e["index"] for a, e in zip(events, events[1:])
                     if e["start"] < a["start"]]
-    return {"file": os.path.abspath(path), "format": fmt,
+    notes = [("This file contains no subtitle events. An empty sidecar "
+              "passes every rule check and delivers nothing."
+              if not events else
+              f"Events {out_of_order} start before the event above them. "
+              "The gap and overlap checks below read the file in its own "
+              "order, so sort it before believing them."
+              if out_of_order else "")]
+    if encoding != "utf-8":
+        notes.append(f"Read as {ENCODING_NAMES[encoding]}, not UTF-8; anything written "
+                     "from it is UTF-8.")
+    return {"file": os.path.abspath(path), "format": fmt, "encoding": encoding,
             "events": events, "count": len(events),
             "out_of_order": out_of_order,
-            "note": ("This file contains no subtitle events. An empty sidecar "
-                     "passes every rule check and delivers nothing."
-                     if not events else
-                     f"Events {out_of_order} start before the event above them. "
-                     "The gap and overlap checks below read the file in its own "
-                     "order, so sort it before believing them."
-                     if out_of_order else "")}
+            "note": " ".join(n for n in notes if n)}
 
 
 def _read_srt(text):
@@ -354,8 +392,11 @@ def check(doc, rules, fps=None, count_spaces=True):
     rows = []
     for i, e in enumerate(events):
         dur = e["end"] - e["start"]
-        # Count what the viewer reads: <i> and {\an8} are not letters.
-        plain = [visible(ln, fmt) for ln in e["lines"]]
+        # Count what the viewer reads: <i> and {\an8} are not letters, and an
+        # accented letter is one letter even when the file spells it as a
+        # base and a combining mark (NFD, as some Mac tools write Greek),
+        # which counted twice and failed a correct reading speed.
+        plain = [unicodedata.normalize("NFC", visible(ln, fmt)) for ln in e["lines"]]
         chars = count_chars(plain, count_spaces)
         cps = chars / dur if dur > 0 else float("inf")
         faults = []
@@ -499,9 +540,26 @@ def collide(doc, supers_plan, fps):
                     "is why burn prints the geometry it will use."}
 
 
+def _filter_value(value):
+    """A value for an ffmpeg filter option, escaped at both levels ffmpeg
+    unescapes (the option, then the filtergraph), per its "Notes on
+    filtergraph escaping"."""
+    level1 = (str(value).replace("\\", "\\\\").replace("'", "\\'")
+              .replace(":", "\\:"))
+    out = []
+    for ch in level1:
+        out.append("\\" + ch if ch in "\\'[],;" else ch)
+    return "".join(out)
+
+
 def burn_command(sub_path, video, raster, margin_v=None, fontsize=None,
                  safe=0.90, out=None):
-    """The ffmpeg burn in, with its geometry stated rather than defaulted."""
+    """The ffmpeg burn in, with its geometry stated rather than defaulted.
+
+    Every path is quoted for the shell and escaped for the filter: printed
+    bare, a folder such as "My Film [v2], final" cut the command at its first
+    space and ffmpeg looked for "/tmp/.../My" (2026-10-07)."""
+    import shlex
     rw, rh = raster
     title_inset = rh * (1 - safe) / 2.0
     margin_v = margin_v if margin_v is not None else int(round(title_inset))
@@ -509,9 +567,10 @@ def burn_command(sub_path, video, raster, margin_v=None, fontsize=None,
     out = out or "BURNED.mov"
     style = (f"FontSize={fontsize},MarginV={margin_v},Alignment=2,"
              f"BorderStyle=1,Outline=2,Shadow=0")
+    vf = f"subtitles=filename={_filter_value(sub_path)}:force_style={_filter_value(style)}"
     return {
-        "command": (f"ffmpeg -i {video} -vf \"subtitles={sub_path}:"
-                    f"force_style='{style}'\" -c:a copy {out}"),
+        "command": (f"ffmpeg -i {shlex.quote(str(video))} -vf {shlex.quote(vf)} "
+                    f"-c:a copy {shlex.quote(str(out))}"),
         "raster": [rw, rh], "font_size_px": fontsize,
         "margin_v_px": margin_v, "title_safe_inset_px": round(title_inset, 1),
         "note": "MarginV is set to the title safe inset so the bottom line "

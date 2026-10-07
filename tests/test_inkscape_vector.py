@@ -96,5 +96,26 @@ class NothingIsLost(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.d.iterdir()), ["bin", "logo.png", "logo.svg"])
 
 
+class GreekCapitals(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: the album and logo templates capitalised with
+    str.upper(), which keeps the tonos ("ΚΑΛΗΜΈΡΑ"); Greek capitals carry
+    no tonos, and a tonos that kept two vowels apart (τσάι, ρολόι) becomes
+    a diaeresis on the second (ΤΣΑΪ, ΡΟΛΟΪ). Latin accents stay (CAFÉ)."""
+
+    def test_capitals_drop_the_tonos(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("vector_sweep", SCRIPT)
+        vector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vector)
+        cases = {"Καλημέρα": "ΚΑΛΗΜΕΡΑ", "τσάι": "ΤΣΑΪ", "ρολόι": "ΡΟΛΟΪ", "άυλος": "ΑΫΛΟΣ",
+                 "λαϊκός": "ΛΑΪΚΟΣ", "προϊόν": "ΠΡΟΪΟΝ", "ζάλη": "ΖΑΛΗ", "café": "CAFÉ",
+                 "Όταν φύγεις": "ΟΤΑΝ ΦΥΓΕΙΣ", "παιδιά": "ΠΑΙΔΙΑ"}
+        for text, want in cases.items():
+            self.assertEqual(vector.upper(text), want, text)
+        svg = vector.template_album_cover("Καλημέρα τσάι", "Artist")
+        texts = "".join(t.text or "" for t in svg.iter() if t.tag.endswith("tspan"))
+        self.assertIn("ΚΑΛΗΜΕΡΑ ΤΣΑΪ", texts)
+
+
 if __name__ == "__main__":
     unittest.main()

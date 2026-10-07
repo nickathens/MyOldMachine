@@ -7,7 +7,10 @@ needs no key and is licensed CC BY. This wraps the two endpoints a legal
 grounding task needs: keyword search and fetch by ΑΔΑ.
 
 Verified live against the opendata API. Working query params: q, size, page,
-from_issue_date, to_issue_date.
+from_issue_date, to_issue_date (date only; a time is misread). Both bounds are
+Athens midnight at the START of the day, and an act's date is stored either at
+UTC midnight or at Athens midnight, so --to sends the day after and drops what
+lands on it, and dates print in Athens time (re-measured 2026-10-07).
 
 Usage:
   python diavgeia.py search "προμήθεια" --size 10 --from 2024-01-01 --to 2024-03-31
@@ -17,21 +20,32 @@ Add --json to search for the raw API payload.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import _common
+
+ATHENS = ZoneInfo("Europe/Athens")
 
 SEARCH_URL = "https://diavgeia.gov.gr/opendata/search"
 DECISION_URL = "https://diavgeia.gov.gr/luminapi/api/decisions/{ada}"
 
 
 def _fmt_date(ms):
+    """The issue date as it reads in Greece: an act of 28 March may be stored
+    at 2024-03-27T22:00Z (Athens midnight), which UTC prints as the 27th."""
     if ms is None:
         return ""
     try:
-        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-    except (TypeError, ValueError, OSError):
+        return datetime.fromtimestamp(ms / 1000, tz=ATHENS).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError, OverflowError):
         return str(ms)
+
+
+def _day(value):
+    """argparse type: a YYYY-MM-DD day, kept as written."""
+    date.fromisoformat(value)
+    return value
 
 
 def search(query, *, size=10, page=0, from_date=None, to_date=None):
@@ -39,10 +53,18 @@ def search(query, *, size=10, page=0, from_date=None, to_date=None):
     if from_date:
         params["from_issue_date"] = from_date
     if to_date:
-        params["to_issue_date"] = to_date
+        # the API stops at Athens midnight at the START of to_issue_date, which
+        # leaves out the acts of that day stored at UTC midnight
+        params["to_issue_date"] = (date.fromisoformat(to_date) + timedelta(days=1)).isoformat()
     r = _common.http_get(SEARCH_URL, params=params, accept_json=True)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    if to_date and isinstance(data.get("decisions"), list):
+        data["decisions"] = [d for d in data["decisions"]
+                             if _fmt_date(d.get("issueDate")) <= to_date]
+        if isinstance(data.get("info"), dict):
+            data["info"]["total_includes_next_day"] = True
+    return data
 
 
 def get(ada):
@@ -53,9 +75,11 @@ def get(ada):
 
 def summarize(data):
     out = []
-    total = data.get("info", {}).get("total")
+    info = data.get("info", {})
+    total = info.get("total")
     if total is not None:
-        out.append(f"Σύνολο αποτελεσμάτων: {total}")
+        about = "περίπου " if info.get("total_includes_next_day") else ""
+        out.append(f"Σύνολο αποτελεσμάτων: {about}{total}")
         out.append("")
     for d in data.get("decisions", []):
         out.append(f"ΑΔΑ: {d.get('ada', '')}")
@@ -78,10 +102,10 @@ def main(argv=None):
     ps.add_argument("query")
     ps.add_argument("--size", type=int, default=10)
     ps.add_argument("--page", type=int, default=0)
-    ps.add_argument("--from", dest="from_date", default=None,
-                    help="issue date lower bound, YYYY-MM-DD")
-    ps.add_argument("--to", dest="to_date", default=None,
-                    help="issue date upper bound, YYYY-MM-DD")
+    ps.add_argument("--from", dest="from_date", default=None, type=_day,
+                    help="first issue date, YYYY-MM-DD")
+    ps.add_argument("--to", dest="to_date", default=None, type=_day,
+                    help="last issue date, YYYY-MM-DD (its whole day is included)")
     ps.add_argument("--json", action="store_true")
 
     pg = sub.add_parser("get", help="fetch one decision by ΑΔΑ (raw JSON)")

@@ -369,7 +369,8 @@ class LymataDiastasiologisiTests(unittest.TestCase):
         self.assertAlmostEqual(r["fainomeni_apodosi_Yobs"], 0.294, places=3)
         self.assertAlmostEqual(r["ogkos_m3"], 269.5, delta=0.1)
         self.assertAlmostEqual(r["ydravlikos_xronos_h"], 16.2, delta=0.1)
-        self.assertAlmostEqual(r["F_M_kgBOD_kgMLSS_d"], 0.148, places=3)
+        # 0.148 was the per-MLVSS figure under this per-MLSS key.
+        self.assertAlmostEqual(r["F_M_kgBOD_kgMLSS_d"], 0.111, places=3)
         self.assertAlmostEqual(r["ogkometriki_fortisi_kgBOD_m3_d"], 0.445, places=3)
         self.assertAlmostEqual(r["paragogi_ilyos_kgVSS_d"], 32.3, delta=0.1)
 
@@ -512,6 +513,141 @@ class CliSmokeTests(unittest.TestCase):
                              (lymata, ["ides"])):
             out = self.run_cli(module, argv)
             self.assertTrue(out.strip())
+
+
+
+# Linux bot sweep, 2026-10-07, second half
+
+import afthaireta  # noqa: E402
+import domisi  # noqa: E402
+import katopsi  # noqa: E402
+
+
+class SweepFasmaRefusesWhatSdRefuses(unittest.TestCase):
+    """sd() refused q < 1, fasma() did not, so `fasma --q 0.5` printed a
+    plateau five times the elastic one with exit 0; and a TD below TC drew a
+    spectrum that jumped down at TC."""
+
+    def test_q_below_one_refused(self):
+        with self.assertRaises(ValueError):
+            fortia.fasma("2", "B", 0.5)
+
+    def test_td_at_or_below_tc_refused(self):
+        with self.assertRaises(ValueError):
+            fortia.fasma("2", "B", 3.0, td_override=0.3)
+        with self.assertRaises(ValueError):
+            fortia.fasma("2", "B", 3.0, td_override=0.5)
+        self.assertAlmostEqual(fortia.fasma("2", "B", 3.0, td_override=2.5)["TD_s"], 2.5)
+
+
+class SweepPyniteMessageNeverSaysPipInstall(unittest.TestCase):
+    """with the isolated venv missing, the frame said "pip install
+    PyNiteFEA", the one install the skill says breaks numba and whisper."""
+
+    def run_frame(self):
+        argv = ["plaisio", "--l", "6", "--h", "3.5", "--w", "35.25", "--dokos", "IPE330",
+                "--stylos", "HEB240", "--pynite", "--json"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            plaisio.main(argv)
+        return json.loads(buf.getvalue())["pynite"]
+
+    def test_missing_venv_points_at_the_setup_script(self):
+        with mock.patch.dict(os.environ, {"GREEK_ENGINEER_VENV": "/nonexistent/engineering"}), \
+                mock.patch.object(plaisio, "_fem_solve", side_effect=ImportError):
+            msg = self.run_frame()
+        self.assertNotIn("pip install", msg)
+        self.assertIn("setup_engine_venv.sh", msg)
+
+    def test_a_failed_solve_is_not_called_missing(self):
+        with mock.patch.object(plaisio, "_fem_solve", side_effect=ImportError), \
+                mock.patch.object(plaisio, "_engine_python", return_value="/venv/bin/python"), \
+                mock.patch.object(plaisio, "_bridge_cross_check", return_value=None):
+            msg = self.run_frame()
+        self.assertNotIn("pip install", msg)
+        self.assertIn("/venv/bin/python", msg)
+
+
+class SweepDomisiCountsWholeStoreys(unittest.TestCase):
+    """9.6 / 3.2 is 2.9999999999999996 in binary, so floor() counted 2
+    storeys in a 9.6 m height of 3.2 m storeys, and 100 m2 at 1.1 and 55%
+    needed "3" storeys for 110 m2 on a 55 m2 footprint."""
+
+    def test_exact_storeys_from_height(self):
+        self.assertEqual(domisi.perigramma(500, 0.8, 60, 9.6, 3.2)["orofoi_apo_ypsos"], 3)
+        self.assertEqual(domisi.perigramma(500, 0.8, 60, 11.1, 3.7)["orofoi_apo_ypsos"], 3)
+
+    def test_full_density_fits_in_three_storeys(self):
+        r = domisi.perigramma(500, 1.3, 60, 9.6, 3.2)
+        self.assertTrue(r["domisi_exantleitai_sto_ypsos"])
+
+    def test_exact_storeys_for_full_density(self):
+        self.assertEqual(
+            domisi.perigramma(100, 1.1, 55, 9.0)["elaxistoi_orofoi_gia_pliri_domisi"], 2)
+
+
+class SweepAfthairetaCategoriesFollowArticle96(unittest.TestCase):
+    """category 4 read "with a building permit" and "suspension of
+    sanctions"; article 96 gives it up to 20% (or 40% within area caps) with or
+    without a permit and a PERMANENT exemption from demolition. The 30 year
+    suspension is category 5's."""
+
+    def test_category_four(self):
+        k4 = afthaireta.KATIGORIES[3]["perigrafi"]
+        self.assertIn("οριστικά από την κατεδάφιση", k4)
+        self.assertIn("20%", k4)
+        self.assertIn("40%", k4)
+        self.assertNotIn("Αναστολή", k4)
+
+    def test_category_five(self):
+        self.assertIn("30 έτη", afthaireta.KATIGORIES[4]["perigrafi"])
+
+
+class SweepYdeIntervalsAreTheCurrentOnes(unittest.TestCase):
+    """the ΥΔΕ re-inspection table was the repealed Φ.7.5/1816/88/2004
+    (14, 7, 2, 1 years). ΥΑ 101195/2021 (ΦΕΚ Β' 4654/8.10.2021), Annex ΙΙ:
+    10, 5 and 2 years."""
+
+    def test_engine_table(self):
+        self.assertEqual([row["eti"] for row in ilektrologika.YDE_INTERVALS], [10, 5, 2])
+        self.assertTrue(all("101195/2021" in row["pigi"] for row in ilektrologika.YDE_INTERVALS))
+
+    def test_reference_pack(self):
+        text = (SCRIPTS.parent / "reference" / "diktya.md").read_text(encoding="utf-8")
+        self.assertNotIn("κατοικίες 14 έτη", text)
+        self.assertIn("101195/2021", text)
+
+
+class SweepKatopsiRefusesImpossibleShapes(unittest.TestCase):
+    """the shoelace area assumes a simple polygon and nothing checked:
+    vertices in the wrong order gave a wrong area (a bow tie gives 0), and a
+    building placed outside the plot got a coverage percentage."""
+
+    PLOT = katopsi.parse_points("0,0 25,0 25,20 0,20")
+
+    def test_self_intersecting_polygon_refused(self):
+        with self.assertRaises(ValueError):
+            katopsi.emvadon_aplou(katopsi.parse_points("0,0 25,0 0,20 25,20"))
+
+    def test_building_outside_the_plot_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "x.dxf")
+            with self.assertRaises(ValueError):
+                katopsi.diagramma(self.PLOT, katopsi.parse_points("5,5 17,5 17,25 5,25"), out)
+            self.assertFalse(os.path.exists(out), "nothing may be written for a refused drawing")
+
+    def test_building_on_the_plot_line_is_accepted_by_the_check(self):
+        katopsi.elegxos_entos(self.PLOT, katopsi.parse_points("0,0 12,0 12,10 0,10"))
+
+
+class SweepLymataFmIsPerMlss(unittest.TestCase):
+    """F/M was load / MLVSS mass but printed and range-checked as per
+    kg MLSS, 33% high at the default 0.75 (0.148 for 0.111)."""
+
+    def test_fm_basis(self):
+        r = lymata.diastasiologisi(ik=2000)
+        self.assertAlmostEqual(r["F_M_kgBOD_kgMLSS_d"], 0.111, places=3)
+        self.assertAlmostEqual(r["F_M_kgBOD_kgMLVSS_d"], 0.148, places=3)
 
 
 if __name__ == "__main__":

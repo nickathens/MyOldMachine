@@ -163,5 +163,40 @@ class CliTests(unittest.TestCase):
             os.unlink(fh.name)
 
 
+class RealWorldSpellingTests(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: correct pleadings written the way lawyers
+    write them were flagged. Each variant must read as complete, and the
+    planted faults next to them must still be caught."""
+
+    def _bad(self, text):
+        return {f["code"]: f["status"] for f in ac.check(text) if f["status"] != "ok"}
+
+    def test_control_is_complete(self):
+        self.assertEqual(self._bad(COMPLETE_AGOGI), {})
+
+    def test_dotted_afm(self):
+        text = COMPLETE_AGOGI.replace("με ΑΦΜ 123456789", "με Α.Φ.Μ. 123456789").replace(
+            "με ΑΦΜ 998877665", "με Α.Φ.Μ.: 998877665")
+        self.assertEqual(self._bad(text), {})
+        self.assertEqual(self._bad(text.replace("123456789", "").replace("998877665", "")), {"afm": "weak"})
+
+    def test_euro_sign_before_the_amount(self):
+        text = COMPLETE_AGOGI.replace("ύψους 5.000 ευρώ", "ύψους € 5.000").replace(
+            "των 5.000 ευρώ", "των €5.000,00")
+        self.assertEqual(self._bad(text), {})
+
+    def test_ordinal_date(self):
+        # the body's own date goes, so the closing date is the only one
+        text = COMPLETE_AGOGI.replace("Την 1 Μαρτίου 2025", "Την προηγούμενη εβδομάδα")
+        self.assertEqual(self._bad(text), {})
+        self.assertEqual(self._bad(text.replace("Αθήνα, 15 Απριλίου 2025", "Αθήνα")), {"date": "missing"})
+        self.assertEqual(self._bad(text.replace("Αθήνα, 15 Απριλίου 2025", "Αθήνα, 15η Απριλίου 2025")), {})
+
+    def test_operative_heading_broken_over_two_lines(self):
+        text = COMPLETE_AGOGI.replace("ΓΙΑ ΤΟΥΣ ΛΟΓΟΥΣ ΑΥΤΟΥΣ", "ΓΙΑ ΤΟΥΣ ΛΟΓΟΥΣ\nΑΥΤΟΥΣ")
+        self.assertEqual(self._bad(text), {})
+        self.assertEqual(ac.summarize(ac.check(text))["critical"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

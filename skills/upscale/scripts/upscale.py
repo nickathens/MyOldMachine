@@ -11,9 +11,20 @@ import, so no manual site-packages edits are required.
 """
 import argparse
 import os
+import socket
 import sys
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import memory_cap  # noqa: E402
+
+if __name__ == "__main__":
+    # Run again inside a memory-capped scope, before torch is imported so the
+    # parent that waits stays small (measurements in memory_cap.py)
+    _code = memory_cap.rerun(__file__, sys.argv[1:])
+    if _code is not None:
+        sys.exit(_code)
 
 
 def _patch_torchvision():
@@ -32,7 +43,6 @@ def _patch_torchvision():
 
 _patch_torchvision()
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import faithful_io  # noqa: E402
 
 # Heavy imports only after the patch is in place.
@@ -55,6 +65,7 @@ MODEL_URLS = {
 GFPGAN_URL = (
     "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.3.pth"
 )
+DOWNLOAD_TIMEOUT = 60  # seconds a stalled download may sit silent before it fails
 
 
 def _cache_dir() -> Path:
@@ -64,12 +75,26 @@ def _cache_dir() -> Path:
     return d
 
 
+class _StallTimeout:
+    """Every socket opened inside fails after DOWNLOAD_TIMEOUT silent seconds:
+    urlretrieve, and the downloads facexlib makes through torch.hub, have no
+    timeout of their own, so a server that stopped answering hung the run."""
+
+    def __enter__(self):
+        self.before = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(DOWNLOAD_TIMEOUT)
+
+    def __exit__(self, *exc):
+        socket.setdefaulttimeout(self.before)
+
+
 def _download(url: str, dest: Path) -> Path:
     if dest.exists():
         return dest
     tmp = dest.with_suffix(dest.suffix + ".part")
     print(f"Downloading {dest.name} ...", file=sys.stderr)
-    urllib.request.urlretrieve(url, tmp)
+    with _StallTimeout():
+        urllib.request.urlretrieve(url, tmp)
     tmp.rename(dest)
     return dest
 
@@ -133,13 +158,28 @@ def _build_upsampler(scale: int, tile: int) -> RealESRGANer:
 def _build_face_enhancer(upsampler, outscale: int):
     from gfpgan import GFPGANer
     model_path = _download(GFPGAN_URL, _cache_dir() / "GFPGANv1.3.pth")
-    return GFPGANer(
-        model_path=str(model_path),
-        upscale=outscale,
-        arch="clean",
-        channel_multiplier=2,
-        bg_upsampler=upsampler,
-    )
+    # GFPGAN gives its face detector and parser the RELATIVE folder
+    # 'gfpgan/weights', so their weights (about 190 MB) were downloaded into
+    # whatever directory the run started in, the bot's repo included. Build
+    # it from the cache folder so they land, once, beside the others.
+    here = os.getcwd()
+    os.chdir(_cache_dir())
+    try:
+        with _StallTimeout():
+            # GFPGAN picks CUDA whenever torch.cuda.is_available() says so,
+            # and on a card the wheels carry no kernels for (measured on a GTX
+            # 970) that is true too: --face died with "no kernel image is
+            # available" on every run. It gets the device the upsampler proved.
+            return GFPGANer(
+                model_path=str(model_path),
+                upscale=outscale,
+                arch="clean",
+                channel_multiplier=2,
+                bg_upsampler=upsampler,
+                device=upsampler.device,
+            )
+    finally:
+        os.chdir(here)
 
 
 def upscale_image(
@@ -152,6 +192,9 @@ def upscale_image(
     img = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
     if img is None:
         raise FileNotFoundError(f"Cannot read image: {input_path}")
+    refusal = memory_cap.unprotected_refusal(img.shape[1], img.shape[0], scale, tile)
+    if refusal:
+        raise RuntimeError(f"Refusing: {refusal}")
     # IMREAD_UNCHANGED ignores EXIF orientation, and the output keeps no tag,
     # so a portrait phone photo came back sideways
     img = faithful_io.orient(img, faithful_io.exif_orientation(input_path))

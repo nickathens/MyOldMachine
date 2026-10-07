@@ -53,16 +53,23 @@ def extract_palette(image_path, num_colors=5):
     palette colour and the colour becomes the mean of those pixels; the list
     is ordered by how much of the image each colour covers.
     """
+    import io
+
     import numpy as np
     from PIL import Image
 
-    ct = ColorThief(image_path)
-    palette = ct.get_palette(color_count=num_colors, quality=1)[:num_colors]
-
     with Image.open(image_path) as im:
+        im.draft("RGB", (800, 800))      # a JPEG decodes at a reduced scale
+        im.thumbnail((400, 400))         # shrink before the RGBA copy, not after
         im = im.convert("RGBA")
-        im.thumbnail((400, 400))
         px = np.asarray(im, dtype=np.float64).reshape(-1, 4)
+        # ColorThief gets the same 400 px copy: at quality=1 it walks every
+        # pixel as a Python tuple, and a 48 MP photo peaked at 3.8 GB (76 s)
+        # as a child of the bot (Linux bot sweep 2026-10-07)
+        small = io.BytesIO()
+        im.save(small, "PNG")
+    small.seek(0)
+    palette = ColorThief(small).get_palette(color_count=num_colors, quality=1)[:num_colors]
     px = px[px[:, 3] >= 125][:, :3]      # ColorThief's own transparency cut
     centres = np.array(palette, dtype=np.float64)
     nearest = ((px[:, None, :] - centres[None, :, :]) ** 2).sum(axis=2).argmin(axis=1)

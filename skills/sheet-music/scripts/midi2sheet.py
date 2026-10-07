@@ -49,7 +49,12 @@ def tidy_midi(midi_path: str, out_path: str, division: int) -> None:
             later = bisect.bisect_right(onsets, note[0])
             nxt = onsets[later] if later < len(onsets) else None
             end = round(note[1] / grid) * grid
-            if nxt is not None and nxt - note[1] < grid:
+            # Run on to the next onset only when the note ends within one
+            # grid step of it, before or after: a gap or a sloppy release.
+            # A note held longer than that past the next onset is a held
+            # voice (a bass under a melody) and keeps its length; an overlap
+            # read as a negative gap used to cut it there.
+            if nxt is not None and abs(nxt - note[1]) < grid:
                 end = nxt
             note[1] = max(end, note[0] + grid)
             # offs sort before ons at the same tick, so repeated notes do not collide

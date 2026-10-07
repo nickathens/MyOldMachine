@@ -63,7 +63,8 @@ def build_case(src, workdir, seg_frames=36, width=960):
 
     # one decode, straight to per segment PNG sequences
     print(f"building {n} segments of {seg_frames} frames at {width}x{h}")
-    cmd = [V.FFMPEG, "-v", "error", "-i", src, "-vf", f"scale={width}:{h}",
+    vf = ",".join(p for p in (media.decode_params, f"scale={width}:{h}") if p)
+    cmd = [V.FFMPEG, "-v", "error", "-i", src, "-vf", vf,
            "-frames:v", str(n * seg_frames), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     raw = subprocess.run(cmd, capture_output=True).stdout
     fb = width * h * 3
@@ -103,9 +104,10 @@ def build_case(src, workdir, seg_frames=36, width=960):
     def encode(frames, path):
         p = subprocess.Popen(
             [V.FFMPEG, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-             "-s", f"{width}x{h}", "-r", "24", "-i", "-",
+             "-s", f"{width}x{h}", "-r", "24", "-i", "-", "-vf", V.ENCODE_MATRIX,
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
-             "-pix_fmt", "yuv420p", path], stdin=subprocess.PIPE)
+             "-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709",
+             "-color_trc", "bt709", "-color_range", "tv", path], stdin=subprocess.PIPE)
         for f in frames:
             p.stdin.write(np.clip(f * 255 + 0.5, 0, 255).astype(np.uint8).tobytes())
         p.stdin.close()

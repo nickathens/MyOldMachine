@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -193,6 +194,39 @@ class SrtSkipsTheWarmEngineTests(unittest.TestCase):
         self.assertIn("whisper", calls, "--srt did not reach the legacy whisper path")
         args, _ = calls["whisper"]
         self.assertIs(args[3], True, f"_run_whisper was not told to emit SRT: {args!r}")
+
+
+class KilledInsideTheScopeTests(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: when the scope's memory cap killed whisper,
+    transcribe.py exited 247 and printed nothing, so a voice note read as
+    blank. A real child that dies by SIGKILL stands in for the capped run."""
+
+    def _main(self, prefix, argv):
+        import contextlib
+        import io
+        err = io.StringIO()
+        # The warm engine is MOM's fast path; it is not the one under test.
+        with mock.patch.object(tmod, "_try_warm_engine", return_value=None), \
+                mock.patch.object(tmod, "_scope_prefix", return_value=prefix), \
+                mock.patch.object(tmod, "_isolation_works", return_value=True), \
+                mock.patch.dict(tmod.os.environ, {"WHISPER_ISOLATED": ""}), \
+                contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit) as cm:
+            tmod.main(argv)
+        return cm.exception.code, err.getvalue()
+
+    def test_a_killed_run_says_why(self):
+        die = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)", "--"]
+        code, err = self._main(die, ["transcribe.py", "a.ogg", "--model", "tiny"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("killed", err)
+        self.assertIn(tmod.MEM_MAX, err)
+
+    def test_a_normal_failure_adds_nothing(self):
+        fail = [sys.executable, "-c", "raise SystemExit(3)", "--"]
+        code, err = self._main(fail, ["transcribe.py", "a.ogg"])
+        self.assertEqual(code, 3)
+        self.assertEqual(err, "")
 
 
 if __name__ == "__main__":

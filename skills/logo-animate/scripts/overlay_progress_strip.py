@@ -36,7 +36,9 @@ def collect_overlay_paths(args: argparse.Namespace) -> list[Path]:
     if args.dir:
         paths.extend(sorted(args.dir.glob(args.pattern), key=natural_key))
     unique = []
-    seen = set()
+    # The strip itself matches the default pattern; a second run into the
+    # folder it scans took the first run's strip for one more overlay.
+    seen = {args.out.resolve()}
     for path in paths:
         resolved = path.resolve()
         if resolved in seen:

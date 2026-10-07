@@ -200,6 +200,11 @@ a { color: inherit; text-decoration: none; }
     transform: scaleX(0);
 }
 
+/* ── CONTENT BLOCK ── */
+/* The heading's colour lives here, not inline, so the light modes can
+   override it: inline #fff drew it white on their cream (2026-10-07). */
+.content-heading { color: #fff; }
+
 /* ── DIRECTOR'S NOTE ── */
 .note-text {
     font-family: var(--font-serif);

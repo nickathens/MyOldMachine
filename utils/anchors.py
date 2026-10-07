@@ -63,7 +63,7 @@ def main():
     if args.cmd == "add":
         r = mm.add_anchor(args.user, args.text, args.anchor_id, args.category)
         if r["status"] == "error":
-            print("ERROR: anchor text is empty")
+            print(_error_text(r.get("reason")))
             sys.exit(1)
         cat = f" ({args.category})" if args.category else ""
         print(f"OK: {r['status']} anchor [{r['id']}]{cat} ({r['total']} total)")
@@ -94,12 +94,22 @@ def main():
             elif reason == "no_match":
                 print(f"ERROR: no observation contains '{args.needle}'")
             else:
-                print("ERROR: anchor text is empty")
+                print(_error_text(reason))
             sys.exit(1)
         if r.get("matched", 0) > 1:
             print(f"WARNING: {r['matched']} observations matched; promoted the most recent.")
         cat = f" ({args.category})" if args.category else ""
         print(f"OK: {r['status']} anchor [{r['id']}]{cat} ({r['total']} total)")
+
+
+def _error_text(reason) -> str:
+    if reason == "bad_id":
+        return ("ERROR: --id may hold only letters, digits, _ and -, "
+                "with no spaces (my-fact, not 'my fact')")
+    if reason == "bad_category":
+        return ("ERROR: --cat may hold only letters, digits, _ and -, "
+                "with no spaces")
+    return "ERROR: anchor text is empty"
 
 
 if __name__ == "__main__":

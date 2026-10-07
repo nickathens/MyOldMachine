@@ -154,10 +154,29 @@ def _load_state(slug: str):
 
 def create_project(name: str, summary: str, location: str,
                    user_id=None, shared: bool = False):
-    """Create a new project. Private to `user_id` unless `shared=True`."""
+    """Create a new project. Private to `user_id` unless `shared=True`.
+
+    Refuses a name whose slug is taken. It used to write a fresh state.json
+    over the existing one, so naming an old project (or another user's private
+    one) erased its next steps, decisions and owner with no copy kept (Linux
+    bot sweep 2026-10-07).
+    """
     ensure_dirs()
     slug = slugify(name)
+    if not slug:
+        print("Refused: a project name needs at least one letter or digit.",
+              file=sys.stderr)
+        sys.exit(1)
     project_dir = PROJECTS_DIR / slug
+    existing, _ = _load_state(slug)
+    if existing is not None or (project_dir / "state.json").exists():
+        if existing is not None and _can_see(existing, user_id):
+            print(f"Refused: project '{slug}' already exists. Read it with "
+                  f"`status {slug}` and change it with `update {slug}`.", file=sys.stderr)
+        else:
+            print(f"Refused: a project named '{slug}' already exists. "
+                  "Choose another name.", file=sys.stderr)
+        sys.exit(1)
     project_dir.mkdir(parents=True, exist_ok=True)
 
     if shared or user_id is None:

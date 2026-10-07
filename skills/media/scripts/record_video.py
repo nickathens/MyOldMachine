@@ -240,6 +240,20 @@ def _wait_for_xvfb(display: str, timeout: float = 10.0) -> bool:
     return False
 
 
+# x11grab hands over RGB, and ffmpeg 6.1 turns RGB into YUV with the BT.601
+# matrix unless told otherwise and tags nothing, so an HD player, which takes an
+# untagged file for BT.709, showed the brand gold C9A84C as (204, 164, 71)
+# (Linux bot sweep 2026-10-07). Name BT.709 for the conversion and tag the file
+# with it. The post-process re-encode carries those tags through from its input
+# (measured: tagging it again changes nothing). The tags go on the frames too
+# (setparams): ffmpeg 7 and later write a file's colour from its frames, and on
+# 9.0.2 the -color_primaries and -color_trc options alone were dropped.
+ENCODE_MATRIX = ("scale=out_color_matrix=bt709:out_range=tv,"
+                 "setparams=colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709")
+BT709_TAGS = ["-colorspace", "bt709", "-color_primaries", "bt709",
+              "-color_trc", "bt709", "-color_range", "tv"]
+
+
 def _record(display: str, width: int, height: int, output_path: Path,
             duration: int, fps: int, audio: str | None) -> bool:
     """Record `display` to output_path. Runs ffmpeg x11grab directly."""
@@ -257,10 +271,12 @@ def _record(display: str, width: int, height: int, output_path: Path,
         "-video_size", f"{width}x{height}",
         "-i", f"{display}+0,0",
         "-t", str(duration + FFMPEG_SETTLE),
+        "-vf", ENCODE_MATRIX,
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-pix_fmt", "yuv420p",
         "-crf", "18",
+        *BT709_TAGS,
         raw_video,
     ]
     ffmpeg_proc = _register_proc(subprocess.Popen(

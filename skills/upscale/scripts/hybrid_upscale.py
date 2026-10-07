@@ -49,13 +49,23 @@ import time
 import urllib.request
 from pathlib import Path
 
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from PIL import Image, ImageOps
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import memory_cap  # noqa: E402
+
+if __name__ == "__main__":
+    # Run again inside a memory-capped scope, before torch is imported so the
+    # parent that waits stays small: a 4x job can need several GB
+    # (measurements in memory_cap.py)
+    _code = memory_cap.rerun(__file__, sys.argv[1:])
+    if _code is not None:
+        sys.exit(_code)
+
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+import torch.nn as nn  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+from PIL import Image, ImageOps  # noqa: E402
+
 import faithful_io  # noqa: E402
 
 WEIGHTS = {
@@ -308,6 +318,14 @@ def main():
         a.tile += 1     # the x2 head needs even patches; an odd tile made odd ones
     icc = faithful_io.icc_profile(a.input)
     orientation = faithful_io.exif_orientation(a.input)
+    try:
+        with Image.open(a.input) as probe:
+            width, height = probe.size
+    except OSError as exc:
+        raise SystemExit(f"Cannot read image: {a.input} ({exc})")
+    refusal = memory_cap.unprotected_refusal(width, height, a.scale, a.tile, neural=a.mode != "lanczos")
+    if refusal:
+        raise SystemExit(f"Refusing: {refusal}")
 
     # Pillow reads a 16-bit RGB PNG or TIFF as 8-bit RGB, so its mode cannot
     # see a deep colour master; cv2 can
@@ -381,9 +399,14 @@ def main():
         else:
             out, lan, mask = hybrid(src_u8, esr, a.scale)
 
+    if a.metrics and mask is None:
+        # plain and lanczos are measured against the same truth and mask as
+        # hybrid; --metrics used to print nothing for them
+        lan = out if a.mode == "lanczos" else lanczos(src_u8, size)
+        mask = structure_mask(lan)
     # measured before the alpha is divided back out: source, Lanczos and
     # output are then all premultiplied alike
-    report = metrics(src_u8, out, lan, mask, a.scale) if a.metrics and mask is not None else None
+    report = metrics(src_u8, out, lan, mask, a.scale) if a.metrics else None
 
     alpha_up = alpha.resize(size, Image.LANCZOS) if alpha is not None else None
     if alpha_up is not None:

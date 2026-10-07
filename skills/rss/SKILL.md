@@ -42,8 +42,10 @@ for e in feed.entries[:5]:
 ## Get Full Content
 
 ```python
+import socket
 import feedparser
 
+socket.setdefaulttimeout(20)   # as above: without it a stalled server hangs the turn
 feed = feedparser.parse("https://example.com/feed.xml")
 
 for entry in feed.entries[:3]:

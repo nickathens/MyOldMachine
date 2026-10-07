@@ -305,7 +305,8 @@ if __name__ == '__main__':
     # Unknown names used to fall back silently: --progression jazz made the
     # pop progression and said nothing
     parser.add_argument('--root', default='C', type=root_note, help='Root note (C, F#, Bb ...)')
-    parser.add_argument('--scale', default='major', choices=sorted(SCALE_PATTERNS), help='Scale for the melody')
+    parser.add_argument('--scale', default=None, choices=sorted(SCALE_PATTERNS),
+                        help="Scale for the melody (default major; for 'full', the progression's own mode)")
     parser.add_argument('--chord', default='major', choices=CHORD_TYPES, help='Chord type for arpeggio')
     parser.add_argument('--pattern', default='up', choices=('up', 'down', 'updown'), help='Arpeggio direction')
     parser.add_argument('--progression', default='pop', choices=sorted(PROGRESSIONS),
@@ -321,6 +322,11 @@ if __name__ == '__main__':
         parser.error('--bars and --tempo must be at least 1')
     if args.seed is not None:
         random.seed(args.seed)
+    if args.scale is None:
+        # 'full' puts the melody over the progression: a major melody over a
+        # minor progression (sad, epic) clashed, E natural over C minor
+        minor = PROGRESSIONS[args.progression][0].startswith('i')
+        args.scale = 'minor' if args.action == 'full' and minor else 'major'
     if args.action in ('chords', 'full') and args.bars % len(PROGRESSIONS[args.progression]):
         print(f"note: {args.bars} bars do not complete the {len(PROGRESSIONS[args.progression])} chord "
               f"'{args.progression}' progression; it stops part way through")

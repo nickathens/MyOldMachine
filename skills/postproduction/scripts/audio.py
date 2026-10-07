@@ -145,6 +145,25 @@ def check(path, profile, stream="a:0"):
             "unmeasured": len(unmeasured), "verdict": verdict}
 
 
+# The codec the normalised track is written in, by output container. It was
+# always 24 bit PCM, and FFmpeg 6.1 writes PCM into an .mp4 as an ISO 23003-5
+# 'ipcm' entry that, for 24 bit, decoded 12.7 dB too loud and clipping: a
+# -16 LUFS target measured -3.3 LUFS and +4.1 dBTP, while the same pass into a
+# .mov landed on -16.0 (2026-10-07). PCM stays where a container carries it.
+TRACK_CODEC = {".mp4": ["aac", "320k"], ".m4v": ["aac", "320k"], ".m4a": ["aac", "320k"],
+               ".webm": ["libopus", "256k"]}
+
+
+def landed(after, target, tol, max_tp):
+    """Whether the normalised file measures where it was sent. Integrated
+    within the profile's tolerance, at least 0.5 LU; true peak within the
+    0.3 dB measurement tolerance R128 allows."""
+    got_i, got_tp = after.get("integrated_lufs"), after.get("true_peak_dbtp")
+    if got_i is None or abs(got_i - target) > max(tol or 0.0, 0.5) + 1e-9:
+        return False
+    return max_tp is None or (got_tp is not None and got_tp <= max_tp + 0.3 + 1e-9)
+
+
 def normalise(path, profile, out, stream="a:0", linear=True):
     """Two pass loudnorm to the profile's target.
 
@@ -208,8 +227,10 @@ def normalise(path, profile, out, stream="a:0", linear=True):
           f":measured_thresh={measured['input_thresh']}"
           f":offset={measured['target_offset']}"
           f":linear={'true' if linear else 'false'}:print_format=summary")
+    codec, bitrate = TRACK_CODEC.get(os.path.splitext(str(out))[1].lower(), ["pcm_s24le", None])
     second = ["ffmpeg", "-nostdin", "-hide_banner", "-y", "-i", str(path),
-              "-map", "0", "-c", "copy", f"-c:a:{track}", "pcm_s24le",
+              "-map", "0", "-c", "copy", f"-c:a:{track}", codec,
+              *([f"-b:a:{track}", bitrate] if bitrate else []),
               f"-ar:a:{track}", str(rate), f"-filter:a:{track}", af, str(out)]
     proc2 = subprocess.run(second, capture_output=True, text=True)
     if proc2.returncode != 0:
@@ -219,13 +240,18 @@ def normalise(path, profile, out, stream="a:0", linear=True):
     kind = kind.group(1).lower() if kind else "unknown"
     stayed_linear = kind == "linear"
     after = measure(out, stream)
+    ok = landed(after, target, loud.get("tol_i"), max_tp)
+    result = (f"{after['integrated_lufs']} LUFS, true peak "
+              f"{after['true_peak_dbtp']} dBTP after normalising")
     return {"in": os.path.abspath(path), "out": os.path.abspath(out),
-            "target_i": target, "max_tp": max_tp,
+            "target_i": target, "max_tp": max_tp, "track_codec": codec,
             "first_pass": measured, "after": after,
             "linear_requested": linear, "normalisation_type": kind,
-            "stayed_linear": stayed_linear,
-            "verdict": f"{after['integrated_lufs']} LUFS, true peak "
-                       f"{after['true_peak_dbtp']} dBTP after normalising",
+            "stayed_linear": stayed_linear, "landed": ok,
+            "verdict": (result if ok else
+                        f"MISSED: {result}, against {target} LUFS and a true peak "
+                        f"ceiling of {max_tp} dBTP. The file was written and must "
+                        "not be delivered."),
             "note": ("Constant gain applied: the mix was moved, not reshaped."
                      if stayed_linear else
                      f"loudnorm reports normalisation type '{kind}', not linear. "
@@ -557,9 +583,10 @@ def main(argv=None):
     if args.cmd == "normalise":
         res = normalise(args.file, SPEC.load_profile(args.profile), args.out,
                         args.stream, not args.allow_dynamic)
-        return C.emit(res, args.json, lambda r: (
+        C.emit(res, args.json, lambda r: (
             print(f"  {r['verdict']}"), print(f"  {r['note']}"),
             print(f"  {r['warning']}")))
+        return 0 if res["landed"] else 1
     if args.cmd == "layout":
         prof = SPEC.load_profile(args.profile) if args.profile else None
         res = layout(args.file, prof)

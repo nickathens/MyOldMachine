@@ -102,6 +102,41 @@ class BackgroundRemoval(unittest.TestCase):
             self.mod.batch_remove(str(src), str(self.d / "out"))
         self.assertEqual(len(calls), 1, f"the model loaded {len(calls)} times for 3 images")
 
+    def test_alpha_matting_runs_on_a_copy_of_at_most_two_megapixels(self):
+        # Linux bot sweep 2026-10-07: closed-form matting at full size passed
+        # 6 GB in six seconds on a 12 MP photo (OOM-killed in a capped
+        # scope; inside the bot's service it can take the bot). The spy does the
+        # plain cutout so the red run cannot blow up.
+        import rembg
+        real = rembg.remove
+        seen = []
+
+        def spy(img, *args, alpha_matting=False, **kwargs):
+            seen.append((img.size, alpha_matting))
+            return real(img, *args, **kwargs)
+
+        src = self.d / "big.jpg"
+        subject().resize((3000, 2000)).save(src, quality=90)
+        with mock.patch.object(rembg, "remove", spy):
+            self.mod.remove_background(str(src), str(self.d / "cut.png"), alpha_matting=True)
+        (w, h), matting = seen[-1]
+        self.assertTrue(matting)
+        self.assertLessEqual(w * h, 2_000_000)
+        out = Image.open(self.d / "cut.png")
+        self.assertEqual(out.size, (3000, 2000))
+        self.assertEqual(out.mode, "RGBA")
+
+    def test_a_batch_into_its_own_folder_keeps_png_originals(self):
+        # Linux bot sweep 2026-10-07: photo.png came out as photo.png in the
+        # same folder, the cutout written over the original
+        src = self.d / "in"
+        src.mkdir()
+        subject().save(src / "photo.png")
+        before = (src / "photo.png").read_bytes()
+        with self.assertRaises(SystemExit):
+            self.mod.batch_remove(str(src), str(src))
+        self.assertEqual((src / "photo.png").read_bytes(), before)
+
     def test_16_bit_grey_keeps_the_subject_only(self):
         grey = np.asarray(subject().convert("L")).astype(np.uint16) * 257
         Image.fromarray(grey).save(self.d / "grey16.png")

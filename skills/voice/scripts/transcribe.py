@@ -191,7 +191,15 @@ def main(argv=None):
             )
             # The scope's exit code IS the transcription's result (stdout/stderr
             # pass straight through). A non-zero code here means whisper failed
-            # or hit the cap -- either way the bot is untouched.
+            # or hit the cap -- either way the bot is untouched. A kill by the
+            # cap prints nothing on its own, so say what happened.
+            if proc.returncode < 0:
+                print(
+                    f"[transcribe] whisper was killed by signal {-proc.returncode} with "
+                    f"no transcript, most likely by the {MEM_MAX} memory cap. Use a "
+                    "smaller --model, or raise WHISPER_MEM_MAX only when the box is attended.",
+                    file=sys.stderr,
+                )
             sys.exit(proc.returncode)
 
         # No scope isolation available on this host.

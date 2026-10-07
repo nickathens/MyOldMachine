@@ -70,5 +70,28 @@ class Compose(unittest.TestCase):
             self.assertIn(51, {n.pitch for n in drums.notes}, "the jazz ride never played")
 
 
+class MelodyFollowsTheProgression(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: `full` took the melody's scale from --scale,
+    whose default is major, whatever the progression: `full --progression
+    sad` in C wrote a C major melody (E, A, B naturals) over Cm Ab Eb Bb."""
+
+    def _melody_pcs(self, *extra):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d, "full.mid")
+            r = run("full", "--root", "C", "--bars", "8", "--seed", "7", "-o", str(out), *extra)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            midi = pretty_midi.PrettyMIDI(str(out))
+        melody = [i for i in midi.instruments if not i.is_drum][1]
+        return {n.pitch % 12 for n in melody.notes}
+
+    def test_a_minor_progression_gets_a_minor_melody(self):
+        pcs = self._melody_pcs("--progression", "sad")
+        self.assertFalse(pcs & {4, 9, 11}, sorted(pcs))      # no E, A or B natural over C minor
+
+    def test_an_explicit_scale_is_kept(self):
+        pcs = self._melody_pcs("--progression", "sad", "--scale", "dorian")
+        self.assertIn(9, pcs)                                # dorian keeps its A natural
+
+
 if __name__ == "__main__":
     unittest.main()

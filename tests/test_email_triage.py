@@ -203,6 +203,17 @@ class TestDigestLines(unittest.TestCase):
         out = build_digest_lines(entries)
         self.assertIn("plus 2 more in Gmail", out)
 
+    def test_unsorted_mail_is_listed_not_counted_as_bulk(self):
+        # Mail the classifier never read (the provider was down or capped)
+        # could be urgent. Counted as "newsletters and notices" it sat hidden
+        # in the bulk line (Linux bot sweep 2026-10-07).
+        ts = datetime.now().isoformat()
+        out = build_digest_lines([{"ts": ts, "from": "Phedon K <p@x.com>",
+                                   "subject": "Contract deadline today",
+                                   "category": "unclassified", "summary": ""}])
+        self.assertIn("NOT SORTED Phedon K: Contract deadline today", out)
+        self.assertNotIn("newsletter", out)
+
 
 class TestGmailHandled(unittest.TestCase):
     """The read-state gate: True = read or dealt with, False = still unread

@@ -2226,24 +2226,33 @@ def _save_and_send(user_id: int, user_message: str, response: str,
         stored_response = response[:3800] + "\n\n[... response truncated in history]"
 
     current_topic = session.get_current_topic()
-    if current_topic:
-        history = session.get_topic_session(current_topic)
-        history.append({"role": "user", "content": stored_user_msg})
-        history.append({"role": "assistant", "content": stored_response})
-        session.save_topic_session(current_topic, history)
-    else:
-        # Use cached history from build_messages to avoid redundant disk read
-        history = _conversation_cache.pop(user_id, None)
-        if history is None:
-            history = session.load_conversation()
-        history.append({"role": "user", "content": stored_user_msg})
-        history.append({"role": "assistant", "content": stored_response})
-        # Tiered compaction gate: idle > 15min AND msgs > threshold, OR token hard cap.
-        do_compact, compact_reason = session.should_compact(history)
-        if do_compact:
-            logger.info(f"Compaction triggered for user {user_id}: {compact_reason}")
-            history, _ = session.compact_conversation(history, session.summary_file)
-        session.save_conversation(history)
+    # Both callers save before they send, so an exception here (a full disk, a
+    # permission change, a compaction that raised) used to skip the send: the
+    # finished answer was lost and the user got "Error processing your
+    # message" instead (Linux bot sweep 2026-10-07). The append-only log below
+    # still records the exchange.
+    try:
+        if current_topic:
+            history = session.get_topic_session(current_topic)
+            history.append({"role": "user", "content": stored_user_msg})
+            history.append({"role": "assistant", "content": stored_response})
+            session.save_topic_session(current_topic, history)
+        else:
+            # Use cached history from build_messages to avoid redundant disk read
+            history = _conversation_cache.pop(user_id, None)
+            if history is None:
+                history = session.load_conversation()
+            history.append({"role": "user", "content": stored_user_msg})
+            history.append({"role": "assistant", "content": stored_response})
+            # Tiered compaction gate: idle > 15min AND msgs > threshold, OR token hard cap.
+            do_compact, compact_reason = session.should_compact(history)
+            if do_compact:
+                logger.info(f"Compaction triggered for user {user_id}: {compact_reason}")
+                history, _ = session.compact_conversation(history, session.summary_file)
+            session.save_conversation(history)
+    except Exception:
+        logger.exception(f"Could not save the conversation history for user {user_id}; "
+                         f"sending the reply anyway")
 
     # Append-only message log (survives compaction)
     try:

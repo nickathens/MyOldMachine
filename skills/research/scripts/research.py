@@ -19,6 +19,11 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
 }
 
+# feedparser.parse(url) has no timeout of its own: one feed server that
+# accepts and never answers held `rss check` forever. Feeds are fetched with
+# requests under this bound, then parsed from the bytes.
+FEED_TIMEOUT = 20
+
 def init_db():
     """Initialize SQLite database"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -126,7 +131,9 @@ def fetch_feed(name=None):
 
     for feed_id, feed_name, url in feeds:
         try:
-            parsed = feedparser.parse(url)
+            resp = requests.get(url, headers=HEADERS, timeout=FEED_TIMEOUT)
+            resp.raise_for_status()
+            parsed = feedparser.parse(resp.content)
 
             for entry in parsed.entries[:20]:  # Limit to 20 per feed
                 title = entry.get('title', 'No title')
@@ -281,7 +288,7 @@ def export_data(format='json', output=None, data_type='articles'):
     conn.close()
 
     if format == 'json':
-        output_text = json.dumps(data, indent=2)
+        output_text = json.dumps(data, indent=2, ensure_ascii=False)
     elif format == 'csv':
         if not data:
             output_text = ''
@@ -370,7 +377,7 @@ if __name__ == '__main__':
     elif args.command == 'scrape':
         results = scrape_page(args.url, args.selector, args.links)
         if results:
-            print(json.dumps(results, indent=2))
+            print(json.dumps(results, indent=2, ensure_ascii=False))
 
     elif args.command == 'articles':
         articles = get_articles(args.feed, args.unread, args.limit)

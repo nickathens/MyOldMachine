@@ -68,5 +68,50 @@ class Synth(unittest.TestCase):
         self.assertNotIn("Traceback", r.stderr)
 
 
+def _load_synth():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("synth_sweep", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class Tuning(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: the pad's detuned voices sat at 0.96, 0.98,
+    1.00 and 1.02 of the pitch asked, centred 1 percent low, so a 220 Hz pad
+    sounded about 17 cents flat; '--bitcrush 8' kept 513 levels (9 bits); a
+    tone shorter than its envelope stopped mid-decay with a click."""
+
+    def test_a_pad_is_centred_on_its_pitch(self):
+        synth = _load_synth()
+        seen = []
+        real = synth.oscillator
+
+        def spy(freq, duration, waveform="sine", sample_rate=synth.SAMPLE_RATE):
+            seen.append(freq)
+            return real(freq, duration, waveform, sample_rate)
+
+        synth.oscillator = spy
+        try:
+            synth.synth_pad(220, 0.5)
+        finally:
+            synth.oscillator = real
+        cents = 1200 * np.log2(np.mean(seen) / 220)
+        self.assertLess(abs(cents), 1.0, seen)
+
+    def test_bitcrush_keeps_the_bits_asked(self):
+        synth = _load_synth()
+        sine = np.sin(np.linspace(0, 2 * np.pi * 5, 44100))
+        self.assertLessEqual(len(np.unique(synth.bitcrush(sine, 4))), 2 ** 4 + 1)
+
+    def test_a_short_tone_ends_at_silence(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d, "t.wav")
+            r = run("tone", "--duration", "0.1", "--freq", "440", "-o", out)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            _, x = wavfile.read(out)
+        self.assertLess(np.max(np.abs(x[-20:])), 400)        # of 32767
+
+
 if __name__ == "__main__":
     unittest.main()

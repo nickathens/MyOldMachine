@@ -69,9 +69,19 @@ try {
   process.exit(1);
 }
 
-const out =
-  values.out || path.resolve(__dirname, "out", `${values.comp}.mp4`);
+// Resolved here so the path printed at the end is absolute, as the SKILL
+// promises; a relative --out still lands where it did, under the working folder.
+const out = values.out
+  ? path.resolve(values.out)
+  : path.resolve(__dirname, "out", `${values.comp}.mp4`);
 fs.mkdirSync(path.dirname(out), { recursive: true });
+
+// Remotion keeps its headless browser beside the nearest package.json above the
+// WORKING folder (node_modules/.remotion), or in <cwd>/.remotion when there is
+// none. Run from the bot's folder, as every SKILL example is, that meant a
+// second 92 MB download into the repo root. Every path given on the command
+// line is resolved above, so from here on work from the engine itself.
+process.chdir(__dirname);
 
 // Older/newer renderer versions differ on browser provisioning. If an explicit
 // ensureBrowser exists, use it (clear log line + first-run download); otherwise

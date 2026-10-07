@@ -41,7 +41,7 @@ blender --background --python $V -- --input video.mp4 --fade-in 1.0 --fade-out 1
 blender --background --python $V -- --concat a.mp4 b.mp4 --transition dissolve --transition-duration 1.0 --output joined.mp4
 ```
 
-Options combine on a single input (cut plus title plus colour plus fades in one render). `--format webm|prores`, `--quality low|medium|high|lossless`, `--width`/`--height` override the output size.
+Options combine on a single input (cut plus speed plus title plus colour plus fades in one render). `--format webm|prores`, `--quality low|medium|high|lossless`, `--width`/`--height` override the output size: the picture is scaled to fit, with bars when the shape differs. `--concat` takes only the join options (transition, size, format, quality) and refuses the others rather than drop them: join first, then edit the joined file. With no `--output` the file goes to /tmp with the format's own extension (.mp4, .webm, .mov).
 
 ## Notes
 
@@ -50,3 +50,4 @@ Options combine on a single input (cut plus title plus colour plus fades in one 
 - Joined clips run at the first clip's frame rate; a clip with a different rate is warned about, because it will play at the wrong speed. Convert it first (video-editing skill).
 - Shares the Blender dependency with the blender 3D skill, no extra install needed
 - Rendering runs on the CPU in the background mode used here, so expect several seconds per second of 1080p.
+- Memory: the script caps Blender's frame cache at 256 MB (a render reads each frame once). At Blender's default 4 GB a 60 second 1080p edit peaked at 4.9 GB; capped, under 1 GB, with the same frames (2026-10-07).

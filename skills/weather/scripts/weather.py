@@ -11,6 +11,7 @@ Default location: New York, USA (40.71°N, 74.01°W)
 """
 
 import argparse
+import re
 from datetime import datetime
 
 import httpx
@@ -54,9 +55,14 @@ WEATHER_CODES = {
 
 
 def geocode(city: str) -> tuple:
-    """Get coordinates for a city name."""
+    """Get coordinates for a city name.
+
+    The geocoder matches a name in the language it is asked in: Θεσσαλονίκη
+    finds nothing with language=en and Thessaloniki with language=el
+    (measured 2026-10-07), so a Greek name is looked up in Greek."""
     url = "https://geocoding-api.open-meteo.com/v1/search"
-    params = {"name": city, "count": 1, "language": "en", "format": "json"}
+    language = "el" if re.search(r"[\u0370-\u03ff\u1f00-\u1fff]", city) else "en"
+    params = {"name": city, "count": 1, "language": language, "format": "json"}
 
     response = httpx.get(url, params=params, timeout=10)
     data = response.json()
@@ -148,7 +154,11 @@ def main():
         lat, lon = args.lat, args.lon
         city = f"({lat}, {lon})"
     elif args.city != DEFAULT_CITY:
-        lat, lon, city = geocode(args.city)
+        try:
+            lat, lon, city = geocode(args.city)
+        except Exception as e:
+            print(f"Error looking up {args.city}: {e}")
+            return 1
         if lat is None:
             print(f"Could not find location: {args.city}")
             return 1
@@ -160,6 +170,10 @@ def main():
         data = get_weather(lat, lon)
     except Exception as e:
         print(f"Error fetching weather: {e}")
+        return 1
+    if data.get("error") or "current" not in data:
+        # Open-Meteo answers a refusal as JSON: {"error": true, "reason": ...}
+        print(f"Error fetching weather: {data.get('reason') or 'no forecast in the answer'}")
         return 1
 
     # Format output
@@ -175,7 +189,7 @@ def main():
             condition = WEATHER_CODES.get(code, "Unknown")
             temp_max = tomorrow["temperature_2m_max"][1]
             temp_min = tomorrow["temperature_2m_min"][1]
-            print(f"Tomorrow: {condition}, {temp_min}°C - {temp_max}°C")
+            print(f"Tomorrow: {condition}, {temp_min} to {temp_max}°C")
 
     return 0
 

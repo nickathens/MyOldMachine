@@ -401,20 +401,75 @@ def cmd_looks(args):
     return 0
 
 
+# A still is graded in bands of about this many pixels, and measured on a copy
+# of at most MEASURE_PIXELS, so memory no longer grows with the photo: graded
+# whole in float32, a 12 MP photo peaked at 2.1 GB (2026-10-07), a 48 MP one
+# would need about 8 GB, as a child of the bot when run unwrapped (Linux bot
+# sweep 2026-10-07).
+BAND_PIXELS = 1_000_000
+MEASURE_PIXELS = 12_000_000
+
+
+def load_still(path):
+    """A still as the eye sees it, as uint8 RGB, plus a note or None.
+
+    EXIF orientation is applied (a portrait phone photo came back sideways,
+    and the PNG written has no tag to turn it), and a colour profile other
+    than sRGB or Rec.709, whose primaries the grade assumes, is converted to
+    sRGB first: a Display P3 iPhone photo was graded and shown as if sRGB.
+    """
+    import io
+    from PIL import Image, ImageCms, ImageOps
+    im = ImageOps.exif_transpose(Image.open(path))
+    icc = im.info.get("icc_profile")
+    note = None
+    if im.mode not in ("RGB", "CMYK"):
+        im = im.convert("RGB")
+    if icc:
+        try:
+            src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+            desc = ImageCms.getProfileDescription(src).strip()
+            if not any(k in desc.lower() for k in ("srgb", "709")):
+                im = ImageCms.profileToProfile(im, src, ImageCms.createProfile("sRGB"), outputMode="RGB")
+                note = f"converted from its {desc} profile to sRGB before grading"
+        except (OSError, ImageCms.PyCMSError) as exc:
+            note = f"its colour profile could not be read ({exc}), graded as sRGB"
+    return np.asarray(im.convert("RGB"), dtype=np.uint8), note
+
+
+def grade_still(img_u8, g, band_pixels=BAND_PIXELS):
+    """apply_grade over the image a band of rows at a time. apply_grade is
+    per pixel, so the result is the same as grading it whole."""
+    h, w = img_u8.shape[:2]
+    rows = max(1, band_pixels // max(w, 1))
+    out = np.empty_like(img_u8)
+    for y in range(0, h, rows):
+        band = img_u8[y:y + rows].astype(np.float32) / 255.0
+        out[y:y + rows] = np.clip(C.apply_grade(band, g) * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    return out
+
+
 def cmd_still(args):
     from PIL import Image
-    img = np.asarray(Image.open(args.input).convert("RGB"), dtype=np.float32) / 255.0
+    img, note = load_still(args.input)
+    if note:
+        log(f"  {note}")
     look = C.Look() if args.look in ("none", "neutral") else C.load_look(args.look, LOOKS_DIR)
     g = C.Grade(look=look)
     if args.normalize != "off":
-        st = A.measure([img])
+        h, w = img.shape[:2]
+        sample = img
+        if h * w > MEASURE_PIXELS:
+            scale = (MEASURE_PIXELS / (h * w)) ** 0.5
+            sample = np.asarray(Image.fromarray(img).resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))), Image.BILINEAR))
+        st = A.measure([sample.astype(np.float32) / 255.0])
         tgt = A.NEUTRAL_TARGETS
         g.balance, notes = A.derive_balance(st, tgt, A.Caps(), strength=args.balance_strength)
         for n in notes:
             log(f"  {n}")
     g.balance.exposure += args.exposure
-    out = C.apply_grade(img, g)
-    V.write_png(args.out, out)
+    Image.fromarray(grade_still(img, g)).save(args.out)
     print(f"wrote {args.out}")
     return 0
 

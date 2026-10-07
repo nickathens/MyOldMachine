@@ -100,10 +100,12 @@ def cmd_chords(args):
         progression = []
         for c in chordified.flatten().getElementsByClass(m21chord.Chord):
             try:
-                # Get common name if possible
-                name = c.pitchedCommonName
-                if name and name != 'empty':
-                    progression.append(_name(name))
+                # Root and common name, joined here: pitchedCommonName joins
+                # them with a dash ("C-major triad"), and the flat-sign
+                # helper turned that dash into a flat ("Cbmajor triad")
+                name = c.commonName
+                if name and name != 'empty' and c.root() is not None:
+                    progression.append(f"{_name(c.root().name)} {name}")
             except Exception:
                 pass
 

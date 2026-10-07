@@ -30,13 +30,27 @@ CAP_MESSAGES = [
     "You've hit your session limit · resets 10:10pm (Europe/Athens)",
     "You've hit your fast limit · resets in 2h 30m",
     "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+    # A reset more than 24 h away carries its date (and the year when it is
+    # another one); the usual shape for a weekly cap.
+    "You've hit your weekly limit · resets Oct 9, 10am (Europe/Athens)",
+    "You've hit your Opus limit · resets Jan 2, 2027, 9:30am (Europe/Athens)",
 ]
+
+# The dated forms on their own, so a failure names the shape that slipped.
+DATED_CAP_MESSAGES = CAP_MESSAGES[-2:]
 
 
 class IsCapMessageTests(unittest.TestCase):
 
     def test_real_cap_formats_detected(self):
         for msg in CAP_MESSAGES:
+            self.assertTrue(reflect._is_cap_message(msg), f"should detect: {msg!r}")
+
+    def test_a_dated_reset_is_a_cap(self):
+        # The clock-only pattern needed digits right after "resets", so a weekly
+        # cap days from its reset was taken as the night's reflection output
+        # (Linux bot sweep 2026-10-07).
+        for msg in DATED_CAP_MESSAGES:
             self.assertTrue(reflect._is_cap_message(msg), f"should detect: {msg!r}")
 
     def test_narrative_mentioning_limit_is_not_a_cap(self):

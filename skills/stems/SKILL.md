@@ -41,7 +41,7 @@ Creates a folder with:
 ## Notes
 
 - `--device auto` (the default) tries one CUDA operation first and uses the GPU only if it really runs: a torch build without kernels for an older card (a GTX 970) reports CUDA as available and then fails every kernel. Before 2026-09-27 every separation on such a machine crashed on that.
-- Measured on a 4 core i5 (htdemucs, CPU): 5 minutes of stereo audio took 3.5 minutes and peaked at 2.3 GB of RAM. On Linux, run anything longer than a song in a capped scope so it can never take the bot down with it: `systemd-run --user --scope --quiet --collect -p MemoryMax=4G -p MemorySwapMax=0 -- python .../separate.py ...`
+- Measured on a 4 core i5 (htdemucs, CPU): 5 minutes of stereo audio took 3.5 minutes and peaked at 2.3 GB of RAM; demucs holds the input and all four stems in memory, about 1.4 MB a second more. On Linux separate.py runs it inside its own memory-capped scope by itself (6 GB, `STEMS_MEM_MAX` to change), outside the bot's service, so a run that is too long dies alone and says so ("killed ... by the 6G memory cap: split the audio"). On Linux where no scope can be made, inputs over 20 minutes are refused; macOS runs as before. Split long recordings with ffmpeg (`-ss`/`-t`) and separate the parts.
 - The first run downloads the model (htdemucs is about 80 MB) into `~/.cache/torch/hub/checkpoints/`
 - Stems are written as 16-bit WAV through soundfile: demucs 4.0.1 saves through torchaudio, and torchaudio 2.9+ needs a torchcodec package that is not installed, so the separation used to finish and then fail writing the files
 - Works best with studio-quality recordings

@@ -603,10 +603,7 @@ def generate_higgsfield(
         )
 
         if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "authenticate" in stderr.lower() or "token" in stderr.lower():
-                return {"success": False, "path": "", "error": "Higgsfield not authenticated. Run: higgsfield auth login"}
-            return {"success": False, "path": "", "error": f"Higgsfield error: {stderr[:500]}"}
+            return {"success": False, "path": "", "error": _cli_error(result.stderr)}
 
         data = json.loads(result.stdout)
 
@@ -709,10 +706,7 @@ def generate_video(
         )
 
         if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "authenticate" in stderr.lower() or "token" in stderr.lower():
-                return {"success": False, "path": "", "error": "Higgsfield not authenticated. Run: higgsfield auth login"}
-            return {"success": False, "path": "", "error": f"Higgsfield error: {stderr[:500]}"}
+            return {"success": False, "path": "", "error": _cli_error(result.stderr)}
 
         data = json.loads(result.stdout)
 
@@ -754,6 +748,21 @@ def generate_video(
         return {"success": False, "path": "", "error": str(e)}
 
 
+# The CLI's own sign-in failures ("Not authenticated.", "Session expired.",
+# "higgsfield: unauthorized", each followed by "higgsfield auth login"; read
+# off the 1.1.26 binary). The old test was "token" anywhere in stderr, which
+# would have sent any refusal that names a token to the sign-in advice and
+# dropped what the CLI actually said (Linux bot sweep 2026-10-07).
+_AUTH_FAILURE = ("not authenticated", "session expired", "unauthorized", "auth login")
+
+
+def _cli_error(stderr: str) -> str:
+    stderr = (stderr or "").strip()
+    if any(marker in stderr.lower() for marker in _AUTH_FAILURE):
+        return f"Higgsfield not authenticated. Run: higgsfield auth login ({stderr[:200]})"
+    return f"Higgsfield error: {stderr[:500]}"
+
+
 def _extract_result_url(data: dict) -> str:
     """Pull the output URL from a job result. Most jobs put it at result_url; some
     (e.g. image_decompose) leave that null and return outputs under params.medias[].data.url."""
@@ -783,10 +792,7 @@ def _submit_and_download(cmd: list[str], output_path: str, timeout: int = 660,
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
         if result.returncode != 0:
-            stderr = result.stderr.strip()
-            if "authenticate" in stderr.lower() or "token" in stderr.lower():
-                return {"success": False, "path": "", "error": "Higgsfield not authenticated. Run: higgsfield auth login"}
-            return {"success": False, "path": "", "error": f"Higgsfield error: {stderr[:500]}"}
+            return {"success": False, "path": "", "error": _cli_error(result.stderr)}
 
         data = json.loads(result.stdout)
 
@@ -1235,10 +1241,13 @@ def main():
                               duration=job_duration, ref_media=args.ref_image, extra_params=job_extra or None)
     else:
         print(f"Generating image with {args.backend}...", file=sys.stderr)
+        # The full size goes in: generate_pollinations scales the longest
+        # side to 768 and keeps the shape. min() on each side here made a 16:9
+        # request 768x720 (Linux bot sweep 2026-10-07).
         if args.backend == "pollinations":
-            w = min(args.width, 768) if args.width != 768 else ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))[0]
-            h = min(args.height, 768) if args.height != 768 else ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))[1]
-            result = generate_pollinations(args.prompt, args.output, width=min(w, 768), height=min(h, 768),
+            w = args.width if args.width != 768 else ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))[0]
+            h = args.height if args.height != 768 else ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))[1]
+            result = generate_pollinations(args.prompt, args.output, width=w, height=h,
                                            seed=args.seed, enhance=args.enhance)
         elif args.backend == "auto":
             result = generate_higgsfield(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
@@ -1246,7 +1255,7 @@ def main():
             if not result["success"]:
                 print(f"Higgsfield failed ({result['error']}). Falling back to Pollinations...", file=sys.stderr)
                 w, h = ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))
-                result = generate_pollinations(args.prompt, args.output, width=min(w, 768), height=min(h, 768),
+                result = generate_pollinations(args.prompt, args.output, width=w, height=h,
                                                seed=args.seed, enhance=args.enhance)
         else:
             result = generate_higgsfield(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,

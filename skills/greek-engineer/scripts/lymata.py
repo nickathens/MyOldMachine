@@ -158,7 +158,11 @@ def diastasiologisi(ik=None, fortio=None, paroxi=None, so=None, se=EKROI_BOD5,
     v = maza_mlvss * 1000.0 / mlvss                  # m3
 
     hrt_h = v / paroxi * 24.0
-    fm = fortio / maza_mlvss                         # kg BOD/kg VSS/d
+    # F/M επί MLSS, η βάση του τυπικού εύρους και της ετικέτας. Ήταν φορτίο διά
+    # μάζα MLVSS με ετικέτα MLSS: 33% πάνω στο 0.75 (0.148 αντί 0.111).
+    maza_mlss = maza_mlvss / vss_ratio               # kg SS
+    fm = fortio / maza_mlss                          # kg BOD/kg MLSS/d
+    fm_vss = fortio / maza_mlvss                     # kg BOD/kg MLVSS/d, για πηγές επί VSS
     bv = fortio / v                                  # kg BOD/m3/d
 
     # Απαίτηση οξυγόνου: άνθρακας (τελικό BOD μείον βιομάζα) και νιτροποίηση.
@@ -172,12 +176,12 @@ def diastasiologisi(ik=None, fortio=None, paroxi=None, so=None, se=EKROI_BOD5,
         o2_nitrop = O2_ANA_N * nox
     o2_synolo = o2_anthraka + o2_nitrop
 
-    # Αυτοέλεγχος συνέπειας: F/M επί τη συγκέντρωση MLVSS (kg/m3) πρέπει να
-    # ξαναδίνει την ογκομετρική φόρτιση. Συνδέει το F/M (από τη μάζα) με τη BV
-    # (από τον όγκο) μέσω της συγκέντρωσης: πιάνει αριθμητική ή μοναδιαία ολίσθηση.
-    elegxos = fm * (mlvss / 1000.0)
-    if abs(elegxos - bv) > 1e-9 * bv:
-        raise RuntimeError("Ασυνέπεια F/M και ογκομετρικής φόρτισης: εσωτερικό σφάλμα.")
+    # Αυτοέλεγχος συνέπειας: F/M επί τη συγκέντρωση της ίδιας βάσης (kg/m3)
+    # πρέπει να ξαναδίνει την ογκομετρική φόρτιση. Συνδέει το F/M (από τη μάζα)
+    # με τη BV (από τον όγκο): πιάνει αριθμητική ή μοναδιαία ολίσθηση.
+    for timi_fm, sygkentrosi in ((fm, mlss), (fm_vss, mlvss)):
+        if abs(timi_fm * (sygkentrosi / 1000.0) - bv) > 1e-9 * bv:
+            raise RuntimeError("Ασυνέπεια F/M και ογκομετρικής φόρτισης: εσωτερικό σφάλμα.")
     if yobs > y:
         raise RuntimeError("Η φαινόμενη απόδοση ξεπέρασε την πραγματική: εσωτερικό σφάλμα.")
 
@@ -190,6 +194,7 @@ def diastasiologisi(ik=None, fortio=None, paroxi=None, so=None, se=EKROI_BOD5,
         "ogkos_m3": round(v, 1),
         "ydravlikos_xronos_h": round(hrt_h, 1),
         "F_M_kgBOD_kgMLSS_d": round(fm, 3),
+        "F_M_kgBOD_kgMLVSS_d": round(fm_vss, 3),
         "ogkometriki_fortisi_kgBOD_m3_d": round(bv, 3),
         "fainomeni_apodosi_Yobs": round(yobs, 3),
         "paragogi_ilyos_kgVSS_d": round(px_vss, 1),
@@ -270,7 +275,8 @@ def _print_diast(r):
     print(f"  Όγκος αντιδραστήρα: {r['ogkos_m3']} m3")
     print(f"  Υδραυλικός χρόνος παραμονής: {r['ydravlikos_xronos_h']} h "
           f"({r['elegxoi']['ydravlikos_xronos']})")
-    print(f"  F/M: {r['F_M_kgBOD_kgMLSS_d']} kg BOD/kg MLSS/d ({r['elegxoi']['F_M']})")
+    print(f"  F/M: {r['F_M_kgBOD_kgMLSS_d']} kg BOD/kg MLSS/d ({r['elegxoi']['F_M']}), "
+          f"{r['F_M_kgBOD_kgMLVSS_d']} επί MLVSS")
     print(f"  Ογκομετρική φόρτιση: {r['ogkometriki_fortisi_kgBOD_m3_d']} kg BOD/m3/d "
           f"({r['elegxoi']['ogkometriki_fortisi']})")
     print(f"  Παραγωγή ιλύος: {r['paragogi_ilyos_kgVSS_d']} kg VSS/d")

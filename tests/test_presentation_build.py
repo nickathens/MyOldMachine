@@ -117,5 +117,72 @@ class OfflineFallback(unittest.TestCase):
         self.assertLess(html.index("</script>", guard), html.index("gsap.registerPlugin(ScrollTrigger)"))
 
 
+THEME_CSS = (SCRIPTS / "theme.css").read_text(encoding="utf-8")
+GREEK_DECK = {"title": "Ελληνική παρουσίαση",
+              "cover": {"brand": "Κουκου", "title": "Καμπάνια"},
+              "sections": [{"type": "cards", "caption": "Γιατί τώρα",
+                            "items": [{"name": "Αυθεντικότητα", "desc": "Κανείς δεν την κατέχει."}]}]}
+
+
+class GreekDecks(unittest.TestCase):
+    """Linux bot sweep 2026-10-07."""
+
+    def test_a_greek_deck_without_lang_is_marked_greek(self):
+        # marked "en", its CSS capitals kept the tonos and no Greek font loaded
+        html = cp.build_html(dict(GREEK_DECK), THEME_CSS)
+        self.assertIn('<html lang="el">', html)
+        self.assertIn("Manrope", html)
+        self.assertEqual(cp.detect_lang({"title": "Treatment", "sections": [
+            {"type": "note", "paragraphs": ["An English deck with one word, Αθήνα."]}]}), "en")
+
+    def test_an_explicit_lang_is_kept(self):
+        html = cp.build_html(dict(GREEK_DECK, lang="en"), THEME_CSS)
+        self.assertIn('<html lang="en">', html)
+
+    def test_greek_companions_reach_the_theme_fonts(self):
+        # the link loaded Manrope and Inter, but with no "fonts" in the deck the
+        # stacks never named them and Greek fell to the system font
+        css = cp.build_font_css({}, subsets=["greek"], defaults=cp.theme_fonts(THEME_CSS))
+        self.assertRegex(css, r"--font-heading: 'Space Grotesk', 'Manrope', 'Inter', sans-serif;")
+        self.assertRegex(css, r"--font-body: 'Outfit', 'Manrope'")
+        self.assertEqual(cp.build_font_css({}, subsets=None, defaults=cp.theme_fonts(THEME_CSS)), "")
+
+    def test_theme_fonts_reads_the_first_family(self):
+        self.assertEqual(cp.theme_fonts(THEME_CSS),
+                         {"heading": "Space Grotesk", "body": "Outfit", "serif": "Playfair Display"})
+
+
+class ModeFollowsTheBackground(unittest.TestCase):
+    """a white canvas (--design-md stripe, a light --aesthetic, or a
+    light scheme) on a deck with no mode stayed dark, whose titles, cards
+    and tables are white: 1.0:1."""
+
+    def _light(self, data):
+        return ".section-title { color: var(--text); }" in cp.build_html(data, THEME_CSS)
+
+    def test_a_light_background_takes_the_light_surface(self):
+        self.assertTrue(self._light({"title": "x", "scheme": {"bg": "#ffffff"}, "sections": []}))
+        self.assertTrue(self._light({"title": "x", "scheme": {"bg": "#efeae0"}, "sections": []}))
+
+    def test_dark_or_explicit_stays(self):
+        self.assertFalse(self._light({"title": "x", "scheme": {"bg": "#000000"}, "sections": []}))
+        self.assertFalse(self._light({"title": "x", "sections": []}))
+        self.assertFalse(self._light({"title": "x", "mode": "dark", "scheme": {"bg": "#ffffff"},
+                                      "sections": []}))
+
+
+class ContentHeadingColour(unittest.TestCase):
+    """the content heading was inline #fff, white on the light modes' cream."""
+
+    def test_the_colour_comes_from_a_class_the_light_modes_override(self):
+        html = cp.build_html({"title": "x", "mode": "light", "sections": [
+            {"type": "content", "heading": "The heading", "texts": ["t"]}]}, THEME_CSS)
+        h3 = html[html.index("<h3"):html.index("</h3>")]
+        self.assertIn('class="content-heading"', h3)
+        self.assertNotIn("#fff", h3)
+        self.assertIn(".content-heading { color: var(--text); }", html)
+        self.assertIn(".content-heading { color: #fff; }", THEME_CSS)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -102,7 +102,7 @@ $B cookies --clear                     # Clear cookies
 ```
 
 Cookies and storage persist across commands automatically.
-Saved to `/tmp/browser_storage.json` on daemon stop.
+Saved to `/tmp/browser_storage.json` after each goto, click, fill and select and on stop, readable by this account only (0600). It holds every logged-in session's cookies.
 
 ## Multi-step Example: Login Flow
 

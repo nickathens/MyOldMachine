@@ -50,6 +50,8 @@ class BusyPage(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
         cls.server.server_close()
+        import shutil
+        shutil.rmtree(cls.dir, ignore_errors=True)   # mkdtemp left one per run
 
     def test_content_and_links_come_back(self):
         began = time.monotonic()
@@ -59,6 +61,41 @@ class BusyPage(unittest.TestCase):
         self.assertIn("Still here", content["content"])
         self.assertEqual(links.get("count"), 1, links)
         self.assertLess(time.monotonic() - began, 25)
+
+
+class ReadableText(unittest.TestCase):
+    """Linux bot sweep 2026-10-07: content read textContent, so a page without
+    whitespace between its tags came back as one glued run with its hidden
+    elements in it ("TitleFirst sentence.Second one.hidden textalphabeta"),
+    and the 15,000 character cut was silent."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(prefix="scrape-text-")
+        page = Path(cls.tmp.name, "page.html")
+        page.write_text("<html><head><title>T</title></head><body><nav>Menu</nav><h1>Title</h1>"
+                        "<p>First sentence.</p><p>Second one.</p><div style='display:none'>hidden text</div>"
+                        "<ul><li>alpha</li><li>beta</li></ul></body></html>", encoding="utf-8")
+        long = Path(cls.tmp.name, "long.html")
+        long.write_text("<html><body>" + "".join(f"<p>line {i} " + "word " * 30 + "</p>" for i in range(200))
+                        + "</body></html>", encoding="utf-8")
+        cls.page, cls.long = page.as_uri(), long.as_uri()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_blocks_stay_apart_and_hidden_text_stays_out(self):
+        result = scrape.get_content(self.page)
+        self.assertNotIn("error", result)
+        lines = [ln.strip() for ln in result["content"].splitlines() if ln.strip()]
+        self.assertEqual(lines, ["Title", "First sentence.", "Second one.", "alpha", "beta"])
+        items = scrape.get_content(self.page, "li")["content"]
+        self.assertEqual(items, ["alpha", "beta"])
+
+    def test_a_cut_is_announced(self):
+        result = scrape.get_content(self.long)
+        self.assertIn("[truncated", result["content"])
 
 
 if __name__ == "__main__":

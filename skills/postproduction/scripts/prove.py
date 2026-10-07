@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from fractions import Fraction
@@ -841,7 +842,9 @@ def seek_for_frame(path, frame, stream="v:0", verify=True, probe_w=96,
 def _seek_tail(out, info):
     """The command line and the caveat, the same however the seek was proved."""
     sec = out.get("seek_seconds")
-    out["ffmpeg"] = (f"ffmpeg -ss {sec:.9f} -i {info['file']} -frames:v 1 "
+    # quoted: printed bare, a path with a space ("My Film [v2], final") cut the
+    # command short (Linux bot sweep 2026-10-07)
+    out["ffmpeg"] = (f"ffmpeg -ss {sec:.9f} -i {shlex.quote(info['file'])} -frames:v 1 "
                      "-c copy out.mov" if sec is not None else None)
     out["note"] = ("Every ProRes and DNx frame is a keyframe, so a copy starting "
                    "at this instant starts on frame N whatever the timeline "

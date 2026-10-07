@@ -882,6 +882,16 @@ def test_deliver_and_archive():
         check("a file named by another version's records is protected",
               not r4["pass"] and r4["referenced_elsewhere"])
 
+        # Kept and condemned at once: the keep ledger sits beside the file it
+        # lists, where the dependency gate does not look, and every gate passed
+        # (2026-10-07).
+        os.remove(dep)
+        beside = os.path.join(old, "SHA256.json")
+        PROVE.write_ledger(PROVE.sha_files([condemned]), beside)
+        r5 = ARC.sweep(beside, [condemned], {"OLD.mov": restore}, execute=True)
+        check("a file the keep ledger lists as a survivor is not deleted",
+              not r5["pass"] and os.path.exists(condemned))
+
 
 # ---------------------------------------------------------------- media
 
@@ -1092,6 +1102,8 @@ def test_media():
         _media_walk_does_not_deadlock(tmp)
         _media_clipping_is_streamed(tmp)
         _media_seek_without_walking(tmp)
+        if _comp_available():
+            _media_cadence_true_time(tmp)
 
 
 CLIP_MEM_CHILD = '''\
@@ -1757,6 +1769,37 @@ def _media_normalise_one_track(tmp):
         check("a stream that is not named a:N is refused", True)
 
 
+def _media_cadence_true_time(tmp):
+    """Linux bot sweep 2026-10-07: the cadence found the lurch at the right phase
+    and then stretched the step AFTER it in the true time vector, so anything
+    smoothed against it moved every lurch one frame late."""
+    import cv2
+    import numpy as np
+    import _track as T
+    rng = np.random.default_rng(3)
+    W, H, N = 320, 180, 41
+    base = cv2.GaussianBlur(rng.random((H, W * 4)).astype(np.float32), (0, 0), 1.2)
+    steps = np.array([8.0 if j % 5 == 2 else 4.0 for j in range(N - 1)])
+    x = np.concatenate([[0.0], np.cumsum(steps)])
+    raw = b"".join(
+        np.repeat((np.clip(cv2.warpAffine(base, np.float32([[1, 0, -x[k]], [0, 1, 0]]),
+                                          (W, H), flags=cv2.INTER_CUBIC), 0, 1) * 255
+                   ).astype(np.uint8)[..., None], 3, axis=2).tobytes() for k in range(N))
+    clip = os.path.join(tmp, "conformed_pan.mp4")
+    run = subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                          "-s", f"{W}x{H}", "-r", "24", "-i", "-", "-c:v", "libx264", "-qp", "0",
+                          "-pix_fmt", "yuv444p", clip], input=raw, capture_output=True)
+    if run.returncode != 0:
+        check("a conformed pan could be built", False, run.stderr.decode()[:200])
+        return
+    r = T.cadence(clip, scale=1.0)
+    d = np.diff(np.array(r.get("true_time_normalised") or [0.0, 1.0]))
+    long_steps = [j for j in range(len(d)) if d[j] > 1.5 * np.median(d)]
+    check("the true time vector stretches the measured lurch steps, not the next ones",
+          r["verdict"] == "CONFORMED" and long_steps[:4] == [2, 7, 12, 17],
+          f"{r['verdict']}, long steps {long_steps[:4]} for lurches at 2, 7, 12, 17")
+
+
 def _media_honest_enlargement(tmp):
     """An honest enlargement of a 4:2:0 source must not be called a fake.
 
@@ -2197,6 +2240,15 @@ def test_comp_geometry():
           abs(a["object_px"] / b["object_px"] - 2.0) < 1e-9,
           f"{a['object_px']:.1f} px and {b['object_px']:.1f} px")
 
+    # Linux bot sweep 2026-10-07: a vanishing NEGATIVE w was clamped to zero.
+    with np.errstate(all="raise"):
+        try:
+            q = G.apply_h(np.diag([1.0, 1.0, -1e-13]), [[2.0, 3.0]])
+            far = bool(np.all(np.isfinite(q)) and q[0, 0] < 0)
+        except FloatingPointError:
+            far = False
+    check("a point on the far side of the line stays finite and keeps its side", far)
+
 
 def test_comp_pixels():
     section("compositing: pixels")
@@ -2345,6 +2397,25 @@ def test_comp_mattes():
     check("preserve_luma puts the light back exactly",
           abs(d2["foreground_luma_change_mean"]) < 1e-5,
           f"{d2['foreground_luma_change_mean']:+.6f}")
+
+    # Linux bot sweep 2026-10-07: two backings of the same total brightness, a
+    # blue and a green pass, were all UNSOLVED by a ratio of channel sums.
+    h, w = 4, 6
+    al = np.linspace(0, 1, h * w).reshape(h, w).astype(np.float32)
+    fgc = np.full((h, w, 3), (0.6, 0.3, 0.2), np.float32)
+    k1 = np.array([0.1, 0.2, 0.8], np.float32)
+    k2 = np.array([0.1, 0.8, 0.2], np.float32)
+
+    def _shot(bk):
+        return P.Image(fgc * al[..., None] + (1 - al[..., None]) * bk, "linear", "t", "t")
+
+    def _flat(bk):
+        return P.Image(np.broadcast_to(bk, (h, w, 3)).copy(), "linear", "t", "t")
+
+    tri = M.triangulate(_shot(k1), _shot(k2), _flat(k1), _flat(k2))
+    check("triangulation solves two backings of equal brightness",
+          tri["unsolved_px"] == 0 and float(np.abs(tri["alpha"] - al).max()) < 1e-5,
+          f"{tri['unsolved_px']} unsolved")
 
 
 def test_comp_outlines():
@@ -2510,6 +2581,27 @@ def test_comp_track():
           kept < 1.2, f"worst {kept:.2f} against the true settle")
     check("and the residual is reported against the RAW values",
           "residual_vs_raw_px" in sm and sm["note"].startswith("the residual"))
+
+    # Linux bot sweep 2026-10-07: holdout with no detections compared the track's
+    # own quads with its own warps and passed a track of random warps.
+    import io
+    import contextlib
+    import comp as CP
+    rng = np.random.default_rng(1)
+    hc = np.array([[100, 80], [500, 70], [520, 400], [90, 410]], float)
+    hw = {str(i): (np.eye(3) + rng.normal(0, 0.05, (3, 3)) * [[1, 1, 40], [1, 1, 40], [0, 0, 0]]).tolist()
+          for i in range(12)}
+    with tempfile.TemporaryDirectory() as tmp:
+        tp = os.path.join(tmp, "track.json")
+        with open(tp, "w", encoding="utf-8") as fh:
+            json.dump({"warps": hw, "corners": hc.tolist(),
+                       "quads": {k: G.apply_h(np.array(v), hc).tolist() for k, v in hw.items()}}, fh)
+        hargs = CP.build_parser().parse_args(["holdout", "--track", tp, "--json"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            hargs.fn(hargs)
+    check("holdout without detections is UNPROVEN, not a pass",
+          json.loads(buf.getvalue())["verdict"] == "UNPROVEN")
 
     _comp_memory_checks()
 

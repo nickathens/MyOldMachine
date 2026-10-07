@@ -1,5 +1,6 @@
 {
   "look": "classic",
+  "themeCSS": ".edgeLabel p { padding: 0 3px; }",
   "flowchart": {"layout": "dagre", "minNodeWidth": 0},
   "state": {"layout": "dagre", "minNodeWidth": 0},
   "class": {"layout": "dagre"},

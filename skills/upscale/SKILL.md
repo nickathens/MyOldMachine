@@ -78,6 +78,15 @@ weights with `strict=True` (no basicsr dependency), tiled, on MPS, CUDA or CPU,
 whichever exists. About 4 seconds for a 1.5 MP image at 2x on an M series GPU;
 weights (~65 MB each) download to `~/.cache/realesrgan` on first use.
 
+**Memory.** On Linux both scripts run themselves again inside a memory-capped
+user scope (6 GB, `UPSCALE_MEM_MAX` to change it), outside the bot's service,
+where an out of memory kill would stop the whole service. Measured on CPU: 4x
+with the default 512 tile peaks about 4.5 GB, 2.1 GB with `--tile 256`, 2x
+about 1.7 GB; the full-size arrays add about 0.1 GB per output megapixel (a
+1080p frame at 4x needs about 5 GB in all). A job the cap kills says so. On
+Linux where no scope can be made (no user session), only a job estimated under
+3 GB runs; the refusal says what to lower. macOS runs as before.
+
 ## The legacy wrapper
 
 The `python -m realesrgan` CLI does not ship in `realesrgan 0.3.0`. The
@@ -94,6 +103,12 @@ It also applies EXIF orientation, keeps the ICC profile, keeps 16 bits in a
 PNG output, and exits 1 when the output could not be written (it used to print
 "Saved" for a file that was never written).
 
+`--face` takes the upsampler's proven device (2026-10-07). GFPGAN picked CUDA
+on its own, so on a card the CUDA wheels carry no kernels for (a GTX 970) it
+died on every run, and it saved its face detector's weights under whatever
+directory the run started in. Those weights now live in
+`~/.cache/realesrgan/gfpgan/weights`.
+
 ## Examples
 
 "Upscale this image to 4x"
@@ -104,7 +119,9 @@ PNG output, and exits 1 when the output could not be written (it used to print
 ## Notes
 
 - First run downloads model weights to `~/.cache/realesrgan/` (~65 MB for
-  x2plus, ~65 MB for x4plus, ~350 MB for GFPGAN face enhance).
+  x2plus, ~65 MB for x4plus, ~350 MB for GFPGAN face enhance plus ~190 MB for
+  its face detector and parser). A download that goes silent for 60 seconds
+  fails instead of hanging.
 - `hybrid_upscale.py` picks MPS, CUDA or CPU automatically. The legacy wrapper
   is CPU only where the GPU is unsupported by the CUDA wheels (e.g. GTX 970);
   budget minutes there and use `--tile`.

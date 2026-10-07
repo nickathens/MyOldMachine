@@ -12,8 +12,24 @@ Usage:
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+
+# Each feature computes its own full-length STFT or CQT, so memory grows with
+# the length: a 34 minute album peaked past 6 GB for the plain analysis
+# (OOM-killed in a capped scope, 2026-10-07) and at 3 GB for a spectrogram.
+# On Linux the run is a child of the bot's service, and when the kernel
+# OOM-kills a process in a unit, systemd's default OOMPolicy=stop takes the
+# whole unit down. So the script re-runs itself in its own memory-capped user
+# scope (the voice skill's pattern); on Linux where no scope can be made, only
+# files up to ten minutes run whole, and --start/--duration analyse a section
+# of a longer one (Linux bot sweep 2026-10-07). macOS has no scope and no such
+# policy; it runs as before.
+MEM_MAX = os.environ.get("AUDIO_ANALYSIS_MEM_MAX", "6G")
+UNPROTECTED_MAX_SECONDS = 10 * 60
 
 
 KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
@@ -42,7 +58,48 @@ def estimate_key(chroma_mean) -> tuple[str, float]:
     return best
 
 
-def analyze_audio(input_path: str, output_dir: str = None) -> dict:
+def _scope_prefix():
+    """systemd-run argv for a memory-capped user scope, or None when none can be made here."""
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        return None
+    prefix = [systemd_run, "--user", "--scope", "--quiet", "--collect",
+              "-p", f"MemoryMax={MEM_MAX}", "-p", "MemorySwapMax=0", "--"]
+    try:
+        probe = subprocess.run(prefix + ["true"], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return prefix if probe.returncode == 0 else None
+
+
+def _isolate(argv):
+    """Run this script again inside the capped scope and return its exit code;
+    None when already inside one, or when no scope can be made here."""
+    if os.environ.get("AUDIO_ANALYSIS_ISOLATED") == "1":
+        return None
+    prefix = _scope_prefix()
+    if prefix is None:
+        return None
+    env = dict(os.environ, AUDIO_ANALYSIS_ISOLATED="1")
+    proc = subprocess.run(prefix + [sys.executable, os.path.abspath(__file__), *argv], env=env)
+    if proc.returncode < 0:
+        print(f"Error: the analysis was killed by signal {-proc.returncode}, most likely by the "
+              f"{MEM_MAX} memory cap: analyse a section with --start and --duration", file=sys.stderr)
+        return 1
+    return proc.returncode
+
+
+def _length(path):
+    try:
+        import librosa
+        return float(librosa.get_duration(path=str(path)))
+    except Exception:
+        return None
+
+
+def analyze_audio(input_path: str, output_dir: str = None, offset: float = 0.0,
+                  duration: float = None) -> dict:
     """Perform full audio analysis."""
     try:
         import librosa
@@ -62,8 +119,8 @@ def analyze_audio(input_path: str, output_dir: str = None) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Load audio
-        y, sr = librosa.load(str(input_path), sr=None)
+        # Load audio (a section when offset/duration are given)
+        y, sr = librosa.load(str(input_path), sr=None, offset=offset, duration=duration)
         duration = librosa.get_duration(y=y, sr=sr)
 
         # BPM detection
@@ -111,7 +168,8 @@ def _image_path(input_path: Path, output: str | None, kind: str) -> Path:
     return folder / f"{input_path.stem}.{kind}.png"
 
 
-def generate_waveform(input_path: str, output_path: str = None) -> dict:
+def generate_waveform(input_path: str, output_path: str = None, offset: float = 0.0,
+                      duration: float = None) -> dict:
     """Generate waveform visualization."""
     try:
         import librosa
@@ -127,7 +185,7 @@ def generate_waveform(input_path: str, output_path: str = None) -> dict:
     output_path = _image_path(input_path, output_path, "waveform")
 
     try:
-        y, sr = librosa.load(str(input_path), sr=None)
+        y, sr = librosa.load(str(input_path), sr=None, offset=offset, duration=duration)
 
         plt.figure(figsize=(14, 4))
         plt.subplot(1, 1, 1)
@@ -144,7 +202,8 @@ def generate_waveform(input_path: str, output_path: str = None) -> dict:
         return {"error": str(e)}
 
 
-def generate_spectrum(input_path: str, output_path: str = None) -> dict:
+def generate_spectrum(input_path: str, output_path: str = None, offset: float = 0.0,
+                      duration: float = None) -> dict:
     """Generate spectrogram visualization."""
     try:
         import librosa
@@ -161,7 +220,7 @@ def generate_spectrum(input_path: str, output_path: str = None) -> dict:
     output_path = _image_path(input_path, output_path, "spectrum")
 
     try:
-        y, sr = librosa.load(str(input_path), sr=None)
+        y, sr = librosa.load(str(input_path), sr=None, offset=offset, duration=duration)
 
         plt.figure(figsize=(14, 6))
 
@@ -190,13 +249,28 @@ def main():
     parser.add_argument("--spectrum", action="store_true", help="Generate spectrogram image")
     parser.add_argument("--output", "-o", help="Output directory for images")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--start", type=float, default=0.0, help="Analyse from this second")
+    parser.add_argument("--duration", type=float, default=None, help="Analyse this many seconds")
     args = parser.parse_args()
 
+    rc = _isolate(sys.argv[1:])
+    if rc is not None:
+        return rc
+    if (sys.platform.startswith("linux") and args.duration is None
+            and os.environ.get("AUDIO_ANALYSIS_ISOLATED") != "1"):
+        length = _length(args.input)
+        if length is not None and length - args.start > UNPROTECTED_MAX_SECONDS:
+            print(f"Error: no memory-capped scope can be made here, and {length / 60:.0f} minutes is too "
+                  f"long to analyse unprotected; give --duration (at most {UNPROTECTED_MAX_SECONDS}) "
+                  "and --start for a section", file=sys.stderr)
+            return 1
+
+    section = {"offset": args.start, "duration": args.duration}
     results = {}
 
     # Generate visualizations if requested
     if args.waveform:
-        result = generate_waveform(args.input, args.output)
+        result = generate_waveform(args.input, args.output, **section)
         if "error" in result:
             print(f"Waveform error: {result['error']}")
         else:
@@ -204,7 +278,7 @@ def main():
             results["waveform"] = result["output"]
 
     if args.spectrum:
-        result = generate_spectrum(args.input, args.output)
+        result = generate_spectrum(args.input, args.output, **section)
         if "error" in result:
             print(f"Spectrum error: {result['error']}")
         else:
@@ -213,14 +287,14 @@ def main():
 
     # Run analysis
     if not (args.waveform or args.spectrum) or args.bpm or args.key:
-        analysis = analyze_audio(args.input)
+        analysis = analyze_audio(args.input, **section)
 
         if "error" in analysis:
             print(f"Error: {analysis['error']}")
             return 1
 
         if args.json:
-            print(json.dumps(analysis, indent=2))
+            print(json.dumps(analysis, indent=2, ensure_ascii=False))
         elif args.bpm:
             print(f"BPM: {analysis['bpm']}")
         elif args.key:

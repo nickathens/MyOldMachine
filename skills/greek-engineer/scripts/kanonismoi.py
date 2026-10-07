@@ -188,13 +188,21 @@ DOMAINS = {
 }
 
 
+def _today():
+    return dt.date.today()
+
+
+def _age(d, today=None):
+    return ((today or _today()) - dt.date.fromisoformat(d["as_of"])).days
+
+
 def freshness(today=None):
     """Έλεγχος φρεσκάδας: ποια πεδία έχουν ξεπεράσει το όριο επαλήθευσης.
 
     Επιστρέφει λίστα με την ηλικία κάθε πεδίου σε ημέρες και σήμανση stale.
     Η ημερομηνία today δίνεται ρητά στους ελέγχους για ντετερμινισμό.
     """
-    today = today or dt.date.today()
+    today = today or _today()
     rows = []
     for slug, d in DOMAINS.items():
         as_of = dt.date.fromisoformat(d["as_of"])
@@ -206,10 +214,20 @@ def freshness(today=None):
 
 def _print_domain(slug, d):
     print(f"{d['titlos']}")
+    age = _age(d)
+    if age > STALE_DAYS:
+        # the picture is shown anyway, but never without saying it is old
+        print(f"  ΞΕΠΕΡΑΣΜΕΝΟ: επαληθεύτηκε πριν από {age} ημέρες (όριο {STALE_DAYS}). "
+              "Ξαναεπαλήθευσε στο πρωτογενές κείμενο πριν το χρησιμοποιήσεις.")
     print(f"  Επαλήθευση: {d['as_of']} {_VERIFY} στο πρωτογενές κείμενο πριν από χρήση")
     print(f"  Κατάσταση: {d['katastasi']}")
     print(f"  Για τον μηχανικό: {d['gia_ton_michaniko']}")
     print(f"  Πηγές: {'; '.join(d['piges'])}")
+
+
+def _with_age(d):
+    age = _age(d)
+    return {**d, "ilikia_imeres": age, "stale": age > STALE_DAYS}
 
 
 def main(argv=None):
@@ -240,7 +258,8 @@ def main(argv=None):
     elif args.cmd == "show":
         if args.all:
             if args.json:
-                print(json.dumps(DOMAINS, ensure_ascii=False, indent=2))
+                print(json.dumps({k: _with_age(v) for k, v in DOMAINS.items()},
+                                 ensure_ascii=False, indent=2))
             else:
                 for slug, d in DOMAINS.items():
                     _print_domain(slug, d)
@@ -252,7 +271,7 @@ def main(argv=None):
             if d is None:
                 raise SystemExit(f"Άγνωστο πεδίο {args.pedio}. Διαθέσιμα: " + ", ".join(DOMAINS))
             if args.json:
-                print(json.dumps(d, ensure_ascii=False, indent=2))
+                print(json.dumps(_with_age(d), ensure_ascii=False, indent=2))
             else:
                 _print_domain(args.pedio, d)
     elif args.cmd == "freshness":

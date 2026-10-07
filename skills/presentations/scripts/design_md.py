@@ -129,6 +129,76 @@ def _pick_color(flat: dict[str, str], candidates: list[str]) -> str:
     return ""
 
 
+def parse_color(value: str) -> tuple[float, float, float, float] | None:
+    """(r, g, b, alpha) of a #hex or rgb()/rgba() colour, or None."""
+    text = str(value or "").strip().lower()
+    if text.startswith("#"):
+        h = text[1:]
+        if len(h) in (3, 4):
+            h = "".join(c * 2 for c in h)
+        if len(h) not in (6, 8) or any(c not in "0123456789abcdef" for c in h):
+            return None
+        alpha = int(h[6:8], 16) / 255 if len(h) == 8 else 1.0
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), alpha
+    m = re.match(r"rgba?\(([^)]+)\)", text)
+    if not m:
+        return None
+    parts = [p.strip() for p in m.group(1).replace("/", ",").split(",") if p.strip()]
+    try:
+        r, g, b = (float(v) for v in parts[:3])
+        alpha = float(parts[3]) if len(parts) > 3 else 1.0
+    except ValueError:
+        return None
+    return r, g, b, alpha
+
+
+def luminance(color: str) -> float | None:
+    """WCAG relative luminance of an opaque colour, None when unreadable."""
+    rgba = parse_color(color)
+    if rgba is None:
+        return None
+
+    def channel(v):
+        v /= 255
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    return 0.2126 * channel(rgba[0]) + 0.7152 * channel(rgba[1]) + 0.0722 * channel(rgba[2])
+
+
+def contrast(fg: str, bg: str) -> float | None:
+    """WCAG contrast ratio of fg over bg (fg's alpha blended onto bg)."""
+    f, b = parse_color(fg), parse_color(bg)
+    if f is None or b is None:
+        return None
+    mixed = "#" + "".join(f"{round(f[i] * f[3] + b[i] * (1 - f[3])):02x}" for i in range(3))
+    l1, l2 = luminance(mixed), luminance("#" + "".join(f"{round(b[i]):02x}" for i in range(3)))
+    return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
+
+
+# Below these a text colour is not taken from a design system or an
+# aesthetic reference: the deck's mode supplies its own. Runway's prose names
+# Charcoal #404040 "body text on light surfaces and secondary text", the
+# parser took it as text_mid on a black page, and table cells and concept
+# text came out at 2.0:1; cahiers' journal yellow is a colour field, but the
+# accent colours captions, section numbers and emphasis, at 1.43:1 on its
+# cream; and "cream" is a text colour in the theme (card names, the cover
+# subtitle, emphasis), while the light references set it to their paper, the
+# background itself: 1.0:1 (2026-10-07).
+READABLE = {"text": 4.5, "text_mid": 4.5, "text_dim": 3.0, "accent": 3.0, "cream": 4.5}
+
+
+def drop_unreadable(palette: dict[str, str]) -> dict[str, str]:
+    """The palette without text colours that cannot be read on its own bg."""
+    bg = palette.get("bg")
+    if not bg:
+        return palette
+    out = dict(palette)
+    for slot, minimum in READABLE.items():
+        ratio = contrast(out[slot], bg) if out.get(slot) else None
+        if ratio is not None and ratio < minimum:
+            del out[slot]
+    return out
+
+
 def map_colors(colors: Any) -> dict[str, str]:
     flat = _flatten_colors(colors)
     if not flat:
@@ -525,6 +595,8 @@ def parse_design_md(text: str, source_path: str = "") -> dict[str, Any]:
         name = _first_h1(body)
     if not description:
         description = _first_paragraph(body)
+
+    palette = drop_unreadable(palette)
 
     if not palette and not fonts_mapped:
         raise DesignMdError(

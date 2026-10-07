@@ -91,7 +91,15 @@ def reverb(audio, seconds=1.5, wet=0.3):
     return (1 - wet) * dry + wet * tail * (np.max(np.abs(audio)) / max(np.max(np.abs(tail)), 1e-12))
 
 def envelope_adsr(length, attack=0.01, decay=0.1, sustain=0.7, release=0.2):
-    """Generate ADSR envelope"""
+    """Generate ADSR envelope.
+
+    A sound shorter than attack + decay + release gets the three scaled down
+    to fit, so the release still reaches silence: cut off mid-decay, a short
+    tone ended at full level with a click."""
+    total = attack + decay + release
+    if 0 < length < total:
+        k = length / total
+        attack, decay, release = attack * k, decay * k, release * k
     samples = int(length * SAMPLE_RATE)
     attack_samples = int(attack * SAMPLE_RATE)
     decay_samples = int(decay * SAMPLE_RATE)
@@ -178,8 +186,9 @@ def distortion(audio, amount=0.5):
     return np.tanh(audio * (1 + amount * 10))
 
 def bitcrush(audio, bits=8):
-    """Reduce bit depth"""
-    levels = 2 ** bits
+    """Reduce bit depth: a signed range has 2**(bits-1) steps a side (the
+    full 2**bits a side, as before, kept one bit more than asked)."""
+    levels = 2 ** (bits - 1)
     return np.round(audio * levels) / levels
 
 def pitch_sweep(start_freq, end_freq, duration, waveform='sine'):
@@ -250,7 +259,9 @@ def synth_pad(freq=220, duration=4.0, voices=4, detune=0.02):
     pad = np.zeros(int(duration * SAMPLE_RATE))
 
     for i in range(voices):
-        detune_factor = 1 + (i - voices/2) * detune
+        # centred on the pitch asked: (i - voices/2) put four voices at 0.96
+        # to 1.02, a pad about 17 cents flat
+        detune_factor = 1 + (i - (voices - 1) / 2) * detune
         voice = oscillator(freq * detune_factor, duration, 'saw')
         pad += voice / voices
 

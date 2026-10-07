@@ -2195,8 +2195,8 @@ body{
 
     // ── Restart ──
 
-    function confirmRestart(label,cb){
-        var msg='Restart '+label+'? It will be unreachable for a few seconds.';
+    function confirmRestart(label,cb,note){
+        var msg='Restart '+label+'? It will be unreachable for a few seconds.'+(note?' '+note:'');
         if(tg&&typeof tg.showConfirm==='function'){
             tg.showConfirm(msg,function(ok){if(ok)cb()});
         }else if(window.confirm(msg)){
@@ -2288,7 +2288,7 @@ body{
         var b=document.getElementById('restart-bot-btn');
         var m=document.getElementById('restart-miniapp-btn');
         if(b)b.addEventListener('click',function(){
-            confirmRestart('the MyOldMachine bot',function(){doRestart('bot','the bot')});
+            confirmRestart('the MyOldMachine bot',function(){doRestart('bot','the bot')},'A task the bot is working on right now stops. The /restart command in the chat refuses while a task runs.');
         });
         if(m)m.addEventListener('click',function(){
             confirmRestart('the Mini App',function(){doRestart('miniapp','the Mini App')});

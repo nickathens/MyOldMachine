@@ -146,7 +146,9 @@ class VttParse(unittest.TestCase):
 
 class LocalWhisperLoad(unittest.TestCase):
     def test_whisper_found_beside_the_interpreter(self):
-        venv = Path(tempfile.mkdtemp(prefix="venv-")) / "bin"
+        tmp = tempfile.TemporaryDirectory(prefix="venv-")
+        self.addCleanup(tmp.cleanup)
+        venv = Path(tmp.name) / "bin"
         venv.mkdir()
         exe = venv / "whisper"
         exe.write_text("#!/bin/sh\n")
@@ -154,6 +156,56 @@ class LocalWhisperLoad(unittest.TestCase):
         with mock.patch.object(wh.shutil, "which", return_value=None), \
                 mock.patch.object(wh.sys, "executable", str(venv / "python")):
             self.assertEqual(wh.whisper_bin(), str(exe))
+
+
+class SweepRest20261007(unittest.TestCase):
+    """Linux bot sweep 2026-10-07. The config file setup.py writes says to uncomment
+    WATCH_LOCAL_WHISPER_MODEL / _DEVICE there, but whisper.py read them from
+    the environment only, so the file's setting did nothing.
+    And transcript stamps past an hour read [75:30] while the frame list
+    beside them says t=1:15:30."""
+
+    def _model_used(self, env, file_text):
+        tmp = tempfile.TemporaryDirectory(prefix="watchcfg-")
+        self.addCleanup(tmp.cleanup)
+        cfg = Path(tmp.name) / ".env"
+        cfg.write_text(file_text, encoding="utf-8")
+        audio = Path(tmp.name) / "audio.mp3"
+        audio.write_bytes(b"x")
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "stop here")
+
+        clean = {k: v for k, v in wh.os.environ.items() if not k.startswith("WATCH_LOCAL_WHISPER_")}
+        clean.update(env)
+        with mock.patch.object(wh, "CONFIG_ENV", cfg), \
+                mock.patch.object(wh, "whisper_bin", return_value="/venv/bin/whisper"), \
+                mock.patch.object(wh, "_isolate_or_refuse", side_effect=lambda c, m, d: c), \
+                mock.patch.object(wh.subprocess, "run", side_effect=fake_run), \
+                mock.patch.dict(wh.os.environ, clean, clear=True), \
+                mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                wh._transcribe_local(audio)
+        cmd = seen[0]
+        return cmd[cmd.index("--model") + 1], cmd[cmd.index("--device") + 1]
+
+    def test_the_config_file_setting_is_honoured(self):
+        self.assertEqual(self._model_used({}, "WATCH_LOCAL_WHISPER_MODEL=tiny\n"), ("tiny", "cpu"))
+
+    def test_the_environment_wins_over_the_file(self):
+        self.assertEqual(self._model_used({"WATCH_LOCAL_WHISPER_MODEL": "small"},
+                                          "WATCH_LOCAL_WHISPER_MODEL=tiny\n"), ("small", "cpu"))
+
+    def test_a_commented_line_is_ignored(self):
+        self.assertEqual(self._model_used({}, "#   WATCH_LOCAL_WHISPER_MODEL=tiny   # note\n"), ("base", "cpu"))
+
+    def test_hour_long_stamps_match_the_frame_list(self):
+        out = tr.format_transcript([{"start": 4530.4, "end": 4533.0, "text": "late"},
+                                    {"start": 65.0, "end": 66.0, "text": "early"}])
+        self.assertIn("[1:15:30] late", out)
+        self.assertIn("[01:05] early", out)
 
 
 if __name__ == "__main__":

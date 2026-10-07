@@ -25,3 +25,13 @@ const { fontFamily: greekFamily } = loadGreekCompanion("normal", {
 });
 
 export const FONT = `${fontFamily}, ${greekFamily}, sans-serif`;
+
+// CSS text-transform: uppercase follows the element's language, and Remotion's
+// page is <html lang="en">, so a Greek label set in capitals kept its tonos
+// (ΔΕΛΤΊΟ ΑΠΟΣΤΟΛΉΣ). Greek capitals carry none, and a tonos that kept two
+// vowels apart turns into a diaeresis (τσάι ΤΣΑΪ, άυλος ΑΫΛΟΣ); Chromium does
+// both only under lang="el". Put lang={capsLang(text)} on every element that
+// sets textTransform "uppercase". Latin text gets no attribute, so it is
+// untouched.
+export const capsLang = (text: unknown): "el" | undefined =>
+  /[\u0370-\u03FF\u1F00-\u1FFF]/.test(String(text ?? "")) ? "el" : undefined;

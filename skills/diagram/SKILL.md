@@ -33,7 +33,9 @@ Defaults: `--theme dark`, `--background transparent`, `--width 1600`, format inf
 natural size. It means the same on Mermaid CLI 11 and 12; the script reads the installed
 version and passes the width the way that version takes it, because 12 removed `-w`.
 
-The look is Mermaid 11's: flat boxes, labels at their natural width, the dagre layout.
+The look is Mermaid 11's: flat boxes, labels at their natural width, the dagre layout,
+plus 3 px either side of an edge label, whose box Mermaid otherwise cuts at the text's
+exact width so the last letter lost its edge.
 `scripts/mermaid.json` keeps it on Mermaid 12, so a diagram re-rendered after the update
 matches one rendered before it. A diagram's own front matter always wins, so one diagram
 can still ask for Mermaid 12's ELK layout or its shaded `neo` look:

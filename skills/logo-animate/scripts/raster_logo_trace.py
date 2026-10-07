@@ -212,12 +212,21 @@ def html_document(svg_text: str) -> str:
 
 
 def draw_evenodd_mask(size: tuple[int, int], loops: list[list[tuple[float, float]]]) -> Image.Image:
+    """Even-odd fill of the loops, one sample at each pixel's centre.
+
+    Pillow's polygon fill includes its boundary, so drawn at 1:1 a 60 px
+    square came out 61 px and a 30 px hole 29: a one pixel fringe on the right
+    and bottom of every shape in the QA render that the SVG does not have.
+    Drawn at 2x, the loops' pixel corners land on even rows and columns and
+    each pixel's centre on the odd ones, so sampling those reads the shape
+    the way a browser does.
+    """
     width, height = size
     mask = np.zeros((height, width), dtype=bool)
     for loop in loops:
-        temp = Image.new("L", size, 0)
-        ImageDraw.Draw(temp).polygon(loop, fill=255)
-        mask ^= np.asarray(temp) > 0
+        temp = Image.new("L", (width * 2, height * 2), 0)
+        ImageDraw.Draw(temp).polygon([(2 * x, 2 * y) for x, y in loop], fill=255)
+        mask ^= np.asarray(temp)[1::2, 1::2] > 0
     return Image.fromarray(mask.astype(np.uint8) * 255, "L")
 
 

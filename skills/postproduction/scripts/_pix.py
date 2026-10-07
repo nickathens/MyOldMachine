@@ -487,6 +487,75 @@ def memory_headroom():
     return int(best) if best is not None else 1 << 62
 
 
+# ffmpeg 6.1 converts RGB back to YUV with the BT.601 matrix unless the graph
+# names another, and write_clip tagged its output BT.709: an untouched frame
+# went YUV, RGB, YUV and came back at 22 dB on luma (2026-10-07). The rule here
+# is to MIRROR the source: decode with its own matrix, encode back with the same
+# one, and tag the output exactly as the source was tagged. An untagged source
+# is read the way ffmpeg wrote it (BT.601, its own default for any raster) and
+# written back the same way, untagged, so a player shows plate and composite
+# alike whatever it assumes. (A per raster guess, BT.709 for HD, read an
+# untagged SD clip and its untagged HD enlargement with two different matrices
+# and called an honest enlargement a fake.)
+_YUV_MATRICES = {"bt709", "smpte170m", "bt470bg", "bt2020nc", "bt2020c",
+                 "smpte240m", "fcc"}
+_SWS_MATRIX = {"bt709": "bt709", "smpte170m": "smpte170m", "bt470bg": "bt470",
+               "bt2020nc": "bt2020", "bt2020c": "bt2020",
+               "smpte240m": "smpte240m", "fcc": "fcc"}
+
+
+def _tag(value):
+    return value if value and value not in ("unknown", "reserved",
+                                            "unspecified") else None
+
+
+def decode_params(info):
+    """`setparams` naming the source's YUV matrix and range, or None for RGB."""
+    colour = info.get("colour") or {}
+    space = _tag(colour.get("matrix"))
+    if space in ("gbr", "rgb"):
+        return None
+    if space not in _YUV_MATRICES:
+        space = "smpte170m"            # what ffmpeg itself assumes untagged
+    rng = "pc" if colour.get("range") in ("pc", "jpeg", "full") else "tv"
+    return f"setparams=colorspace={space}:range={rng}"
+
+
+def encode_params(colour=None):
+    """(-vf filter, tag options) that write RGB back as the source was written.
+
+    With no source colour (a caller that has none) it is BT.709, tagged. So is
+    an RGB source (a PNG sequence, libx264rgb): it has no YUV matrix or range
+    to mirror, and `-colorspace gbr` is no encoder option, so ffmpeg refused
+    to open the output and the composite was never written.
+
+    Every label also goes on the frames (setparams), because ffmpeg 7 and
+    later write a file's colour from its frames: on 9.0.2 the scale alone
+    labelled an untagged plate's composite BT.601, so a player showed it apart
+    from its plate, and -color_primaries and -color_trc were dropped
+    (measured 2026-10-07). The options stay for 6.1.
+    """
+    if colour is None or _tag(colour.get("matrix")) in ("gbr", "rgb"):
+        colour = {"matrix": "bt709", "primaries": "bt709", "transfer": "bt709",
+                  "range": "tv"}
+    written = {key: _tag(colour.get(key))
+               for key in ("matrix", "primaries", "transfer", "range")}
+    if written["matrix"] and written["matrix"] not in _SWS_MATRIX:
+        written["matrix"] = "smpte170m"    # swscale writes it as BT.601: say so
+    rng = "pc" if written["range"] in ("pc", "jpeg", "full") else "tv"
+    matrix = _SWS_MATRIX.get(written["matrix"], "bt601")
+    labels, tags = [], []
+    for key, label, option in (("matrix", "colorspace", "-colorspace"),
+                               ("primaries", "color_primaries", "-color_primaries"),
+                               ("transfer", "color_trc", "-color_trc"),
+                               ("range", "range", "-color_range")):
+        labels.append(f"{label}={written[key] or 'unknown'}")
+        if written[key]:
+            tags += [option, written[key]]
+    return (f"scale=out_color_matrix={matrix}:out_range={rng},"
+            f"setparams={':'.join(labels)}", tags)
+
+
 def decoded_bytes(info, start=0, count=None):
     """What holding this span decoded costs: float32 RGB, as read_frames yields."""
     frames = max(int(info.get("frames") or 0) - int(start or 0), 0)
@@ -519,7 +588,7 @@ def read_frames(path, start=0, count=None, step=1, scale=None, bits=8):
     # the tool for reaching a frame by its packet timestamps when that is really
     # what is wanted.
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path)]
-    vf = []
+    vf = [p for p in (decode_params(info),) if p]
     if scale:
         vf.append(f"scale={w}:{h}:flags=lanczos")
     if vf:
@@ -569,8 +638,12 @@ def frame_at(path, index, bits=8):
 
 
 def write_clip(path, frames, rate, source_audio=None, crf=16, transfer="srgb",
-               pix_fmt="yuv420p"):
-    """Encode an iterable of Images. Nothing is downscaled, ever."""
+               pix_fmt="yuv420p", colour=None):
+    """Encode an iterable of Images. Nothing is downscaled, ever.
+
+    `colour` is the source's clip_info colour: the frames go back with the
+    source's own matrix and tags (encode_params). Without it, BT.709.
+    """
     C.need("ffmpeg")
     first = next(iter(frames), None)
     if first is None:
@@ -588,9 +661,10 @@ def write_clip(path, frames, rate, source_audio=None, crf=16, transfer="srgb",
     if source_audio:
         cmd += ["-i", str(source_audio), "-map", "0:v", "-map", "1:a?",
                 "-c:a", "copy"]
-    cmd += ["-c:v", "libx264", "-preset", "slow", "-crf", str(crf),
-            "-pix_fmt", pix_fmt, "-colorspace", "bt709", "-color_primaries",
-            "bt709", "-color_trc", "bt709", "-movflags", "+faststart", str(path)]
+    matrix_vf, tags = encode_params(colour)
+    cmd += ["-vf", matrix_vf,
+            "-c:v", "libx264", "-preset", "slow", "-crf", str(crf),
+            "-pix_fmt", pix_fmt, *tags, "-movflags", "+faststart", str(path)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     n = 0
     for img in _gen():

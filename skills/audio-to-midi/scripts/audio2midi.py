@@ -86,7 +86,7 @@ def transcribe_audio(input_path: str, output_path: str = None) -> dict:
     # "already exists"), which failed every rerun, and the loop below read
     # that as a model that would not load. It writes into a fresh folder
     # beside the destination instead, and the result replaces the old file.
-    last_error = "no basic-pitch model could be loaded"
+    errors = []
     for model_path in _model_candidates():
         with tempfile.TemporaryDirectory(dir=output_dir, prefix=".basic_pitch_") as scratch:
             try:
@@ -100,7 +100,10 @@ def transcribe_audio(input_path: str, output_path: str = None) -> dict:
                     model_or_model_path=model_path,
                 )
             except Exception as e:
-                last_error = str(e)
+                # name the exception: audioread's NoBackendError (a file that
+                # is not audio) has an empty message, and "Error: " said nothing
+                errors.append(f"{Path(str(model_path)).name}: {type(e).__name__}"
+                              + (f": {e}" if str(e) else ""))
                 continue
 
             midi_file = Path(scratch) / f"{input_path.stem}_basic_pitch.mid"
@@ -114,7 +117,7 @@ def transcribe_audio(input_path: str, output_path: str = None) -> dict:
             "message": f"Transcribed to {final}"
         }
 
-    return {"error": last_error}
+    return {"error": "; ".join(errors) or "no basic-pitch model could be loaded"}
 
 
 def main():

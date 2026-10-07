@@ -24,6 +24,14 @@ FLAT_ONLY = {'.jpg': 'JPEG', '.jpeg': 'JPEG', '.bmp': 'BMP'}
 
 _sessions = {}
 
+# Closed-form alpha matting builds a matrix over the edge band at full size:
+# about 1.8 GB at 2 MP, 3 GB at 4.3 MP, and a 12 MP photo passed 6 GB in six
+# seconds (OOM-killed in a capped scope, 2026-10-07; as a child of the bot's
+# service on Linux, an OOM kill stops the whole service). Matting runs on a copy
+# this big at most and its edge is scaled back up onto the full size picture
+# (Linux bot sweep 2026-10-07).
+MATTING_MAX_PIXELS = 2_000_000
+
 
 def session(model):
     """One rembg session per model: loading the network is most of the time per image."""
@@ -76,9 +84,19 @@ def save(img, output, icc, background=None):
 
 
 def cutout(input_path, model, alpha_matting=False, only_mask=False):
-    from rembg import remove
+    import rembg
     img, icc = load(input_path)
-    result = remove(img, session=session(model), alpha_matting=alpha_matting, only_mask=only_mask)
+    if alpha_matting and not only_mask and img.width * img.height > MATTING_MAX_PIXELS:
+        scale = (MATTING_MAX_PIXELS / (img.width * img.height)) ** 0.5
+        small = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                           Image.Resampling.LANCZOS)
+        matted = rembg.remove(small, session=session(model), alpha_matting=True)
+        result = img.convert('RGBA')
+        result.putalpha(matted.getchannel('A').resize(img.size, Image.Resampling.LANCZOS))
+        print(f"note: alpha matting ran at {small.width}x{small.height} to stay within memory; "
+              "its edge was scaled up to the full picture", file=sys.stderr)
+        return result, icc
+    result = rembg.remove(img, session=session(model), alpha_matting=alpha_matting, only_mask=only_mask)
     return result, icc
 
 
@@ -107,8 +125,13 @@ def batch_remove(input_dir, output_dir, model='u2net', background=None, alpha_ma
     files = sorted(p for p in Path(input_dir).iterdir() if p.is_file() and p.suffix.lower() in INPUTS)
     if not files:
         sys.exit(f"Error: no images in {input_dir} ({', '.join(sorted(INPUTS))})")
+    outputs = batch_outputs(files, output_dir, ext)
+    clobbered = [src.name for src, dst in outputs.items() if dst.resolve() in {f.resolve() for f in files}]
+    if clobbered:
+        sys.exit(f"Error: the results would be written over the originals ({', '.join(clobbered[:5])}); "
+                 "give a different output folder")
     failed = 0
-    for src, dst in batch_outputs(files, output_dir, ext).items():
+    for src, dst in outputs.items():
         try:
             remove_background(str(src), str(dst), model, background, alpha_matting)
         except Exception as e:  # one bad file must not stop the folder

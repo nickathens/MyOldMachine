@@ -82,8 +82,11 @@ def _run(cmd: list[str], enhance_only: bool, prefix: str, out_dir: Path, timeout
 
     if r.returncode != 0:
         err = (r.stderr.strip() or r.stdout.strip())
-        if "authenticate" in err.lower() or "token" in err.lower():
-            err = "Higgsfield not authenticated. Run: higgsfield auth login"
+        # The CLI's own sign-in failures, as in generate.py: a bare "token"
+        # matched other refusals and threw their words away (Linux bot sweep 2026-10-07).
+        if any(m in err.lower() for m in ("not authenticated", "session expired",
+                                          "unauthorized", "auth login")):
+            err = f"Higgsfield not authenticated. Run: higgsfield auth login ({err[:200]})"
         return {"success": False, "error": err[:500]}
 
     try:

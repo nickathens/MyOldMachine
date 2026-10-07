@@ -18,6 +18,12 @@ seconds black. What this version does, each proved by a render:
 - every clip keeps its own frame rate (read with ffprobe) and its sound;
 - cuts start at frame 1 and keep audio in sync;
 - any failure prints the reason and exits 1.
+
+Linux bot sweep 2026-10-07: a cut with a speed change rendered one black frame (the
+retiming keys Blender adds at a cut's ends pinned the clip); --width/--height
+and a joined clip of another size were cropped, not scaled; a relative
+--output failed; and Blender's 4 GB frame cache took a 60 second 1080p edit
+to 4.9 GB, 0.96 GB with the cache at 256 MB and the same frames.
 """
 import argparse
 import json
@@ -78,6 +84,11 @@ def setup_scene(info, width=None, height=None):
     scene.view_settings.look = 'None'
     scene.view_settings.exposure = 0.0
     scene.view_settings.gamma = 1.0
+    # A render reads each frame once, so the cache only costs memory: at
+    # Blender's default 4096 MB a 60 second 1080p edit peaked at 4.9 GB,
+    # at 256 MB at 0.96 GB with identical frames and no loss of speed.
+    # (Preferences are not saved by a --background run.)
+    bpy.context.preferences.system.memory_cache_limit = 256
     scene.sequence_editor_create()
     for strip in list(scene.sequence_editor.strips_all):
         scene.sequence_editor.strips.remove(strip)
@@ -92,12 +103,34 @@ def add_clip(path, info, frame_start=1, channel=1):
     """The movie strip and, when the file has audio, its sound strip."""
     ed = bpy.context.scene.sequence_editor
     name = os.path.basename(path)
-    movie = ed.strips.new_movie(name=name, filepath=path, channel=channel, frame_start=frame_start)
+    # FIT scales the picture into the frame: the API's default, ORIGINAL,
+    # cropped the middle out of a clip larger than the frame (--width and
+    # --height, or a bigger clip in a join)
+    movie = ed.strips.new_movie(name=name, filepath=path, channel=channel, frame_start=frame_start,
+                                fit_method='FIT')
     sound = None
     if info["has_audio"]:
         sound = ed.strips.new_sound(name=name + " audio", filepath=path,
                                     channel=channel + 1, frame_start=frame_start)
     return movie, sound
+
+
+def retime(strips, speed):
+    """Play each whole strip at `speed`: Blender 5 retiming, a key at each
+    end and the end key moved. The SPEED effect is locked to its input's
+    length there (right_handle is read only), and retiming also works on the
+    sound strip, with pitch kept. Done before any cut: on a cut strip
+    Blender adds keys at the cut's ends too, the end key cannot pass them,
+    and the clip collapsed to one black frame."""
+    for strip in strips:
+        if strip is None:
+            continue
+        length = strip.right_handle - strip.left_handle
+        keys = strip.retiming_keys
+        keys.add(timeline_frame=strip.left_handle)
+        keys[-1].timeline_frame = strip.left_handle + max(1, int(round(length / speed)))
+        if strip.type == "SOUND":
+            strip.pitch_correction = True
 
 
 def trim(strips, start_frames, end_frames, place_at):
@@ -203,8 +236,11 @@ def render(output, fmt='mp4', quality='high'):
     ff.audio_channels = 'STEREO'
     ff.audio_mixrate = 48000
     scene.render.use_file_extension = False   # write exactly the path asked for
+    # Blender cannot write a relative path with no .blend file to anchor it
+    # ("Couldn't create directory for file cut.mp4"), the form the SKILL shows
+    output = os.path.abspath(output)
     scene.render.filepath = output
-    os.makedirs(os.path.dirname(os.path.abspath(output)) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(output), exist_ok=True)
     bpy.ops.render.render(animation=True)
     if not os.path.isfile(output) or os.path.getsize(output) == 0:
         raise RuntimeError(f"Blender reported no error but wrote no file at {output}")
@@ -223,24 +259,19 @@ def op_single(args):
     start = seconds_to_frames(args.start or 0.0, info)
     end = seconds_to_frames(args.end, info) if args.end is not None else movie.right_handle - 1
     if end <= start:
+        if args.end is None:
+            raise ValueError(f"--start {args.start}s is past the end of the clip ({info['duration']:.2f}s)")
         raise ValueError(f"the cut ends ({args.end}s) before it starts ({args.start}s)")
+    speed = 1.0 if args.speed is None else args.speed
+    if speed <= 0:
+        raise ValueError(f"--speed must be above 0, not {args.speed}")
+    if speed != 1.0:
+        # the whole clip is retimed first, so the cut is made in retimed frames
+        retime([movie, sound], speed)
+        start = int(round(start / speed))
+        end = max(int(round(end / speed)), start + 1)
     trim([movie, sound], start, end, place_at=1)
     last = clip_end([movie, sound]) - 1
-
-    if args.speed and args.speed != 1.0:
-        # Blender 5 retiming: a key at each end, the end key moved. The SPEED
-        # effect is locked to its input's length there (right_handle is read
-        # only), and retiming also works on the sound strip, with pitch kept.
-        length = int(round((last) / args.speed))
-        for strip in (movie, sound):
-            if strip is None:
-                continue
-            keys = strip.retiming_keys
-            keys.add(timeline_frame=strip.left_handle)
-            keys[-1].timeline_frame = strip.left_handle + length
-            if strip.type == "SOUND":
-                strip.pitch_correction = True
-        last = clip_end([movie, sound]) - 1
 
     fade_in = seconds_to_frames(args.fade_in or 0.0, info)
     fade_out = seconds_to_frames(args.fade_out or 0.0, info)
@@ -296,7 +327,7 @@ def op_concat(args):
 def build_parser():
     p = argparse.ArgumentParser(description='Blender VSE video editor')
     p.add_argument('--input', '-i', help='Input video file')
-    p.add_argument('--output', '-o', default=f'/tmp/output_{uuid.uuid4().hex[:8]}.mp4')
+    p.add_argument('--output', '-o', help='Output file (default /tmp/output_<id> with the format\'s extension)')
     p.add_argument('--concat', nargs='+', help='Concatenate these videos in order')
     p.add_argument('--cut', help='Keep a range in seconds: "10-30", "10-" or "-30"')
     p.add_argument('--start', type=float, help='Keep from this second')
@@ -321,6 +352,13 @@ def build_parser():
     return p
 
 
+# The options op_single applies and op_concat does not: with --concat they
+# were dropped without a word, so a join asked for with a title came back
+# without one.
+SINGLE_INPUT_ONLY = ('cut', 'start', 'end', 'text', 'fade_in', 'fade_out', 'speed', 'bw')
+SINGLE_INPUT_DEFAULTS = {'brightness': 0.0, 'contrast': 1.0, 'saturation': 1.0}
+
+
 def main(argv):
     args = build_parser().parse_args(argv)
     version = '.'.join(map(str, bpy.app.version))
@@ -332,6 +370,18 @@ def main(argv):
             f"this script needs Blender 5 or newer and this is Blender {version}. "
             "Distribution packages can be older (Ubuntu 24.04's apt blender is 4.0); "
             "install the blender.org build, the snap, or brew's cask.")
+    if args.output is None:
+        ext = {'mp4': 'mp4', 'webm': 'webm', 'prores': 'mov'}[args.format]
+        args.output = f'/tmp/output_{uuid.uuid4().hex[:8]}.{ext}'
+    if args.concat:
+        if args.input:
+            raise ValueError("give --input or --concat, not both")
+        ignored = [name for name in SINGLE_INPUT_ONLY if getattr(args, name)]
+        ignored += [name for name, value in SINGLE_INPUT_DEFAULTS.items() if getattr(args, name) != value]
+        if ignored:
+            names = ', '.join('--' + name.replace('_', '-') for name in ignored)
+            raise ValueError(f"{names}: for a single --input only, not --concat. Join first, then "
+                             "edit the joined file with --input")
     if args.cut:
         first, _, second = args.cut.partition('-')
         args.start = float(first) if first else None

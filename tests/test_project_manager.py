@@ -76,6 +76,57 @@ class OwnerSemanticsTests(unittest.TestCase):
         self.assertTrue(self.pm._can_see(state, user_id=None))
 
 
+class CreateNeverReplacesTests(unittest.TestCase):
+    """create wrote a fresh state.json over an existing one, so naming an old
+    project, or another user's private one, erased its next steps, decisions
+    and owner with no copy kept (Linux bot sweep 2026-10-07)."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.pm = _load(self.tmp)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _state_file(self, slug):
+        return self.pm.PROJECTS_DIR / slug / "state.json"
+
+    def _create(self, *args, **kwargs):
+        from contextlib import redirect_stderr, redirect_stdout
+        import io
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            try:
+                self.pm.create_project(*args, **kwargs)
+            except SystemExit as e:
+                return e.code, err.getvalue()
+        return 0, err.getvalue()
+
+    def test_another_users_private_project_is_not_replaced(self):
+        self._create("Album", "mine", str(self.tmp / "a"), user_id=111)
+        self.pm.update_project("album", user_id=111, next_step="mix track 3")
+        before = self._state_file("album").read_bytes()
+        code, err = self._create("Album", "theirs", str(self.tmp / "b"), user_id=222)
+        self.assertEqual(code, 1)
+        self.assertEqual(self._state_file("album").read_bytes(), before)
+        self.assertNotIn("update album", err, "told a stranger how to edit it")
+
+    def test_the_owner_is_pointed_at_status_and_update(self):
+        self._create("Album", "mine", str(self.tmp / "a"), user_id=111)
+        code, err = self._create("Album", "again", str(self.tmp / "a"), user_id=111)
+        self.assertEqual(code, 1)
+        self.assertIn("update album", err)
+        self.assertEqual(json.loads(self._state_file("album").read_text())["summary"], "mine")
+
+    def test_a_name_with_no_letters_is_refused(self):
+        code, _ = self._create("!!!", "s", str(self.tmp / "x"), user_id=111)
+        self.assertEqual(code, 1)
+        self.assertFalse((self.pm.PROJECTS_DIR / "state.json").exists(),
+                         "wrote a state.json into the projects folder itself")
+
+
 class VisibilityTests(unittest.TestCase):
     def setUp(self):
         import tempfile

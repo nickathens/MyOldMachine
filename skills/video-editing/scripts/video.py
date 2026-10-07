@@ -186,7 +186,7 @@ def cmd_info(args):
         "audio_channels": (audio or {}).get("channels"),
         "bit_rate": int(info["format"].get("bit_rate") or 0) or None,
     }
-    print(json.dumps(out, indent=2))
+    print(json.dumps(out, indent=2, ensure_ascii=False))
 
 
 def cmd_cut(args):

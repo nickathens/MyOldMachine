@@ -286,7 +286,7 @@ if __name__ == '__main__':
             sys.exit(1)
         result = add_product(args.name, args.url, args.selector, args.threshold)
         if args.json:
-            print(json.dumps(result, indent=2))
+            print(json.dumps(result, indent=2, ensure_ascii=False))
 
     elif args.action == 'remove':
         if not args.name:
@@ -297,14 +297,14 @@ if __name__ == '__main__':
     elif args.action == 'check':
         updates = check_prices()
         if args.json:
-            print(json.dumps(updates, indent=2))
+            print(json.dumps(updates, indent=2, ensure_ascii=False))
         else:
             print(format_report(updates))
 
     elif args.action == 'list':
         products = list_products()
         if args.json:
-            print(json.dumps(products, indent=2))
+            print(json.dumps(products, indent=2, ensure_ascii=False))
         else:
             if not products:
                 print("No products tracked")
@@ -322,7 +322,7 @@ if __name__ == '__main__':
         if history is None:
             print(f"Product '{args.name}' not found")
         elif args.json:
-            print(json.dumps(history, indent=2))
+            print(json.dumps(history, indent=2, ensure_ascii=False))
         else:
             for entry in history[-10:]:  # Last 10 entries
                 print(f"{entry['date']}: {entry['price']:.2f}")

@@ -382,7 +382,17 @@ def main(argv=None):
         if cross:
             r["pynite"] = cross
         elif args.pynite:
-            r["pynite"] = "Το PyNiteFEA δεν είναι εγκατεστημένο (pip install PyNiteFEA). Οι κλειστοί τύποι ισχύουν."
+            # Ποτέ "pip install PyNiteFEA" στη βασική εγκατάσταση: οι βαριές
+            # μηχανές μένουν εκτός του κοινού venv (αρχή 2 στην κορυφή).
+            engine = _engine_python()
+            if engine is None:
+                setup = Path(__file__).resolve().parent / "setup_engine_venv.sh"
+                r["pynite"] = (f"Το απομονωμένο engineering venv λείπει: bash {setup} "
+                               "(όχι εγκατάσταση στο βασικό περιβάλλον). "
+                               "Οι κλειστοί τύποι ισχύουν.")
+            else:
+                r["pynite"] = (f"Η διασταύρωση PyNiteFEA απέτυχε στο {engine}. "
+                               "Οι κλειστοί τύποι ισχύουν.")
         if args.json:
             print(json.dumps(r, ensure_ascii=False, indent=2))
         else:

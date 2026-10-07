@@ -601,7 +601,7 @@ async def get_status(user: dict = Depends(_get_user)):
     # answering with the new model's own levels is all the re-render needs.
     effort = _clamp_effort(provider, model, _read_env_var("LLM_EFFORT", "") or None)
     return {
-        "bot": _bot_status(),
+        "bot": await run_in_threadpool(_bot_status),
         "provider": provider,
         "available_providers": _available_providers(),
         "model": model,
@@ -883,14 +883,14 @@ async def restart_target(request: Request, user: dict = Depends(_get_user)):
         raise HTTPException(status_code=400, detail="Invalid restart target")
 
     from core.updater import restart_service
-    success, message = restart_service(target)
+    success, message = await run_in_threadpool(restart_service, target)
     if not success:
         raise HTTPException(status_code=500, detail=message)
     if target == "bot":
         # New code should reach both processes: this server imports the model
         # catalog (PROVIDER_MODELS) at startup, so schedule our own restart
         # too. Detached with a ~3s delay, so this response still lands first.
-        mini_ok, mini_msg = restart_service("miniapp")
+        mini_ok, mini_msg = await run_in_threadpool(restart_service, "miniapp")
         if not mini_ok:
             log.warning("miniapp self-restart failed: %s", mini_msg)
     return {"target": target, "message": message}
@@ -1238,7 +1238,7 @@ def _media_menu() -> dict:
 @app.get("/api/media/menu")
 async def media_menu(user: dict = Depends(_get_user)):
     try:
-        return _media_menu()
+        return await run_in_threadpool(_media_menu)
     except Exception as e:
         log.error("Media menu failed: %s", e)
         raise HTTPException(status_code=500, detail="Could not read the model list")
@@ -1247,8 +1247,8 @@ async def media_menu(user: dict = Depends(_get_user)):
 @app.get("/api/media/balance")
 async def media_balance(user: dict = Depends(_get_user)):
     try:
-        result = subprocess.run(
-            [sys.executable, str(GENERATE_SCRIPT), "--balance"],
+        result = await run_in_threadpool(
+            subprocess.run, [sys.executable, str(GENERATE_SCRIPT), "--balance"],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -1387,12 +1387,12 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
     user_id = user["_id"]
 
     if config["type"] == "reply":
-        ok = _send_bot_message(user_id, config["text"])
+        ok = await run_in_threadpool(_send_bot_message, user_id, config["text"])
         return {"ok": ok, "type": "reply"}
 
     if config["type"] == "script" and skill == "weather":
-        text = _run_weather()
-        ok = _send_bot_message(user_id, text)
+        text = await run_in_threadpool(_run_weather)
+        ok = await run_in_threadpool(_send_bot_message, user_id, text)
         return {"ok": ok, "type": "weather"}
 
     if config["type"] == "media-gen":
@@ -1407,7 +1407,7 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         # read the same list, so "soul-cast" as a video (a still model since
         # 2026-08-07) is refused here rather than by Higgsfield after the turn.
         try:
-            cards = {card["id"]: card for card in _media_menu()[mg_type]}
+            cards = {card["id"]: card for card in (await run_in_threadpool(_media_menu))[mg_type]}
         except Exception as e:
             log.error("Media menu failed: %s", e)
             raise HTTPException(status_code=503, detail="Could not read the model list")
@@ -1503,7 +1503,8 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
                     cost_cmd.extend(["--duration", str(duration)])
             if safe_extra:
                 cost_cmd.extend(["--extra", json.dumps(safe_extra)])
-            cr = subprocess.run(cost_cmd, capture_output=True, text=True, timeout=15)
+            cr = await run_in_threadpool(subprocess.run, cost_cmd, capture_output=True,
+                                         text=True, timeout=15)
             if cr.returncode == 0:
                 cd = json.loads(cr.stdout)
                 credits = cd.get("credits", cd.get("credits_exact", "?"))
@@ -1527,7 +1528,7 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
             lines.append(cost_info)
         lines.append(f'\nPrompt: "{prompt}"')
         lines.append("\nReply to proceed. I'll refine the prompt for this model first.")
-        _send_bot_message(user_id, "\n".join(lines))
+        await run_in_threadpool(_send_bot_message, user_id, "\n".join(lines))
 
         mg["extra_params"] = safe_extra
         # The hand-off carries what was checked above. Unset stays unset, so the
