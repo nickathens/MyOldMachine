@@ -2,8 +2,8 @@
 """
 Excel helper using LibreOffice UNO bridge.
 
-Must be run with /usr/bin/python3 (system Python) since UNO bindings
-are only available there, not in the venv.
+Run it with /usr/bin/python3. On Linux that is the Python python3-uno serves;
+on macOS any Python 3 will do (see "Where the command runs" below).
 
 Usage:
     /usr/bin/python3 excel_lo.py <command> <file> [options]
@@ -34,93 +34,487 @@ Commands:
     add-sheet <file> --name <sheet_name> [--after <existing_sheet>]
         Add a new sheet.
 
-    save-as <file> --output <output_file> [--format xlsx|pdf|csv]
-        Save/export to another format.
+    save-as <file> --output <output_file> [--format xlsx|pdf|csv] [--sheet <name>]
+        Save/export to another format. CSV holds one sheet: the active one,
+        or the one --sheet names.
 
     eval-formulas <file>
         Force recalculation of all formulas and save.
 
-The script manages the LibreOffice process automatically (starts/stops as needed).
+    stop
+        Close the LibreOffice copies this tool left running for this user,
+        which only happens when a command is killed before it can close its
+        own. Nothing else is touched: not a LibreOffice window, not another
+        user's copy, not a command that is still running.
+
+Every command runs in a private LibreOffice of its own, on a fresh profile in
+a new temporary folder, and closes that copy, and only that copy, when it
+ends. One OS account hosts every user of the bot. The old
+``pkill -f soffice.bin`` after every command closed every LibreOffice on a
+Linux machine, other users' open windows included; on macOS, where the process
+is called soffice, it matched nothing and every command left its LibreOffice
+running (2026-10-07).
+
+Where the command runs: when the Python running this script can import uno
+(Linux with python3-uno), the command talks to its LibreOffice over a pipe
+named after its folder. When it cannot, which is every Python on macOS
+(/usr/bin/python3 has no uno, and the Python inside LibreOffice.app is signed
+so that only LibreOffice itself may start it), the command runs inside its
+LibreOffice as a Python macro and hands its output back through a file.
 """
 
 import argparse
+import contextlib
 import datetime
+import glob
+import io
 import json
 import math
 import os
 import re
+import shutil
+import signal
+import socket
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
+from urllib.parse import quote, unquote, urlparse
 
 
-LO_PORT = 2002
-LO_TIMEOUT = 10  # seconds to wait for LO to start
+LO_START_TIMEOUT = 60  # seconds for a private LibreOffice to come up (2 s on the Mac)
+LO_JOB_TIMEOUT = 600   # seconds a command may run inside its LibreOffice
+LO_STOP_TIMEOUT = 20   # seconds it gets to close by itself before it is stopped
+RUN_PREFIX = "mom-excel-lo-"
+JOB_ENV = "MOM_EXCEL_LO_JOB"
+MAC_SOFFICE = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+
+_OFFICE = None   # the private LibreOffice this process started
+_DESKTOP = None  # its Desktop
+
+
+def _owner_tag():
+    """Whose runs these are, for the folder name: the bot user, or 'local'."""
+    uid = os.environ.get("JARVIS_USER_ID", "").strip()
+    return uid if re.fullmatch(r"[0-9]+", uid) else "local"
+
+
+def _soffice():
+    found = shutil.which("soffice")
+    if found:
+        return found
+    if os.path.exists(MAC_SOFFICE):
+        return MAC_SOFFICE
+    raise RuntimeError("LibreOffice is not installed: there is no soffice on PATH")
+
+
+class PsFailed(RuntimeError):
+    """The process table could not be read, so nothing can be proved from it."""
+
+
+def _ps(*args):
+    """ps output in the C locale, so a start time reads the same to every caller.
+
+    A ps that cannot run raises: "could not look" must never read as "nothing
+    there", or a live command would be judged gone.
+    """
+    try:
+        return subprocess.run(["ps", *args], capture_output=True, text=True, timeout=10,
+                              env=dict(os.environ, LC_ALL="C")).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PsFailed(f"could not read the process table ({exc}); nothing was touched") from None
+
+
+def _process_start(pid):
+    """When a process started, as ps tells it, or None when there is no such process."""
+    if not isinstance(pid, int):
+        return None
+    return _ps("-o", "lstart=", "-p", str(pid)).strip() or None
+
+
+def _process_table():
+    """(pid, argv words) for every process on the machine."""
+    rows = []
+    for line in _ps("-A", "-ww", "-o", "pid=,command=").splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if pid.isdigit():
+            rows.append((int(pid), command.split()))
+    if not rows:  # this process at least is always there
+        raise PsFailed("ps listed no processes; nothing was touched")
+    return rows
+
+
+def _write_json(path, data):
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _marker(folder):
+    """The argument that puts a LibreOffice on a run's private profile.
+
+    The folder's name is random and made for one run, so a process carrying
+    this exact argument is one that run started: that is the ownership proof,
+    never a process name.
+    """
+    return f"-env:UserInstallation={Path(folder, 'profile').as_uri()}"
+
+
+def _carrying(marker, table=None):
+    """PIDs whose command line carries this exact marker."""
+    rows = _process_table() if table is None else table
+    return [pid for pid, words in rows if marker in words and pid != os.getpid()]
+
+
+def _signal_each(pids, marker):
+    """TERM, then KILL what is left, checking each PID still carries the marker."""
+    def still_ours(pid):
+        return marker in _ps("-ww", "-o", "command=", "-p", str(pid)).split()
+
+    for sig, grace in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 2.0)):
+        live = [pid for pid in pids if still_ours(pid)]
+        for pid in live:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        deadline = time.monotonic() + grace
+        while live and time.monotonic() < deadline:
+            time.sleep(0.2)
+            live = [pid for pid in live if still_ours(pid)]
+        if not live:
+            return
+
+
+class _Office:
+    """One private LibreOffice: a new folder holds its profile, its pipe is
+    named after the folder, and owner.json says which command started it."""
+
+    def __init__(self):
+        self.dir = tempfile.mkdtemp(prefix=f"{RUN_PREFIX}{_owner_tag()}-")
+        self.marker = _marker(self.dir)
+        self.pipe = os.path.basename(self.dir)
+        self.proc = None
+        try:
+            started = _process_start(os.getpid())
+        except PsFailed:
+            started = None  # stop never judges a run without one gone
+        _write_json(os.path.join(self.dir, "owner.json"),
+                    {"pid": os.getpid(), "started": started,
+                     "user": os.environ.get("JARVIS_USER_ID") or None})
+
+    def launch(self, *args, env=None):
+        # Not a session of its own: when a timeout kills this command's
+        # process group, its LibreOffice goes with it instead of living on.
+        with open(os.path.join(self.dir, "soffice.log"), "wb") as log:
+            self.proc = subprocess.Popen(
+                [_soffice(), "--headless", "--norestore", "--nologo", self.marker, *args],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, env=env)
+
+    def log_tail(self, limit=600):
+        try:
+            with open(os.path.join(self.dir, "soffice.log"), encoding="utf-8",
+                      errors="replace") as fh:
+                lines = [ln for ln in fh.read().splitlines()
+                         if ln.strip() and not ln.startswith("Fontconfig")]
+        except OSError:
+            return ""
+        return " | ".join(lines)[-limit:]
+
+    def close(self, grace=LO_STOP_TIMEOUT):
+        """Close this LibreOffice, and nothing else, then remove its folder."""
+        proc, self.proc = self.proc, None
+        if proc is not None:
+            try:
+                proc.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+        # A LibreOffice that forks (soffice.bin under oosplash on Linux) can
+        # outlive the process started here, still carrying the marker. When ps
+        # cannot be read nothing is signalled: a leak, never a wrong kill.
+        with contextlib.suppress(PsFailed):
+            leftover = _carrying(self.marker)
+            if leftover:
+                _signal_each(leftover, self.marker)
+        shutil.rmtree(self.dir, ignore_errors=True)
 
 
 def start_libreoffice():
-    """Start LibreOffice in headless mode with UNO listener."""
-    # Check if already running
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", f"soffice.*accept.*{LO_PORT}"],
-            capture_output=True, text=True
-        )
-        if result.stdout.strip():
-            return  # Already running
-    except Exception:
-        pass
-
-    # Start fresh
-    subprocess.Popen(
-        ["soffice", "--headless", "--norestore", "--nologo",
-         f"--accept=socket,host=localhost,port={LO_PORT};urp;"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True
-    )
-
-    # Wait for it to be ready
+    """Start this command's own LibreOffice and connect to it over its pipe."""
+    global _OFFICE, _DESKTOP
     import uno
-    for i in range(LO_TIMEOUT):
-        time.sleep(1)
+    office = _OFFICE = _Office()
+    office.launch(f"--accept=pipe,name={office.pipe};urp;StarOffice.ComponentContext")
+    local = uno.getComponentContext()
+    resolver = local.ServiceManager.createInstanceWithContext(
+        "com.sun.star.bridge.UnoUrlResolver", local)
+    deadline = time.monotonic() + LO_START_TIMEOUT
+    while True:
         try:
-            localContext = uno.getComponentContext()
-            resolver = localContext.ServiceManager.createInstanceWithContext(
-                "com.sun.star.bridge.UnoUrlResolver", localContext)
-            resolver.resolve(
-                f"uno:socket,host=localhost,port={LO_PORT};urp;StarOffice.ComponentContext")
-            return  # Connected
+            ctx = resolver.resolve(
+                f"uno:pipe,name={office.pipe};urp;StarOffice.ComponentContext")
+            break
         except Exception:
-            continue
-    raise RuntimeError("Failed to start LibreOffice within timeout")
+            if office.proc.poll() is not None:
+                raise RuntimeError("LibreOffice closed before it was ready: "
+                                   + office.log_tail()) from None
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"LibreOffice did not start within {LO_START_TIMEOUT} s") from None
+            time.sleep(0.5)
+    _DESKTOP = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
 
 
 def stop_libreoffice():
-    """Stop the LibreOffice process."""
-    subprocess.run(["pkill", "-f", "soffice.bin"], capture_output=True)
-    time.sleep(1)
+    """Close the LibreOffice this command started, and nothing else."""
+    global _OFFICE, _DESKTOP
+    office, desktop = _OFFICE, _DESKTOP
+    _OFFICE = _DESKTOP = None
+    if office is None:
+        return
+    if desktop is not None:
+        try:
+            desktop.terminate()
+        except Exception:
+            pass  # the bridge drops as the office goes down
+    office.close(LO_STOP_TIMEOUT if desktop is not None else 0)
 
 
 def get_desktop():
-    """Get the LibreOffice Desktop object via UNO."""
-    import uno
-    localContext = uno.getComponentContext()
-    resolver = localContext.ServiceManager.createInstanceWithContext(
-        "com.sun.star.bridge.UnoUrlResolver", localContext)
-    ctx = resolver.resolve(
-        f"uno:socket,host=localhost,port={LO_PORT};urp;StarOffice.ComponentContext")
-    smgr = ctx.ServiceManager
-    return smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+    """The Desktop of this command's own LibreOffice, started on first use."""
+    if _DESKTOP is None:
+        start_libreoffice()
+    return _DESKTOP
 
 
-def open_document(desktop, filepath):
-    """Open a document and return it."""
-    from urllib.parse import quote
+def _uno_importable():
+    """Can this Python drive LibreOffice over its bridge?
+
+    Only LibreOffice's own uno counts. The typing stubs ooo-dev-tools pulls in
+    (types-uno-script) leave a folder named uno holding only __init__.pyi,
+    which imports as an empty namespace package: the Linux bot's venv took
+    the client route on it and died on "module 'uno' has no attribute
+    'getComponentContext'" (2026-10-07).
+    """
+    try:
+        import uno
+    except ImportError:
+        return False
+    return callable(getattr(uno, "getComponentContext", None))
+
+
+def run_in_office(args):
+    """Run one command inside a private LibreOffice, as a Python macro.
+
+    For a Python that cannot import uno, which is every Python on macOS.
+    Returns what the command printed and its error (None when it worked).
+    """
+    office = _Office()
+    finished = False
+    try:
+        scripts = Path(office.dir, "profile", "user", "Scripts", "python")
+        scripts.mkdir(parents=True)
+        shutil.copyfile(os.path.abspath(__file__), scripts / "excel_lo.py")
+        job = os.path.join(office.dir, "job.json")
+        _write_json(job, {"args": vars(args)})
+        office.launch("vnd.sun.star.script:excel_lo.py$run_job?language=Python&location=user",
+                      env=dict(os.environ, **{JOB_ENV: job}))
+        started = os.path.join(office.dir, "started")
+        result_path = os.path.join(office.dir, "result.json")
+        t0 = time.monotonic()
+        while not os.path.exists(result_path) and office.proc.poll() is None:
+            waited = time.monotonic() - t0
+            if waited > LO_START_TIMEOUT and not os.path.exists(started):
+                return "", f"LibreOffice did not start the command within {LO_START_TIMEOUT} s"
+            if waited > LO_JOB_TIMEOUT:
+                return "", f"the command did not finish within {LO_JOB_TIMEOUT} s"
+            time.sleep(0.1)
+        result = _read_json(result_path)
+        if not isinstance(result, dict):
+            why = ("in the middle of the command" if os.path.exists(started)
+                   else "without running the command (is its Python scripting installed?)")
+            tail = office.log_tail()
+            return "", f"LibreOffice closed {why}" + (f": {tail}" if tail else "")
+        finished = True
+        return result.get("stdout") or "", result.get("error")
+    finally:
+        office.close(LO_STOP_TIMEOUT if finished else 0)
+
+
+def run_job(*_):
+    """The macro run_in_office starts inside its private LibreOffice."""
+    global _DESKTOP
+    job = os.environ.get(JOB_ENV)
+    if not job:
+        return
+    folder = os.path.dirname(job)
+    result = {"stdout": "", "error": None}
+    desktop = None
+    try:
+        open(os.path.join(folder, "started"), "w").close()
+        spec = _read_json(job)
+        if not isinstance(spec, dict):
+            raise RuntimeError("the command's job file could not be read")
+        args = argparse.Namespace(**spec["args"])
+        import uno
+        ctx = uno.getComponentContext()
+        desktop = _DESKTOP = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.frame.Desktop", ctx)
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                _commands()[args.command](args)
+        finally:
+            result["stdout"] = out.getvalue()
+    except Exception as exc:
+        result["error"] = str(exc) or type(exc).__name__
+    finally:
+        _DESKTOP = None
+        _write_json(os.path.join(folder, "result.json"), result)
+        if desktop is not None:
+            try:
+                desktop.terminate()
+            except Exception:
+                pass
+
+
+def stop_leftovers():
+    """Close the LibreOffice copies this tool left behind for this user.
+
+    A copy is closed only when it carries one of this user's private profiles
+    on its command line AND the command that started it is provably gone (its
+    PID no longer has the start time recorded for it). A command still
+    running, another user's copy and any LibreOffice window are left alone.
+    """
+    stopped, in_use = [], []
+    table = _process_table()
+    pattern = os.path.join(tempfile.gettempdir(), f"{RUN_PREFIX}{_owner_tag()}-*")
+    for folder in sorted(glob.glob(pattern)):
+        owner = _read_json(os.path.join(folder, "owner.json"))
+        if not isinstance(owner, dict) or not owner.get("started"):
+            continue  # being created this instant, or nothing to prove it by
+        marker = _marker(folder)
+        pids = _carrying(marker, table)
+        if _process_start(owner.get("pid")) == owner["started"]:
+            in_use.extend(pids)
+            continue
+        if pids:
+            _signal_each(pids, marker)
+            stopped.extend(pids)
+        shutil.rmtree(folder, ignore_errors=True)
+    if stopped:
+        message = f"Closed {len(stopped)} LibreOffice process(es) this tool had left running."
+    else:
+        message = "Nothing to close: no LibreOffice this tool started for you is left running."
+    if in_use:
+        message += f" {len(in_use)} belong(s) to a command still running and were left alone."
+    message += " LibreOffice windows and other users' copies are never touched."
+    return {"status": "ok", "stopped": stopped, "in_use": in_use, "message": message}
+
+
+def _url_path(url):
+    return unquote(urlparse(url).path)
+
+
+def _read_lock(lock):
+    """A LibreOffice lock file's fields: name, OS user, host, time, profile URL."""
+    try:
+        with open(lock, encoding="utf-8", errors="replace") as fh:
+            body = fh.read().strip()
+    except OSError:
+        return None
+    fields = [f.replace("\\,", ",") for f in re.split(r"(?<!\\),", body.rstrip(";"))]
+    return fields if len(fields) >= 5 else None
+
+
+def _profile_in_use(profile):
+    """Is any process running on this LibreOffice profile?"""
+    want = os.path.realpath(profile)
+    for _, words in _process_table():
+        for word in words:
+            if (word.startswith("-env:UserInstallation=")
+                    and os.path.realpath(_url_path(word.split("=", 1)[1])) == want):
+                return True
+    return False
+
+
+def clear_stale_lock(path):
+    """Remove the lock a killed copy of this tool left on a file; name any other holder.
+
+    LibreOffice will not open a file whose lock names another profile, and
+    headless it cannot ask, so one command killed with the file open made every
+    later command on it fail with "Failed to open" (2026-10-07), and told anyone
+    opening it by hand that someone had it. A lock is removed only when this
+    machine wrote it from one of this tool's private profiles and nothing runs
+    on that profile any more. Returns who holds a lock that stays, or None.
+    """
+    lock = os.path.join(os.path.dirname(path), f".~lock.{os.path.basename(path)}#")
+    fields = _read_lock(lock)
+    if fields is None:
+        return None
+    name, user, host, when, url = fields[:5]
+    profile = _url_path(url)
+    ours = (host == socket.gethostname() and os.path.basename(profile) == "profile"
+            and os.path.basename(os.path.dirname(profile)).startswith(RUN_PREFIX))
+    try:
+        if ours and not _profile_in_use(profile):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(lock)
+            return None
+    except PsFailed:
+        pass  # cannot prove it stale: leave it
+    return f"{name or user} on {host}, since {when}"
+
+
+def _props(**values):
+    from com.sun.star.beans import PropertyValue
+    props = []
+    for name, value in values.items():
+        prop = PropertyValue()
+        prop.Name, prop.Value = name, value
+        props.append(prop)
+    return tuple(props)
+
+
+def open_document(desktop, filepath, write=False):
+    """Open a document and return it.
+
+    A command that only reads opens it read-only, which writes no lock file
+    (so a read that is killed leaves nothing behind) and reads a file someone
+    has open. A command that writes refuses a file someone else has open
+    rather than race their save: LibreOffice refused such a file outright when
+    the lock came from this OS account, and opened it read-only, to fail at
+    store, when it came from another (measured 2026-10-07).
+    """
     abspath = os.path.abspath(filepath)
+    holder = clear_stale_lock(abspath)
+    if write and holder:
+        raise RuntimeError(f"{filepath} is open in another LibreOffice ({holder}), so nothing "
+                           "was written. Close it there and run the command again.")
     url = "file://" + quote(abspath, safe="/:@")
-    doc = desktop.loadComponentFromURL(url, "_blank", 0, ())
+    doc = desktop.loadComponentFromURL(url, "_blank", 0,
+                                       () if write else _props(ReadOnly=True))
     if not doc:
         raise RuntimeError(f"Failed to open: {filepath}")
+    if write and doc.isReadonly():
+        doc.close(True)
+        raise RuntimeError(f"{filepath} opened read-only (open somewhere else, or not "
+                           "writable), so nothing was written.")
     return doc
 
 
@@ -315,7 +709,6 @@ def get_cell_value(cell, doc=None):
 
 def cmd_info(args):
     """Show info about an Excel file."""
-    start_libreoffice()
     desktop = get_desktop()
     doc = open_document(desktop, args.file)
     try:
@@ -344,7 +737,6 @@ def cmd_info(args):
 
 def cmd_read(args):
     """Read cells from a sheet."""
-    start_libreoffice()
     desktop = get_desktop()
     doc = open_document(desktop, args.file)
     try:
@@ -376,9 +768,8 @@ def cmd_read(args):
 
 def cmd_write(args):
     """Write a value to a cell."""
-    start_libreoffice()
     desktop = get_desktop()
-    doc = open_document(desktop, args.file)
+    doc = open_document(desktop, args.file, write=True)
     try:
         sheets = doc.getSheets()
         sheet = sheets.getByName(args.sheet)
@@ -409,9 +800,8 @@ def cmd_write(args):
 
 def cmd_add_rows(args):
     """Insert rows from a JSON file."""
-    start_libreoffice()
     desktop = get_desktop()
-    doc = open_document(desktop, args.file)
+    doc = open_document(desktop, args.file, write=True)
     try:
         sheets = doc.getSheets()
         sheet = sheets.getByName(args.sheet)
@@ -475,9 +865,8 @@ def cmd_add_rows(args):
 
 def cmd_formula(args):
     """Set a formula in a cell."""
-    start_libreoffice()
     desktop = get_desktop()
-    doc = open_document(desktop, args.file)
+    doc = open_document(desktop, args.file, write=True)
     try:
         sheets = doc.getSheets()
         sheet = sheets.getByName(args.sheet)
@@ -500,9 +889,8 @@ def cmd_formula(args):
 
 def cmd_add_sheet(args):
     """Add a new sheet."""
-    start_libreoffice()
     desktop = get_desktop()
-    doc = open_document(desktop, args.file)
+    doc = open_document(desktop, args.file, write=True)
     try:
         sheets = doc.getSheets()
         if args.after:
@@ -523,12 +911,10 @@ def cmd_add_sheet(args):
 
 def cmd_save_as(args):
     """Save/export to another format."""
-    start_libreoffice()
     desktop = get_desktop()
     doc = open_document(desktop, args.file)
     try:
         output_path = os.path.abspath(args.output)
-        from urllib.parse import quote
         url = "file://" + quote(output_path, safe="/:@")
 
         fmt = args.format or os.path.splitext(args.output)[1].lstrip('.')
@@ -544,33 +930,65 @@ def cmd_save_as(args):
         filter_name = filter_map.get(fmt)
         if not filter_name:
             raise ValueError(f"Unsupported format: {fmt}")
+        sheet = getattr(args, "sheet", None)
+        if sheet is not None and fmt != 'csv':
+            raise ValueError(f"--sheet is for csv only: {fmt} holds every sheet")
 
-        from com.sun.star.beans import PropertyValue
-        props = []
-        p = PropertyValue()
-        p.Name = "FilterName"
-        p.Value = filter_name
-        props.append(p)
-
-        if fmt == 'pdf':
-            doc.storeToURL(url, tuple(props))
+        result = {"status": "ok", "output": output_path, "format": fmt}
+        if fmt == 'csv':
+            result["sheet"], names = _store_csv(doc, output_path, sheet)
+            if len(names) > 1:
+                result["note"] = (f"CSV holds one sheet: this is {result['sheet']!r} of "
+                                  f"{len(names)} ({', '.join(names)}); pass --sheet for another.")
         else:
-            doc.storeToURL(url, tuple(props))
+            doc.storeToURL(url, _props(FilterName=filter_name))
 
-        print(json.dumps({
-            "status": "ok",
-            "output": output_path,
-            "format": fmt
-        }))
+        print(json.dumps(result, ensure_ascii=False))
     finally:
         doc.close(True)
 
 
+# What LibreOffice uses for CSV when given no options (byte for byte, measured
+# on 26.8), with token 12 naming the sheet. Left unnamed, a workbook of several
+# sheets stops to warn that CSV holds only the active one, and a headless
+# LibreOffice waits on that warning for ever (2026-10-07).
+CSV_OPTIONS = "44,34,76,1,,0,false,true,false,false,false,{number}"
+
+
+def _store_csv(doc, output_path, sheet=None):
+    """Write one sheet as CSV to output_path; returns it and the sheet names.
+
+    Naming the sheet makes LibreOffice write "<name>-<sheet>.csv", so it writes
+    into a folder of its own and the file is moved to the path asked for. A
+    killed export leaves its lock and temporary files there, not beside the
+    user's file.
+    """
+    names = list(doc.getSheets().getElementNames())
+    if sheet is None:
+        controller = doc.getCurrentController()
+        sheet = controller.getActiveSheet().getName() if controller is not None else names[0]
+    if sheet not in names:
+        raise ValueError(f"No sheet named {sheet!r}; the workbook has {', '.join(names)}")
+    staging = tempfile.mkdtemp(prefix="mom-excel-csv-")
+    try:
+        target = os.path.join(staging, "export.csv")
+        doc.storeToURL("file://" + quote(target, safe="/:@"),
+                       _props(FilterName="Text - txt - csv (StarCalc)",
+                              FilterOptions=CSV_OPTIONS.format(number=names.index(sheet) + 1)))
+        written = [n for n in os.listdir(staging) if n.endswith(".csv")]
+        if len(written) != 1:
+            raise RuntimeError(f"LibreOffice wrote {len(written)} CSV files for one sheet")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)  # as storeToURL does
+        shutil.move(os.path.join(staging, written[0]), output_path)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return sheet, names
+
+
 def cmd_eval_formulas(args):
     """Force recalculation of all formulas and save."""
-    start_libreoffice()
     desktop = get_desktop()
-    doc = open_document(desktop, args.file)
+    doc = open_document(desktop, args.file, write=True)
     try:
         # Force recalculation
         doc.calculateAll()
@@ -634,38 +1052,73 @@ def main():
     p.add_argument("file")
     p.add_argument("--output", required=True)
     p.add_argument("--format", default=None)
+    p.add_argument("--sheet", default=None,
+                   help="csv only: the sheet to write (default: the active sheet)")
 
     # eval-formulas
     p = subparsers.add_parser("eval-formulas")
     p.add_argument("file")
 
-    # stop (utility to stop LO)
+    # stop: close what this tool left behind for this user, nothing else
     subparsers.add_parser("stop")
 
     args = parser.parse_args()
 
     if args.command == "stop":
-        stop_libreoffice()
-        print(json.dumps({"status": "ok", "message": "LibreOffice stopped"}))
+        try:
+            print(json.dumps(stop_leftovers(), ensure_ascii=False))
+        except Exception as e:
+            print(json.dumps({"error": str(e)}), file=sys.stderr)
+            sys.exit(1)
         return
 
+    # A timeout's SIGTERM still closes this command's LibreOffice and folder.
+    # Only over the default action: a handler set by anyone else stays (one set
+    # outside Python cannot even be put back from here).
+    installed = False
+    with contextlib.suppress(ValueError):  # not the main thread
+        if signal.getsignal(signal.SIGTERM) == signal.SIG_DFL:
+            signal.signal(signal.SIGTERM, _exit_on_sigterm)
+            installed = True
     try:
-        cmd_func = {
-            "info": cmd_info,
-            "read": cmd_read,
-            "write": cmd_write,
-            "add-rows": cmd_add_rows,
-            "formula": cmd_formula,
-            "add-sheet": cmd_add_sheet,
-            "save-as": cmd_save_as,
-            "eval-formulas": cmd_eval_formulas,
-        }[args.command]
-        cmd_func(args)
-    except Exception as e:
-        print(json.dumps({"error": str(e)}), file=sys.stderr)
-        sys.exit(1)
+        if not _uno_importable():
+            try:
+                out, error = run_in_office(args)
+            except Exception as e:  # no LibreOffice, no temporary folder
+                out, error = "", str(e)
+            sys.stdout.write(out)
+            if error is not None:
+                print(json.dumps({"error": error}), file=sys.stderr)
+                sys.exit(1)
+            return
+        try:
+            _commands()[args.command](args)
+        except Exception as e:
+            print(json.dumps({"error": str(e)}), file=sys.stderr)
+            sys.exit(1)
+        finally:
+            stop_libreoffice()
     finally:
-        stop_libreoffice()
+        if installed:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+def _commands():
+    """Looked up on each call, so a test's patch of one command is seen."""
+    return {
+        "info": cmd_info,
+        "read": cmd_read,
+        "write": cmd_write,
+        "add-rows": cmd_add_rows,
+        "formula": cmd_formula,
+        "add-sheet": cmd_add_sheet,
+        "save-as": cmd_save_as,
+        "eval-formulas": cmd_eval_formulas,
+    }
+
+
+def _exit_on_sigterm(signum, frame):
+    raise SystemExit(128 + signum)
 
 
 if __name__ == "__main__":

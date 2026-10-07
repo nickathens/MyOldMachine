@@ -8,6 +8,13 @@ subs.py:
   tools export) counted each accented letter twice in the reading speed.
 - The printed burn in command left every path bare, so a folder with a space
   in its name cut the command short.
+- On the Mac the burn in could not run at all: Homebrew's ffmpeg has no
+  libass, so no subtitles filter. It now names an ffmpeg that has one (the
+  one on PATH, else Homebrew's keg-only ffmpeg-full) and says so plainly when
+  none is installed. And every number it stated was wrong where it did run:
+  libass read them in ffmpeg's 384x288 default script, so on 1920x1080 the
+  45 px font burned 3.75 times too big and 202 px up. PlayResX and PlayResY
+  now name the raster, and the margins include the outline.
 
 supers.py: plan and audit never printed the glyphs a face lacks, so a
 Greek line in a Latin-only face came back placed and "inside" safe.
@@ -31,6 +38,7 @@ main_guard did not catch, so its advice came as a traceback.
 
 import contextlib
 import importlib.util
+import shlex
 import shutil
 import subprocess
 import sys
@@ -38,19 +46,12 @@ import tempfile
 import unicodedata
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "postproduction" / "scripts"
 # CI installs no numpy; the compositing and upres tests need it.
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 HAVE_CV2 = importlib.util.find_spec("cv2") is not None
-
-
-def _ffmpeg_has_filter(name):
-    """Homebrew's ffmpeg 9 is built without libass, so it has no subtitles filter."""
-    if not shutil.which("ffmpeg"):
-        return False
-    out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True).stdout
-    return any(line.split()[1:2] == [name] for line in out.splitlines())
 
 
 # greek-law and postproduction each ship a `_common`, and the scripts import it
@@ -150,8 +151,139 @@ class ReadingSpeed(unittest.TestCase):
         self.assertEqual(subs.check(decomposed, {})["rows"][0]["chars"], 12)
 
 
-@unittest.skipUnless(_ffmpeg_has_filter("subtitles"), "needs ffmpeg with the subtitles filter (libass)")
-class BurnCommand(unittest.TestCase):
+class _NeedsBurnFfmpeg(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not subs.burn_ffmpeg():
+            raise unittest.SkipTest("needs an ffmpeg with the subtitles filter (libass)")
+
+
+def _vf(command):
+    argv = shlex.split(command)
+    return argv[0], argv[argv.index("-vf") + 1]
+
+
+class BurnInPixels(unittest.TestCase):
+    def test_every_number_is_in_pixels_of_the_raster(self):
+        res = subs.burn_command("s.srt", "v.mov", (1920, 1080), ffmpeg="/opt/x/ffmpeg")
+        ffmpeg, vf = _vf(res["command"])
+        self.assertEqual(ffmpeg, "/opt/x/ffmpeg")
+        self.assertIn("force_style=PlayResX=1920\\,PlayResY=1080\\,FontSize=45\\,", vf)
+        # The outline is drawn outside the text box, so each margin carries it.
+        self.assertIn("MarginL=98\\,MarginR=98\\,MarginV=56\\,", vf)
+        self.assertEqual((res["font_size_px"], res["margin_v_px"], res["margin_h_px"],
+                          res["outline_px"], res["title_safe_inset_px"]), (45, 56, 98, 2, 54.0))
+
+    def test_a_margin_under_title_safe_is_called_out(self):
+        low = subs.burn_command("s.srt", "v.mov", (1920, 1080), margin_v=20, ffmpeg="/opt/x/ffmpeg")
+        self.assertIn("MarginV 20px is under title safe plus the outline (56px)", low["note"])
+        self.assertIn("MarginV=20\\,", _vf(low["command"])[1])
+        safe = subs.burn_command("s.srt", "v.mov", (1920, 1080), ffmpeg="/opt/x/ffmpeg")
+        self.assertNotIn("under title safe", safe["note"])
+
+    def test_without_an_ffmpeg_that_can_burn_it_says_so(self):
+        # Before: a command that died with "No such filter: 'subtitles'".
+        with mock.patch.object(subs, "burn_ffmpeg", return_value=None):
+            with self.assertRaises(RuntimeError) as cm:
+                subs.burn_command("s.srt", "v.mov", (1920, 1080))
+        self.assertIn("brew install ffmpeg-full", str(cm.exception))
+
+    def test_the_ffmpeg_on_path_first_then_homebrews_full_build(self):
+        keg = subs.FULL_FFMPEG[0]
+        for has, want in ((lambda f: f == keg, keg), (lambda f: True, "/usr/bin/ffmpeg"),
+                          (lambda f: False, None)):
+            with mock.patch("shutil.which", return_value="/usr/bin/ffmpeg"), \
+                    mock.patch("os.access", return_value=True), \
+                    mock.patch.object(subs, "_has_filter", side_effect=lambda f, name, has=has: has(f)):
+                self.assertEqual(subs.burn_ffmpeg(), want)
+
+
+def _ink_box(raw, w, h, tolerance=6):
+    """Top, bottom, left and right of everything off the flat grey: text and outline."""
+    base = raw[0]
+    marks = raw.translate(bytes(0 if abs(v - base) <= tolerance else 1 for v in range(256)))
+    rows = [r for r in range(h) if 1 in marks[r * w:(r + 1) * w]]
+    lefts = [marks.find(1, r * w, (r + 1) * w) - r * w for r in rows]
+    rights = [marks.rfind(1, r * w, (r + 1) * w) - r * w for r in rows]
+    return rows[0], rows[-1], min(lefts), max(rights)
+
+
+class BurnGeometry(_NeedsBurnFfmpeg):
+    """The burned text is the size burn states, centred, inside title safe.
+
+    Measured 2026-10-07 before the fix: the stated 45 px font on 1920x1080
+    burned 156 px tall, outline included, with its bottom 195 px up.
+    """
+    LINES = {"one line": "Ηλέκτρα Hxg ρς",
+             "wrapped": ("Αυτή είναι μια πάρα πολύ μεγάλη γραμμή υποτίτλων που δεν χωράει "
+                         "ποτέ σε ένα πλάτος οθόνης χωρίς αναδίπλωση στο κέντρο")}
+
+    def _burn(self, text, w, h, unwrapped=False):
+        with tempfile.TemporaryDirectory() as d:
+            srt = Path(d, "s.srt")
+            srt.write_text(f"1\n00:00:00,000 --> 00:00:02,000\n{text}\n", encoding="utf-8")
+            res = subs.burn_command(str(srt), "unused.mov", (w, h))
+            ffmpeg, vf = _vf(res["command"])
+            if unwrapped:  # the width libass sets the text at, on one line, no margins
+                m = res["margin_h_px"]
+                vf = vf.replace("force_style=", "force_style=WrapStyle=2\\,", 1)
+                vf = vf.replace(f"MarginL={m}\\,MarginR={m}\\,", "MarginL=0\\,MarginR=0\\,", 1)
+            # The filter straight to raw grey: no encoder to add ringing round the ink.
+            raw = subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i",
+                                  f"color=c=0x808080:s={w}x{h}:r=25:d=1", "-vf", vf,
+                                  "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                                 capture_output=True, check=True, timeout=120).stdout
+        self.assertEqual(len(raw), w * h)
+        return res, raw
+
+    def test_the_ink_is_the_stated_size_and_inside_title_safe(self):
+        for w, h in ((1920, 1080), (1280, 720)):
+            for name, text in self.LINES.items():
+                with self.subTest(raster=f"{w}x{h}", line=name):
+                    res, raw = self._burn(text, w, h)
+                    top, bottom, left, right = _ink_box(raw, w, h)
+                    inset_v, inset_h = h * 0.05, w * 0.05
+                    self.assertGreaterEqual(top, inset_v)
+                    self.assertLessEqual(bottom, h - 1 - inset_v)
+                    self.assertGreaterEqual(left, inset_h)
+                    self.assertLessEqual(right, w - 1 - inset_h)
+                    self.assertAlmostEqual((left + right) / 2, w / 2, delta=2)
+                    # Sits on the title safe line, not hundreds of pixels up.
+                    self.assertGreaterEqual(bottom, h - 1 - inset_v - 6)
+                    if name == "one line":
+                        size, outline = res["font_size_px"], res["outline_px"]
+                        height = bottom - top + 1
+                        self.assertLessEqual(height, 1.2 * size + 2 * outline)
+                        self.assertGreaterEqual(height, 0.6 * size)
+
+    def test_a_line_wider_than_title_safe_wraps_inside_it(self):
+        # The fewest short words wider than title safe: still one line within
+        # libass's default 10 px side margins, so only burn's own side
+        # margins can wrap it back inside.
+        w, h = 1920, 1080
+        words = ["να", "το", "με", "σε"] * 20
+
+        def width(n):
+            _, raw = self._burn(" ".join(words[:n]), w, h, unwrapped=True)
+            _, _, left, right = _ink_box(raw, w, h)
+            return right - left + 1
+
+        lo, hi = 1, len(words)
+        self.assertGreater(width(hi), w * 0.9)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if width(mid) > w * 0.9:
+                hi = mid
+            else:
+                lo = mid + 1
+        self.assertLess(width(lo), w - 20)
+        _, raw = self._burn(" ".join(words[:lo]), w, h)
+        _, _, left, right = _ink_box(raw, w, h)
+        self.assertGreaterEqual(left, w * 0.05)
+        self.assertLessEqual(right, w - 1 - w * 0.05)
+
+
+class BurnCommand(_NeedsBurnFfmpeg):
     def test_the_printed_command_runs_on_an_awkward_folder(self):
         with tempfile.TemporaryDirectory() as d:
             folder = Path(d, "My Film [v2], final")

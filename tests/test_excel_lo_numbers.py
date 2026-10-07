@@ -199,7 +199,10 @@ class Commands(unittest.TestCase):
     def test_cli_accepts_the_new_options(self):
         parser_args = ["excel_lo.py", "add-rows", "f.xlsx", "--sheet", "S", "--after", "1",
                        "--data", "d.json", "--decimal", "comma", "--as-text"]
+        # The client route runs the command in this process, so the patch is
+        # what main calls; the macro route would start a real LibreOffice.
         with mock.patch("sys.argv", parser_args), \
+                mock.patch.object(xl, "_uno_importable", return_value=True), \
                 mock.patch.object(xl, "cmd_add_rows") as fake, \
                 mock.patch.object(xl, "stop_libreoffice"):
             xl.main()
