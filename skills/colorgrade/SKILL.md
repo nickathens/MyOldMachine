@@ -76,7 +76,10 @@ That one line does all of this:
 6. lays the look over every shot identically
 7. re measures, and raises the match if the shots still do not agree
 8. bakes one LUT per shot, choosing the LUT size by measuring its error
-9. renders in a single decode and a single encode, audio copied through
+9. renders in a single decode and a single encode, audio copied through (into an
+   .mp4 only AAC, MP3, AC-3 and E-AC-3 are copied; PCM, which a ProRes .mov usually
+   carries, is encoded AAC 320k because players largely cannot read PCM from an
+   .mp4. Give a .mov output to keep it untouched)
 10. writes a contact sheet, a report, and the LUTs
 
 Step 9 is one straight chain of lut3d filters, each switched on over its own
@@ -159,6 +162,19 @@ Bake any of them to a standalone LUT:
 ```bash
 $PY scripts/cg.py lut --look kodak2383 --out kodak.cube --size 65
 ```
+
+Grade one photo with the same maths (`--normalize full` balances it first):
+
+```bash
+$PY scripts/cg.py still IN.jpg --look warm_doc --out OUT.png
+```
+
+The photo is read as it is seen: EXIF orientation applied, and a colour
+profile other than sRGB or Rec.709 (an iPhone's Display P3, Adobe RGB)
+converted to sRGB before grading, with a note saying so. It is graded a band
+of rows at a time, so memory stays near 0.6 GB whatever the size (whole, a
+12 MP photo peaked at 2.1 GB and a 48 MP one would need about 8). The output
+is an 8-bit PNG.
 
 ## Track two: change one object
 

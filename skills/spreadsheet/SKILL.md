@@ -16,7 +16,7 @@ Run from the MyOldMachine repo root:
 # File info (sheets, dimensions)
 /usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py info /path/to/file.xlsx
 
-# Read a sheet (outputs JSON)
+# Read a sheet (outputs JSON; date cells come back as ISO text, 2026-10-07 or 2026-10-07 14:05:00)
 /usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py read /path/to/file.xlsx --sheet "Sheet1"
 /usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py read /path/to/file.xlsx --sheet "Sheet1" --range A1:E10
 

@@ -21,7 +21,7 @@ A bot skill (file in `skills/<name>/`) and an MCP server are not the same shape.
 
 ## Choosing language
 
-- **Python** -- preferred for I/O-bound servers, integration with Python data libs, fastest path. SDK: `mcp` (PyPI), maintained by Anthropic. **Version 2 (2.2.0 on 2026-09-27) renamed `FastMCP` to `MCPServer`**: 1.x code (`from mcp.server.fastmcp import FastMCP`) dies on a fresh install with ModuleNotFoundError, and results use snake_case (`is_error`, not `isError`). Pin `mcp<2` to run old code. The Python examples below are 2.x and were run end to end over stdio with an MCP client on 2026-09-27; the TypeScript one ran on SDK 1.30.1 under Node 24.
+- **Python** -- preferred for I/O-bound servers, integration with Python data libs, fastest path. SDK: `mcp` (PyPI), maintained by Anthropic. **Version 2 (2.2.0 on 2026-09-27; 2.3.0 on 2026-10-07, same imports and `run()`) renamed `FastMCP` to `MCPServer`**: 1.x code (`from mcp.server.fastmcp import FastMCP`) dies on a fresh install with ModuleNotFoundError, and results use snake_case (`is_error`, not `isError`). Pin `mcp<2` to run old code. The Python examples below are 2.x and were run end to end over stdio with an MCP client on 2026-09-27; the TypeScript one ran on SDK 1.30.1 under Node 24.
 - **TypeScript** -- preferred when targeting Cloudflare Workers / serverless, or when the host is a Node app. SDK: `@modelcontextprotocol/sdk`.
 - **Go / Rust / others** -- viable, fewer first-party tools. Use the protocol directly via JSON-RPC over stdio.
 

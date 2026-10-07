@@ -56,7 +56,7 @@ python skills/calendar/scripts/gcal.py calendars
 ## Event IDs
 
 Event IDs are shown in brackets after each event in list output: `[id:abc12345]`
-You can use just the first 8 characters when deleting or showing events.
+You can use just the first 8 characters when deleting or showing events. Each occurrence of a repeating event is listed with its whole id, because all of them start with the same 8 characters; a short id that matches more than one event is refused with the matches listed, never settled by taking the first.
 
 ## Timezone
 

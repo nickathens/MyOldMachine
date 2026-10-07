@@ -29,7 +29,19 @@ python scripts/analyze.py input.mp3 --json
 
 # Images into a folder (default: beside the input), named <input>.waveform.png and <input>.spectrum.png
 python scripts/analyze.py input.mp3 --waveform --spectrum --output /tmp/plots
+
+# A section of a long file: from 5:00, four minutes
+python scripts/analyze.py mix.mp3 --start 300 --duration 240
 ```
+
+Memory grows with length (each feature computes a full-length STFT or CQT):
+a 34 minute album needs more than 6 GB for the plain analysis and about
+3 GB for a spectrogram. On Linux the script runs itself inside its own
+memory-capped scope (6 GB, `AUDIO_ANALYSIS_MEM_MAX`), outside the bot's
+service, so a file that is too long fails alone with "killed ... by the 6G
+memory cap: analyse a section with --start and --duration". On Linux where no
+scope can be made, files over ten minutes need `--duration`; macOS runs as
+before.
 
 ## Output
 
