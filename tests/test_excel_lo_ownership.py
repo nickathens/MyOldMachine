@@ -150,14 +150,34 @@ class StopClosesOnlyWhatThisToolLeft(_TempDir):
             self.assertTrue(os.path.exists(kept))
 
     def test_a_folder_without_a_recorded_start_is_never_judged_gone(self):
-        folder, marker = self.run_folder("4242", 990004, None)
-        fake = _FakeTable({601: [MAC_SOFFICE, "--headless", marker]})
+        # Its PID gone, or alive with some start: with none recorded, nothing
+        # proves the command that made the folder has ended.
+        for starts in ({}, {990004: "Thu Jan  8 09:00:00 2026"}):
+            with self.subTest(owner_pid_alive=bool(starts)):
+                folder, marker = self.run_folder("4242", 990004, None)
+                fake = _FakeTable({601: [MAC_SOFFICE, "--headless", marker]}, starts=starts)
+                with contextlib.ExitStack() as stack:
+                    for p in fake.patches():
+                        stack.enter_context(p)
+                    res = xl.stop_leftovers()
+                self.assertEqual((fake.signals, res["stopped"]), ([], []))
+                self.assertTrue(os.path.exists(folder))
+
+    def test_a_pid_reused_since_the_table_was_read_is_never_signalled(self):
+        _, marker = self.run_folder("4242", 990001, "Mon Jan  5 10:00:00 2026")
+        fake = _FakeTable({801: [LINUX_BIN, "--headless", marker]})
+
+        def read_then_reuse():
+            rows = fake.table()
+            fake.rows[801] = ["/usr/bin/vim", "notes.txt"]  # 801 ended; its PID went to vim
+            return rows
+
         with contextlib.ExitStack() as stack:
             for p in fake.patches():
                 stack.enter_context(p)
-            res = xl.stop_leftovers()
-        self.assertEqual((fake.signals, res["stopped"]), ([], []))
-        self.assertTrue(os.path.exists(folder))
+            stack.enter_context(mock.patch.object(xl, "_process_table", side_effect=read_then_reuse))
+            xl.stop_leftovers()
+        self.assertEqual(fake.signals, [])
 
     def test_whose_runs_and_which_processes(self):
         for uid, tag in (("123456789", "123456789"), ("", "local"), ("../x", "local"),
@@ -420,6 +440,18 @@ class StaleLocks(_TempDir):
         kill.assert_not_called()
         self.assertTrue(os.path.exists(gone_dir))
 
+    def test_a_process_table_that_lists_nothing_never_reads_as_nobody(self):
+        # A ps that runs and prints nothing would make every command look
+        # gone, and stop would delete the folders of commands still running.
+        busy_dir, _ = self.run_folder("4242", os.getpid(), xl._process_start(os.getpid()))
+        with mock.patch.object(xl.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                mock.patch.object(xl.os, "kill") as kill:
+            with self.assertRaises(xl.PsFailed):
+                xl.stop_leftovers()
+        kill.assert_not_called()
+        self.assertTrue(os.path.exists(busy_dir))
+
 
 class CsvExport(_TempDir):
     """CSV holds one sheet, and the sheet is always named to LibreOffice."""
@@ -549,6 +581,18 @@ class TheMacroRoute(_TempDir):
         out, error = self._controller(play)
         self.assertEqual(out, "")
         self.assertIn("without running the command", error)
+
+    def test_a_copy_that_never_starts_the_macro_is_given_up_on(self):
+        def play(office, args, env):
+            office.proc = _FakeProc(exits_on_wait=False)  # runs, never writes "started"
+
+        t0 = time.monotonic()
+        with mock.patch.object(xl, "LO_START_TIMEOUT", 0.3), \
+                mock.patch.object(xl, "LO_JOB_TIMEOUT", 5):
+            out, error = self._controller(play)
+        self.assertEqual(out, "")
+        self.assertIn("did not start the command within", error)
+        self.assertLess(time.monotonic() - t0, 3)
 
     def test_a_sigterm_handler_set_by_anyone_else_is_left_alone(self):
         # Inside LibreOffice the handler was set outside Python: getsignal gives
@@ -753,8 +797,8 @@ class LiveOwnership(unittest.TestCase):
                                 stderr=subprocess.PIPE, text=True, env=self.env, cwd=self.td)
 
     @staticmethod
-    def _soffice_pids():
-        return {pid for pid, words in _table()
+    def _soffice_pids(table=None):
+        return {pid for pid, words in (_table() if table is None else table)
                 if words and os.path.basename(words[0]).startswith(("soffice", "oosplash"))}
 
     def _wait_for(self, procs, timeout=60):
@@ -764,9 +808,14 @@ class LiveOwnership(unittest.TestCase):
             time.sleep(0.2)
 
     def _assert_nothing_left(self, before, theirs):
-        left = self._soffice_pids() - before
-        self.assertEqual(left, set(), "a command left its LibreOffice running: "
-                         + str([w for p, w in _table() if p in left]))
+        # On Linux a LibreOffice on a fresh profile restarts its soffice.bin
+        # once, so the bystander can gain a PID after `before` was taken and
+        # read as the command's leftover. It is not: theirs.poll() judges it.
+        bystander = "-env:UserInstallation=" + Path(self.td, "theirs").as_uri()
+        table = _table()
+        new = self._soffice_pids(table) - before
+        left = [words for pid, words in table if pid in new and bystander not in words]
+        self.assertEqual(left, [], f"a command left its LibreOffice running: {left}")
         self.assertIsNone(theirs.poll(), "a command closed someone else's LibreOffice")
         self.assertEqual([n for n in os.listdir(self.td) if n.startswith("mom-excel-lo-")], [])
 

@@ -174,6 +174,13 @@ class BurnInPixels(unittest.TestCase):
         self.assertEqual((res["font_size_px"], res["margin_v_px"], res["margin_h_px"],
                           res["outline_px"], res["title_safe_inset_px"]), (45, 56, 98, 2, 54.0))
 
+    def test_a_margin_under_title_safe_is_called_out(self):
+        low = subs.burn_command("s.srt", "v.mov", (1920, 1080), margin_v=20, ffmpeg="/opt/x/ffmpeg")
+        self.assertIn("MarginV 20px is under title safe plus the outline (56px)", low["note"])
+        self.assertIn("MarginV=20\\,", _vf(low["command"])[1])
+        safe = subs.burn_command("s.srt", "v.mov", (1920, 1080), ffmpeg="/opt/x/ffmpeg")
+        self.assertNotIn("under title safe", safe["note"])
+
     def test_without_an_ffmpeg_that_can_burn_it_says_so(self):
         # Before: a command that died with "No such filter: 'subtitles'".
         with mock.patch.object(subs, "burn_ffmpeg", return_value=None):
