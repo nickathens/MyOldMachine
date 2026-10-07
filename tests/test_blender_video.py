@@ -164,7 +164,9 @@ class SweepRest20261007(unittest.TestCase):
              "--output", str(self.d / "hd_out.mp4")],
             capture_output=True, text=True, timeout=600).stdout.split()
         self.assertEqual(peak[0], "0")
-        self.assertLess(int(peak[1]), 1_500_000, f"peak {int(peak[1]) // 1024} MB")
+        # ru_maxrss is in kilobytes on Linux and in bytes on macOS
+        peak_kb = int(peak[1]) // (1024 if sys.platform == "darwin" else 1)
+        self.assertLess(peak_kb, 1_500_000, f"peak {peak_kb // 1024} MB")
 
 
 if __name__ == "__main__":

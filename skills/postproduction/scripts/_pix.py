@@ -524,21 +524,36 @@ def decode_params(info):
 def encode_params(colour=None):
     """(-vf filter, tag options) that write RGB back as the source was written.
 
-    With no source colour (a caller that has none) it is BT.709, tagged.
+    With no source colour (a caller that has none) it is BT.709, tagged. So is
+    an RGB source (a PNG sequence, libx264rgb): it has no YUV matrix or range
+    to mirror, and `-colorspace gbr` is no encoder option, so ffmpeg refused
+    to open the output and the composite was never written.
+
+    Every label also goes on the frames (setparams), because ffmpeg 7 and
+    later write a file's colour from its frames: on 9.0.2 the scale alone
+    labelled an untagged plate's composite BT.601, so a player showed it apart
+    from its plate, and -color_primaries and -color_trc were dropped
+    (measured 2026-10-07). The options stay for 6.1.
     """
-    if colour is None:
-        return ("scale=out_color_matrix=bt709:out_range=tv",
-                ["-colorspace", "bt709", "-color_primaries", "bt709",
-                 "-color_trc", "bt709", "-color_range", "tv"])
-    space = _tag(colour.get("matrix"))
-    rng = "pc" if colour.get("range") in ("pc", "jpeg", "full") else "tv"
-    matrix = _SWS_MATRIX.get(space, "bt601")
-    tags = []
-    for key, option in (("matrix", "-colorspace"), ("primaries", "-color_primaries"),
-                        ("transfer", "-color_trc"), ("range", "-color_range")):
-        if _tag(colour.get(key)):
-            tags += [option, colour[key]]
-    return f"scale=out_color_matrix={matrix}:out_range={rng}", tags
+    if colour is None or _tag(colour.get("matrix")) in ("gbr", "rgb"):
+        colour = {"matrix": "bt709", "primaries": "bt709", "transfer": "bt709",
+                  "range": "tv"}
+    written = {key: _tag(colour.get(key))
+               for key in ("matrix", "primaries", "transfer", "range")}
+    if written["matrix"] and written["matrix"] not in _SWS_MATRIX:
+        written["matrix"] = "smpte170m"    # swscale writes it as BT.601: say so
+    rng = "pc" if written["range"] in ("pc", "jpeg", "full") else "tv"
+    matrix = _SWS_MATRIX.get(written["matrix"], "bt601")
+    labels, tags = [], []
+    for key, label, option in (("matrix", "colorspace", "-colorspace"),
+                               ("primaries", "color_primaries", "-color_primaries"),
+                               ("transfer", "color_trc", "-color_trc"),
+                               ("range", "range", "-color_range")):
+        labels.append(f"{label}={written[key] or 'unknown'}")
+        if written[key]:
+            tags += [option, written[key]]
+    return (f"scale=out_color_matrix={matrix}:out_range={rng},"
+            f"setparams={':'.join(labels)}", tags)
 
 
 def decoded_bytes(info, start=0, count=None):

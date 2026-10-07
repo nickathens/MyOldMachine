@@ -42,6 +42,15 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "postproduction" / "scripts"
 # CI installs no numpy; the compositing and upres tests need it.
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
+HAVE_CV2 = importlib.util.find_spec("cv2") is not None
+
+
+def _ffmpeg_has_filter(name):
+    """Homebrew's ffmpeg 9 is built without libass, so it has no subtitles filter."""
+    if not shutil.which("ffmpeg"):
+        return False
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True).stdout
+    return any(line.split()[1:2] == [name] for line in out.splitlines())
 
 
 # greek-law and postproduction each ship a `_common`, and the scripts import it
@@ -141,7 +150,7 @@ class ReadingSpeed(unittest.TestCase):
         self.assertEqual(subs.check(decomposed, {})["rows"][0]["chars"], 12)
 
 
-@unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+@unittest.skipUnless(_ffmpeg_has_filter("subtitles"), "needs ffmpeg with the subtitles filter (libass)")
 class BurnCommand(unittest.TestCase):
     def test_the_printed_command_runs_on_an_awkward_folder(self):
         with tempfile.TemporaryDirectory() as d:
@@ -366,7 +375,7 @@ class TriangulateAnyTwoBackings(unittest.TestCase):
         self.assertLess(float(np.abs(r["alpha"] - alpha).max()), 1e-5)
 
 
-@unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+@unittest.skipUnless(shutil.which("ffmpeg") and HAVE_NUMPY and HAVE_CV2, "needs ffmpeg, numpy and OpenCV")
 class CadenceTrueTimeLandsOnTheLurch(unittest.TestCase):
     """the cadence found the lurch step j -> j + 1 at phase j but stretched
     step j + 1 in the true time vector, so smoothing against it put every

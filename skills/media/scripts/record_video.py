@@ -245,8 +245,11 @@ def _wait_for_xvfb(display: str, timeout: float = 10.0) -> bool:
 # untagged file for BT.709, showed the brand gold C9A84C as (204, 164, 71)
 # (Linux bot sweep 2026-10-07). Name BT.709 for the conversion and tag the file
 # with it. The post-process re-encode carries those tags through from its input
-# (measured: tagging it again changes nothing).
-ENCODE_MATRIX = "scale=out_color_matrix=bt709:out_range=tv"
+# (measured: tagging it again changes nothing). The tags go on the frames too
+# (setparams): ffmpeg 7 and later write a file's colour from its frames, and on
+# 9.0.2 the -color_primaries and -color_trc options alone were dropped.
+ENCODE_MATRIX = ("scale=out_color_matrix=bt709:out_range=tv,"
+                 "setparams=colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709")
 BT709_TAGS = ["-colorspace", "bt709", "-color_primaries", "bt709",
               "-color_trc", "bt709", "-color_range", "tv"]
 

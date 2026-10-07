@@ -29,7 +29,12 @@ def run(cmd, **kw):
 
 _YUV_MATRICES = {"bt709", "smpte170m", "bt470bg", "bt2020nc", "bt2020c",
                  "smpte240m", "fcc"}
-ENCODE_MATRIX = "scale=out_color_matrix=bt709:out_range=tv"
+# The labels go on the frames as well as in the output options: ffmpeg 7 and
+# later write a file's colour from its frames, so on 9.0.2 -color_primaries and
+# -color_trc were dropped, and an HDR source's own BT.2020 and PQ labels came
+# through onto the graded BT.709 file (measured 2026-10-07; pixels identical).
+ENCODE_MATRIX = ("scale=out_color_matrix=bt709:out_range=tv,"
+                 "setparams=colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709")
 
 
 @dataclass

@@ -292,9 +292,13 @@ def expected_seconds(page, delay: float) -> float:
 # x11grab hands over RGB, and ffmpeg 6.1 turns RGB into YUV with the BT.601
 # matrix unless told otherwise and tags nothing, so an HD player, which takes an
 # untagged file for BT.709, showed the brand gold C9A84C as (204, 164, 71)
-# (2026-10-07). Name BT.709 for the conversion and tag the file with it.
+# (2026-10-07). Name BT.709 for the conversion and tag the file with it, on the
+# frames too (setparams): ffmpeg 7 and later write a file's colour from its
+# frames, and on 9.0.2 the -color_primaries and -color_trc options alone were
+# dropped.
 ENCODE_ARGS = [
-    "-vf", "scale=out_color_matrix=bt709:out_range=tv",
+    "-vf", "scale=out_color_matrix=bt709:out_range=tv,"
+           "setparams=colorspace=bt709:range=tv:color_primaries=bt709:color_trc=bt709",
     "-c:v", "libx264",
     "-crf", "20",
     "-preset", "fast",
