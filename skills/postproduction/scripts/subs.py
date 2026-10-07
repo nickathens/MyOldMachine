@@ -32,8 +32,11 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -552,30 +555,91 @@ def _filter_value(value):
     return "".join(out)
 
 
+# The subtitles filter is libass, and Homebrew's ffmpeg is built without it
+# (9.0.2 on the Mac, 2026-10-07: no subtitles, ass or drawtext filter), so the
+# printed command died there with "No such filter: 'subtitles'". Homebrew's
+# ffmpeg-full carries libass. It is keg-only, so it is never on PATH and is
+# looked for where Homebrew keeps it, Apple silicon first, then Intel.
+FULL_FFMPEG = ("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg",
+               "/usr/local/opt/ffmpeg-full/bin/ffmpeg")
+BURN_OUTLINE_PX = 2
+
+
+def _has_filter(ffmpeg, name):
+    try:
+        out = subprocess.run([ffmpeg, "-hide_banner", "-filters"],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(line.split()[1:2] == [name] for line in out.splitlines())
+
+
+def burn_ffmpeg():
+    """The first ffmpeg here that can burn subtitles, or None: the one on
+    PATH when it carries libass (a Linux distribution's does), else
+    Homebrew's ffmpeg-full."""
+    seen = set()
+    for cand in (shutil.which("ffmpeg"),) + FULL_FFMPEG:
+        if not cand or cand in seen or not os.access(cand, os.X_OK):
+            continue
+        seen.add(cand)
+        if _has_filter(cand, "subtitles"):
+            return cand
+    return None
+
+
 def burn_command(sub_path, video, raster, margin_v=None, fontsize=None,
-                 safe=0.90, out=None):
+                 safe=0.90, out=None, ffmpeg=None):
     """The ffmpeg burn in, with its geometry stated rather than defaulted.
 
     Every path is quoted for the shell and escaped for the filter: printed
     bare, a folder such as "My Film [v2], final" cut the command at its first
-    space and ffmpeg looked for "/tmp/.../My" (2026-10-07)."""
+    space and ffmpeg looked for "/tmp/.../My" (2026-10-07).
+
+    Every number is in pixels of the raster. libass reads the font size, the
+    margins and the outline in the script's own units, and an SRT gets
+    ffmpeg's default script of 384x288, so until PlayResX and PlayResY named
+    the raster the stated 45 px font burned 3.75 times too big on a
+    1920x1080 picture and the 54 px margin landed 202 px up (measured
+    2026-10-07). The outline is drawn outside the text box, so every margin
+    is the title safe inset plus the outline: the ink, outline included,
+    stays inside title safe."""
     import shlex
     rw, rh = raster
     title_inset = rh * (1 - safe) / 2.0
-    margin_v = margin_v if margin_v is not None else int(round(title_inset))
+    side_inset = rw * (1 - safe) / 2.0
+    outline = BURN_OUTLINE_PX
+    safe_v = int(math.ceil(title_inset + outline))
+    margin_v = margin_v if margin_v is not None else safe_v
+    margin_h = int(math.ceil(side_inset + outline))
     fontsize = fontsize or int(round(rh * 0.042))
     out = out or "BURNED.mov"
-    style = (f"FontSize={fontsize},MarginV={margin_v},Alignment=2,"
-             f"BorderStyle=1,Outline=2,Shadow=0")
+    ffmpeg = ffmpeg or burn_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError(
+            "No ffmpeg here can burn subtitles: the subtitles filter needs "
+            f"libass, and {shutil.which('ffmpeg') or 'ffmpeg'} was built "
+            "without it. On macOS, brew install ffmpeg-full puts one beside "
+            "the everyday ffmpeg without replacing it; a Linux "
+            "distribution's ffmpeg already carries libass.")
+    style = (f"PlayResX={rw},PlayResY={rh},FontSize={fontsize},"
+             f"MarginL={margin_h},MarginR={margin_h},MarginV={margin_v},"
+             f"Alignment=2,BorderStyle=1,Outline={outline},Shadow=0")
     vf = f"subtitles=filename={_filter_value(sub_path)}:force_style={_filter_value(style)}"
     return {
-        "command": (f"ffmpeg -i {shlex.quote(str(video))} -vf {shlex.quote(vf)} "
-                    f"-c:a copy {shlex.quote(str(out))}"),
+        "command": (f"{shlex.quote(ffmpeg)} -i {shlex.quote(str(video))} "
+                    f"-vf {shlex.quote(vf)} -c:a copy {shlex.quote(str(out))}"),
+        "ffmpeg": ffmpeg,
         "raster": [rw, rh], "font_size_px": fontsize,
-        "margin_v_px": margin_v, "title_safe_inset_px": round(title_inset, 1),
-        "note": "MarginV is set to the title safe inset so the bottom line "
-                "cannot fall outside it. Burning in is destructive: keep a "
-                "textless master, and never burn into the only copy.",
+        "margin_v_px": margin_v, "margin_h_px": margin_h, "outline_px": outline,
+        "title_safe_inset_px": round(title_inset, 1),
+        "note": ("Every margin is the title safe inset plus the outline, so no "
+                 "line, outline included, can fall outside title safe. "
+                 if margin_v >= safe_v else
+                 f"MarginV {margin_v}px is under title safe plus the outline "
+                 f"({safe_v}px), so the bottom line can fall outside title safe. ")
+                + "Burning in is destructive: keep a textless master, and never "
+                  "burn into the only copy.",
     }
 
 
@@ -708,7 +772,8 @@ def main(argv=None):
         return C.emit(res, args.json, lambda r: (
             print(f"  {r['command']}"),
             print(f"\n  font {r['font_size_px']}px, MarginV {r['margin_v_px']}px, "
-                  f"title safe inset {r['title_safe_inset_px']}px"),
+                  f"MarginL and MarginR {r['margin_h_px']}px, outline "
+                  f"{r['outline_px']}px, title safe inset {r['title_safe_inset_px']}px"),
             print(f"  {r['note']}")))
     return 0
 

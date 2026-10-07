@@ -90,8 +90,20 @@ to the top of frame for that span. Say which you did.
 
     python subs.py burn FILM.srt --video FILM.mov --raster 1920x1080
 
-MarginV is set to the TITLE SAFE inset so the bottom line cannot fall outside
-it. Burning in is destructive: keep a textless master, and never burn into the
+Every number it prints is in pixels of the raster: the script is set to the
+raster (PlayResX and PlayResY), because libass otherwise reads the font size,
+margins and outline in ffmpeg's default 384x288 script, and on 1920x1080 a
+"45 px" font burned 3.75 times too big with its bottom 202 px up. Each margin
+is the TITLE SAFE inset plus the outline, which is drawn outside the text box,
+so no line, outline included, can fall outside title safe; a line too wide for
+title safe wraps inside it.
+
+The burn needs an ffmpeg with libass. A Linux distribution's carries it;
+Homebrew's does not, so on a Mac `brew install ffmpeg-full`, which sits beside
+the everyday ffmpeg without replacing it. `burn` names the ffmpeg it found at
+the head of the command, and says so plainly when there is none.
+
+Burning in is destructive: keep a textless master, and never burn into the
 only copy. A film with burned in subtitles cannot be localised without going
 back to the textless, which is exactly why the textless is on the delivery list.
 

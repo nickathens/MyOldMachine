@@ -72,7 +72,8 @@ python skills/voice/scripts/transcribe.py /path/to/talk.mp4 --srt > /tmp/talk.sr
 **`--srt`:** prints an SRT subtitle document (numbered cues, `HH:MM:SS,mmm` timings)
 built from whisper's own segment boundaries, instead of the plain transcript. Use it
 whenever something downstream needs timings: a player or editor that loads a sidecar
-`.srt`, ffmpeg's own `-vf subtitles=` burn-in where the build carries libass, or feeding a
+`.srt`, a burn-in (the postproduction skill's `subs.py burn`, which finds an ffmpeg that
+carries libass and sets the geometry in pixels), or feeding a
 timed script into an animation pipeline. The `video-editing` skill does **not** read SRT:
 its `text` command puts one static string on the frame. Blank segments (whisper
 emits them on silence) are dropped and the cues renumbered, so the index never gaps.

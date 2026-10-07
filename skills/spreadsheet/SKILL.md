@@ -6,7 +6,9 @@ Create, read, edit, and export Excel/ODS spreadsheets. Full formula support, cha
 
 ### 1. LibreOffice UNO (primary)
 
-Full Excel compatibility with formula evaluation, charts, and format conversion. Must use system Python (`/usr/bin/python3`) because UNO bindings aren't in the venv.
+Full Excel compatibility with formula evaluation, charts, and format conversion. Run it with `/usr/bin/python3`, not the bot's venv. On Linux that is the Python `python3-uno` serves, and the command talks to LibreOffice over a pipe. On macOS no Python outside LibreOffice can import `uno` (the one inside LibreOffice.app is signed so that only LibreOffice may start it), so the command runs inside LibreOffice as a macro; any Python 3 starts it.
+
+Every command starts a private LibreOffice of its own, on a fresh profile in a new temporary folder, and closes that copy, and only that copy, when it ends. It never closes a LibreOffice it did not start: not a window someone has open, not another user's command.
 
 **Helper script:** `skills/spreadsheet/scripts/excel_lo.py`
 
@@ -36,10 +38,13 @@ Run from the MyOldMachine repo root:
 # Export to another format (xlsx, xls, csv, pdf, ods)
 /usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py save-as /path/to/file.xlsx --output /tmp/output.pdf --format pdf
 
+# CSV holds one sheet: the active one, or the one --sheet names (the reply says which, and how many there were)
+/usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py save-as /path/to/file.xlsx --output /tmp/totals.csv --sheet "Totals"
+
 # Recalculate all formulas
 /usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py eval-formulas /path/to/file.xlsx
 
-# Stop LibreOffice process
+# Close a LibreOffice this tool left running for you (only after a command was killed)
 /usr/bin/python3 skills/spreadsheet/scripts/excel_lo.py stop
 ```
 
@@ -135,7 +140,8 @@ plt.close()
 ## Important Notes
 
 - **Numbers in text form must be unambiguous.** `write` and `add-rows` turn a text value into a number only when it can mean one thing. `2.500` is two thousand five hundred in Greek and two and a half in English, so it is refused (nothing is written) until you pass `--decimal comma` (Greek amounts) or `--decimal dot`. IDs with leading zeros (`0012`), `nan`, `1e5`, `12%` and `€1.234,56` stay text. The JSON reply lists every cell stored as text. JSON numbers (`2500`, `2.5`) are always stored as numbers; `--as-text` keeps everything exactly as typed.
-- LibreOffice UNO requires `/usr/bin/python3` (system Python), NOT the venv Python
+- LibreOffice UNO runs under `/usr/bin/python3` (system Python), NOT the venv Python
 - openpyxl, xlsxwriter, pandas, seaborn are all in the bot's venv (installed by `deps.json`)
-- LibreOffice starts/stops automatically per command -- no manual management needed
+- LibreOffice starts and stops by itself with every command: no manual management. Never close LibreOffice by name (`pkill soffice`, `killall soffice`): one OS account hosts every user here, so that closes other people's windows and commands. `stop` closes only a copy this tool left behind for you, and only once the command that started it is gone.
+- Commands that only read (`info`, `read`, `save-as`) open the file read-only, so they work while someone has it open and leave no lock behind. Commands that write refuse a file someone else has open ("is open in another LibreOffice (...)"), rather than race their save: ask them to close it. A lock left by a killed copy of this tool is recognised and cleared by itself.
 - Supported formats: xlsx, xls, ods, csv, pdf
