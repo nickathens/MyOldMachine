@@ -162,19 +162,27 @@ def lint_script_inputs(project: Path) -> list[dict]:
 
 
 # Measured on CLI 1.1.1, 1.2.0 and 1.3.0, and in the web runtime 2.44.0 playing
-# each one's .riv, 4 Oct 2026 (references/rml.md, Drawing). A Feather inside a
+# each one's .riv, 4 Oct 2026 (references/rml.md, Drawing); CLI 1.4.0 drew all
+# 36 probe scenes byte for byte as 1.3.0 did, 7 Oct 2026. A Feather inside a
 # Fill draws only under fillRule clockwise: under nonZero or evenOdd the paint
 # vanishes, inner or not, on a shape, a layout box or the artboard. Text is the
 # exception: the Fill of a text style, or of its background, feathers under any
 # rule. Under the clockwise rule the built-in shapes fill, mirrored or not, but a
 # custom path's points must run clockwise (y grows down) or the contour cuts a
-# hole instead of filling, and isClockwise="false" is read by 1.3.0 and ignored
-# by 1.1.1 and 1.2.0, so the same file draws differently on each. On Linux
-# (measured on an NVIDIA GTX 970) the CLI's own captures draw no feathered Fill
-# at all (references/rendering.md), but the .riv it builds follows these rules
-# in the web runtime.
+# hole instead of filling, and isClockwise="false" is read by 1.3.0 and 1.4.0
+# and ignored by 1.1.1 and 1.2.0, so the same file draws differently on each.
+# On Linux (measured on an NVIDIA GTX 970) the CLI's own captures draw no
+# feathered Fill at all (references/rendering.md), but the .riv it builds
+# follows these rules in the web runtime.
 PARAMETRIC_PATHS = {"Rectangle", "Ellipse", "Triangle", "Polygon", "Star"}
 TEXT_PAINTS = {"TextStylePaint", "TextStyleBackground"}
+
+# Measured 7 Oct 2026: CLI 1.4.0 draws a Stroke inside or outside its edge (a
+# 40 px stroke on a 200 px square spans 200, 240 or 280 px), and the web
+# runtime of this version, playing the same .riv, draws all three centred
+# (240). The file carries the setting (property key 470), so a later runtime
+# may draw it: re-measure when web_runtime.json moves (LiveWebTests).
+STROKE_POSITION_WEB = "2.44.0"
 
 
 def label(node: dict) -> str:
@@ -205,6 +213,14 @@ def lint_paints(node: dict) -> list[dict]:
                                             'Feather but not fillRule="clockwise", so it draws nothing at any '
                                             "strength (the editor sets the rule when you feather a fill; in RML "
                                             "you write it)"})
+    for stroke in (k for k in kids if k.get("type") == "Stroke"):
+        position = (stroke.get("enums") or {}).get("position", {0: "inside", 2: "outside"}.get(stroke.get("position")))
+        if position in ("inside", "outside"):
+            findings.append({"severity": "warning", "kind": "stroke-position-web", "line": stroke.get("line"),
+                             "message": f"the Stroke{label(stroke)} on line {stroke.get('line')} sits {position} "
+                                        "its edge: the CLI draws it there, but Rive's web runtime "
+                                        f"{STROKE_POSITION_WEB} ignores the setting and centres the stroke, so "
+                                        "a web page of this scene will not match a render of it"})
     if node.get("type") != "Shape" or not any(clockwise_rule(f) for f in fills):
         return findings
     paths = [k for k in kids if k.get("type") == "PointsPath"]
@@ -212,10 +228,10 @@ def lint_paints(node: dict) -> list[dict]:
         if path.get("isClockwise") is False:
             findings.append({"severity": "warning", "kind": "path-direction-flag", "line": path.get("line"),
                              "message": f'the PointsPath on line {path.get("line")} has isClockwise="false" '
-                                        "under fillRule clockwise: CLI 1.3.0 reads it and 1.1.1 and 1.2.0 ignore "
-                                        "it, so it fills on one and cuts a hole on the other. Write its points "
-                                        "clockwise and drop the attribute; cut a hole with points that run "
-                                        'counter-clockwise, or with isHole="true"'})
+                                        "under fillRule clockwise: CLI 1.3.0 and 1.4.0 read it and 1.1.1 and "
+                                        "1.2.0 ignore it, so it fills on one and cuts a hole on the other. Write "
+                                        "its points clockwise and drop the attribute; cut a hole with points "
+                                        'that run counter-clockwise, or with isHole="true"'})
     solid = [p for p in paths if not p.get("isHole")]
     if solid and not any(k.get("type") in PARAMETRIC_PATHS for k in kids):
         outer = max(solid, key=lambda p: abs(winding(p)))
