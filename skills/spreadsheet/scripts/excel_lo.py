@@ -303,11 +303,19 @@ def get_desktop():
 
 
 def _uno_importable():
+    """Can this Python drive LibreOffice over its bridge?
+
+    Only LibreOffice's own uno counts. The typing stubs ooo-dev-tools pulls in
+    (types-uno-script) leave a folder named uno holding only __init__.pyi,
+    which imports as an empty namespace package: the Linux bot's venv took
+    the client route on it and died on "module 'uno' has no attribute
+    'getComponentContext'" (2026-10-07).
+    """
     try:
-        import uno  # noqa: F401
+        import uno
     except ImportError:
         return False
-    return True
+    return callable(getattr(uno, "getComponentContext", None))
 
 
 def run_in_office(args):

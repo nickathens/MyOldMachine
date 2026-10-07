@@ -166,10 +166,13 @@ class StopClosesOnlyWhatThisToolLeft(_TempDir):
                 self.assertEqual(xl._owner_tag(), tag)
         marker = xl._marker("/tmp/mom-excel-lo-1-abc")
         self.assertEqual(marker, "-env:UserInstallation=file:///tmp/mom-excel-lo-1-abc/profile")
-        rows = [(1, ["soffice", marker]), (2, ["soffice", marker + "2"]),
-                (3, ["soffice", "-env:UserInstallation=file:///tmp/mom-excel-lo-1-abcd/profile"]),
-                (4, ["ls", "/tmp/mom-excel-lo-1-abc/profile"])]
-        self.assertEqual(xl._carrying(marker, rows), [1])
+        # High PIDs: _carrying never counts the caller, and a runner that is
+        # pid 1 (a container, a pid namespace) failed this with pid 1 here.
+        rows = [(90001, ["soffice", marker]), (90002, ["soffice", marker + "2"]),
+                (90003, ["soffice", "-env:UserInstallation=file:///tmp/mom-excel-lo-1-abcd/profile"]),
+                (90004, ["ls", "/tmp/mom-excel-lo-1-abc/profile"])]
+        self.assertEqual(xl._carrying(marker, rows), [90001])
+        self.assertEqual(xl._carrying(marker, [(os.getpid(), ["python3", marker])]), [])
 
     def test_start_times_are_read_in_one_locale(self):
         with mock.patch.object(xl.subprocess, "run",
@@ -581,6 +584,26 @@ class TheMacroRoute(_TempDir):
                 xl.main()
         self.assertEqual(cm.exception.code, 1)
         self.assertEqual(json.loads(err.getvalue()), {"error": "type detection failed"})
+
+
+class WhichRoute(unittest.TestCase):
+    """Only LibreOffice's own uno takes the client route."""
+
+    def _importable_with(self, files):
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in files.items():
+                Path(d, name).parent.mkdir(parents=True, exist_ok=True)
+                Path(d, name).write_text(text, encoding="utf-8")
+            with mock.patch.object(sys, "path", [d]), mock.patch.dict(sys.modules):
+                sys.modules.pop("uno", None)
+                return xl._uno_importable()
+
+    def test_typing_stubs_named_uno_are_not_libreoffice(self):
+        # types-uno-script (with ooo-dev-tools) ships uno/__init__.pyi and no
+        # module: it imports as an empty namespace package.
+        self.assertFalse(self._importable_with({"uno/__init__.pyi": "", "uno/py.typed": ""}))
+        self.assertFalse(self._importable_with({}))
+        self.assertTrue(self._importable_with({"uno.py": "def getComponentContext():\n    pass\n"}))
 
 
 # --------------------------------------------------------------- live
