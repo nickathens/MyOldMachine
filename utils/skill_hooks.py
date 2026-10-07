@@ -250,7 +250,7 @@ def _verify_pid_is_browser(pid: int) -> bool:
         # macOS: use ps -p <pid> -o args=
         try:
             result = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "args="],
+                ["ps", "-ww", "-p", str(pid), "-o", "args="],
                 capture_output=True, text=True, timeout=3
             )
             if result.returncode == 0:
@@ -286,10 +286,13 @@ def get_process_table() -> list[tuple[int, int, str]]:
     try:
         # macOS: ps -ax -o pid,ppid,args (no --no-headers)
         # Linux: ps -eo pid,ppid,args --no-headers
+        # -ww: without it ps cuts each line at the terminal width whenever it
+        # can find one (a bot started from a shell, a test run), so a pattern
+        # or a path near the end of a long command line was never seen.
         if IS_MACOS:
-            cmd = ["ps", "-ax", "-o", "pid,ppid,args"]
+            cmd = ["ps", "-ax", "-ww", "-o", "pid,ppid,args"]
         else:
-            cmd = ["ps", "-eo", "pid,ppid,args", "--no-headers"]
+            cmd = ["ps", "-ww", "-eo", "pid,ppid,args", "--no-headers"]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         lines = result.stdout.strip().split("\n")

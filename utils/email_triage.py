@@ -241,7 +241,11 @@ def build_digest_lines(entries: list, hours: int = 24) -> str:
     if not entries:
         return f"Email ({hours}h): nothing unread."
 
-    notable = [e for e in entries if e.get("category") in ("urgent", "needs_reply", "fyi")]
+    # "unclassified" is mail the classifier never read (the provider was down
+    # or capped), so it may be urgent; it is listed by name, never folded into
+    # the bulk count (Linux bot sweep 2026-10-07).
+    notable = [e for e in entries
+               if e.get("category") in ("urgent", "needs_reply", "fyi", "unclassified")]
     bulk = len(entries) - len(notable)
     needs = sum(1 for e in entries if e.get("category") == "needs_reply")
 
@@ -259,7 +263,7 @@ def build_digest_lines(entries: list, hours: int = 24) -> str:
             hm = "--:--"
         name = parseaddr(e.get("from", ""))[0] or parseaddr(e.get("from", ""))[1] or "unknown"
         summary = e.get("summary") or e.get("subject") or ""
-        marker = "URGENT " if e.get("category") == "urgent" else ""
+        marker = {"urgent": "URGENT ", "unclassified": "NOT SORTED "}.get(e.get("category"), "")
         suffix = " (draft saved)" if e.get("draft_id") else ""
         lines.append(f"  {hm} {marker}{name}: {summary}{suffix}")
     if len(notable) > 8:

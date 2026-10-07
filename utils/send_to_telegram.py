@@ -41,6 +41,30 @@ def api_url(token: str, method: str) -> str:
     return f"{get_api_base()}/bot{token}/{method}"
 
 
+# Telegram refuses a caption over 1024 characters, and with it the whole file.
+CAPTION_LIMIT = 1024
+
+
+def _accepted_or_say_why(response: httpx.Response, what: str) -> bool:
+    """True when Telegram accepted the call. Otherwise print its own reason.
+
+    "Document sent: False" said nothing about why, so a turn could not tell a
+    caption that was too long from a file over the size limit or a bad chat;
+    and a reply that was not JSON (a proxy's error page) ended in a traceback
+    (Linux bot sweep 2026-10-07)."""
+    try:
+        data = response.json()
+    except ValueError:
+        print(f"{what}: Telegram answered HTTP {response.status_code} with no JSON",
+              file=sys.stderr)
+        return False
+    if data.get("ok"):
+        return True
+    print(f"{what} refused by Telegram: "
+          f"{data.get('description') or f'HTTP {response.status_code}'}", file=sys.stderr)
+    return False
+
+
 def send_message(token, chat_id, text):
     # Without an explicit timeout httpx waits forever; a frozen Bot API server
     # would hang the calling process indefinitely. send_file already sets one;
@@ -50,16 +74,22 @@ def send_message(token, chat_id, text):
         data={"chat_id": chat_id, "text": text},
         timeout=30,
     )
-    return r.json().get("ok", False)
+    return _accepted_or_say_why(r, "Message")
 
 
 def send_file(token, chat_id, method, field, path, caption=None):
     with open(path, "rb") as f:
         data = {"chat_id": chat_id}
         if caption:
+            # A longer caption made Telegram refuse the file itself, so the
+            # file never arrived; now the file goes and the cut is said.
+            if len(caption) > CAPTION_LIMIT:
+                print(f"Caption was {len(caption)} characters; Telegram takes {CAPTION_LIMIT}, "
+                      "so it was cut. Send the rest as a message.", file=sys.stderr)
+                caption = caption[:CAPTION_LIMIT - 1].rstrip() + "\u2026"
             data["caption"] = caption
         r = httpx.post(api_url(token, method), data=data, files={field: f}, timeout=300)
-    return r.json().get("ok", False)
+    return _accepted_or_say_why(r, field.capitalize())
 
 
 def main():

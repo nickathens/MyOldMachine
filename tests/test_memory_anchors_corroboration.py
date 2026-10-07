@@ -104,6 +104,23 @@ class AnchorStorageTests(_Base):
     def test_load_when_none(self):
         self.assertEqual(self.mm.load_anchors(self.uid), [])
 
+    def test_an_id_or_category_the_reader_cannot_parse_is_refused(self):
+        # "my fact" was written as "- [id:my fact] ...", reported as added, then
+        # skipped by the reader and dropped by the next write (Linux bot sweep
+        # 2026-10-07).
+        self.mm.add_anchor(self.uid, "kept fact", anchor_id="kept")
+        for kwargs, reason in (({"anchor_id": "my fact"}, "bad_id"),
+                               ({"anchor_id": "ok", "category": "two words"}, "bad_category")):
+            with self.subTest(**kwargs):
+                r = self.mm.add_anchor(self.uid, "a new fact", **kwargs)
+                self.assertEqual((r["status"], r.get("reason")), ("error", reason))
+        self.assertEqual([a["id"] for a in self.mm.load_anchors(self.uid)], ["kept"])
+
+    def test_a_greek_id_is_readable_and_accepted(self):
+        r = self.mm.add_anchor(self.uid, "Γράφε σύντομα", anchor_id="ύφος-γραφής", category="ύφος")
+        self.assertEqual(r["status"], "added")
+        self.assertEqual(self.mm.load_anchors(self.uid)[0]["id"], "ύφος-γραφής")
+
 
 # ─────────────────────────── Anchors: promote ────────────────────────────
 

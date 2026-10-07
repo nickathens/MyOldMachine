@@ -8,14 +8,16 @@ Closes the gap where Stop hooks never fire (bot crash, reboot, kill -9).
 Cross-platform: works on Linux and macOS.
 """
 
-import glob
 import logging
 import os
 import platform
-import shutil
 import signal
 import subprocess
 import time
+
+# The Stop hook's own sweep, so the two can never disagree about what is safe
+# to delete.
+from utils import skill_hooks
 
 logger = logging.getLogger("startup_cleanup")
 
@@ -91,19 +93,19 @@ TEMP_PATTERNS = [
     "/tmp/skill_hooks/",
 ]
 
-# Min age for temp files before cleanup (seconds)
-TEMP_MIN_AGE = 3600  # 1 hour
-
 
 def _get_all_pids() -> list[tuple[int, str]]:
     """Get all running PIDs and their command lines. Cross-platform."""
     pids = []
     exclude = {os.getpid(), os.getppid()}
     try:
+        # -ww: without it ps cuts each line at the terminal width whenever it
+        # can find one (a bot started from a shell, a test run), and a path at
+        # the end of a long command line drops out of the in-use check.
         if IS_MACOS:
-            cmd = ["ps", "-ax", "-o", "pid,args"]
+            cmd = ["ps", "-ax", "-ww", "-o", "pid,args"]
         else:
-            cmd = ["ps", "-eo", "pid,args", "--no-headers"]
+            cmd = ["ps", "-ww", "-eo", "pid,args", "--no-headers"]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         lines = result.stdout.strip().split("\n")
@@ -150,24 +152,16 @@ def _kill_pids(pids: list[int], grace_sec: float = 0.8):
 
 
 def _clean_temp_files() -> int:
-    """Remove old temp files matching known patterns."""
-    cutoff = time.time() - TEMP_MIN_AGE
-    cleaned = 0
-    for pattern in TEMP_PATTERNS:
-        for path in glob.glob(pattern):
-            try:
-                mtime = os.path.getmtime(path)
-                if mtime >= cutoff:
-                    continue
-                if os.path.isfile(path):
-                    os.unlink(path)
-                    cleaned += 1
-                elif os.path.isdir(path):
-                    shutil.rmtree(path, ignore_errors=True)
-                    cleaned += 1
-            except OSError:
-                pass
-    return cleaned
+    """Remove old temp files matching known patterns.
+
+    The Stop hook's rule: older than its TEMP_MAX_AGE (two hours), and named on
+    no live process's command line. This sweep used to take anything an hour
+    past its last write, user unchecked, so a restart during the day deleted
+    the output of a render still running in another process, such as an ffmpeg
+    writing /tmp/tmpXXXX.mp4 (Linux bot sweep 2026-10-07). It runs after the
+    process sweep above, so it reads the process table again.
+    """
+    return skill_hooks.clean_old_temp_files(TEMP_PATTERNS, all_pids=_get_all_pids())
 
 
 def run_startup_cleanup() -> dict:

@@ -20,6 +20,7 @@ import shlex
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -397,6 +398,72 @@ class _Request:
 
     async def json(self):
         return self._body
+
+
+async def _worst_loop_gap(coro):
+    """The longest the event loop went without running, while coro ran.
+
+    Ticks until the task is done rather than sampling once: a single sample
+    can land before the blocking call and pass blocking code."""
+    task = asyncio.ensure_future(coro)
+    worst, last = 0.0, time.monotonic()
+    while not task.done():
+        await asyncio.sleep(0.01)
+        now = time.monotonic()
+        worst, last = max(worst, now - last), now
+    await task
+    return worst
+
+
+class SlowWorkLeavesTheServerFree(unittest.TestCase):
+    """The Mini App is one uvicorn worker. A cost quote, a balance check or a
+    status read that ran on its event loop froze every other request, from
+    every user, for as long as Higgsfield or systemctl took to answer (ported
+    from the Linux bot's sweep of 2026-10-07). They run in a worker thread now.
+    """
+
+    SLOW = 0.6
+    UID = "mom-test-slow-work"
+
+    def setUp(self):
+        self.pending = Path(f"/tmp/media_gen_pending_{self.UID}.json")
+        self.assertFalse(self.pending.exists(), "a pending file from another run is in the way")
+        self.addCleanup(self.pending.unlink, missing_ok=True)
+        uploads = Path(tempfile.mkdtemp(prefix="mom-test-media-uploads-"))
+        self.addCleanup(shutil.rmtree, uploads, ignore_errors=True)
+        for obj, name, value in ((srv, "UPLOAD_DIR", uploads),
+                                 (srv, "_send_bot_message", mock.Mock(return_value=True)),
+                                 (srv.subprocess, "run", mock.Mock(side_effect=self._slow_run))):
+            patcher = mock.patch.object(obj, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _slow_run(self, cmd, **kwargs):
+        time.sleep(self.SLOW)
+        return mock.Mock(returncode=0, stdout=json.dumps({"credits": 2, "credits_remaining": 100}),
+                         stderr="")
+
+    def test_a_slow_cost_quote_does_not_hold_the_loop(self):
+        card = next(c for c in gen.menu()["image"] if not c["ref"] == "required")
+        body = {"skill": "media-gen",
+                "config": {"type": "image", "model": card["id"], "prompt": "a lighthouse at dusk"}}
+        gap = asyncio.run(_worst_loop_gap(srv.launch_skill(_Request(body), {"_id": self.UID})))
+        self.assertTrue(self.pending.exists(), "the launch did not complete")
+        self.assertEqual(srv.subprocess.run.call_count, 1, "the quote was not asked for")
+        self.assertLess(gap, self.SLOW / 3, f"the event loop stood still for {gap:.2f} s")
+
+    def test_a_slow_balance_check_does_not_hold_the_loop(self):
+        gap = asyncio.run(_worst_loop_gap(srv.media_balance(user={"_id": self.UID})))
+        self.assertLess(gap, self.SLOW / 3, f"the event loop stood still for {gap:.2f} s")
+
+    def test_a_slow_status_read_does_not_hold_the_loop(self):
+        def slow_status():
+            time.sleep(self.SLOW)
+            return {"active": True}
+        user = {"_id": self.UID, "_profile": {"name": "Test", "role": "user"}}
+        with mock.patch.object(srv, "_bot_status", side_effect=slow_status):
+            gap = asyncio.run(_worst_loop_gap(srv.get_status(user=user)))
+        self.assertLess(gap, self.SLOW / 3, f"the event loop stood still for {gap:.2f} s")
 
 
 @unittest.skipUnless(importlib.util.find_spec("playwright"), "needs Playwright with Chromium")

@@ -537,7 +537,19 @@ def _mark_observations_reflected(user_id: int, mm: MemoryManager, records: list)
 # one corroborating clause (reset time, reset duration, or spend marker), bounded
 # by length, so a long response that merely mentions the phrase never trips it.
 _CAP_ANCHOR = re.compile(r"you'?ve\s+hit\s+your\s+(?:\S+\s+){0,3}limit", re.IGNORECASE)
-_CAP_RESET = re.compile(r"resets?(?:\s+at)?\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?", re.IGNORECASE)
+# The reset clause comes in two shapes, both from the CLI's own formatter (read
+# off the 2.1.292 binary): under 24 h away it is a bare clock, "resets 4:30pm
+# (Europe/Athens)"; anything further carries its date, "resets Oct 9, 10am
+# (Europe/Athens)", plus ", 2027" in another year. A weekly cap is usually days
+# from its reset, so the dated shape is the common one for it, and a clock-only
+# pattern let it through as the night's output (Linux bot sweep 2026-10-07).
+_CAP_RESET = re.compile(
+    r"resets?(?:\s+at)?\s+"
+    r"(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+    r"\s+\d{1,2}(?:,\s*\d{4})?(?:\s*,|\s+at)?\s+)?"
+    r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?",
+    re.IGNORECASE,
+)
 _CAP_RESET_DURATION = re.compile(r"resets?\s+in\s+\d", re.IGNORECASE)
 _CAP_SPEND = re.compile(r"settings/usage|raise it at|spend limit", re.IGNORECASE)
 _MAX_CAP_MESSAGE_LEN = 400
