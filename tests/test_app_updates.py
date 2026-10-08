@@ -1391,15 +1391,24 @@ _DOCTOR_FLAG_GONE = {"ok": False, "results": [
 ]}
 
 
-def _fake_rive(folder: Path, version: str = "1.5.0") -> Path:
+def _fake_rive(folder: Path, version: str = "1.5.0", notice: str = "",
+               record: Path | None = None) -> Path:
     """A rive that answers --version as the real one does ("rive 1.5.0") and
-    knows nothing else, so the skill's real doctor finds every flag gone."""
+    knows nothing else, so the skill's real doctor finds every flag gone.
+
+    notice is printed to stderr after the version, and record, when given,
+    gets the quiet settings --version was run with."""
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / "rive"
     script.write_text(f"""#!{sys.executable}
-import sys
+import json, os, sys
 if sys.argv[1:] == ["--version"]:
+    if {str(record) if record else ''!r}:
+        with open({str(record) if record else ''!r}, "w") as fh:
+            json.dump({{k: os.environ.get(k) for k in ("RIVE_ANALYTICS", "RIVE_NO_TUI", "NO_COLOR")}}, fh)
     print("rive {version}")
+    if {notice!r}:
+        print({notice!r}, file=sys.stderr)
     sys.exit(0)
 print("usage: rive COMMAND")
 sys.exit(2)
@@ -1408,9 +1417,10 @@ sys.exit(2)
     return script
 
 
-def _fake_doctor(folder: Path, report, rc: int = 0, record: Path | None = None) -> Path:
+def _fake_doctor(folder: Path, report, rc: int = 0, record: Path | None = None,
+                 warn: str = "") -> Path:
     """A rive_doctor.py that prints this report (a dict, or raw text) and
-    writes down how it was run."""
+    writes down how it was run. warn goes to stderr first."""
     script = folder / "fake_doctor.py"
     text = report if isinstance(report, str) else json.dumps(report)
     script.write_text(f"""import json, os, sys
@@ -1418,6 +1428,8 @@ if {str(record) if record else ''!r}:
     with open({str(record) if record else ''!r}, "w") as fh:
         json.dump({{"argv": sys.argv[1:], "cli": os.environ.get("RIVE_SKILL_CLI"),
                    "analytics": os.environ.get("RIVE_ANALYTICS")}}, fh)
+if {warn!r}:
+    print({warn!r}, file=sys.stderr, flush=True)
 print({text!r})
 sys.exit({rc})
 """, encoding="utf-8")
@@ -1438,8 +1450,8 @@ class RiveCliWorksTests(unittest.TestCase):
         self.signed = signed.start()
         self.addCleanup(signed.stop)
 
-    def works(self, report, rc=0, version="1.5.0"):
-        doctor = _fake_doctor(self.dir, report, rc, self.record)
+    def works(self, report, rc=0, version="1.5.0", warn=""):
+        doctor = _fake_doctor(self.dir, report, rc, self.record, warn)
         with patch.object(au, "RIVE_DOCTOR", doctor):
             return au._rive_cli_works(self.rive, version)
 
@@ -1466,6 +1478,13 @@ class RiveCliWorksTests(unittest.TestCase):
     def test_a_failed_check_wins_over_an_ok_it_contradicts(self):
         self.assertFalse(self.works({"ok": True, "results": _DOCTOR_FLAG_GONE["results"]})[0])
         self.assertFalse(self.works(_DOCTOR_READY, rc=1)[0])
+        # and the doctor's own "not ok" stands even when no row says why
+        self.assertFalse(self.works({"ok": False, "results": []})[0])
+
+    def test_a_doctor_that_warns_on_stderr_is_still_read(self):
+        # The report is stdout alone. A warning on stderr (a deprecation, the
+        # CLI talking) must not turn a passing build into "no report".
+        self.assertEqual(self.works(_DOCTOR_READY, warn="DeprecationWarning: old"), (True, ""))
 
     def test_a_doctor_that_crashed_is_a_failure(self):
         ok, why = self.works("Traceback (most recent call last):", rc=1)
@@ -1499,7 +1518,7 @@ class SignedByRiveTests(unittest.TestCase):
     """codesign and Gatekeeper, the checks each Rive update by hand was proved
     with."""
 
-    def check(self, path, verify=0, team="NJ3JMFUNS9", assess=0):
+    def check(self, path, verify=0, team="NJ3JMFUNS9", assess=0, identifier="app.rive.cli"):
         calls = []
 
         def run(cmd, timeout=60, merge_stderr=True, env=None):
@@ -1507,7 +1526,7 @@ class SignedByRiveTests(unittest.TestCase):
             if cmd[:2] == ["codesign", "--verify"]:
                 return verify, "" if not verify else f"{path}: a sealed resource is missing or invalid"
             if cmd[:2] == ["codesign", "-dv"]:
-                return 0, (f"Executable={path}\nIdentifier=app.rive.cli\n"
+                return 0, (f"Executable={path}\nIdentifier={identifier}\n"
                            f"Authority=Developer ID Application: Rive, Inc (NJ3JMFUNS9)\n"
                            f"TeamIdentifier={team}\n")
             if cmd[0] == "spctl":
@@ -1549,6 +1568,22 @@ class SignedByRiveTests(unittest.TestCase):
         _, calls = self.check("/x/rive")
         self.assertEqual(calls[-1], ["spctl", "--assess", "--type", "open", "--context",
                                      "context:primary-signature", "/x/rive"])
+
+    def test_the_signature_is_verified_deep_and_strict(self):
+        # --deep verifies the code nested inside Rive.app as well, and
+        # --strict adds codesign's extra restrictions.
+        for path in ("/x/rive", "/x/Rive.app"):
+            with self.subTest(path=path):
+                _, calls = self.check(path)
+                self.assertEqual(calls[0], ["codesign", "--verify", "--deep", "--strict", path])
+
+    def test_the_team_is_read_from_its_own_line(self):
+        # The identifier is the signer's own text, so a build signed by
+        # another team cannot pass by writing Rive's team into it.
+        (ok, why), _ = self.check("/x/rive", team="ABCDE12345",
+                                  identifier="app.x.TeamIdentifier=NJ3JMFUNS9")
+        self.assertFalse(ok)
+        self.assertIn("signed by ABCDE12345", why)
 
 
 class _BrewDownload:
@@ -1864,6 +1899,25 @@ class RiveCliTests(unittest.TestCase):
         self.assertIn("some other way than Homebrew", s.detail)
         self.assertEqual([c[0] for c in calls], ["version"])
 
+    def test_a_cli_linked_from_the_taps_caskroom_is_recognised(self):
+        # brew links the tap's cask from Caskroom/rive-cli/<version>/, under
+        # the bare token. Looking for the full tap name there would read every
+        # brew install as "installed some other way", and the CLI would never
+        # update or say so. Nothing is faked here but brew's answer.
+        with tempfile.TemporaryDirectory() as tmp:
+            brew = Path(tmp) / "brew"
+            real = _fake_rive(brew / "Caskroom" / "rive-cli" / "1.4.0", version="1.4.0")
+            (brew / "bin").mkdir()
+            (brew / "bin" / "rive").symlink_to(real)
+            curl = _fake_rive(Path(tmp) / ".rive" / "versions" / "1.4.0", version="1.4.0")
+            cask = {"token": "rive-cli", "version": "1.4.0", "installed": "1.4.0"}
+            with patch("utils.app_updates._brew_cask", return_value=cask):
+                for binary, state in ((brew / "bin" / "rive", "current"), (curl, "unknown")):
+                    with self.subTest(binary=str(binary)), \
+                            patch("utils.app_updates.shutil.which", return_value=str(binary)):
+                        (s,) = au.check_rive_cli(auto_update=False)
+                        self.assertEqual((s.state, s.installed), (state, "1.4.0"))
+
     def test_an_unreadable_latest_is_unknown_not_current(self):
         (s,), _ = self.run_check(latest="")
         self.assertEqual(s.state, "unknown")
@@ -1975,6 +2029,14 @@ class RiveEditorTests(unittest.TestCase):
         self.assertEqual(s.state, "current")
         self.assertEqual(self.installs(calls), [])
 
+    def test_an_unreadable_latest_is_unknown_not_current(self):
+        # As for the CLI: a brew that cannot say what is newest is "cannot
+        # tell", never good news.
+        (s,), calls = self.run_check(latest="")
+        self.assertEqual(s.state, "unknown")
+        self.assertIn("Homebrew", s.detail)
+        self.assertEqual(self.installs(calls), [])
+
     def test_a_new_release_is_tried_then_installed(self):
         (s,), calls = self.run_check()
         self.assertEqual((s.name, s.family, s.state, s.installed, s.latest),
@@ -2066,6 +2128,18 @@ class RiveContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             rive = str(_fake_rive(Path(tmp), version="1.6.2"))
             self.assertEqual(au._rive_version(rive), self.L.cli_version(rive))
+
+    def test_the_version_is_read_from_stdout_with_analytics_off(self):
+        # Asked every night of the live CLI and of each trial copy: run quiet,
+        # as the skill runs it, and a notice on stderr is not the version.
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ):
+            for key in au.RIVE_QUIET:
+                os.environ.pop(key, None)
+            record = Path(tmp) / "env.json"
+            rive = str(_fake_rive(Path(tmp) / "bin", version="1.5.0",
+                                  notice="rive 1.6.0 is available", record=record))
+            self.assertEqual(au._rive_version(rive), "1.5.0")
+            self.assertEqual(json.loads(record.read_text(encoding="utf-8")), au.RIVE_QUIET)
 
 
 class RiveLiveTests(unittest.TestCase):
