@@ -106,13 +106,29 @@ NPM_NEVER_TOUCH = frozenset({"npm", "npx", "node", "corepack"})
 # list leaves out what is updated here.
 CODEX_CASK = "codex"
 CODEX_NPM = "@openai/codex"
-CASKS_UPDATED_HERE = frozenset({CODEX_CASK})
+
+# The Rive CLI, which the rive skill renders with, and the Rive editor app.
+# Both are Homebrew casks on the Mac, and neither moved by itself either: the
+# CLI has no updater on a brew install (`rive update` serves only Rive's own
+# installer), and the editor's own updater runs only while the app is open,
+# which on a machine nobody sits at is never. So the nightly run listed one
+# or both as waiting on 10 of the 13 nights from 26 Sep to 8 Oct 2026, and
+# each release waited for someone to ask. check_rive_cli and check_rive_editor
+# own them now. brew outdated names a tap's cask by its bare token
+# ("rive-cli"), so that is the name the cask list leaves out.
+RIVE_CLI_CASK = "rive-app/tap/rive-cli"
+RIVE_EDITOR_CASK = "rive"
+RIVE_EDITOR_APP = Path("/Applications/Rive.app")
+CASKS_UPDATED_HERE = frozenset({CODEX_CASK, RIVE_CLI_CASK.rsplit("/", 1)[-1], RIVE_EDITOR_CASK})
 
 # Families the nightly job may install without a human. A CLI moves by
 # replacing a file and old versions stay on disk; a GUI app bundle does not.
 # Codex is the exception on the first count, since brew and npm both delete
-# the old version, which is why it is tried before it is installed.
-AUTO_INSTALLABLE = frozenset({"claude-code", "codex", "npm"})
+# the old version, which is why it is tried before it is installed. Rive is
+# the exception on both: brew deletes the old CLI and the old editor, and the
+# editor is an app. So each is tried first, and the editor is replaced only
+# while it is closed.
+AUTO_INSTALLABLE = frozenset({"claude-code", "codex", "npm", "rive"})
 
 _VERSION_PART = re.compile(r"\d+")
 
@@ -598,12 +614,58 @@ CODEX_BOT_FEATURES = ("multi_agent", "multi_agent_v2")
 
 
 def _brew_env() -> dict:
-    """brew's environment for the Codex steps: no self-update on the way.
+    """brew's environment for the cask steps: no self-update on the way.
 
     The nightly run has already refreshed brew, and a refresh between the
     trial and the install could move the cask to a version nobody tried.
     """
     return dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1")
+
+
+def _brew_cask(token: str) -> dict:
+    """brew's record of one cask (`brew info --cask --json=v2`), or {}.
+
+    "version" is what brew would install now and "installed" what it
+    installed last, None for a cask it never installed.
+    """
+    rc, out = _run(["brew", "info", "--cask", "--json=v2", token],
+                   timeout=120, merge_stderr=False, env=_brew_env())
+    try:
+        cask = json.loads(out)["casks"][0] if rc == 0 else {}
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+        cask = {}
+    return cask if isinstance(cask, dict) else {}
+
+
+def _cask_version(cask: dict) -> str:
+    """The version a cask record offers, or "" when it holds none."""
+    version = str(cask.get("version") or "")
+    return version if version_tuple(version) and len(version) < 40 else ""
+
+
+def _linked_from_cask(binary: str, token: str) -> bool:
+    """True when this command really points into Caskroom/<token>/."""
+    parts = Path(os.path.realpath(binary)).parts
+    return any(a == "Caskroom" and b == token for a, b in zip(parts, parts[1:]))
+
+
+def _brew_fetch(token: str) -> tuple[Path | None, str]:
+    """Download the file brew is about to install for a cask: (file, "") or (None, why).
+
+    `brew fetch` puts it in brew's own cache and checks it against the cask's
+    SHA-256, and the upgrade after it installs that same file, so the build
+    tried from it is byte for byte the one that goes live.
+    """
+    env = _brew_env()
+    rc, out = _run(["brew", "fetch", "--cask", token], timeout=900, env=env)
+    if rc != 0:
+        return None, f"brew could not download it: {out[-200:] or f'rc={rc}'}"
+    rc, path = _run(["brew", "--cache", "--cask", token], timeout=60,
+                    merge_stderr=False, env=env)
+    download = Path(path) if rc == 0 and path else None
+    if download is None or not download.is_file():
+        return None, "brew downloaded it but did not say where"
+    return download, ""
 
 
 def _codex_version(binary: str, env: dict | None = None) -> str:
@@ -622,10 +684,9 @@ def _codex_source(binary: str) -> str:
     standalone installer is reported and never moved, because this check
     would not know how to put it back.
     """
-    real = Path(os.path.realpath(binary))
-    parts = real.parts
-    if any(a == "Caskroom" and b == CODEX_CASK for a, b in zip(parts, parts[1:])):
+    if _linked_from_cask(binary, CODEX_CASK):
         return "cask"
+    real = Path(os.path.realpath(binary))
     root = puppeteer_browsers.npm_global_root()
     if root is not None and Path(os.path.realpath(root / CODEX_NPM)) in real.parents:
         return "npm"
@@ -640,12 +701,7 @@ def _codex_latest(source: str) -> str:
     reading GitHub would report an update brew cannot fetch yet.
     """
     if source == "cask":
-        rc, out = _run(["brew", "info", "--cask", "--json=v2", CODEX_CASK],
-                       timeout=120, merge_stderr=False, env=_brew_env())
-        try:
-            version = str(json.loads(out)["casks"][0]["version"]) if rc == 0 else ""
-        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-            version = ""
+        version = _cask_version(_brew_cask(CODEX_CASK))
     elif source == "npm":
         rc, out = _run(["npm", "view", CODEX_NPM, "version"], timeout=120,
                        merge_stderr=False)
@@ -715,21 +771,11 @@ def _codex_takes_the_bot(binary: str, version: str) -> tuple[bool, str]:
 
 
 def _codex_cask_trial(version: str) -> tuple[bool, str]:
-    """Unpack the download brew is about to install and put it to the bot's test.
-
-    `brew fetch` downloads the archive into brew's own cache and checks it
-    against the cask's SHA-256, and the upgrade after it installs that same
-    file, so the build tried here is byte for byte the one that goes live.
-    """
-    env = _brew_env()
-    rc, out = _run(["brew", "fetch", "--cask", CODEX_CASK], timeout=900, env=env)
-    if rc != 0:
-        return False, f"brew could not download it: {out[-200:] or f'rc={rc}'}"
-    rc, path = _run(["brew", "--cache", "--cask", CODEX_CASK], timeout=60,
-                    merge_stderr=False, env=env)
-    archive = Path(path) if rc == 0 and path else None
-    if archive is None or not archive.is_file():
-        return False, "brew downloaded it but did not say where"
+    """Unpack the download brew is about to install (_brew_fetch) and put it
+    to the bot's test."""
+    archive, why = _brew_fetch(CODEX_CASK)
+    if archive is None:
+        return False, why
     scratch = Path(tempfile.mkdtemp(prefix="app_update_trial_"))
     try:
         rc, out = _run(["tar", "-xzf", str(archive), "-C", str(scratch)], timeout=300)
@@ -810,6 +856,337 @@ def check_codex_cli(auto_update: bool = False) -> list[AppStatus]:
 
 
 # --------------------------------------------------------------------------
+# Rive — the CLI the rive skill renders with, and the Rive editor app, both
+# Homebrew casks on the Mac
+# --------------------------------------------------------------------------
+
+RIVE_CLI_NAME = "Rive CLI"
+RIVE_EDITOR_NAME = "Rive editor"
+
+# Rive's Apple developer team. Every CLI from 1.1.1 to 1.5.0 and every editor
+# from 0.8.5940 to 0.9.157 installed here was signed by it and notarized by
+# Apple. A build signed by anyone else is not installed.
+RIVE_TEAM_ID = "NJ3JMFUNS9"
+
+# How the rive skill's scripts run the CLI (rivelib.rive_env): no usage
+# analytics, which nobody on this machine agreed to, and no terminal UI.
+RIVE_QUIET = {"RIVE_ANALYTICS": "off", "RIVE_NO_TUI": "1", "NO_COLOR": "1"}
+
+RIVE_DOCTOR = ROOT / "skills" / "rive" / "scripts" / "rive_doctor.py"
+
+
+def _rive_version(binary: str) -> str:
+    """What `rive --version` says ("rive 1.5.0" gives "1.5.0"), or ""."""
+    rc, out = _run([binary, "--version"], timeout=30, merge_stderr=False,
+                   env=dict(os.environ, **RIVE_QUIET))
+    words = out.split() if rc == 0 else []
+    return words[-1] if words and version_tuple(words[-1]) else ""
+
+
+def _bundle_version(app: Path) -> str:
+    """The version an app bundle carries, or "" when there is no bundle."""
+    try:
+        with open(app / "Contents" / "Info.plist", "rb") as fh:
+            version = str(plistlib.load(fh).get("CFBundleShortVersionString", ""))
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return ""
+    return version if version_tuple(version) else ""
+
+
+def _signed_by_rive(path: Path) -> tuple[bool, str]:
+    """Whether an app or a bare binary carries Rive's signature and Apple's
+    notarization: the checks each Rive update by hand was proved with.
+
+    codesign proves the signature is whole and names the team, and Gatekeeper
+    (spctl) proves Apple notarized it, which is what lets a downloaded copy
+    run at all. Gatekeeper's execute check refuses anything that is not an
+    app, so a bare binary is asked as a file against its own signature.
+    """
+    rc, out = _run(["codesign", "--verify", "--deep", "--strict", str(path)], timeout=300)
+    if rc != 0:
+        return False, f"its signature does not hold: {out[-200:] or f'rc={rc}'}"
+    _rc, out = _run(["codesign", "-dv", "--verbose=2", str(path)], timeout=60)
+    team = re.search(r"(?m)^TeamIdentifier=(\S+)", out)
+    if not team or team.group(1) != RIVE_TEAM_ID:
+        return False, (f"it is signed by {team.group(1) if team else 'no team'}, "
+                       f"not by Rive ({RIVE_TEAM_ID})")
+    if path.suffix == ".app":
+        assess = ["spctl", "--assess", "--type", "execute", str(path)]
+    else:
+        assess = ["spctl", "--assess", "--type", "open",
+                  "--context", "context:primary-signature", str(path)]
+    rc, out = _run(assess, timeout=120)
+    if rc != 0:
+        return False, f"Gatekeeper refuses it: {out[-200:] or f'rc={rc}'}"
+    return True, ""
+
+
+def _rive_cli_works(binary: str, version: str) -> tuple[bool, str]:
+    """Whether the rive skill would still work on this build of the CLI.
+
+    The skill's own doctor is the test, the one its SKILL.md asks for after
+    every CLI update: every flag the skill's scripts pass must still be in
+    --help, a bundled sample must build, inspect clean and draw, and a click
+    must still cost the 3 frames the render timeline is built on. The CLI is
+    a technical preview whose flags have moved before (--frame became
+    --advance, and 1.4.0 dropped --immediate). RIVE_SKILL_CLI points the
+    doctor at this build, the way the skill tries a second version beside
+    the live one. The build also has to be the version meant, signed by
+    Rive.
+
+    The doctor's note that a version has not been compared frame by frame
+    with the ones the skill was measured on is a note, not a failure.
+    Measured 8 Oct 2026: it passes 1.5.0 unpacked in a scratch folder in
+    0.6 s.
+    """
+    found = _rive_version(binary)
+    if found != version:
+        return False, f"it reports version {found or 'nothing'}, not {version}"
+    if platform.system() == "Darwin":
+        signed, why = _signed_by_rive(Path(binary))
+        if not signed:
+            return False, why
+    rc, out = _run([sys.executable, str(RIVE_DOCTOR), "--json"], timeout=600,
+                   merge_stderr=False,
+                   env=dict(os.environ, **RIVE_QUIET, RIVE_SKILL_CLI=binary))
+    try:
+        report = json.loads(out)
+    except json.JSONDecodeError:
+        report = None
+    if not isinstance(report, dict):
+        return False, f"the rive skill's doctor gave no report (rc={rc})"
+    failed = [f"{r.get('check')}: {r.get('detail')}" for r in report.get("results") or []
+              if isinstance(r, dict) and not r.get("ok") and r.get("fatal")]
+    if rc != 0 or report.get("ok") is not True or failed:
+        return False, f"the rive skill's doctor fails it: {'; '.join(failed)[:300] or f'rc={rc}'}"
+    return True, ""
+
+
+def _rive_cli_trial(version: str) -> tuple[bool, str]:
+    """Unpack the CLI brew is about to install (_brew_fetch) and run the
+    skill's doctor on it.
+
+    Unpacked whole: the binary's docs/ and samples/ sit beside it, the only
+    place `rive docs` and `rive samples` look, and the doctor builds one of
+    those samples.
+    """
+    archive, why = _brew_fetch(RIVE_CLI_CASK)
+    if archive is None:
+        return False, why
+    scratch = Path(tempfile.mkdtemp(prefix="app_update_trial_"))
+    try:
+        rc, out = _run(["tar", "-xzf", str(archive), "-C", str(scratch)], timeout=300)
+        binary = scratch / "rive"
+        if rc != 0 or not binary.is_file():
+            return False, f"the download did not unpack to rive: {out[-200:] or f'rc={rc}'}"
+        return _rive_cli_works(str(binary), version)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _rive_cli_busy() -> bool:
+    """True while the Rive CLI or one of the rive skill's scripts is running.
+
+    A render starts the CLI once a frame and solves alpha and encodes in
+    between, so in the middle of one there can be moments with no rive
+    process at all; the skill's script driving it says more. The upgrade
+    deletes the folder the CLI lives in, so a render running across it would
+    fail on the frame captured while the link is missing, or finish with
+    frames from two versions, whose edges can differ (1.3.0 against 1.2.0,
+    skills/rive/references/rendering.md). Reads the process table only and
+    acts on nothing it finds (AGENTS.md, "Never reap by name across the
+    machine").
+    """
+    for probe in (["pgrep", "-x", "rive"], ["pgrep", "-f", "skills/rive/scripts/"]):
+        rc, _out = _run(probe, timeout=15)
+        if rc == 0:
+            return True
+    return False
+
+
+def check_rive_cli(auto_update: bool = False) -> list[AppStatus]:
+    """Version state of the Rive CLI, updated through its Homebrew cask.
+
+    Any release that keeps the leading number is installed, once a copy of
+    that exact release has passed the rive skill's doctor (_rive_cli_works).
+    A CLI from Rive's own installer (~/.rive/bin, the Linux route) is
+    reported and never moved.
+    """
+    binary = shutil.which("rive")
+    if not binary:
+        return []
+    installed = _rive_version(binary)
+    if not installed:
+        return []
+    if not _linked_from_cask(binary, RIVE_CLI_CASK.rsplit("/", 1)[-1]):
+        return [AppStatus(RIVE_CLI_NAME, "rive", installed, "", "unknown",
+                          "installed some other way than Homebrew, so left alone")]
+    latest = _cask_version(_brew_cask(RIVE_CLI_CASK))
+    if not latest:
+        return [AppStatus(RIVE_CLI_NAME, "rive", installed, "", "unknown",
+                          "could not read the newest version from Homebrew")]
+    if not is_newer(latest, installed):
+        return [AppStatus(RIVE_CLI_NAME, "rive", installed, latest, "current")]
+    if not auto_update:
+        return [AppStatus(RIVE_CLI_NAME, "rive", installed, latest, "outdated")]
+    if version_tuple(latest)[0] != version_tuple(installed)[0]:
+        return [AppStatus(RIVE_CLI_NAME, "rive", installed, latest, "outdated",
+                          "major version, worth a look before installing")]
+    in_use = AppStatus(RIVE_CLI_NAME, "rive", installed, latest, "outdated",
+                       "Rive was rendering, so the update waits for a quiet night")
+    if _rive_cli_busy():
+        return [in_use]
+
+    works, why = _rive_cli_trial(latest)
+    if not works:
+        return [AppStatus(RIVE_CLI_NAME, "rive", installed, latest, "failed",
+                          f"{latest} failed its trial, so {installed} was kept: {why}")]
+    # Asked again, because a render can start while the trial runs.
+    if _rive_cli_busy():
+        return [in_use]
+
+    rc, out = _run(["brew", "upgrade", "--cask", RIVE_CLI_CASK], timeout=900, env=_brew_env())
+    if rc != 0:
+        return [AppStatus(RIVE_CLI_NAME, "rive", installed, latest, "failed",
+                          out[-200:] if out else f"rc={rc}")]
+    now = _rive_version(binary)
+    if now != latest:
+        return [AppStatus(RIVE_CLI_NAME, "rive", now or installed, latest, "failed",
+                          f"Homebrew finished, but rive reports {now or 'nothing'}, not {latest}")]
+    works, why = _rive_cli_works(binary, latest)
+    if not works:
+        return [AppStatus(RIVE_CLI_NAME, "rive", latest, latest, "failed",
+                          f"{latest} passed its trial but not where it was installed: {why}")]
+    return [AppStatus(RIVE_CLI_NAME, "rive", latest, latest, "updated")]
+
+
+def _rive_editor_good(app: Path, version: str) -> tuple[bool, str]:
+    """Whether this Rive.app is the version meant, signed by Rive and
+    notarized.
+
+    That is all that can be asked of the editor unattended. It does nothing
+    until a person signs in at the screen, so it is never opened here.
+    """
+    if not app.is_dir():
+        return False, f"there is no {app.name} in it"
+    found = _bundle_version(app)
+    if found != version:
+        return False, f"it reports version {found or 'nothing'}, not {version}"
+    return _signed_by_rive(app)
+
+
+def _rive_editor_trial(version: str) -> tuple[bool, str]:
+    """Open the disk image brew is about to install from (_brew_fetch) and
+    check the app in it.
+
+    Attached read-only and out of sight, and never launched. Measured 8 Oct
+    2026 on 0.9.157 (93 MB): attach under 2 s, the checks 2 s, detach 0.1 to
+    11 s.
+    """
+    dmg, why = _brew_fetch(RIVE_EDITOR_CASK)
+    if dmg is None:
+        return False, why
+    mount = Path(tempfile.mkdtemp(prefix="app_update_trial_"))
+    rc, out = _run(["hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
+                    "-mountpoint", str(mount), str(dmg)], timeout=300)
+    try:
+        if rc != 0:
+            return False, f"its disk image would not open: {out[-200:] or f'rc={rc}'}"
+        return _rive_editor_good(mount / RIVE_EDITOR_APP.name, version)
+    finally:
+        if rc == 0 and _run(["hdiutil", "detach", str(mount)], timeout=120)[0] != 0:
+            _run(["hdiutil", "detach", "-force", str(mount)], timeout=120)
+        try:
+            mount.rmdir()  # empty once detached; never deletes into an image
+        except OSError:
+            pass
+
+
+def _rive_editor_open() -> bool:
+    """True while anything runs out of the Rive editor's app bundle.
+
+    The upgrade swaps the bundle out from under it, and an open file with
+    unsaved work would go with it. While the editor is open its own updater
+    runs anyway. Reads the process table only.
+    """
+    rc, _out = _run(["pgrep", "-f", f"{RIVE_EDITOR_APP}/Contents/"], timeout=15)
+    return rc == 0
+
+
+def check_rive_editor(auto_update: bool = False) -> list[AppStatus]:
+    """Version state of the Rive editor, updated through its Homebrew cask.
+
+    The one application installed unattended, and on purpose: it is a 93 MB
+    download from Rive's own server behind no form, it is what Rive's own
+    updater would install the moment anyone opened the app, and nobody here
+    opens it. A copy of the exact disk image is checked first
+    (_rive_editor_trial), and the swap waits for a night the app is closed.
+
+    The brew step leaves app casks alone because a Blender upgrade hung in
+    the nightly job in July 2026 and was killed half way
+    (system_update._UPGRADE_CMDS). This one has run from inside the bot's
+    own process tree, the one the nightly job runs in, on 28 and 29 Sep and
+    1 and 4 Oct 2026, and through this check on 8 Oct; none hung. It still
+    has a time limit, and a failed one is checked for an app left missing.
+    """
+    if platform.system() != "Darwin" or not shutil.which("brew"):
+        return []
+    installed = _bundle_version(RIVE_EDITOR_APP)
+    cask = _brew_cask(RIVE_EDITOR_CASK)
+    latest = _cask_version(cask)
+    if not installed:
+        if not cask.get("installed"):
+            return []
+        # brew still lists it, so this is an update that died half way, or an
+        # app thrown away by hand. Either way the nightly would go quiet.
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", "", latest, "failed",
+                          f"Homebrew lists Rive {cask.get('installed')} but {RIVE_EDITOR_APP} "
+                          "is gone: `brew reinstall --cask rive` puts it back, "
+                          "`brew uninstall --cask rive` forgets it")]
+    if not cask.get("installed"):
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", installed, "", "unknown",
+                          "installed without Homebrew, so its own updater moves it "
+                          "whenever it is open")]
+    if not latest:
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", installed, "", "unknown",
+                          "could not read the newest version from Homebrew")]
+    if not is_newer(latest, installed):
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", installed, latest, "current")]
+    if not auto_update:
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", installed, latest, "outdated")]
+    if version_tuple(latest)[0] != version_tuple(installed)[0]:
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", installed, latest, "outdated",
+                          "major version, worth a look before installing")]
+    in_use = AppStatus(RIVE_EDITOR_NAME, "rive", installed, latest, "outdated",
+                       "the editor was open, so the update waits for a night it is closed")
+    if _rive_editor_open():
+        return [in_use]
+
+    works, why = _rive_editor_trial(latest)
+    if not works:
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", installed, latest, "failed",
+                          f"{latest} failed its trial, so {installed} was kept: {why}")]
+    if _rive_editor_open():
+        return [in_use]
+
+    rc, out = _run(["brew", "upgrade", "--cask", RIVE_EDITOR_CASK], timeout=900, env=_brew_env())
+    if rc != 0:
+        gone = "" if RIVE_EDITOR_APP.is_dir() else (
+            f"; {RIVE_EDITOR_APP} is gone, `brew reinstall --cask rive` puts it back")
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", installed, latest, "failed",
+                          (out[-200:] if out else f"rc={rc}") + gone)]
+    now = _bundle_version(RIVE_EDITOR_APP)
+    if now != latest:
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", now or installed, latest, "failed",
+                          f"Homebrew finished, but Rive.app reports {now or 'nothing'}, not {latest}")]
+    works, why = _rive_editor_good(RIVE_EDITOR_APP, latest)
+    if not works:
+        return [AppStatus(RIVE_EDITOR_NAME, "rive", latest, latest, "failed",
+                          f"{latest} passed its trial but not where it was installed: {why}")]
+    return [AppStatus(RIVE_EDITOR_NAME, "rive", latest, latest, "updated")]
+
+
+# --------------------------------------------------------------------------
 # Flatpak apps (Linux) — sandboxed, version-independent, and invisible to apt
 # --------------------------------------------------------------------------
 
@@ -855,6 +1232,10 @@ def check_flatpak(auto_update: bool = False) -> list[AppStatus]:
 CHECKS: tuple[tuple[str, Callable[[bool], list[AppStatus]]], ...] = (
     ("claude-code", check_claude_code),
     ("codex", check_codex_cli),
+    # Two entries under one family, so a check that throws cannot take the
+    # other Rive app down with it.
+    ("rive", check_rive_cli),
+    ("rive", check_rive_editor),
     ("resolve", check_davinci_resolve),
     ("npm", check_npm_clis),
     ("flatpak", check_flatpak),
