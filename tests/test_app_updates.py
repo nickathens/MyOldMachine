@@ -12,12 +12,15 @@ make it safe to run unattended at 4am:
 Every subprocess call and every HTTP fetch is mocked. Nothing here touches the
 network, npm, or the Claude CLI. The Codex tests run a stand-in codex script and
 tar for real, and one asks the real codex on PATH the bot's questions (skipped
-where there is none). None of them installs anything or starts a turn.
+where there is none). None of them installs anything or starts a turn. The
+Rive tests do the same with a stand-in rive and the rive skill's real doctor,
+and two ask the real Rive CLI and editor, where Homebrew installed them.
 """
 from __future__ import annotations
 
 import json
 import os
+import platform
 import plistlib
 import shutil
 import subprocess
@@ -712,11 +715,12 @@ class CollectTests(unittest.TestCase):
 
         with patch.object(au, "CHECKS", tuple(
             (family, spy(family))
-            for family in ("claude-code", "codex", "resolve", "npm", "flatpak")
+            for family in ("claude-code", "codex", "rive", "resolve", "npm", "flatpak")
         )):
             au.collect(auto_update=True)
         self.assertTrue(seen["claude-code"])
         self.assertTrue(seen["codex"])
+        self.assertTrue(seen["rive"])
         self.assertTrue(seen["npm"])
         # Applications are never installed by an unattended job.
         self.assertFalse(seen["resolve"])
@@ -809,10 +813,24 @@ class RunAppUpdateCheckTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     """The lists that decide what may be installed without a human."""
 
-    def test_only_cli_families_may_install(self):
-        self.assertEqual(au.AUTO_INSTALLABLE, frozenset({"claude-code", "codex", "npm"}))
+    def test_which_families_may_install(self):
+        # CLIs, plus Rive, whose editor is the one application installed
+        # unattended: tried from Rive's own notarized image, and only while
+        # it is closed.
+        self.assertEqual(au.AUTO_INSTALLABLE, frozenset({"claude-code", "codex", "npm", "rive"}))
         self.assertNotIn("resolve", au.AUTO_INSTALLABLE)
         self.assertNotIn("flatpak", au.AUTO_INSTALLABLE)
+
+    def test_each_rive_app_has_its_own_entry(self):
+        # One check throwing must not take the other Rive app down with it,
+        # and collect() isolates entries, not families.
+        rive = [check for family, check in au.CHECKS if family == "rive"]
+        self.assertEqual(rive, [au.check_rive_cli, au.check_rive_editor])
+
+    def test_the_cask_list_leaves_out_what_is_updated_here_by_brew_outdated_name(self):
+        # brew outdated --cask --quiet prints a tap's cask by its bare token
+        # (measured 8 Oct 2026: "rive-cli", not "rive-app/tap/rive-cli").
+        self.assertEqual(au.CASKS_UPDATED_HERE, frozenset({"codex", "rive", "rive-cli"}))
 
     def test_brew_owned_node_packages_are_off_limits(self):
         for pkg in ("npm", "node", "npx", "corepack"):
@@ -1347,6 +1365,725 @@ class CodexContractDriftTests(unittest.IsolatedAsyncioTestCase):
     def test_the_feature_names_are_the_bots(self):
         from core import llm
         self.assertEqual(tuple(au.CODEX_BOT_FEATURES), tuple(llm._CODEX_DISABLED_FEATURES))
+
+
+# --------------------------------------------------------------------------
+# Rive: the CLI and the editor
+# --------------------------------------------------------------------------
+
+_RIVE_ON_PATH = shutil.which("rive")
+_HOMEBREW_RIVE = bool(_RIVE_ON_PATH) and "/Caskroom/rive-cli/" in os.path.realpath(_RIVE_ON_PATH or "")
+
+# rive_doctor.py --json, shaped as it prints them (CLI 1.5.0, 8 Oct 2026).
+_DOCTOR_READY = {"ok": True, "results": [
+    {"check": "rive cli", "ok": True, "detail": "/x/rive (1.5.0)", "fatal": True},
+    {"check": "tested version", "ok": False, "fatal": False,
+     "detail": "Rive CLI 1.5.0 is not a version this skill was measured against"},
+    {"check": "flags", "ok": True, "detail": "all present", "fatal": True},
+    {"check": "gesture timing", "ok": True, "fatal": True,
+     "detail": "a click costs 3 frames, as rivetimeline.py assumes"},
+]}
+_DOCTOR_FLAG_GONE = {"ok": False, "results": [
+    {"check": "rive cli", "ok": True, "detail": "/x/rive (1.6.0)", "fatal": True},
+    {"check": "flags", "ok": False, "fatal": True,
+     "detail": "no longer in --help: --advance -- read the release notes and fix the "
+               "scripts before rendering"},
+]}
+
+
+def _fake_rive(folder: Path, version: str = "1.5.0") -> Path:
+    """A rive that answers --version as the real one does ("rive 1.5.0") and
+    knows nothing else, so the skill's real doctor finds every flag gone."""
+    folder.mkdir(parents=True, exist_ok=True)
+    script = folder / "rive"
+    script.write_text(f"""#!{sys.executable}
+import sys
+if sys.argv[1:] == ["--version"]:
+    print("rive {version}")
+    sys.exit(0)
+print("usage: rive COMMAND")
+sys.exit(2)
+""", encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def _fake_doctor(folder: Path, report, rc: int = 0, record: Path | None = None) -> Path:
+    """A rive_doctor.py that prints this report (a dict, or raw text) and
+    writes down how it was run."""
+    script = folder / "fake_doctor.py"
+    text = report if isinstance(report, str) else json.dumps(report)
+    script.write_text(f"""import json, os, sys
+if {str(record) if record else ''!r}:
+    with open({str(record) if record else ''!r}, "w") as fh:
+        json.dump({{"argv": sys.argv[1:], "cli": os.environ.get("RIVE_SKILL_CLI"),
+                   "analytics": os.environ.get("RIVE_ANALYTICS")}}, fh)
+print({text!r})
+sys.exit({rc})
+""", encoding="utf-8")
+    return script
+
+
+class RiveCliWorksTests(unittest.TestCase):
+    """The question a new Rive CLI has to answer before it replaces the live
+    one: does the rive skill still work on it."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.rive = str(_fake_rive(self.dir / "bin"))
+        self.record = self.dir / "doctor_run.json"
+        signed = patch("utils.app_updates._signed_by_rive", return_value=(True, ""))
+        self.signed = signed.start()
+        self.addCleanup(signed.stop)
+
+    def works(self, report, rc=0, version="1.5.0"):
+        doctor = _fake_doctor(self.dir, report, rc, self.record)
+        with patch.object(au, "RIVE_DOCTOR", doctor):
+            return au._rive_cli_works(self.rive, version)
+
+    def test_a_build_the_doctor_passes_works(self):
+        self.assertEqual(self.works(_DOCTOR_READY), (True, ""))
+
+    def test_the_unmeasured_version_note_is_not_a_failure(self):
+        # Every new version carries it until someone compares its renders
+        # frame by frame, so failing on it would hold every release.
+        note = [r for r in _DOCTOR_READY["results"] if not r["ok"]]
+        self.assertEqual([r["fatal"] for r in note], [False])
+        self.assertTrue(self.works(_DOCTOR_READY)[0])
+
+    def test_the_doctor_is_pointed_at_this_build_with_analytics_off(self):
+        self.works(_DOCTOR_READY)
+        seen = json.loads(self.record.read_text(encoding="utf-8"))
+        self.assertEqual(seen, {"argv": ["--json"], "cli": self.rive, "analytics": "off"})
+
+    def test_a_dropped_flag_is_refused_and_named(self):
+        ok, why = self.works(_DOCTOR_FLAG_GONE, rc=1)
+        self.assertFalse(ok)
+        self.assertIn("flags: no longer in --help: --advance", why)
+
+    def test_a_failed_check_wins_over_an_ok_it_contradicts(self):
+        self.assertFalse(self.works({"ok": True, "results": _DOCTOR_FLAG_GONE["results"]})[0])
+        self.assertFalse(self.works(_DOCTOR_READY, rc=1)[0])
+
+    def test_a_doctor_that_crashed_is_a_failure(self):
+        ok, why = self.works("Traceback (most recent call last):", rc=1)
+        self.assertFalse(ok)
+        self.assertIn("no report", why)
+
+    def test_a_build_that_is_not_the_version_meant_is_refused_before_the_doctor(self):
+        ok, why = self.works(_DOCTOR_READY, version="1.6.0")
+        self.assertFalse(ok)
+        self.assertIn("1.5.0", why)
+        self.assertFalse(self.record.exists(), "the doctor ran on the wrong build")
+
+    @patch("utils.app_updates.platform.system", return_value="Darwin")
+    def test_a_build_rive_did_not_sign_is_refused_before_the_doctor(self, _plat):
+        self.signed.return_value = (False, "it is signed by ABCDE12345, not by Rive (NJ3JMFUNS9)")
+        ok, why = self.works(_DOCTOR_READY)
+        self.assertFalse(ok)
+        self.assertIn("not by Rive", why)
+        self.assertFalse(self.record.exists())
+
+    def test_the_skills_own_doctor_refuses_a_cli_without_the_skills_flags(self):
+        # The contract end to end, with nothing faked but the CLI: the real
+        # rive_doctor.py finds this build through RIVE_SKILL_CLI, and it
+        # knows none of the flags the skill's scripts pass.
+        ok, why = au._rive_cli_works(self.rive, "1.5.0")
+        self.assertFalse(ok)
+        self.assertIn("flags: no longer in --help", why)
+
+
+class SignedByRiveTests(unittest.TestCase):
+    """codesign and Gatekeeper, the checks each Rive update by hand was proved
+    with."""
+
+    def check(self, path, verify=0, team="NJ3JMFUNS9", assess=0):
+        calls = []
+
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            calls.append(cmd)
+            if cmd[:2] == ["codesign", "--verify"]:
+                return verify, "" if not verify else f"{path}: a sealed resource is missing or invalid"
+            if cmd[:2] == ["codesign", "-dv"]:
+                return 0, (f"Executable={path}\nIdentifier=app.rive.cli\n"
+                           f"Authority=Developer ID Application: Rive, Inc (NJ3JMFUNS9)\n"
+                           f"TeamIdentifier={team}\n")
+            if cmd[0] == "spctl":
+                return assess, (f"{path}: accepted\nsource=Notarized Developer ID" if not assess
+                                else f"{path}: rejected\nsource=Unnotarized Developer ID")
+            raise AssertionError(f"unexpected call {cmd}")
+
+        with patch("utils.app_updates._run", side_effect=run):
+            return au._signed_by_rive(Path(path)), calls
+
+    def test_rives_notarized_build_passes(self):
+        for path in ("/x/rive", "/x/Rive.app"):
+            with self.subTest(path=path):
+                self.assertEqual(self.check(path)[0], (True, ""))
+
+    def test_a_broken_signature_fails_at_once(self):
+        (ok, why), calls = self.check("/x/rive", verify=1)
+        self.assertFalse(ok)
+        self.assertIn("does not hold", why)
+        self.assertEqual(len(calls), 1)
+
+    def test_another_teams_signature_fails(self):
+        for team in ("ABCDE12345", "not set"):
+            with self.subTest(team=team):
+                (ok, why), _ = self.check("/x/rive", team=team)
+                self.assertFalse(ok)
+                self.assertIn("not by Rive (NJ3JMFUNS9)", why)
+
+    def test_a_build_apple_did_not_notarize_fails(self):
+        (ok, why), _ = self.check("/x/Rive.app", assess=3)
+        self.assertFalse(ok)
+        self.assertIn("Gatekeeper refuses it", why)
+
+    def test_an_app_is_assessed_to_run_and_a_bare_binary_as_a_file(self):
+        # spctl's execute check refuses anything that is not an app (measured
+        # on CLI 1.4.0), so the CLI is asked against its own signature.
+        _, calls = self.check("/x/Rive.app")
+        self.assertEqual(calls[-1], ["spctl", "--assess", "--type", "execute", "/x/Rive.app"])
+        _, calls = self.check("/x/rive")
+        self.assertEqual(calls[-1], ["spctl", "--assess", "--type", "open", "--context",
+                                     "context:primary-signature", "/x/rive"])
+
+
+class _BrewDownload:
+    """brew fetch and brew --cache, answered from a file made in the test."""
+
+    def brew(self, download: Path, fetch_rc=0, extra=None):
+        self.brew_calls = []
+        real_run = au._run
+
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            if cmd[0] == "brew":
+                self.brew_calls.append((cmd, env))
+                if cmd[1] == "fetch":
+                    return fetch_rc, "" if fetch_rc == 0 else "curl: (6) Could not resolve host"
+                if cmd[1] == "--cache":
+                    return 0, str(download)
+                raise AssertionError(f"unexpected brew call {cmd}")
+            if extra is not None and cmd[0] in extra:
+                return extra[cmd[0]](cmd)
+            return real_run(cmd, timeout=timeout, merge_stderr=merge_stderr, env=env)
+
+        return patch("utils.app_updates._run", side_effect=run)
+
+    def assert_brew_asked_about(self, token):
+        self.assertEqual([c[:2] for c, _ in self.brew_calls], [["brew", "fetch"], ["brew", "--cache"]])
+        for cmd, env in self.brew_calls:
+            self.assertEqual(cmd[-1], token)
+            self.assertEqual(env.get("HOMEBREW_NO_AUTO_UPDATE"), "1")
+
+
+class RiveCliTrialTests(_BrewDownload, unittest.TestCase):
+    """The trial unpacks the very archive brew will install, docs and samples
+    with it."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def _archive(self, with_binary=True) -> Path:
+        package = self.dir / "package"
+        if with_binary:
+            _fake_rive(package)
+        (package / "docs").mkdir(parents=True)
+        (package / "samples" / "rml_triangle").mkdir(parents=True)
+        archive = self.dir / "rive-macos-arm64.tar.gz"
+        subprocess.run(["tar", "-czf", str(archive), "-C", str(package), "."], check=True)
+        return archive
+
+    def test_the_download_is_unpacked_whole_and_tried(self):
+        seen = []
+
+        def works(binary, version):
+            folder = Path(binary).parent
+            seen.append((Path(binary), version, (folder / "samples" / "rml_triangle").is_dir(),
+                         (folder / "docs").is_dir()))
+            return True, ""
+
+        with self.brew(self._archive()), patch("utils.app_updates._rive_cli_works", side_effect=works):
+            self.assertEqual(au._rive_cli_trial("1.5.0"), (True, ""))
+        self.assert_brew_asked_about("rive-app/tap/rive-cli")
+        ((binary, version, samples, docs),) = seen
+        self.assertEqual((binary.name, version), ("rive", "1.5.0"))
+        self.assertIn("app_update_trial_", str(binary))
+        # `rive samples` looks only beside the binary, and the doctor builds one
+        self.assertTrue(samples and docs)
+        self.assertFalse(binary.exists(), "the unpacked trial copy was left behind")
+
+    def test_a_build_the_doctor_fails_fails_its_trial(self):
+        failed = (False, "the rive skill's doctor fails it: flags: no longer in --help: --advance")
+        with self.brew(self._archive()), patch("utils.app_updates._rive_cli_works", return_value=failed):
+            self.assertEqual(au._rive_cli_trial("1.5.0"), failed)
+
+    def test_a_download_brew_could_not_fetch_is_a_failed_trial(self):
+        with self.brew(self.dir / "missing.tar.gz", fetch_rc=1):
+            ok, why = au._rive_cli_trial("1.5.0")
+        self.assertFalse(ok)
+        self.assertIn("could not download", why)
+
+    def test_an_archive_without_rive_is_a_failed_trial(self):
+        with self.brew(self._archive(with_binary=False)), \
+                patch("utils.app_updates._rive_cli_works") as works:
+            ok, why = au._rive_cli_trial("1.5.0")
+        self.assertFalse(ok)
+        self.assertIn("did not unpack to rive", why)
+        works.assert_not_called()
+
+
+class RiveEditorTrialTests(_BrewDownload, unittest.TestCase):
+    """The editor's disk image is opened read-only and out of sight, checked,
+    and closed again."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dmg = Path(tmp.name) / "Rive.dmg"
+        self.dmg.write_bytes(b"a disk image")
+        self.hdiutil = []
+        self.mount = None
+        signed = patch("utils.app_updates._signed_by_rive", return_value=(True, ""))
+        self.signed = signed.start()
+        self.addCleanup(signed.stop)
+
+    def hdiutil_answers(self, version="0.9.157", attach_rc=0, detach_rcs=()):
+        detach_rcs = list(detach_rcs)
+
+        def hdiutil(cmd):
+            self.hdiutil.append(cmd)
+            if cmd[1] == "attach":
+                if attach_rc:
+                    return attach_rc, "hdiutil: attach failed - image not recognized"
+                self.mount = Path(cmd[cmd.index("-mountpoint") + 1])
+                contents = self.mount / "Rive.app" / "Contents"
+                contents.mkdir(parents=True)
+                with open(contents / "Info.plist", "wb") as fh:
+                    plistlib.dump({"CFBundleShortVersionString": version}, fh)
+                return 0, f"/dev/disk8s1  Apple_HFS  {self.mount}"
+            if cmd[1] == "detach":
+                rc = detach_rcs.pop(0) if detach_rcs else 0
+                if rc == 0:
+                    shutil.rmtree(Path(cmd[-1]) / "Rive.app")  # what unmounting does
+                    return 0, '"disk8" ejected.'
+                return rc, "hdiutil: couldn't unmount \"disk8\" - Resource busy"
+            raise AssertionError(f"unexpected call {cmd}")
+
+        return {"hdiutil": hdiutil}
+
+    def trial(self, version="0.9.157", **answers):
+        with self.brew(self.dmg, extra=self.hdiutil_answers(**answers)):
+            return au._rive_editor_trial(version)
+
+    def test_the_image_is_opened_read_only_checked_and_closed(self):
+        self.assertEqual(self.trial(), (True, ""))
+        self.assert_brew_asked_about("rive")
+        attach, detach = self.hdiutil
+        for flag in ("-readonly", "-nobrowse", "-noautoopen"):
+            self.assertIn(flag, attach)
+        self.assertEqual(attach[-1], str(self.dmg))
+        self.assertEqual(detach, ["hdiutil", "detach", str(self.mount)])
+        self.signed.assert_called_once_with(self.mount / "Rive.app")
+        self.assertIn("app_update_trial_", str(self.mount))
+        self.assertFalse(self.mount.exists(), "the mount point was left behind")
+
+    def test_an_app_that_is_not_the_version_meant_fails_and_is_still_closed(self):
+        ok, why = self.trial(version="0.9.158")
+        self.assertFalse(ok)
+        self.assertIn("reports version 0.9.157, not 0.9.158", why)
+        self.assertEqual(self.hdiutil[-1][:2], ["hdiutil", "detach"])
+        self.signed.assert_not_called()
+
+    def test_an_app_rive_did_not_sign_fails(self):
+        self.signed.return_value = (False, "Gatekeeper refuses it: rejected")
+        self.assertEqual(self.trial(), (False, "Gatekeeper refuses it: rejected"))
+        self.assertFalse(self.mount.exists())
+
+    def test_an_image_that_will_not_open_is_a_failed_trial(self):
+        ok, why = self.trial(attach_rc=1)
+        self.assertFalse(ok)
+        self.assertIn("would not open", why)
+        self.assertEqual([c[1] for c in self.hdiutil], ["attach"])
+
+    def test_a_busy_image_is_forced_and_never_deleted_into(self):
+        # Both detaches fail, so the image is still mounted on the folder:
+        # the folder stays, and so does everything in it.
+        ok, _ = self.trial(detach_rcs=(16, 16))
+        self.addCleanup(shutil.rmtree, self.mount, True)
+        self.assertTrue(ok)
+        self.assertEqual([c[1:3] for c in self.hdiutil[1:]],
+                         [["detach", str(self.mount)], ["detach", "-force"]])
+        self.assertTrue((self.mount / "Rive.app" / "Contents" / "Info.plist").is_file())
+
+
+class RiveBusyTests(unittest.TestCase):
+    """What makes a Rive update wait. The process table is read, never acted on."""
+
+    def test_a_rive_process_or_a_skill_script_means_wait(self):
+        for answers, busy in (((0, 1), True), ((1, 0), True), ((1, 1), False)):
+            answer = iter(answers)
+            with self.subTest(answers=answers), \
+                    patch("utils.app_updates._run", side_effect=lambda *a, **k: (next(answer), "")) as run:
+                self.assertEqual(au._rive_cli_busy(), busy)
+            for call in run.call_args_list:
+                self.assertEqual(call.args[0][0], "pgrep")
+
+    def test_the_probes(self):
+        with patch("utils.app_updates._run", return_value=(1, "")) as run:
+            self.assertFalse(au._rive_cli_busy())
+            self.assertFalse(au._rive_editor_open())
+        self.assertEqual([c.args[0] for c in run.call_args_list],
+                         [["pgrep", "-x", "rive"], ["pgrep", "-f", "skills/rive/scripts/"],
+                          ["pgrep", "-f", "/Applications/Rive.app/Contents/"]])
+
+    def test_a_skill_script_run_from_the_repo_root_is_seen(self):
+        # A relative path, the form a pattern with a leading slash would miss.
+        # pgrep -f matches against the whole command line, so a full path and
+        # a user's own forked copy of the skill carry the same text.
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                                 "skills/rive/scripts/rive_render.py"])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.terminate)  # the test's own child, nothing else
+        for _ in range(50):
+            if au._rive_cli_busy():
+                break
+            subprocess.run(["sleep", "0.1"])
+        self.assertTrue(au._rive_cli_busy())
+
+
+class RiveCliTests(unittest.TestCase):
+    """check_rive_cli from the version read to the install, every step faked."""
+
+    BIN = "/opt/homebrew/bin/rive"
+
+    def run_check(self, auto=True, installed="1.4.0", latest="1.5.0", from_cask=True,
+                  busy=False, trial=(True, ""), install_rc=0, after=None, landed=(True, "")):
+        """Returns (statuses, calls): calls lists every step that ran, in order."""
+        calls = []
+        versions = [installed, latest if after is None else after]
+
+        def version(binary):
+            calls.append(("version", binary))
+            return versions.pop(0) if versions else ""
+
+        def cask(token):
+            calls.append(("cask", token))
+            return {"token": "rive-cli", "version": latest, "installed": installed}
+
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            calls.append(("run", cmd, (env or {}).get("HOMEBREW_NO_AUTO_UPDATE")))
+            return install_rc, "brew said so"
+
+        def cli_trial(version):
+            calls.append(("trial", version))
+            return trial
+
+        def works(binary, version):
+            calls.append(("live-check", binary, version))
+            return landed
+
+        with patch("utils.app_updates.shutil.which", return_value=self.BIN), \
+                patch("utils.app_updates._rive_version", side_effect=version), \
+                patch("utils.app_updates._linked_from_cask", return_value=from_cask), \
+                patch("utils.app_updates._brew_cask", side_effect=cask), \
+                patch("utils.app_updates._rive_cli_busy",
+                      side_effect=list(busy) if isinstance(busy, list) else lambda: busy), \
+                patch("utils.app_updates._rive_cli_trial", side_effect=cli_trial), \
+                patch("utils.app_updates._rive_cli_works", side_effect=works), \
+                patch("utils.app_updates._run", side_effect=run):
+            statuses = au.check_rive_cli(auto_update=auto)
+        return statuses, calls
+
+    @staticmethod
+    def installs(calls):
+        return [c for c in calls if c[0] == "run"]
+
+    def test_not_installed_reports_nothing(self):
+        with patch("utils.app_updates.shutil.which", return_value=None):
+            self.assertEqual(au.check_rive_cli(auto_update=True), [])
+
+    def test_a_new_release_is_tried_then_installed(self):
+        (s,), calls = self.run_check()
+        self.assertEqual((s.name, s.family, s.state, s.installed, s.latest),
+                         ("Rive CLI", "rive", "updated", "1.5.0", "1.5.0"))
+        self.assertEqual(self.installs(calls),
+                         [("run", ["brew", "upgrade", "--cask", "rive-app/tap/rive-cli"], "1")])
+        self.assertIn(("cask", "rive-app/tap/rive-cli"), calls)
+
+    def test_the_trial_comes_before_brew_touches_the_live_one(self):
+        _, calls = self.run_check()
+        steps = [c[0] for c in calls]
+        self.assertLess(steps.index("trial"), steps.index("run"))
+        self.assertLess(steps.index("run"), steps.index("live-check"))
+        self.assertIn(("trial", "1.5.0"), calls)
+        self.assertIn(("live-check", self.BIN, "1.5.0"), calls)
+
+    def test_a_failed_trial_keeps_the_working_version(self):
+        (s,), calls = self.run_check(trial=(False, "the rive skill's doctor fails it: flags: x"))
+        self.assertEqual((s.state, s.installed), ("failed", "1.4.0"))
+        self.assertIn("1.4.0 was kept", s.detail)
+        self.assertIn("doctor fails it", s.detail)
+        self.assertEqual(self.installs(calls), [])
+
+    def test_a_render_in_progress_is_not_swapped_under(self):
+        (s,), calls = self.run_check(busy=True)
+        self.assertEqual(s.state, "outdated")
+        self.assertIn("waits", s.detail)
+        self.assertFalse([c for c in calls if c[0] in ("trial", "run")])
+
+    def test_a_render_that_starts_during_the_trial_still_waits(self):
+        (s,), calls = self.run_check(busy=[False, True])
+        self.assertEqual(s.state, "outdated")
+        self.assertIn(("trial", "1.5.0"), calls)
+        self.assertEqual(self.installs(calls), [])
+
+    def test_a_new_leading_number_waits_for_a_human(self):
+        (s,), calls = self.run_check(installed="1.5.0", latest="2.0.0")
+        self.assertEqual(s.state, "outdated")
+        self.assertIn("major version", s.detail)
+        self.assertFalse([c for c in calls if c[0] in ("trial", "run")])
+
+    def test_report_only_mode_installs_nothing(self):
+        (s,), calls = self.run_check(auto=False)
+        self.assertEqual(s.state, "outdated")
+        self.assertEqual([c[0] for c in calls], ["version", "cask"])
+
+    def test_current_is_current(self):
+        (s,), calls = self.run_check(installed="1.5.0", latest="1.5.0")
+        self.assertEqual(s.state, "current")
+        self.assertEqual([c[0] for c in calls], ["version", "cask"])
+
+    def test_a_cli_from_rives_own_installer_is_never_moved(self):
+        (s,), calls = self.run_check(from_cask=False)
+        self.assertEqual(s.state, "unknown")
+        self.assertIn("some other way than Homebrew", s.detail)
+        self.assertEqual([c[0] for c in calls], ["version"])
+
+    def test_an_unreadable_latest_is_unknown_not_current(self):
+        (s,), _ = self.run_check(latest="")
+        self.assertEqual(s.state, "unknown")
+        self.assertIn("Homebrew", s.detail)
+
+    def test_a_refused_install_is_a_failure(self):
+        (s,), calls = self.run_check(install_rc=1)
+        self.assertEqual((s.state, s.installed), ("failed", "1.4.0"))
+        self.assertNotIn("live-check", [c[0] for c in calls])
+
+    def test_an_install_that_did_not_move_the_version_is_a_failure(self):
+        (s,), _ = self.run_check(after="1.4.0")
+        self.assertEqual(s.state, "failed")
+        self.assertIn("reports 1.4.0", s.detail)
+
+    def test_a_build_that_fails_where_it_landed_is_not_an_update(self):
+        (s,), _ = self.run_check(landed=(False, "the rive skill's doctor fails it: pixels: blank"))
+        self.assertEqual(s.state, "failed")
+        self.assertIn("passed its trial but not where it was installed", s.detail)
+
+
+class RiveEditorTests(unittest.TestCase):
+    """check_rive_editor from the version read to the install, every step faked."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.app = Path(tmp.name) / "Rive.app"
+        self.app.mkdir()
+
+    def run_check(self, auto=True, installed="0.9.104", latest="0.9.157", in_brew="0.9.104",
+                  is_open=False, trial=(True, ""), install_rc=0, after=None, landed=(True, ""),
+                  app_left=True, system="Darwin"):
+        """Returns (statuses, calls): calls lists every step that ran, in order."""
+        calls = []
+        versions = [installed, latest if after is None else after]
+
+        def bundle(app):
+            calls.append(("bundle", app))
+            return versions.pop(0) if versions else ""
+
+        def cask(token):
+            calls.append(("cask", token))
+            return {"token": "rive", "version": latest, "installed": in_brew}
+
+        def run(cmd, timeout=60, merge_stderr=True, env=None):
+            calls.append(("run", cmd, (env or {}).get("HOMEBREW_NO_AUTO_UPDATE")))
+            if not app_left:
+                self.app.rmdir()
+            return install_rc, "brew said so"
+
+        def editor_trial(version):
+            calls.append(("trial", version))
+            return trial
+
+        def good(app, version):
+            calls.append(("live-check", app, version))
+            return landed
+
+        with patch("utils.app_updates.platform.system", return_value=system), \
+                patch("utils.app_updates.shutil.which", return_value="/opt/homebrew/bin/brew"), \
+                patch.object(au, "RIVE_EDITOR_APP", self.app), \
+                patch("utils.app_updates._bundle_version", side_effect=bundle), \
+                patch("utils.app_updates._brew_cask", side_effect=cask), \
+                patch("utils.app_updates._rive_editor_open",
+                      side_effect=list(is_open) if isinstance(is_open, list) else lambda: is_open), \
+                patch("utils.app_updates._rive_editor_trial", side_effect=editor_trial), \
+                patch("utils.app_updates._rive_editor_good", side_effect=good), \
+                patch("utils.app_updates._run", side_effect=run):
+            statuses = au.check_rive_editor(auto_update=auto)
+        return statuses, calls
+
+    @staticmethod
+    def installs(calls):
+        return [c for c in calls if c[0] == "run"]
+
+    def test_only_on_a_mac(self):
+        self.assertEqual(self.run_check(system="Linux"), ([], []))
+
+    def test_not_installed_reports_nothing(self):
+        self.assertEqual(self.run_check(installed="", in_brew=None)[0], [])
+
+    def test_an_app_gone_while_brew_still_lists_it_is_reported(self):
+        # What a killed upgrade leaves (system_update._UPGRADE_CMDS, Blender in
+        # July 2026), and brew's own list leaves Rive to this check, so silence
+        # here would be silence everywhere.
+        (s,), calls = self.run_check(installed="", in_brew="0.9.104")
+        self.assertEqual(s.state, "failed")
+        self.assertIn("brew reinstall --cask rive", s.detail)
+        self.assertEqual(self.installs(calls), [])
+
+    def test_an_editor_installed_without_brew_is_left_to_its_own_updater(self):
+        (s,), calls = self.run_check(in_brew=None)
+        self.assertEqual(s.state, "unknown")
+        self.assertEqual(self.installs(calls), [])
+
+    def test_report_only_mode_installs_nothing(self):
+        (s,), calls = self.run_check(auto=False)
+        self.assertEqual(s.state, "outdated")
+        self.assertEqual([c[0] for c in calls], ["bundle", "cask"])
+
+    def test_current_is_current(self):
+        (s,), _ = self.run_check(installed="0.9.157")
+        self.assertEqual(s.state, "current")
+
+    def test_an_editor_that_updated_itself_past_brew_is_current(self):
+        # Opened once, its own updater can take it past the cask.
+        (s,), calls = self.run_check(installed="0.9.160")
+        self.assertEqual(s.state, "current")
+        self.assertEqual(self.installs(calls), [])
+
+    def test_a_new_release_is_tried_then_installed(self):
+        (s,), calls = self.run_check()
+        self.assertEqual((s.name, s.family, s.state, s.installed, s.latest),
+                         ("Rive editor", "rive", "updated", "0.9.157", "0.9.157"))
+        self.assertEqual(self.installs(calls), [("run", ["brew", "upgrade", "--cask", "rive"], "1")])
+        steps = [c[0] for c in calls]
+        self.assertLess(steps.index("trial"), steps.index("run"))
+        self.assertLess(steps.index("run"), steps.index("live-check"))
+        self.assertIn(("live-check", self.app, "0.9.157"), calls)
+
+    def test_a_zero_x_minor_is_installed(self):
+        # Only the leading number waits, as for Codex: the editor has been 0.x
+        # for its whole life and is checked by its signature, not its number.
+        self.assertTrue(au.is_major_jump("0.9.157", "0.10.0"))
+        (s,), _ = self.run_check(installed="0.9.157", latest="0.10.0", in_brew="0.9.157")
+        self.assertEqual(s.state, "updated")
+
+    def test_a_new_leading_number_waits_for_a_human(self):
+        (s,), calls = self.run_check(installed="0.9.157", latest="1.0.0")
+        self.assertEqual(s.state, "outdated")
+        self.assertIn("major version", s.detail)
+        self.assertFalse([c for c in calls if c[0] in ("trial", "run")])
+
+    def test_an_open_editor_is_not_replaced_under_someone(self):
+        (s,), calls = self.run_check(is_open=True)
+        self.assertEqual(s.state, "outdated")
+        self.assertIn("open", s.detail)
+        self.assertFalse([c for c in calls if c[0] in ("trial", "run")])
+
+    def test_an_editor_opened_during_the_trial_still_waits(self):
+        (s,), calls = self.run_check(is_open=[False, True])
+        self.assertEqual(s.state, "outdated")
+        self.assertIn(("trial", "0.9.157"), calls)
+        self.assertEqual(self.installs(calls), [])
+
+    def test_a_failed_trial_keeps_the_working_version(self):
+        (s,), calls = self.run_check(trial=(False, "it is signed by ABCDE12345, not by Rive"))
+        self.assertEqual((s.state, s.installed), ("failed", "0.9.104"))
+        self.assertIn("0.9.104 was kept", s.detail)
+        self.assertEqual(self.installs(calls), [])
+
+    def test_a_refused_install_is_a_failure(self):
+        (s,), calls = self.run_check(install_rc=1)
+        self.assertEqual((s.state, s.installed), ("failed", "0.9.104"))
+        self.assertNotIn("is gone", s.detail)
+        self.assertNotIn("live-check", [c[0] for c in calls])
+
+    def test_a_refused_install_that_took_the_app_says_how_to_put_it_back(self):
+        (s,), _ = self.run_check(install_rc=1, app_left=False)
+        self.assertEqual(s.state, "failed")
+        self.assertIn("is gone, `brew reinstall --cask rive` puts it back", s.detail)
+
+    def test_an_install_that_did_not_move_the_version_is_a_failure(self):
+        (s,), _ = self.run_check(after="0.9.104")
+        self.assertEqual(s.state, "failed")
+        self.assertIn("reports 0.9.104", s.detail)
+
+    def test_an_app_that_fails_where_it_landed_is_not_an_update(self):
+        (s,), _ = self.run_check(landed=(False, "Gatekeeper refuses it: rejected"))
+        self.assertEqual(s.state, "failed")
+        self.assertIn("passed its trial but not where it was installed", s.detail)
+
+
+class RiveContractTests(unittest.TestCase):
+    """The nightly runs the CLI and the doctor the way the rive skill does."""
+
+    @classmethod
+    def setUpClass(cls):
+        scripts = ROOT / "skills" / "rive" / "scripts"
+        if str(scripts) not in sys.path:
+            sys.path.insert(0, str(scripts))
+        import rivelib
+        cls.L = rivelib
+
+    def test_the_cli_is_run_as_the_skill_runs_it(self):
+        env = self.L.rive_env()
+        for key, value in au.RIVE_QUIET.items():
+            self.assertEqual(env.get(key), value, key)
+
+    def test_the_doctor_tries_the_build_it_is_pointed_at(self):
+        self.assertTrue(au.RIVE_DOCTOR.is_file())
+        with tempfile.TemporaryDirectory() as tmp:
+            rive = str(_fake_rive(Path(tmp)))
+            with patch.dict(os.environ, {"RIVE_SKILL_CLI": rive}):
+                self.assertEqual(self.L.find_rive(), rive)
+                self.assertEqual(self.L.cli_version(), "1.5.0")
+
+    def test_the_trial_reads_the_cli_version_as_the_skill_does(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rive = str(_fake_rive(Path(tmp), version="1.6.2"))
+            self.assertEqual(au._rive_version(rive), self.L.cli_version(rive))
+
+
+class RiveLiveTests(unittest.TestCase):
+    """The Rive on this machine, asked the nightly's questions. Installs nothing,
+    and skips where Homebrew did not install it, CI included."""
+
+    @unittest.skipUnless(_HOMEBREW_RIVE, "no Homebrew Rive CLI on PATH")
+    def test_the_installed_cli_passes_the_trial_it_would_get(self):
+        version = au._rive_version(_RIVE_ON_PATH)
+        self.assertTrue(version, "rive --version gave no version")
+        self.assertEqual(au._rive_cli_works(_RIVE_ON_PATH, version), (True, ""))
+
+    @unittest.skipUnless(platform.system() == "Darwin" and Path("/Applications/Rive.app").is_dir(),
+                         "no Rive editor here")
+    def test_the_installed_editor_is_rives_and_notarized(self):
+        version = au._bundle_version(au.RIVE_EDITOR_APP)
+        self.assertTrue(version)
+        self.assertEqual(au._rive_editor_good(au.RIVE_EDITOR_APP, version), (True, ""))
 
 
 class FetchTests(unittest.TestCase):

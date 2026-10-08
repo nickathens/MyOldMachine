@@ -623,6 +623,16 @@ class PendingCaskTests(unittest.TestCase):
         run.return_value = (0, "codex\n")
         self.assertEqual(su._outdated_casks(), ())
 
+    @patch("utils.system_update._run_cmd")
+    def test_rive_is_left_to_the_app_check(self, run):
+        # The same for the Rive editor and the Rive CLI since 8 Oct 2026. brew
+        # names the tap's cask by its bare token: this is its output that
+        # morning, when the line read "waiting on you ... rive, rive-cli".
+        run.return_value = (0, "rive\nrive-cli\n")
+        self.assertEqual(su._outdated_casks(), ())
+        run.return_value = (0, "libreoffice\nrive\nrive-cli\n")
+        self.assertEqual(su._outdated_casks(), ("libreoffice",))
+
     def test_note_names_the_apps(self):
         note = su._brew_cask_note(("blender", "libreoffice"))
         self.assertIn("blender", note)

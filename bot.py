@@ -1316,7 +1316,7 @@ def build_system_prompt(user_id: int, provider=None, new_message: str = None) ->
         # Maintenance system
         parts.append("### Maintenance:")
         parts.append("The bot runs nightly maintenance automatically (system updates at 4:00 AM, cleanup at 3:30 AM).")
-        parts.append("The 4:00 AM run covers the package manager AND the apps it does not track or upgrade: DaVinci Resolve, Claude Code, the Codex CLI, the global npm CLIs the skills install, and Flatpak apps. CLI updates install themselves (Codex only after a trial copy of the new build passes the bot's own checks); applications and major-version jumps are reported for the user to approve.")
+        parts.append("The 4:00 AM run covers the package manager AND the apps it does not track or upgrade: DaVinci Resolve, Claude Code, the Codex CLI, the Rive CLI and the Rive editor, the global npm CLIs the skills install, and Flatpak apps. CLI updates install themselves (Codex and the Rive CLI only after a trial copy of the new build passes the bot's own checks), and so does the Rive editor, after its download is checked and only while it is closed; other applications and major-version jumps are reported for the user to approve.")
         parts.append("If the user wants automatic backups, they need to set a target path:")
         parts.append("  /maintenance backup /path/to/drive")
         parts.append("Other commands: /maintenance updates on|off, /maintenance cleanup on|off, /maintenance apps on|off|report, /maintenance run backup|update|cleanup|apps")
@@ -5810,15 +5810,15 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(
                 "App update checks enabled. Nightly at 4:00 AM I check the apps no "
                 "package manager tracks (DaVinci Resolve, Claude Code, the Codex CLI, "
-                "the npm CLIs the skills use) and install the CLI updates that are "
-                "safe unattended. "
-                "Applications and major-version jumps are reported, never installed."
+                "Rive, the npm CLIs the skills use) and install the CLI updates that "
+                "are safe unattended, and the Rive editor while it is closed. "
+                "Other applications and major-version jumps are reported, never installed."
             )
         elif arg.lower() in ("off", "false", "no", "0"):
             update_config(app_update_checks=False)
             await update.message.reply_text(
                 "App update checks disabled. Nothing will look at DaVinci Resolve, "
-                "Claude Code, the Codex CLI or the npm CLIs again."
+                "Claude Code, the Codex CLI, Rive or the npm CLIs again."
             )
         elif arg.lower() in ("report", "report-only", "check"):
             update_config(app_update_checks=True, app_auto_update=False)

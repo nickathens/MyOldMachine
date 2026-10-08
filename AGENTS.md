@@ -102,6 +102,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-10-08] mac: the Rive CLI and editor join the nightly app updates, tried before they are installed; CLI 1.5.0 measured (utils/app_updates.py, bot.py, skills/rive)
+
 (Entries removed above: #199 cleared in its reviewed merge revision,
 the same call as #197.
 #197 cleared in its reviewed merge revision,

@@ -52,15 +52,17 @@ DEFAULT_CONFIG = {
     "macos_system_updates_restart": False,
     # Also check the apps no package manager tracks: DaVinci Resolve (Blackmagic
     # retired the Homebrew cask), Claude Code (native install), the Codex CLI
-    # (a cask the brew step never upgrades, or npm), the global npm CLIs the
-    # skills install, and Flatpak apps on Linux. On by default and
+    # (a cask the brew step never upgrades, or npm), the Rive CLI and the Rive
+    # editor (two more such casks), the global npm CLIs the skills install,
+    # and Flatpak apps on Linux. On by default and
     # read-only in itself — before this existed nothing on the machine had ever
     # looked at any of their versions.
     "app_update_checks": True,
     # Whether that check may install what it finds. Deliberately narrow: only
     # CLIs, and only when the leading version number does not move (a major
     # bump is reported for a human instead). GUI applications are never
-    # installed unattended whatever this says — see app_updates.AUTO_INSTALLABLE.
+    # installed unattended whatever this says, the Rive editor apart (tried
+    # first, and only while it is closed) — see app_updates.AUTO_INSTALLABLE.
     "app_auto_update": True,
     # Straight after the system update's package upgrade, repair the Python
     # tool kits (virtual environments) a Homebrew Python upgrade left dead, and
@@ -154,7 +156,7 @@ def get_status_report() -> str:
         else:
             lines.append("  macOS softwareupdate: OFF (Apple security responses still auto-install)")
 
-    # Apps outside the package manager (Resolve, Claude Code, Codex, npm CLIs, Flatpak)
+    # Apps outside the package manager (Resolve, Claude Code, Codex, Rive, npm CLIs, Flatpak)
     if config.get("app_update_checks", True):
         if config.get("app_auto_update", True):
             lines.append("App update checks: ON (nightly, installs CLI updates)")

@@ -79,7 +79,10 @@ _UPGRADE_CMDS = {
     # timeout kill then strands the cask half-installed (Blender, 2026-07-15..18).
     # Outdated casks are reported in the summary instead — upgrade them
     # interactively. The Codex CLI cask is plain command-line files, and
-    # utils/app_updates.py updates it after trying the new build first.
+    # utils/app_updates.py updates it after trying the new build first. It
+    # updates the Rive CLI and the Rive editor the same way; the editor's
+    # cask upgrade has been run from the bot's own process tree five times
+    # without hanging (app_updates.check_rive_editor).
     "brew": "brew upgrade --formula",
 }
 
@@ -534,7 +537,8 @@ def _maybe_run_app_update_check(log_fn):
     outside apt/brew, so before this ran nothing on the machine had ever looked
     at their versions — the nightly job reported "no updates available" on a
     box carrying four stale CLIs and a stale Resolve (2026-08-04). The Codex
-    CLI is checked here too, whether brew or npm installed it.
+    CLI is checked here too, whether brew or npm installed it, and so are the
+    Rive CLI and the Rive editor.
 
     Never propagates: a version check is additive, and a flaky download feed
     must not fail the night's package upgrade.
