@@ -4698,6 +4698,12 @@ def _media_gen_turn(mg: dict, user_id) -> str:
         "flux-video": "flux-3-video.md", "flux3-video": "flux-3-video.md",
         "grok-video1.5": "grok-video-1-5.md",
         "happy-horse": "happy-horse.md",
+        # 2026-10-13 image additions (mirror the SKILL.md guide table).
+        # nano-pro keeps its nano-banana.md route above; nano2.1 joins it.
+        "nano2.1": "nano-banana.md", "gpt2.5": "gpt-image.md",
+        "grok2": "grok.md", "ideogram": "ideogram.md",
+        "seedream-pro": "seedream.md", "seedream-flash": "seedream.md",
+        "flux3": "flux.md",
     }
     guide_file = _MODEL_GUIDES.get(mg_model, "nano-banana.md")
     guide_path = f"skills/image-gen/models/{guide_file}"
