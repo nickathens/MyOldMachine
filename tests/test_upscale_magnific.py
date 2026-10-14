@@ -220,7 +220,9 @@ class FakeMagnific:
 class Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.fixtures = Path(tempfile.mkdtemp(prefix="magnific-fixtures-"))
+        # Resolved, as the script stores paths: macOS's temp folder sits behind
+        # the /var -> /private/var link, and an unresolved one never compares equal.
+        cls.fixtures = Path(tempfile.mkdtemp(prefix="magnific-fixtures-")).resolve()
         f = cls.fixtures
         Image.new("RGB", (600, 400), (40, 80, 120)).save(f / "photo.png")
         Image.new("RGB", (1280, 720), (40, 80, 120)).save(f / "wide.png")
@@ -236,7 +238,7 @@ class Base(unittest.TestCase):
         shutil.rmtree(cls.fixtures, ignore_errors=True)
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="magnific-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="magnific-test-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.tmp / "state"), mod.KEY_NAME: FAKE_KEY})
         env.start()
