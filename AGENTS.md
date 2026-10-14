@@ -102,9 +102,10 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-10-13] linux: image-gen 8 new models (nano 2.1, GPT 2.5, Grok 2.0, Ideogram 4.5, Seedream 5 Pro/Flash, FLUX 3); touches bot.py + miniapp/server.py (PR #202)
-
-(Entries removed above: #201 cleared in its reviewed merge revision,
+(Entries removed above: #202 merged 2026-10-14, its line cleared inside
+#203's own edit, as its merge comment left it for the next PR, the same
+call as #185.
+#201 cleared in its reviewed merge revision,
 the same call as #199.
 #199 cleared in its reviewed merge revision,
 the same call as #197.

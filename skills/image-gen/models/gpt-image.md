@@ -1,6 +1,6 @@
-# GPT Image 2 / Hazel (OpenAI)
+# GPT Image 2 and 2.5 / Hazel (OpenAI)
 
-Covers: gpt (GPT Image 2), hazel (OpenAI Hazel)
+Covers: gpt (GPT Image 2), gpt2.5 (GPT Image 2.5), hazel (OpenAI Hazel)
 
 ## Prompt Style
 
@@ -25,6 +25,11 @@ Structured visual direction. Think like a director, not a prompter. Layered prom
 - Don't use SDXL/Midjourney-era keywords ("masterpiece", "best quality", "8k uhd") as they occupy semantic space intended for real descriptions
 - Don't mix too many styles in one prompt
 - Don't describe impossible physics without acknowledging it as surreal/fantasy
+
+## Model Differences
+
+- **gpt**: GPT Image 2. `quality` low, medium or high, and high is its default; 1k, 2k or 4k, 2k by default. 6.5 credits when nothing is chosen.
+- **gpt2.5**: GPT Image 2.5. `quality` low, medium, high, xhigh or max, and **its default is low**, so `-m gpt2.5` with nothing chosen buys a 0.25 credit draft, not GPT Image 2's high. Choose the quality on purpose: at 1k, low is 0.25, medium 0.5, high 1.5, xhigh 2.5 and max 5; max at 4k is 15. Also `variant` flare (the default) or sunburst at the same price, `background` auto, opaque or transparent, and four more ratios: 27:16, 16:27, 9:8 and 8:9.
 
 ## Example Refinement
 
