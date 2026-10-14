@@ -155,6 +155,10 @@ ARMS = [
     ("quote goes online", "    quote[\"code\"] = code\n    save(quote)\n",
      "    quote[\"code\"] = code\n    api(\"GET\", \"/v1/ai/image-upscaler\")\n    save(quote)\n",
      "test_quote_makes_no_request"),
+    ("key asked for after the claim", "    api_key()\n    claim(code)\n", "    claim(code)\n",
+     "test_run_without_a_key_changes_nothing"),
+    ("quotes shared across users", '    base = user_dir or os.environ.get("XDG_STATE_HOME")',
+     '    base = os.environ.get("XDG_STATE_HOME")', "test_each_user_keeps_their_own_quotes"),
 ]
 
 SUMMARY = re.compile(r"\d+ (passed|failed)")

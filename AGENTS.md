@@ -102,9 +102,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-10-14] linux: upscale skill gains the Magnific API route (paid only behind a quote); skills/upscale + one new test file, no shared core files (PR #204)
-
-(Entries removed above: #202 merged 2026-10-14, its line cleared inside
+(Entries removed above: #204 cleared in its reviewed merge revision,
+the same call as #199.
+#202 merged 2026-10-14, its line cleared inside
 #203's own edit, as its merge comment left it for the next PR, the same
 call as #185.
 #201 cleared in its reviewed merge revision,

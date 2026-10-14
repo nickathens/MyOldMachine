@@ -196,8 +196,10 @@ was sent). When a start goes unanswered (a network error or a 5xx), the job
 may or may not exist and may have been charged: the quote is marked `unknown`
 (or stays `submitting` when the script itself was cut off) and never runs
 again. `check` lists Magnific's jobs, and `fetch CODE --task TASK_ID` adopts
-the right one. Quotes and jobs are kept in `~/.local/state/magnific/`
-(`$XDG_STATE_HOME` moves it).
+the right one. Quotes and jobs are kept per person: in the bot, in the
+user's own folder (`$JARVIS_USER_DIR/magnific/`), so nobody sees another's
+files in `ledger` or runs a code quoted for someone else; outside it, in
+`~/.local/state/magnific/` (`$XDG_STATE_HOME` moves it).
 
 Exit codes: 0 done, 1 failed or unknown, 2 refused before anything was sent,
 3 still running. Proof: `tests/test_upscale_magnific.py` (no network; a socket

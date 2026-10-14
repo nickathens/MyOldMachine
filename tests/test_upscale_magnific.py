@@ -243,6 +243,7 @@ class Base(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.tmp / "state"), mod.KEY_NAME: FAKE_KEY})
         env.start()
         self.addCleanup(env.stop)
+        os.environ.pop("JARVIS_USER_DIR", None)          # a bot session sets it, and it would win over the above
         for name, value in (("ENV_FILE", self.tmp / "no.env"), ("POLL", {"image": 0, "video": 0}),
                             ("_ffprobe", fake_ffprobe)):
             patcher = mock.patch.object(mod, name, value)
@@ -464,6 +465,40 @@ class Run(Base):
         self.rewrite(code, state="done")
         self.offline()
         self.assertEqual(cli("run", code)[0], 2)
+
+    def test_run_without_a_key_changes_nothing(self):
+        """A quote needs no key, so a new install reaches run without one. The
+        image start was the first call to ask for it, after the quote was
+        marked submitting: stuck for good, and counted as sent."""
+        code, _ = self.quote(self.copy("photo.png"))
+        with mock.patch.dict(os.environ, {mod.KEY_NAME: ""}):
+            rc, out, err = cli("run", code)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("is not set", err)
+        self.assertNotIn("Spending", out)
+        self.assertEqual(self.record(code)["state"], "quoted")
+        self.assertFalse((self.tmp / "state" / "magnific" / f"{code}.claim").exists())
+        self.assertIn("Sent to Magnific: 0 jobs", cli("ledger")[1])
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(cli("run", code, "-o", self.tmp / "out.png")[0], 0)   # once the key is there
+        self.assertEqual(len(self.fake.paid()), 1)
+
+    def test_each_user_keeps_their_own_quotes(self):
+        """One OS account hosts several people: a quote lives in its own user's
+        folder, so another user's ledger never lists it and their run of its
+        code is refused before anything is sent."""
+        first, second = self.tmp / "users" / "1001", self.tmp / "users" / "1002"
+        with mock.patch.dict(os.environ, {"JARVIS_USER_DIR": str(first)}):
+            code, _ = self.quote(self.copy("photo.png", "client_shot.png"))
+        self.assertTrue((first / "magnific" / f"{code}.json").is_file())
+        self.assertFalse((self.tmp / "state" / "magnific" / f"{code}.json").exists())
+        self.offline()
+        with mock.patch.dict(os.environ, {"JARVIS_USER_DIR": str(second)}):
+            out = cli("ledger")[1]
+            self.assertNotIn(code, out)
+            self.assertNotIn("client_shot", out)
+            for args in (("run", code), ("status", code), ("fetch", code)):
+                self.assertEqual(cli(*args)[0], 2, args)
 
     def test_run_once_only(self):
         code, _ = self.quote(self.copy("photo.png"))
@@ -882,8 +917,12 @@ class RealVideo(Base):
         f.mkdir()
         x264 = ("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p")
         ffmpeg("-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-frames:v", 12, *x264, f / "clip.mp4")
-        ffmpeg("-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-f", "lavfi", "-i", "sine=frequency=440",
-               "-frames:v", 12, *x264, "-c:a", "aac", "-shortest", f / "sound.mp4")
+        # The sound ends at the source: under -shortest, ffmpeg 9 usually lets
+        # an endless sine run past -frames:v 12 (0.998 s of sound to 0.5 s of
+        # picture in 11 of 12 runs on a Mac), and the container's duration
+        # follows the sound.
+        ffmpeg("-f", "lavfi", "-i", "testsrc=size=320x240:rate=24", "-f", "lavfi", "-i",
+               "sine=frequency=440:duration=0.5", "-frames:v", 12, *x264, "-c:a", "aac", "-shortest", f / "sound.mp4")
         ffmpeg("-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=24", "-frames:v", 2, *x264, f / "tall.mp4")
         ffmpeg("-i", f / "clip.mp4", "-c", "copy", "-f", "mov", f / "master.mov")
 

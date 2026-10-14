@@ -11,7 +11,7 @@ plan's "unlimited" never covers the API), so nothing here spends on its own:
                  unchanged file, at the same price, within 24 hours
   status CODE    free: where a job stands
   fetch CODE     free: wait for a job that is already running and download it
-  ledger         every quote and job on this machine, and what was sent
+  ledger         every quote and job of this user, and what was sent
 
 Requests are fenced to the upscaler endpoints plus the upload endpoint a local
 video needs (the video upscalers only take an address); any other Magnific
@@ -429,7 +429,12 @@ def euros(value):
 # ---------------------------------------------------------------- quotes on disk
 
 def state_dir():
-    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    """Where quotes and jobs are kept. One OS account can host several people,
+    each with a private folder in JARVIS_USER_DIR; quotes go there, so one
+    person's ledger never lists another's files and nobody runs a code quoted
+    for someone else. Outside the bot, $XDG_STATE_HOME or ~/.local/state."""
+    user_dir = os.environ.get("JARVIS_USER_DIR")
+    base = user_dir or os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
     folder = Path(base) / "magnific"
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     return folder
@@ -454,7 +459,7 @@ def load(code):
     try:
         quote = json.loads(path.read_text())
     except FileNotFoundError:
-        raise Refused(f"there is no quote {code} on this machine") from None
+        raise Refused(f"there is no quote {code} for this user") from None
     except ValueError:
         quote = None
     if not isinstance(quote, dict) or quote.get("code") != code:
@@ -645,6 +650,10 @@ def cmd_run(args):
         raise Refused(f"{src} is gone or changed since the quote; nothing was sent. Quote again")
     if price_of(quote) != quote["price_eur"]:
         raise Refused("this script's price list changed since the quote; nothing was sent. Quote again")
+    # A quote needs no key, so a new install can reach here without one. Ask
+    # now: the image start is the first call to want it, and by then the
+    # quote is marked submitting and can never run again.
+    api_key()
     claim(code)
     try:
         payload = submit_payload(quote, data)
