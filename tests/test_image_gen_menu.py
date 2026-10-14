@@ -206,10 +206,11 @@ class ChosenSettingsReachHiggsfield(unittest.TestCase):
         self.assertEqual(self.flag(self.calls[-1], "--resolution"), "2k")
 
     def test_2k_reaches_a_model_the_menu_does_not_list(self):
-        # Chat can name any Higgsfield job type. flux_3_image has no row here
-        # yet and defaults to 1k with 2k on offer (model get, 2026-10-06), so
-        # holding back an unknown model's resolution would buy 1K again.
-        self.gen.generate_higgsfield("a cat", "/tmp/x.jpg", model="flux_3_image", resolution="2k")
+        # Chat can name any Higgsfield job type. A model with no row here
+        # (topaz_image is one) is sent whatever resolution was asked, so holding
+        # back an unknown model's resolution would buy its own default again.
+        # flux_3_image used to be the example; it got a card on 2026-10-13.
+        self.gen.generate_higgsfield("a cat", "/tmp/x.jpg", model="topaz_image", resolution="2k")
         self.assertEqual(self.flag(self.calls[-1], "--resolution"), "2k")
 
     def test_no_resolution_to_a_model_without_one(self):

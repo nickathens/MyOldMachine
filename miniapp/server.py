@@ -1421,7 +1421,8 @@ async def launch_skill(request: Request, user: dict = Depends(_get_user)):
         if aspect is not None and aspect not in valid_aspects:
             raise HTTPException(status_code=400, detail="Invalid aspect ratio")
         resolution = mg.get("resolution") or None
-        if resolution is not None and resolution not in ("1k", "2k", "4k"):
+        # 2026-10-13: 1.5k (Seedream 5.0) and 768sq (FLUX 3) joined the catalog.
+        if resolution is not None and resolution not in ("768sq", "1k", "1.5k", "2k", "4k"):
             raise HTTPException(status_code=400, detail="Invalid resolution")
         duration = mg.get("duration")
         if duration is not None:

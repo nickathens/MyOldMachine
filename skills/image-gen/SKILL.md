@@ -206,7 +206,7 @@ python skills/image-gen/scripts/generate.py --balance
 |------|-------------|
 | `-o`, `--output` | Output file path (auto: .jpg for images, .mp4 for video) |
 | `-m`, `--model` | Model name or alias (auto-selects based on --video flag) |
-| `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21, plus the per-model 2:1, 1:2 and `auto` (the model's own schema refuses a ratio it does not take; `--cost` shows it free). Pollinations falls back to 768x768 for a ratio it has no size for. Leave it out and the model keeps its own, which is not always 1:1 or 16:9 |
+| `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21, plus the per-model 2:1, 1:2, `auto` and the new models' strip ratios (4:1, 8:1 and the like). The accepted set is the union of every model's own ratios; the model's own schema refuses a ratio it does not take (`--cost` shows it free). Pollinations falls back to 768x768 for a ratio it has no size for. Leave it out and the model keeps its own, which is not always 1:1 or 16:9 |
 | `-r`, `--ref-image` | Reference image for image-to-image or image-to-video |
 | `--video` | Generate video instead of image |
 | `--threed` | Generate a 3D mesh (default output `.glb`) |
@@ -220,7 +220,7 @@ python skills/image-gen/scripts/generate.py --balance
 | `--voice-id`, `--voice-type` | Voice for speech / voice_change (preset or element); see `--list-voices` |
 | `--pitch`, `--speed` | Voice pitch/speed for speech (seed_audio) |
 | `--backend` | Backend: auto (default, tries Higgsfield then Pollinations), higgsfield, pollinations |
-| `--resolution` | Image resolution: 1k, 2k, 4k, sent only to a model that has one. Leave it out and the model keeps its own, 1k on most (`--menu` lists each model's) |
+| `--resolution` | Image resolution: 768sq, 1k, 1.5k, 2k, 4k, sent only to a model that has one (1.5k is Seedream 5.0, 768sq is FLUX 3; most models are 1k/2k/4k). Leave it out and the model keeps its own, 1k on most (`--menu` lists each model's) |
 | `--duration` | Duration in seconds (video and music; model-dependent) |
 | `--extra` | JSON string of extra model params (e.g. `'{"quality":"high"}'`) |
 | `--list-models` | List all model aliases and exit |
@@ -257,6 +257,13 @@ python skills/image-gen/scripts/generate.py --balance
 | `ms-studio` | Marketing Studio Image | Product and marketing stills |
 | `z` | Z Image | Cheapest stills; takes no reference image |
 | `auto` | Image Auto | Let Higgsfield pick |
+| `nano2.1` | Nano Banana 2.1 | Newest Nano: `thinking_level` minimal/medium/high, web and image search grounding, region inpaint, up to 14 refs, strip ratios to 8:1 |
+| `gpt2.5` | GPT Image 2.5 | GPT Image's successor; `quality` low to max swings the price 0.25 to 15 |
+| `grok2` | Grok Image 2.0 | Newer Grok, `quality` low or medium |
+| `ideogram` | Ideogram 4.5 | Text in the image: posters, logos, signage; `magic_prompt` auto/on/off, 2k floor for text-to-image |
+| `seedream-pro` | Seedream 5.0 Pro | High detail, adds a 1.5k tier |
+| `seedream-flash` | Seedream 5.0 Flash | Flat 0.5 cr, fast |
+| `flux3` | FLUX 3 Image | FLUX 2's successor, 768sq to 4k |
 
 ## Video Model Aliases
 
@@ -302,10 +309,10 @@ python skills/image-gen/scripts/generate.py --balance
 
 | Tier | Credits | Models |
 |------|---------|--------|
-| Image near free | 0.12-0.5 | soul, soul-cinematic, soul-location, soul-cinema, soul-cast (0.12), z (0.15), kling (0.5) |
-| Image cheap | 1-1.5 | nano, nano2 at 1k, nano-lite, seedream, seedream-lite, flux (pro at 1k), flux-kontext, recraft (1k) |
-| Image mid | 2-4 | nano-pro, nano2 at 2k and 4k, cinematic, ms-studio, auto |
-| Image by setting | 0.5-12 | gpt and ms (quality times resolution), hazel (2-6), recraft at 2k (8-10), flux flex and max (3-6) |
+| Image near free | 0.12-0.5 | soul, soul-cinematic, soul-location, soul-cinema, soul-cast (0.12), z (0.15), kling (0.5), seedream-flash (0.5) |
+| Image cheap | 1-1.5 | nano, nano2 and nano2.1 at 1k, nano-lite, seedream, seedream-lite, flux (pro at 1k), flux-kontext, recraft (1k) |
+| Image mid | 1.25-4 | nano-pro, nano2 and nano2.1 at 2k and 4k, grok2 (1.25-2.5), seedream-pro (1.25-2.5), cinematic, ms-studio, auto |
+| Image by setting | 0.25-19 | gpt and ms (quality times resolution), gpt2.5 (0.25-15), hazel (2-6), ideogram (1-6.25), recraft at 2k (8-10), flux flex and max (3-6), flux3 (1-19 by resolution) |
 | Image free | 0 | Pollinations (`--backend pollinations`) |
 | Video | 5-80 | seedance-mini (5 for 5 s at 720p), kling-turbo (7.5), h3 (8 at the 4 s minimum, 2 a second), kling (10), veo3 (22 a clip), seedance (22.5), gemini (24 for 8 s), cinematic3 (25), veo3.1 (32 for 8 s) |
 | 3D | 5 | text-to-3d, image-to-3d |
@@ -327,14 +334,15 @@ When a media generation request comes from a structured source (Mini App, script
 
 | Model aliases | Guide file |
 |---|---|
-| nano, nano2, nano-pro | `nano-banana.md` |
-| gpt, hazel | `gpt-image.md` |
-| flux, flux-kontext | `flux.md` |
-| grok | `grok.md` |
+| nano, nano2, nano-pro, nano2.1 | `nano-banana.md` |
+| gpt, gpt2.5, hazel | `gpt-image.md` |
+| flux, flux-kontext, flux3 | `flux.md` |
+| grok, grok2 | `grok.md` |
+| ideogram | `ideogram.md` |
 | grok-video | `grok-video.md` |
 | soul, soul-cinematic, soul-location | `soul.md` |
 | cinematic | `cinematic-studio.md` |
-| seedream, seedream-lite | `seedream.md` |
+| seedream, seedream-lite, seedream-pro, seedream-flash | `seedream.md` |
 | kling (video), kling2.6 | `kling-video.md` |
 | veo3, veo3.1, veo3-lite | `veo.md` |
 | seedance, seedance1.5 | `seedance.md` |

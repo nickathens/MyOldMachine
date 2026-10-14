@@ -36,7 +36,7 @@ def _save_last_generation(output_path: str, media_type: str, model: str, prompt:
 MODEL_ALIASES = {
     "nano": "nano_banana",
     "nano2": "nano_banana_flash",
-    "nano-pro": "nano_banana_2",
+    "nano-pro": "nano_banana_pro",
     "gpt": "gpt_image_2",
     "grok": "grok_image",
     "flux": "flux_2",
@@ -61,6 +61,20 @@ MODEL_ALIASES = {
     # budget + prompt, no duration. It sat in VIDEO_MODEL_ALIASES until 2026-08-07,
     # which wrote its stills into a .mp4 container.
     "soul-cast": "soul_cast",
+    # --- added 2026-10-13: new image models from the live catalog, CLI 1.1.26 ---
+    # Params, aspect enums, resolutions and credit ranges were read off
+    # `higgsfield model get <job> --json` and `generate cost` on 2026-10-13. The
+    # live list drops `nano_banana_2`; `nano-pro` above repoints to the canonical
+    # `nano_banana_pro`, which still resolves to Pro server-side (a rename, not a
+    # new model). Nano 2.1 is genuinely new: thinking_level, web/image search
+    # grounding, region inpaint, up to 14 refs, strip ratios to 8:1.
+    "nano2.1": "nano_banana_2_1",
+    "gpt2.5": "gpt_image_2_5",
+    "grok2": "grok_image_2_0",
+    "ideogram": "ideogram_4_5",
+    "seedream-pro": "seedream_v5_pro",
+    "seedream-flash": "seedream_5_0_flash",
+    "flux3": "flux_3_image",
 }
 
 DEFAULT_MODEL = "nano_banana_flash"
@@ -118,7 +132,8 @@ MODEL_MENU = {
     # --- images ---
     "nano_banana_flash": {"name": "Nano 2", "credits": (1.5, 3), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
     "nano_banana": {"name": "Nano", "credits": (1, 1), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"], "resolutions": [], "ref": "optional"},
-    "nano_banana_2": {"name": "Nano Pro", "credits": (2, 4), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "nano_banana_pro": {"name": "Nano Pro", "credits": (2, 4), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "nano_banana_2_1": {"name": "Nano 2.1", "credits": (1.5, 3), "ratios": ["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "9:16", "16:9", "21:9", "4:1", "1:4", "8:1", "1:8"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
     "nano_banana_2_lite": {"name": "Nano 2 Lite", "credits": (1, 1), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k"], "ref": "optional"},
     "gpt_image_2": {"name": "GPT Image 2", "credits": (0.5, 11), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
     "openai_hazel": {"name": "Hazel", "credits": (2, 6), "ratios": ["1:1", "3:2", "2:3", "auto"], "resolutions": [], "ref": "optional"},
@@ -139,6 +154,19 @@ MODEL_MENU = {
     "marketing_studio_image": {"name": "MS Studio", "credits": (2, 4), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "auto"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
     "z_image": {"name": "Z Image", "credits": (0.15, 0.15), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "resolutions": [], "ref": None},
     "image_auto": {"name": "Auto", "credits": (2, 2), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"], "resolutions": [], "ref": "optional"},
+    # --- added 2026-10-13: new image models, CLI 1.1.26. Ratios are each model's
+    # live aspect_ratio enum; menu() cuts them to the eleven the Mini App accepts,
+    # while the CLI -a set is the union of every row's ratios. Credit ranges are
+    # `generate cost` quotes on 2026-10-13, cheapest to dearest across the settings
+    # that move each price: gpt_image_2_5 0.25 (low/1k) to 15 (max/4k); ideogram_4_5
+    # 1 (low/2k) to 6.25 (high/2k, its text-to-image floor); flux_3_image 1 (768sq)
+    # to 19 (4k); seedream_5_0_flash flat 0.5. ---
+    "gpt_image_2_5": {"name": "GPT Image 2.5", "credits": (0.25, 15), "ratios": ["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "27:16", "16:27", "9:8", "8:9", "4:5", "5:4"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
+    "grok_image_2_0": {"name": "Grok 2.0", "credits": (1.25, 2.5), "ratios": ["1:1", "auto", "1:2", "2:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], "resolutions": ["1k", "2k"], "ref": "optional"},
+    "ideogram_4_5": {"name": "Ideogram 4.5", "credits": (1, 6.25), "ratios": ["auto", "1:1", "1:2", "2:1", "2:3", "3:2", "4:5", "5:4", "9:16", "16:9", "5:8", "8:5", "3:4", "4:3", "9:22", "22:9", "9:23", "23:9", "3:8", "8:3", "5:12", "12:5", "1:3", "3:1"], "resolutions": ["1k", "2k"], "ref": "optional"},
+    "seedream_v5_pro": {"name": "Seedream 5 Pro", "credits": (1.25, 2.5), "ratios": ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"], "resolutions": ["1k", "1.5k", "2k"], "ref": "optional"},
+    "seedream_5_0_flash": {"name": "Seedream 5 Flash", "credits": (0.5, 0.5), "ratios": ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"], "resolutions": ["1k", "1.5k", "2k"], "ref": "optional"},
+    "flux_3_image": {"name": "FLUX 3", "credits": (1, 19), "ratios": ["auto", "21:9", "2:1", "16:9", "3:2", "7:5", "4:3", "5:4", "1:1", "4:5", "3:4", "5:7", "2:3", "9:16", "1:2"], "resolutions": ["768sq", "1k", "1.5k", "2k", "4k"], "ref": "optional"},
     # --- video ---
     "kling3_0": {"name": "Kling 3.0", "credits": (1.5, 6), "ratios": ["1:1", "16:9", "9:16"], "ref": "optional"},
     "kling3_0_turbo": {"name": "Kling 3.0 Turbo", "credits": (1.5, 2), "ratios": ["1:1", "16:9", "9:16"], "ref": "optional"},
@@ -382,6 +410,27 @@ MODEL_PARAMS = {
         "texture": {"type": "bool", "default": True},
     },
     "seed_audio": {"format": {"options": ["wav", "mp3", "pcm", "ogg_opus"], "default": "mp3"}},
+    # --- added 2026-10-13: menu controls for the new image models (live schema).
+    # nano_banana_pro, seedream_v5_pro, seedream_5_0_flash and flux_3_image expose
+    # nothing beyond ratio and resolution, so they have no entry here. ---
+    "nano_banana_2_1": {
+        "thinking_level": {"options": ["minimal", "medium", "high"], "default": "medium"},
+    },
+    "gpt_image_2_5": {
+        # quality swings the price about 60x (0.25 at low/1k to 15 at max/4k), so
+        # it is the one control worth surfacing; background and variant keep their
+        # own defaults and stay reachable through --extra.
+        "quality": {"options": ["low", "medium", "high", "xhigh", "max"], "default": "low"},
+    },
+    "grok_image_2_0": {
+        "quality": {"options": ["low", "medium"], "default": "medium"},
+    },
+    "ideogram_4_5": {
+        # very_low is withheld on purpose: the live validator refuses it without a
+        # source image, so from a text-to-image card it is a guaranteed failure.
+        "quality": {"options": ["low", "medium", "high"], "default": "high"},
+        "magic_prompt": {"options": ["auto", "on", "off"], "default": "auto"},
+    },
 }
 
 DEFAULT_VIDEO_MODEL = "kling3_0"
@@ -1027,15 +1076,17 @@ def main():
     parser.add_argument("prompt", nargs="?", default="", help="Text prompt for generation")
     parser.add_argument("-o", "--output", default=None, help="Output file path")
     parser.add_argument("-m", "--model", default=None, help="Model name or alias")
-    # 'auto', '1:2' and '2:1' are per model values (gpt_image_2, grok_image,
-    # flux_3_video ...) that the fixed-size table below does not list; the
-    # model's own schema is what refuses a ratio it does not take.
+    # The -a choices are the union of every MODEL_MENU row's own ratios, plus
+    # ASPECT_RATIOS and 'auto': a ratio any model offers (including per-model
+    # values like '2:1' and the new strip ratios '4:1'/'8:1') is accepted, and
+    # the model's own schema is what refuses one it does not take.
     parser.add_argument("-a", "--aspect-ratio", default=None,
-                        choices=sorted({*ASPECT_RATIOS, "auto", "1:2", "2:1"}),
-                        help="Aspect ratio (includes per-model values like 'auto' and '2:1'; default: the model's own)")
+                        choices=sorted({*ASPECT_RATIOS, "auto",
+                                        *(r for row in MODEL_MENU.values() for r in row["ratios"])}),
+                        help="Aspect ratio: the union of every model's own ratios (adds 'auto', '2:1' and the new strip ratios like '4:1'/'8:1'). The model's schema refuses a ratio it does not take; default: the model's own")
     parser.add_argument("-r", "--ref-image", default=None, help="Reference image path for image-to-image or image-to-video")
-    parser.add_argument("--resolution", default=None, choices=["1k", "2k", "4k"],
-                        help="Image resolution, where the model has one (default: the model's own, 1k on most)")
+    parser.add_argument("--resolution", default=None, choices=["768sq", "1k", "1.5k", "2k", "4k"],
+                        help="Image resolution, where the model has one (default: the model's own, 1k on most; 1.5k is Seedream 5.0, 768sq is FLUX 3)")
     parser.add_argument("--backend", default="auto", choices=["higgsfield", "pollinations", "auto"], help="Backend (default: auto, tries Higgsfield then Pollinations)")
     parser.add_argument("--video", action="store_true", help="Generate video instead of image")
     parser.add_argument("--threed", "--3d", action="store_true", dest="threed", help="Generate a 3D asset (mesh) instead of an image")
@@ -1134,7 +1185,7 @@ def main():
         if args.output is None:
             args.output = f"/tmp/generated_workflow{wf['out']}"
         # Workflow resolution (480p/720p/1080p) travels via --extra, not the image-style
-        # --resolution flag (1k/2k/4k); pull it out so it reaches the CLI correctly.
+        # --resolution flag (768sq/1k/1.5k/2k/4k); pull it out so it reaches the CLI correctly.
         wf_res = None
         if extra_params:
             wf_res = extra_params.pop("resolution", None)
