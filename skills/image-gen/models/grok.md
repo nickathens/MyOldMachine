@@ -1,6 +1,6 @@
-# Grok Image (xAI)
+# Grok Image and Grok Image 2.0 (xAI)
 
-Covers: grok (Grok Image)
+Covers: grok (Grok Image), grok2 (Grok Image 2.0)
 
 ## Prompt Style
 
@@ -23,6 +23,11 @@ Precise visual specifications. Grok responds best to concrete, measurable detail
 - Don't use quality boosters ("masterpiece", "8k", "trending on artstation") as they dilute the actual description
 - Don't rely on negative prompt syntax (brackets, minus signs) as it is not supported
 - Don't write vague prompts expecting the model to infer intent
+
+## Model Differences
+
+- **grok**: Grok Image. `mode` std (the default) or quality; 1k or 2k.
+- **grok2**: Grok Image 2.0. `quality` low or medium (the default) in place of `mode`; 1k or 2k, the same ratios as grok. 1.25 credits at low and 1k, 2 at medium and 1k or at low and 2k, 2.5 at medium and 2k.
 
 ## Example Refinement
 

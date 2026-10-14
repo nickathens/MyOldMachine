@@ -1,7 +1,7 @@
 # Nano Banana Family (Google Imagen)
 
-Covers: nano (Nano Banana), nano2 (Nano Banana 2), nano-pro (Nano Banana Pro), nano-lite
-(Nano Banana 2 Lite), and recraft (Recraft V4.1), which SKILL.md routes here too.
+Covers: nano (Nano Banana), nano2 (Nano Banana 2), nano2.1 (Nano Banana 2.1), nano-pro (Nano Banana Pro),
+nano-lite (Nano Banana 2 Lite), and recraft (Recraft V4.1), which SKILL.md routes here too.
 
 - **nano-lite**: the cheapest Pro tier. `--extra '{"thinking": "MINIMAL"}'` for speed; HIGH is the default.
 - **recraft**: a different model (design, logos, icons). `--extra '{"model_type": "vector"}'` for vector
@@ -34,6 +34,7 @@ Natural language. Write narrative descriptions, not keyword lists. These are thi
 
 - **nano**: Budget-friendly, realistic. Good for quick iterations.
 - **nano2**: Fast, high-quality. Best general-purpose default. Strong photorealism.
+- **nano2.1**: The newest Nano. `thinking_level` minimal, medium (the default) or high, through `--extra '{"thinking_level": "high"}'`; it does not move the price. It can ground a picture in a web or image search (`--extra '{"enable_web_search": true}'`, or `enable_image_search`). Its ratios include the strips 4:1, 1:4, 8:1 and 1:8, and its own default is auto. 1.5 credits at 1k, 2 at 2k, 3 at 4k. Sent straight to the CLI, 14 or more references are refused ("Unsupported validation rules") unless `--is_inpaint false` goes with them, because CLI 1.1.26 checks the inpaint rule against the settings sent.
 - **nano-pro**: Ultimate quality. Best text rendering and diagram generation. Use for final output when quality matters most.
 
 ## Example Refinement

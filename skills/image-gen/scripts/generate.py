@@ -159,7 +159,7 @@ MODEL_MENU = {
     # while the CLI -a set is the union of every row's ratios. Credit ranges are
     # `generate cost` quotes on 2026-10-13, cheapest to dearest across the settings
     # that move each price: gpt_image_2_5 0.25 (low/1k) to 15 (max/4k); ideogram_4_5
-    # 1 (low/2k) to 6.25 (high/2k, its text-to-image floor); flux_3_image 1 (768sq)
+    # 1 (low) to 6.25 (high), the same at 1k and 2k; flux_3_image 1 (768sq)
     # to 19 (4k); seedream_5_0_flash flat 0.5. ---
     "gpt_image_2_5": {"name": "GPT Image 2.5", "credits": (0.25, 15), "ratios": ["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "27:16", "16:27", "9:8", "8:9", "4:5", "5:4"], "resolutions": ["1k", "2k", "4k"], "ref": "optional"},
     "grok_image_2_0": {"name": "Grok 2.0", "credits": (1.25, 2.5), "ratios": ["1:1", "auto", "1:2", "2:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], "resolutions": ["1k", "2k"], "ref": "optional"},

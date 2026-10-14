@@ -13,6 +13,7 @@ replaced, nothing reaches Higgsfield.
 import asyncio
 import importlib.util
 import inspect
+import io
 import json
 import os
 import re
@@ -263,6 +264,28 @@ class ChosenSettingsReachHiggsfield(unittest.TestCase):
         cmd = self.run_main("a shot", "--video", "-m", "marketing")
         self.assertNotIn("--aspect_ratio", cmd)
 
+    def test_every_ratio_a_model_offers_gets_through_the_parser(self):
+        # The -a choices were a hand list (the eleven, auto, 1:2 and 2:1) until
+        # 2026-10-13, and are now the union of every row's ratios, so chat can ask
+        # nano2.1 for 8:1 or ideogram for 3:1. menu() cuts the page's cards to the
+        # eleven, so nothing on the page sends these and no card test sees them.
+        video = set(self.gen.VIDEO_MODEL_ALIASES.values())
+        carrier = {}
+        for job, row in self.gen.MODEL_MENU.items():
+            for ratio in row["ratios"]:
+                carrier.setdefault(ratio, job)
+        for ratio, job in sorted(carrier.items()):
+            with self.subTest(ratio=ratio, model=job):
+                argv = ["a cat", "--cost", "-m", job, "-a", ratio] + (["--video"] if job in video else [])
+                with mock.patch.object(self.gen, "estimate_cost", return_value={}) as quote, \
+                        mock.patch("sys.argv", ["generate.py", *argv]), mock.patch("builtins.print"), \
+                        mock.patch("sys.stderr", io.StringIO()):
+                    try:
+                        self.gen.main()
+                    except SystemExit as exc:
+                        self.fail(f"the parser refused -a {ratio} (exit {exc.code})")
+                self.assertEqual(quote.call_args.kwargs["aspect_ratio"], ratio)
+
 
 class PageKeepsNoListOfItsOwn(unittest.TestCase):
     """index.html: the menu comes from /api/media/menu, nothing hand-typed."""
@@ -391,6 +414,21 @@ class EveryCardReachesTheToolIntact(unittest.TestCase):
                     for label, key in (("Aspect Ratio:", "aspect_ratio"), ("Resolution:", "resolution"),
                                        ("Duration:", "duration")):
                         self.assertEqual(label in turn, key in config, label)
+
+    def test_every_resolution_on_every_card(self):
+        # test_every_card sends each card's second resolution, so a size that is
+        # never second, such as FLUX 3's 768sq (its first), never reached the
+        # server's allow-list or the tool's --resolution choices.
+        for card in gen.menu()["image"]:
+            for res in card["resolutions"]:
+                with self.subTest(model=card["id"], resolution=res):
+                    config = self.page_config("image", card)
+                    config["resolution"] = res
+                    body = {"skill": "media-gen", "config": json.loads(json.dumps(config))}
+                    self.assertTrue(asyncio.run(srv.launch_skill(_Request(body), {"_id": self.UID}))["ok"])
+                    turn = bot._media_gen_turn(json.loads(self.pending.read_text()), self.UID)
+                    self.pending.unlink()
+                    self.assertEqual(self.quote_args(turn)["resolution"], res)
 
 
 class _Request:

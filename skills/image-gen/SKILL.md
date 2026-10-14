@@ -260,7 +260,7 @@ python skills/image-gen/scripts/generate.py --balance
 | `nano2.1` | Nano Banana 2.1 | Newest Nano: `thinking_level` minimal/medium/high, web and image search grounding, region inpaint, up to 14 refs, strip ratios to 8:1 |
 | `gpt2.5` | GPT Image 2.5 | GPT Image's successor; `quality` low to max swings the price 0.25 to 15 |
 | `grok2` | Grok Image 2.0 | Newer Grok, `quality` low or medium |
-| `ideogram` | Ideogram 4.5 | Text in the image: posters, logos, signage; `magic_prompt` auto/on/off, 2k floor for text-to-image |
+| `ideogram` | Ideogram 4.5 | Text in the image: posters, logos, signage; `magic_prompt` auto/on/off; banner ratios (3:1 and the like) need 2k, and 1k needs `-a` sent with it |
 | `seedream-pro` | Seedream 5.0 Pro | High detail, adds a 1.5k tier |
 | `seedream-flash` | Seedream 5.0 Flash | Flat 0.5 cr, fast |
 | `flux3` | FLUX 3 Image | FLUX 2's successor, 768sq to 4k |

@@ -1,6 +1,6 @@
 # Seedream (ByteDance)
 
-Covers: seedream (Seedream 4.5), seedream-lite (Seedream V5 Lite)
+Covers: seedream (Seedream 4.5), seedream-lite (Seedream V5 Lite), seedream-pro (Seedream 5.0 Pro), seedream-flash (Seedream 5.0 Flash)
 
 ## Prompt Style
 
@@ -28,6 +28,8 @@ Natural language with optional negative prompts. Seedream understands conversati
 
 - **seedream**: Higher quality, more detail fidelity. Best for final output.
 - **seedream-lite**: Faster, lower cost. Good for iteration and drafts.
+- **seedream-pro**: Seedream 5.0 Pro. Resolution 1k, 1.5k or 2k, and 2k is its own default: 1.25 credits at 1k and 1.5k, 2.5 at 2k. Up to 10 reference images. Also `remove_bg` (true or false), at the same price.
+- **seedream-flash**: Seedream 5.0 Flash. A flat 0.5 credits at every size; 1k, 1.5k or 2k, 2k by default. Its own ratio default is 4:3, so send `-a` for any other shape. Up to 10 reference images.
 
 ## Example Refinement
 

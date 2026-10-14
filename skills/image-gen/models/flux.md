@@ -1,6 +1,6 @@
-# FLUX 2.0 (Black Forest Labs)
+# FLUX 2.0 and FLUX 3 (Black Forest Labs)
 
-Covers: flux (FLUX 2.0), flux-kontext (Flux Kontext)
+Covers: flux (FLUX 2.0), flux-kontext (Flux Kontext), flux3 (FLUX 3 Image)
 
 ## Prompt Style
 
@@ -15,7 +15,7 @@ Clear, descriptive prose. Natural language. Word order matters: put the most imp
 - **Priority ordering.** FLUX pays more attention to what comes first. Order: Main subject, key action, critical style, essential context, secondary details.
 - **No negative prompts.** FLUX does not support negative prompts. Describe what you want, not what you don't want. Instead of "no blur" write "sharp focus" or "crisp detail".
 - **Camera and film stocks.** "Shot on Fujifilm X-T5, 35mm f/1.4" produces more authentic results than "professional photo". Specify actual camera models and lenses.
-- **Typography.** FLUX 2.0 Flex is the strongest for readable text; `flux` runs Pro unless you pass `--extra '{"variant": "flex"}'` (pro, flex or max; the param was `model` until Higgsfield renamed it, and `model` is now refused). Enclose text in quotes. Specify font characteristics.
+- **Typography.** FLUX 2.0 Flex is the strongest for readable text; `flux` runs Pro unless you pass `--extra '{"variant": "flex"}'` (pro, flex or max; the param was `model` until Higgsfield renamed it, and `model` is now refused). `variant` is FLUX 2 only: FLUX 3 has none and refuses it ("Unknown params: variant"). Enclose text in quotes. Specify font characteristics.
 - **Hex color matching.** Supports hex codes for precise color control: "a #FF4500 orange button on a #1A1A1A dark background". Extremely useful for product and brand work.
 - **Multi-reference.** Flux Kontext maintains character consistency, product styling, and brand identity across generations using reference images.
 - **Aspect ratio.** Results improve when the aspect ratio matches the described scene. Landscapes in 16:9, portraits in 3:4, products in 1:1.
@@ -30,6 +30,7 @@ Clear, descriptive prose. Natural language. Word order matters: put the most imp
 
 - **flux**: Precise prompt adherence. Best for complex scenes where every detail matters.
 - **flux-kontext**: Context-aware. Best when working with reference images for consistency.
+- **flux3**: FLUX 3 Image, FLUX 2's successor. One model with no variant; resolution alone sets the price: 768sq 1 credit, 1k and 1.5k 2, 2k 3, 4k 19 (1k is its default). Ratios run from 21:9 to 1:2, with 7:5, 5:7 and auto (its default). The prompt advice above was written for FLUX 2.
 
 ## Example Refinement
 

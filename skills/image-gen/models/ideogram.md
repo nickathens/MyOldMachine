@@ -21,15 +21,16 @@ Two layers in one prompt. First the scene, then the exact text in quotes, then t
 - **Quote the words, name the font feeling.** The quoted string is what gets spelled; the words around it steer the typeface. "Serif, high contrast, 1920s theatre bill" lands a very different face than "rounded geometric sans, modern tech".
 - **magic_prompt.** The model can rewrite your prompt into a richer one before generating. `auto` lets it decide, `on` forces the expansion, `off` renders your words as written. Use `off` when you have already written a precise brief and want no surprises; use `on` for a one-line idea you want fleshed out. Default is `auto`.
 - **Layout language.** It understands "centred", "top third", "lower left", "two-column", "circular badge". State where the text sits rather than hoping.
-- **Ratios for the medium.** The enum runs from square to extreme banners (3:1, 1:3, 23:9, 9:23). Match the ratio to the artefact: 9:16 for a story, 3:1 for a web banner, 1:1 for a logo tile.
+- **Ratios for the medium.** The enum runs from square to extreme banners (3:1, 1:3, 23:9, 9:23). Match the ratio to the artefact: 9:16 for a story, 3:1 for a web banner, 1:1 for a logo tile. The banner ratios render at 2k only (see Controls).
 - **Negate in the sentence.** No negative-prompt field. Write the positive: "plain background, no extra text, no watermark" as part of the brief.
 
 ## Controls
 
 - **quality**: low, medium, high. High is the default and the right choice for finished text; lower tiers trade crispness of lettering for credits.
-- **very_low quality is image-to-image only.** The live validator refuses it unless you attach a source image, so it is not offered on a plain text-to-image card. Use it only with a reference.
-- **Resolution 1k or 2k.** A plain text-to-image job needs 2k (the validator refuses 1k there without a source image or a mask), so 2k is the working floor. Its text-to-image price runs about 1 credit at low to 6.25 at high.
-- **References.** Takes up to 14 reference images through the normal attach path for style or subject carry-over.
+- **very_low quality is image-to-image only.** The live validator refuses it unless you attach a source image, so it is not offered on a plain text-to-image card. Use it only with a reference; it costs 0.25 credits.
+- **Resolution 1k or 2k; the model's own default is 2k.** 1k takes the fourteen ordinary ratios: auto, 1:1, 1:2, 2:1, 2:3, 3:2, 4:5, 5:4, 9:16, 16:9, 5:8, 8:5, 3:4 and 4:3. The ten banner ratios (3:1, 1:3, 23:9, 9:23, 22:9, 9:22, 12:5, 5:12, 8:3, 3:8) need 2k. Only a mask lifts that; a source image does not. Both sizes cost the same: 1 credit at low, 2 at medium, 6.25 at high.
+- **Send a ratio with 1k.** The live rule is checked against the settings sent, so `--resolution 1k` with no `-a` is refused ("This aspect ratio requires 2K resolution without a mask"), even though the model's own ratio is auto. Pass `-a` with 1k, or leave the resolution out and get 2k at the same price.
+- **References.** The tool's `-r` attaches one reference image, for style or subject carry-over. Higgsfield sets no count limit of its own on this model (twenty references quoted without complaint on 2026-10-14); only a mask limits them, to one to four.
 
 ## What NOT to Do
 
