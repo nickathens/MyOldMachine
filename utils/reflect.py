@@ -406,7 +406,15 @@ def route_project_observations(records: list, mm: MemoryManager, user_id: int) -
                     f"keeping in model pool")
                 remaining.append(record)
             else:
-                _append_lesson_to_project(state_file, record)
+                # A malformed state file must not abort the whole nightly run;
+                # the observation falls back to the model reflection pool.
+                try:
+                    _append_lesson_to_project(state_file, record)
+                except Exception as e:
+                    log(f"  WARNING: Could not write lesson to project "
+                        f"'{project_slug}': {type(e).__name__}: {e}")
+                    remaining.append(record)
+                    continue
                 routed.append(record)
                 log(f"  Routed observation to project '{project_slug}': {record['content'][:80]}")
         else:
@@ -453,13 +461,20 @@ def _append_lesson_to_project(state_file: Path, record: dict):
     }
 
     # Same words from a different message are a second occurrence, not a repeat.
+    # Entries are not all dicts either: sessions have hand-written plain strings
+    # into this array, and a string carries no evidence, so it is compared
+    # against the content alone.
     for existing in data["lessons"]:
-        if (existing.get("date") == lesson["date"]
-                and existing.get("content") == lesson["content"]
-                and existing.get("basis", "unspecified") == lesson["basis"]
-                and existing.get("source") == lesson["source"]
-                and existing.get("quote") == lesson["quote"]):
-            return
+        if isinstance(existing, str):
+            if existing == lesson["content"]:
+                return
+        elif isinstance(existing, dict):
+            if (existing.get("date") == lesson["date"]
+                    and existing.get("content") == lesson["content"]
+                    and existing.get("basis", "unspecified") == lesson["basis"]
+                    and existing.get("source") == lesson["source"]
+                    and existing.get("quote") == lesson["quote"]):
+                return
 
     data["lessons"].append(lesson)
 

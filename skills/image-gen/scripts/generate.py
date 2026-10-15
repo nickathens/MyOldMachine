@@ -630,7 +630,11 @@ def generate_higgsfield(
     cmd.extend(_resolution_args(resolved, resolution))
 
     if ref_image:
-        cmd.extend(["--image", ref_image])
+        # nano_banana_pro (and friends) take image_references as an ARRAY: the CLI
+        # builds it from a repeated --image flag. A bare string stays single-ref.
+        for img in (ref_image if isinstance(ref_image, list) else [ref_image]):
+            if img:
+                cmd.extend(["--image", img])
 
     if extra_params:
         for k, v in extra_params.items():
@@ -1085,6 +1089,8 @@ def main():
                                         *(r for row in MODEL_MENU.values() for r in row["ratios"])}),
                         help="Aspect ratio: the union of every model's own ratios (adds 'auto', '2:1' and the new strip ratios like '4:1'/'8:1'). The model's schema refuses a ratio it does not take; default: the model's own")
     parser.add_argument("-r", "--ref-image", default=None, help="Reference image path for image-to-image or image-to-video")
+    parser.add_argument("--ref-images", nargs="+", default=None, dest="ref_images",
+                        help="Several reference image paths for image models whose image_references is an array (nano-pro accepts up to 14)")
     parser.add_argument("--resolution", default=None, choices=["768sq", "1k", "1.5k", "2k", "4k"],
                         help="Image resolution, where the model has one (default: the model's own, 1k on most; 1.5k is Seedream 5.0, 768sq is FLUX 3)")
     parser.add_argument("--backend", default="auto", choices=["higgsfield", "pollinations", "auto"], help="Backend (default: auto, tries Higgsfield then Pollinations)")
@@ -1302,7 +1308,7 @@ def main():
                                            seed=args.seed, enhance=args.enhance)
         elif args.backend == "auto":
             result = generate_higgsfield(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
-                                         resolution=args.resolution, ref_image=args.ref_image, extra_params=extra_params or None)
+                                         resolution=args.resolution, ref_image=args.ref_images or args.ref_image, extra_params=extra_params or None)
             if not result["success"]:
                 print(f"Higgsfield failed ({result['error']}). Falling back to Pollinations...", file=sys.stderr)
                 w, h = ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))
@@ -1310,7 +1316,7 @@ def main():
                                                seed=args.seed, enhance=args.enhance)
         else:
             result = generate_higgsfield(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
-                                         resolution=args.resolution, ref_image=args.ref_image, extra_params=extra_params or None)
+                                         resolution=args.resolution, ref_image=args.ref_images or args.ref_image, extra_params=extra_params or None)
 
     print(json.dumps(result, indent=2))
     if result["success"]:

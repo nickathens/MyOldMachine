@@ -499,6 +499,51 @@ survives" and "nothing outside moved" both read zero on a badly tracked comp.
 **A mask cannot audit itself.** Any check on a composite must be anchored in the
 PLATE. See section 8.
 
+### THE STANDING GATE: no aliasing, no flicker, on any matte, ever
+
+A house rule, and it is measured rather than asserted. Four numbers, all taken off
+the DELIVERED alpha and the DELIVERED picture, never off an intermediate:
+
+* **HARDNESS** the largest alpha step between two neighbouring pixels inside the
+  picture. An aliased or stair stepped edge jumps 0 to 1 in one pixel and reads
+  1.000 here. Exclude the frame cut itself: an element that runs off the bottom of
+  frame is cut by the frame, not by the matte.
+* **EDGE** the width of the partial band, partial px / perimeter px, expressed in
+  thousandths of frame width so two rasters can be compared at all.
+* **PICTURE** the steepest luminance step inside the silhouette, measured on the
+  PREMULTIPLIED picture, which is what actually lands on the plate.
+* **JITTER** two parts. Pieces that POP, meaning a component with no overlapping
+  piece in BOTH neighbouring frames, the neighbours dilated by the object's own
+  per frame travel. And the high frequency wobble of silhouette area and centroid
+  against a moving quadratic, which separates boiling from a real move.
+
+### The picture is usually the culprit, not the matte
+
+The rule above exists because of a note that read "the mask is weird, it has
+pixels". The matte was innocent and measured so: worst alpha step 0.042 against
+the approved reference's 0.039, partial band 8.35 thousandths against 7.93,
+area wobble 0.69% against 0.43%. What had failed was the PICTURE. The element sat
+1.6x brighter than the approved reference with luminance steps 1.9x steeper, so
+its own internal features, a specular strip and a lit box face, read as hard pale
+rectangles over a near black plate. Nothing about the alpha would ever have shown
+it.
+
+**So when a note says pixels, measure both, and measure against a reference the
+client has already approved on that plate.** Grading the element onto the approved
+element's own solid pixel distribution took the steepest step to 0.60x the
+reference and the complaint went with it.
+
+### Deflicker by persistence, not by size
+
+A speck is not defined by being small. It is defined by not being there a frame
+earlier and a frame later. Drop a component when it is under a size that could
+never be a real body AND has no overlapping piece in both neighbours; keep every
+component above that size unconditionally, so the rule can never eat the subject.
+Drop it WHOLE with its own soft band (dilate past the band width) so the removal
+leaves no cut edge, and protect anything within a couple of pixels of a component
+that is kept. Run it again on its own output until nothing pops, because removing
+a speck can leave the piece that touched it standing alone.
+
 ---
 
 ## 6. Premultiplied alpha, and blending in light

@@ -20,6 +20,12 @@ on each other.
 - **Open work as a branch + PR.** Use a clear prefix: `mac/...` or `linux/...`
   so the other side can see at a glance whose change it is.
 - **Review on the PR, not by force-pushing fixes onto each other's branch.**
+- **Never merge a PR yourself. Nick merges.** This holds for a PR you opened,
+  for a PR he opened and asked you to look at, and for a PR that is green with
+  every check passing and an obvious fix in it. "Open a PR" and "do what you
+  need to do" are authorisation to open and to review, never to merge. Review,
+  report what you found, and stop at the merge button. An agent merging its own
+  work removes the only place he sees the change before it is live.
 - **Leave a one-line entry in the Active work log below** when you start
   something non-trivial that touches a shared file. Remove it when merged.
 

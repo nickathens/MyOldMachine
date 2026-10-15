@@ -125,8 +125,10 @@ steps that come first.
    track, the motion model chosen by cross validation rather than assumed, the
    track certified by a second route that shares no assumption with the first,
    every occluded edge declared UNMEASURED and any rigid fill proved by hold
-   out, and every check on the result anchored in the PLATE, never in the model
-   the build used.
+   out, every check on the result anchored in the PLATE, never in the model the
+   build used, and the matte through the standing gate: no aliasing, no popping
+   pieces, and the steepest luminance step the element puts on the plate no
+   worse than a reference already approved on it.
 6. **Colour.** Gate: dE2000 consistency before and after, and every correction
    that hit a cap declared.
 7. **Supers and titles.** On the GRADED picture. Gate: safe area, AND the ink
