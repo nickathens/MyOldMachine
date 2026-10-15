@@ -108,9 +108,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-10-15] mac: Seedance 2.5 1080p re-quoted (16.0/s, 20.0 for a video_edit) across the guide, SKILL.md and the Mini App price; touches skills/image-gen/scripts/generate.py (PR #206)
-
-(Entries removed above: #205 cleared in its reviewed merge revision,
+(Entries removed above: #206 cleared in its reviewed merge revision,
+the same call as #205.
+#205 cleared in its reviewed merge revision,
 the same call as #204.
 #204 cleared in its reviewed merge revision,
 the same call as #199.
