@@ -407,5 +407,38 @@ class PointerMarks(unittest.TestCase):
                 self.assertEqual(self._unmarked_hyphenated(text, name), [])
 
 
+class PickClausesMatchTheSkills(unittest.TestCase):
+    """A Pick clause steers every turn, so it must not narrow or overstate what
+    a skill does here. Each check reads the skill itself, so it follows the
+    skill rather than this wording (Mac review of #207)."""
+
+    @staticmethod
+    def _clause(group: str, skill: str) -> str:
+        return next(skill_groups.plain(c) for c in skill_groups.DISAMBIGUATION[group]
+                    if c.startswith("{" + skill + "}"))
+
+    def test_ai_video_is_offered_where_video_is_picked(self):
+        # image-gen is MOM's only route to an AI clip (its SKILL.md title reads
+        # "Media Generation (Image + Video + 3D + Audio)"). A clause calling it
+        # an image maker, and a Film & Video line that never names it, steer a
+        # request for a new clip to the editing tools.
+        title = (SKILLS / "image-gen" / "SKILL.md").read_text(encoding="utf-8").splitlines()[0]
+        if "Video" not in title:
+            self.skipTest("image-gen no longer generates video")
+        self.assertIn("video", self._clause("Image", "image-gen"))
+        film = set().union(*map(skill_groups.refs, skill_groups.DISAMBIGUATION["Film & Video"]))
+        self.assertIn("image-gen", film)
+
+    def test_screen_recording_says_where_it_works(self):
+        # record_video.py refuses on anything but Linux, so a clause that offers
+        # recording sends a Mac's request to a script that will not run.
+        script = (SKILLS / "media" / "scripts" / "record_video.py").read_text(encoding="utf-8")
+        if 'platform.system() != "Linux"' not in script:
+            self.skipTest("record_video.py runs beyond Linux now")
+        clause = self._clause("System & Files", "media")
+        if "record" in clause:
+            self.assertIn("Linux", clause)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

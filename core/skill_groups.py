@@ -208,6 +208,7 @@ DISAMBIGUATION: dict[str, list[str]] = {
     ],
     "Film & Video": [
         "{video-editing} for cuts, resize, text and audio",
+        "{image-gen} generates a NEW clip with AI",
         "{davinci-resolve} when the result must live in a Resolve project",
         "{postproduction} for subtitles, supers, conform, mastering and delivery",
         "{colorgrade} for a whole-video colour pass",
@@ -219,7 +220,8 @@ DISAMBIGUATION: dict[str, list[str]] = {
         "{watch} to analyse an existing video",
     ],
     "Image": [
-        "{image-gen} makes a NEW image from text",
+        "{image-gen} makes NEW images, video, 3D and audio with AI, from text "
+        "or a reference",
         "{image-editing} edits or recolours REAL pixels",
         "{background-removal} cuts out a subject",
         "{upscale} raises resolution",
@@ -284,7 +286,7 @@ DISAMBIGUATION: dict[str, list[str]] = {
     ],
     "System & Files": [
         "{browser} for a persistent headless browser session",
-        "{media} for screenshots and screen recording",
+        "{media} for screenshots, and screen recording on Linux",
         "{downloads} and {torrent} to fetch files",
         "{cloud-sync} for rclone",
         "{compress} for archives",

@@ -108,9 +108,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-10-16] linux: the skill menu grouped by domain, whole lines for the 19 cut summaries, and a Pick line per group that never names a skill the user cannot see; core/skill_loader.py, core/skill_overlay.py, a new core/skill_groups.py and one new test file (PR #207)
-
-(Entries removed above: #206 cleared in its reviewed merge revision,
+(Entries removed above: #207 cleared in its reviewed merge revision,
+the same call as #206.
+#206 cleared in its reviewed merge revision,
 the same call as #205.
 #205 cleared in its reviewed merge revision,
 the same call as #204.
