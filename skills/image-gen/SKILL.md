@@ -381,11 +381,13 @@ rather than paying flagship rates to find a shot. Always confirm with `--cost` b
 | 4.5 | `seedance`, `grok-video1.5` |
 | 5.0 | `cinematic3`, `cinematic3.5`, `marketing` |
 | 5.5 | `flux-video`, no video reference |
-| 7.0 | `seedance2.5` at 720p (3.0 at 480p, 12.0 at 1080p; a `video_edit` 3.5, 7.5, 12.0) |
+| 7.0 | `seedance2.5` at 720p (3.0 at 480p, 16.0 at 1080p; a `video_edit` 3.5, 7.5, 20.0) |
 
 Re-quoted live on 2026-09-27: `seedance2.5` rose when ByteDance's 1080p promotion ended on
 17 September, `h3` halved in early September, and `wan2.6` fell to 1.5 at 720p. Re-quoted again on
 2026-10-06: `veo3.1` rose to 4.0 and `veo3-lite` to 1.5, `seedance-mini` fell to 1.0, the rest held.
+Re-quoted on 2026-10-15: `seedance2.5` at 1080p rose again, from 12.0 to 16.0, and a 1080p
+`video_edit` from 12.0 to 20.0; its 480p and 720p held.
 
 `veo3` is priced per clip, not per second: 22 flat on `veo-3-fast`, 58 on `veo-3-preview`.
 Quality steps cost extra on top: `kling` 4k is 6.0/s, `seedance` 4k is 22/s, `cinematic3` 4k is 24/s.
@@ -399,7 +401,7 @@ price, not the name of the mode, so the trap springs on a quote that names no mo
   continuation at 110 and the bill is 260: read `flux-3-video.md` first.
 - `seedance2.5` **used to** drop to 4.0/s at 720p and 2.0 at 480p on the same trigger. **That tier
   is gone [re-measured live 2026-08-19, re-verified 2026-08-23].** It charges 3.0/s at 480p, 7.0 at
-  720p and 12.0 at 1080p [re-quoted 2026-09-27], and a `video_edit` bills its own 3.5, 7.5 and 12.0.
+  720p and 16.0 at 1080p [re-quoted 2026-10-15], and a `video_edit` bills its own 3.5, 7.5 and 20.0.
   What moves its bill beyond that is which duration gets used:
   **`video_edit` ignores the `duration` you pass and charges the source clip's own length**, with a
   four second floor, so an 8 s clip is 60 at 720p whether you ask for 5 s or 20 s. Read
