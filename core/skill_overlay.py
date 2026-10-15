@@ -43,6 +43,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Optional
 
+from core import skill_groups
 from core.skill_loader import Skill, SkillManager
 from core.self_install import (
     check_resource_requirements,
@@ -378,8 +379,16 @@ def build_user_context(shared_manager: SkillManager, user_dir: Path,
         "## Available Skills (use Read tool on SKILL.md for full instructions):",
         f"Skills directory: {skills_dir}",
         f"To use a skill, read its full instructions: Read {skills_dir}/<skill-name>/SKILL.md",
+        skill_groups.HEADER_NOTE,
         "",
     ]
+    header_len = len(parts)
+    # The menu names no skill it does not list: a pointer (Pick clause, a
+    # summary's SEE_ALSO sentence) to a skill this user cannot see is dropped.
+    # A name-only skill gave up its description, and its Pick clause is one.
+    shown = {skill.name for skill, _ in visible}
+    described = {skill.name for skill, state in visible if state != "name-only"}
+    lines: dict[str, str] = {}
 
     has_resource_warnings = False
     overlay_dir = _overlay_dir(user_dir)
@@ -416,7 +425,8 @@ def build_user_context(shared_manager: SkillManager, user_dir: Path,
         # Mark forked skills so the LLM knows this is the user's own version.
         forked_marker = ""
         forked_path = overlay_dir / skill.name
-        if forked_path == skill.path and forked_path.exists():
+        forked = forked_path == skill.path and forked_path.exists()
+        if forked:
             forked_marker = "[FORKED] "
 
         if state == "name-only":
@@ -424,7 +434,9 @@ def build_user_context(shared_manager: SkillManager, user_dir: Path,
             if resource_warning:
                 line += f" | {resource_warning}"
         else:
-            line = skill.to_summary(resource_warning)
+            # A fork keeps the description its own SKILL.md gives: the user
+            # may have rewritten it, and a curated summary would hide that.
+            line = skill.to_summary(resource_warning, shown, curated=not forked)
             if forked_marker:
                 line = line.replace(
                     f"- **{skill.name}**: ",
@@ -439,11 +451,13 @@ def build_user_context(shared_manager: SkillManager, user_dir: Path,
             collapsed = " ".join(user_note.split())
             if collapsed:
                 line += f" | Your note: {collapsed[:NOTE_MAX_LEN]}"
-        parts.append(line)
+        lines[skill.name] = line
+
+    # Grouped by domain, each group led by its Pick line (core/skill_groups.py).
+    parts.extend(skill_groups.grouped(lines, described))
 
     if has_resource_warnings:
-        parts.insert(4, "**NOTE:** Some skills are marked with resource warnings. "
+        parts.insert(header_len, "**NOTE:** Some skills are marked with resource warnings. "
                      "Do NOT auto-install their dependencies without asking the user first.\n")
 
-    parts.append("")
     return "\n".join(parts)

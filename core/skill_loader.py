@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from core import skill_groups
 from core.self_install import get_skill_resource_info, check_resource_requirements
 
 logger = logging.getLogger(__name__)
@@ -61,11 +62,21 @@ class Skill:
         scripts_dir = self.path / "scripts"
         return scripts_dir if scripts_dir.exists() else None
 
-    def to_summary(self, resource_warning: str = "") -> str:
+    def to_summary(self, resource_warning: str = "", shown=None,
+                   curated: bool = True) -> str:
+        """One menu line: name, description, scripts dir, resource note.
+
+        A curated summary in skill_groups.SUMMARIES stands in for the
+        description, which the loader cuts at 200 chars, unless `curated` is
+        False: a user's fork keeps what its own SKILL.md says. `shown` is the
+        set of skills on this menu; a curated pointer to a skill outside it
+        is left out.
+        """
         scripts = self.get_scripts_dir()
         scripts_note = f" | Scripts: {scripts}" if scripts else ""
         warning_note = f" | {resource_warning}" if resource_warning else ""
-        return f"- **{self.name}**: {self.description}{scripts_note}{warning_note}"
+        desc = (skill_groups.summary(self.name, shown) if curated else None) or self.description
+        return f"- **{self.name}**: {desc}{scripts_note}{warning_note}"
 
 
 class SkillManager:
@@ -115,8 +126,12 @@ class SkillManager:
             "## Available Skills (use Read tool on SKILL.md for full instructions):",
             f"Skills directory: {self.skills_dir}",
             f"To use a skill, read its full instructions: Read {self.skills_dir}/<skill-name>/SKILL.md",
+            skill_groups.HEADER_NOTE,
             "",
         ]
+        header_len = len(parts)
+        shown = {s.name for s in enabled}
+        lines: dict[str, str] = {}
 
         # Check which skills have resource concerns on this machine
         has_resource_warnings = False
@@ -142,7 +157,7 @@ class SkillManager:
                 if note:
                     resource_warning += f" ({note})"
                 resource_warning += " — ask user before installing"
-                parts.append(skill.to_summary(resource_warning))
+                lines[skill.name] = skill.to_summary(resource_warning, shown)
             else:
                 # Include weight tag for heavy/medium skills even if resources are OK
                 info = get_skill_resource_info(skill.path)
@@ -150,13 +165,15 @@ class SkillManager:
                     tag = f"[{info['weight'].upper()}]"
                     note = info.get("install_note", "")
                     resource_note = f"{tag} {note}" if note else tag
-                    parts.append(skill.to_summary(resource_note))
+                    lines[skill.name] = skill.to_summary(resource_note, shown)
                 else:
-                    parts.append(skill.to_summary())
+                    lines[skill.name] = skill.to_summary(shown=shown)
+
+        # Grouped by domain, each group led by its Pick line (core/skill_groups.py).
+        parts.extend(skill_groups.grouped(lines))
 
         if has_resource_warnings:
-            parts.insert(4, "**NOTE:** Some skills are marked with resource warnings. "
+            parts.insert(header_len, "**NOTE:** Some skills are marked with resource warnings. "
                          "Do NOT auto-install their dependencies without asking the user first.\n")
 
-        parts.append("")
         return "\n".join(parts)
