@@ -2418,6 +2418,117 @@ def test_comp_mattes():
           f"{tri['unsolved_px']} unsolved")
 
 
+def test_comp_matte_gate():
+    section("compositing: the standing matte gate")
+    if not _comp_available():
+        return
+    import cv2
+    import numpy as np
+    import matte_gate as MG
+
+    H, W, N = 120, 200, 9
+    yy, xx = np.mgrid[0:H, 0:W]
+
+    def disc(cx, cy, r, soft=6.0):
+        d = np.hypot(xx - cx, yy - cy)
+        return np.clip((r - d) / soft, 0, 1) if soft else (d <= r).astype(float)
+
+    def clip(tmp, name, alphas, depth=8, form="rgba", paint=None):
+        """One clip of PNG frames on disk, the way a delivery arrives; returns its glob."""
+        folder = os.path.join(tmp, name)
+        os.makedirs(folder)
+        top, kind = (65535, np.uint16) if depth == 16 else (255, np.uint8)
+        for k, a in enumerate(alphas):
+            if form == "matte":
+                px = a
+            elif form == "matte_rgb":
+                px = np.dstack([a, a, a])
+            else:
+                bgr = np.full((H, W, 3), 0.2)
+                if paint:
+                    paint(bgr)
+                px = np.dstack([bgr, a])
+            cv2.imwrite(os.path.join(folder, f"f_{k:04d}.png"), (px * top).round().astype(kind))
+        return os.path.join(folder, "f_*.png")
+
+    def gate(pattern):
+        with open(os.devnull, "w") as sink:
+            old_out, sys.stdout = sys.stdout, sink
+            try:
+                return MG.measure(pattern)
+            finally:
+                sys.stdout = old_out
+
+    def refused(pattern, words):
+        try:
+            gate(pattern)
+        except SystemExit as e:
+            return words in str(e)
+        return False
+
+    moving = [disc(60 + 3 * k, 60, 30) for k in range(N)]
+    with tempfile.TemporaryDirectory() as tmp:
+        soft = gate(clip(tmp, "soft", moving))
+        check("a soft edge reads its own ramp, not an aliased step",
+              soft["hard"] < 0.25, f"{soft['hard']:.3f}")
+        check("an element that moves is not a pop",
+              soft["pops"] == 0 and soft["judged"] == N - 2,
+              f"{soft['pops']} over {soft['judged']} frames")
+        aliased = [disc(60 + 3 * k, 60, 30, soft=0) for k in range(N)]
+        hard = gate(clip(tmp, "aliased", aliased))
+        check("an aliased edge reads 1.000", hard["hard"] == 1.0, f"{hard['hard']:.3f}")
+        deep = gate(clip(tmp, "deep", aliased, depth=16))
+        check("and reads the same from 16 bit frames", deep["hard"] == 1.0, f"{deep['hard']:.3f}")
+
+        specks = [a.copy() for a in moving]
+        specks[4][100:103, 180:183] = 1.0
+        one = gate(clip(tmp, "speck", specks))
+        check("a speck there for a single frame is a pop",
+              one["pops"] == 1 and one["popped"][0][1] == 9
+              and one["popped"][0][0].endswith("f_0004.png"),
+              f"{one['pops']} pop, {one['popped'][0][1] if one['popped'] else 0} px")
+        specks[5][100:103, 180:183] = 1.0
+        held = gate(clip(tmp, "held", specks))
+        check("the same speck held a second frame is not (persistence, not size)",
+              held["pops"] == 0, f"{held['pops']} pops")
+        fast = gate(clip(tmp, "fast", [disc(20 + 18 * k, 60, 4, soft=2.0) for k in range(N)]))
+        check("a small fast element is not taken for specks: neighbours grow by its travel",
+              fast["pops"] == 0, f"{fast['pops']} pops at 18 px a frame, 8 px wide")
+
+        def strip(bgr):
+            bgr[:, 55:60] = 1.0
+
+        def band(bgr):
+            bgr[55:60, :] = 1.0
+
+        check("a plain element's PICTURE is only its own soft edge",
+              soft["pic"] < 0.1, f"{soft['pic']:.4f} per px")
+        across = gate(clip(tmp, "strip", moving, paint=strip))
+        check("a lit strip down the element reads its 0.8 step",
+              across["pic"] > 0.6, f"{across['pic']:.4f} per px")
+        down = gate(clip(tmp, "band", moving, paint=band))
+        check("and a lit band across it, which only a step DOWN can see",
+              down["pic"] > 0.6, f"{down['pic']:.4f} per px")
+
+        bare = gate(clip(tmp, "bare", moving, form="matte"))
+        check("a bare matte measures the same alpha as the RGBA clip",
+              bare["hard"] == soft["hard"] and bare["pops"] == soft["pops"],
+              f"{bare['hard']:.3f} against {soft['hard']:.3f}")
+        check("and declares PICTURE n/a rather than inventing one", bare["pic"] is None)
+        grey = gate(clip(tmp, "grey_rgb", moving, form="matte_rgb"))
+        check("a matte written as RGB is read as the matte",
+              grey["hard"] == soft["hard"] and grey["pic"] is None, f"{grey['hard']:.3f}")
+        red = os.path.join(tmp, "red")
+        os.makedirs(red)
+        picture = np.zeros((H, W, 3), np.uint8)
+        picture[..., 2] = 200
+        cv2.imwrite(os.path.join(red, "f_0000.png"), picture)
+        check("colour frames with no alpha are refused, not read as a matte",
+              refused(os.path.join(red, "f_*.png"), "no alpha"))
+        check("and a glob that matches nothing says so",
+              refused(os.path.join(tmp, "none_*.png"), "nothing matches"))
+
+
 def test_comp_outlines():
     section("compositing: outlines and occlusion")
     if not _comp_available():
@@ -2732,6 +2843,7 @@ def main(argv=None):
     test_comp_geometry()
     test_comp_pixels()
     test_comp_mattes()
+    test_comp_matte_gate()
     test_comp_outlines()
     test_comp_track()
     test_resolution_spectrum()

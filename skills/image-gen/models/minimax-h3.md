@@ -151,6 +151,56 @@ How the reference pictures align with the target video — Picture 1 (from Shot 
 
 `S.SS` is the clip duration to exactly two decimals. `N` is the index of the real final shot.
 
+**Naming, on the Higgsfield route [verified 2026-08-25]:** the Higgsfield prompt box states its own
+rule — *"Describe the video. Refer to the start and end frames as Image 1 and Image 2."* Higgsfield
+relabels every attachment as `Image N` / `Video N` / `Audio N` and its guide asks you to say what
+each one is for. MiniMax's template says `Picture N`. Write `Image N` when generating through
+Higgsfield: it is the label the user's own slots carry, and the alignment line is the only thing
+tying the anchors to those slots. Keep the structured headings anyway — Higgsfield does not expose
+Context-IR, so the text reaches the model unrewritten, and the model was trained on the form.
+
+**Identical first and last frame (seamless loop):** MiniMax's FL2VA instruction is to describe *the
+motion path that connects the two anchors*, and its docs say nothing about the degenerate case where
+the anchors are the same file. A zero-length path has three cheap solutions, not two — do not move,
+go out and come back, and **cross-dissolve back at the end**. All three must be forbidden by name,
+and the prompt must also state *why* the two anchors are the same image.
+
+**The third cheat, measured on a paid take [2026-08-25].** A 15 s desert loop, same file in both
+slots, two files of camels walking. The model walked them honestly for 14.2 s, then cross-dissolved
+the entire arrangement back to the opening one over 15 frames (14.25–14.88 s): both sets on screen
+half-transparent at the same time. Ban list that closes it: *no animal ever fades, dims, turns
+transparent, ghosts, doubles, cross-dissolves, vanishes, reappears or jumps to a new position; every
+animal is fully solid and fully visible in every single frame.* Also ban deceleration into the final
+frame — a model handed a matching last frame eases into it, which reads as a stall once per loop.
+
+**Check the task is physically possible before writing a word of it.** The model cheats because the
+brief cannot be satisfied, not because the brief is badly worded. A subject that translates across
+frame can only return if its field is *spatially periodic* along the direction of travel and the
+clip length is exactly one spatial period ÷ speed. An irregular group — four animals, a gap, a pair
+— has no period, so no walk of any length lands back on the plate, and every reroll will cheat. On
+that take the left file covered 287 px, nearly five camel widths, in 14 s.
+
+**The fix is to move the cycle out of translation and into phase.** Require a whole number of
+complete gait cycles (so every leg is in the same phase at S.SS as at 0.00) and cap net travel below
+one subject body length for the whole clip. The life then comes from articulation, rocking load,
+swaying tack, shifting shadows and ambient texture. For a long-lens shot of distant subjects this is
+also what the lens really does. Do **not** write *the column is continuously replenished, lead
+animals dropping away and new ones entering at the tail* — that was the wording used on the failed
+take, and it is a standing licence to make subjects appear and disappear anywhere in the clip.
+A subject that merely reverses will not loop.
+
+**Lock the landscape harder than feels necessary.** On the same take the *background* drifted more
+than the subjects: mid-ground dunes moved 17.4 mean grey levels first-to-last against 6.8 in the
+subject band, and the lit edge along the foreground crest slid across frame. Name the ridge lines,
+the ripples, the crest highlight, the shadow boundaries, the sun's size and flare and the cloud
+shapes individually, and call the terrain *fixed geography, not a moving texture*.
+
+**No edit can rescue a loop the model did not close.** All 65,341 frame pairs of that take were
+searched: the best join anywhere was 17× a normal frame-to-frame step, end-to-start was 32×, and an
+invisible join needs about 1×. Dissolve length does not help — a dissolve blends the end of one copy
+against the start of the next, and those are the full drift apart however long the blend is. The
+shorter-is-better rule for dissolves holds **only** on a loop that genuinely closed.
+
 What goes where:
 
 - **integrated_multimodal_description** — the body. Picture, action, shot changes, who speaks, what
