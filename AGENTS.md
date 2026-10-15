@@ -108,9 +108,9 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
-[2026-10-15] mac: the merge rule in this file, the matte gate, and three edits found uncommitted on the Mac (generate.py --ref-images, utils/reflect.py, MiniMax loop notes) (PR #205)
-
-(Entries removed above: #204 cleared in its reviewed merge revision,
+(Entries removed above: #205 cleared in its reviewed merge revision,
+the same call as #204.
+#204 cleared in its reviewed merge revision,
 the same call as #199.
 #202 merged 2026-10-14, its line cleared inside
 #203's own edit, as its merge comment left it for the next PR, the same
