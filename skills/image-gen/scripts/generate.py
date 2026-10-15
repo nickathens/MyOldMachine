@@ -562,10 +562,23 @@ def list_voices() -> list[dict]:
     return []
 
 
+def _image_args(ref_image: str | list[str] | None) -> list[str]:
+    """One --image per reference: the CLI builds image_references from the repeats.
+
+    A plain string is one reference, never walked character by character.
+    """
+    refs = ref_image if isinstance(ref_image, (list, tuple)) else [ref_image]
+    args = []
+    for img in refs:
+        if img:
+            args.extend(["--image", img])
+    return args
+
+
 def estimate_cost(model: str, prompt: str = "test", aspect_ratio: str | None = None,
                    resolution: str | None = None, duration: int | None = None,
                    kind: str = "image", extra_params: dict | None = None,
-                   ref_image: str | None = None, start_image: str | None = None,
+                   ref_image: str | list[str] | None = None, start_image: str | None = None,
                    end_image: str | None = None, video_references: str | None = None) -> dict:
     """Quote a job the way it will be created: same params, same media.
 
@@ -586,8 +599,7 @@ def estimate_cost(model: str, prompt: str = "test", aspect_ratio: str | None = N
     for k, v in REQUIRED_DEFAULTS.get(resolved, {}).items():
         if not (extra_params or {}).get(k):
             cmd.extend([f"--{k}", str(v)])
-    if ref_image:
-        cmd.extend(["--image", ref_image])
+    cmd.extend(_image_args(ref_image))
     if start_image:
         cmd.extend(["--start-image", start_image])
     if end_image:
@@ -613,7 +625,7 @@ def generate_higgsfield(
     model: str = DEFAULT_MODEL,
     aspect_ratio: str | None = None,
     resolution: str | None = None,
-    ref_image: str | None = None,
+    ref_image: str | list[str] | None = None,
     extra_params: dict | None = None,
 ) -> dict:
     resolved = MODEL_ALIASES.get(model, model)
@@ -629,12 +641,9 @@ def generate_higgsfield(
     cmd.extend(_aspect_args(resolved, aspect_ratio))
     cmd.extend(_resolution_args(resolved, resolution))
 
-    if ref_image:
-        # nano_banana_pro (and friends) take image_references as an ARRAY: the CLI
-        # builds it from a repeated --image flag. A bare string stays single-ref.
-        for img in (ref_image if isinstance(ref_image, list) else [ref_image]):
-            if img:
-                cmd.extend(["--image", img])
+    # nano_banana_pro (and friends) take image_references as an ARRAY: the CLI
+    # builds it from a repeated --image flag. A bare string stays single-ref.
+    cmd.extend(_image_args(ref_image))
 
     if extra_params:
         for k, v in extra_params.items():
@@ -1090,7 +1099,7 @@ def main():
                         help="Aspect ratio: the union of every model's own ratios (adds 'auto', '2:1' and the new strip ratios like '4:1'/'8:1'). The model's schema refuses a ratio it does not take; default: the model's own")
     parser.add_argument("-r", "--ref-image", default=None, help="Reference image path for image-to-image or image-to-video")
     parser.add_argument("--ref-images", nargs="+", default=None, dest="ref_images",
-                        help="Several reference image paths for image models whose image_references is an array (nano-pro accepts up to 14)")
+                        help="Several reference image paths for an image model whose image_references is an array (nano-pro takes up to 14). Sent after -r, and quoted with --cost exactly as sent")
     parser.add_argument("--resolution", default=None, choices=["768sq", "1k", "1.5k", "2k", "4k"],
                         help="Image resolution, where the model has one (default: the model's own, 1k on most; 1.5k is Seedream 5.0, 768sq is FLUX 3)")
     parser.add_argument("--backend", default="auto", choices=["higgsfield", "pollinations", "auto"], help="Backend (default: auto, tries Higgsfield then Pollinations)")
@@ -1127,6 +1136,17 @@ def main():
     parser.add_argument("--list-voices", action="store_true", help="List available text-to-speech voices and exit")
 
     args = parser.parse_args()
+
+    # --ref-images reaches the Higgsfield image call and nothing else. Video, 3D,
+    # audio, the workflows and Pollinations would drop the list without a word.
+    if args.ref_images and (args.video or args.threed or args.audio or args.workflow
+                            or args.backend == "pollinations"):
+        parser.error("--ref-images is for Higgsfield image models only; video, 3D, audio "
+                     "and workflows take -r, --start-image, --end-image or --video-references")
+    # -r and --ref-images go together, -r first, and the quote carries the same list
+    # the create call sends.
+    refs = [r for r in (args.ref_image, *(args.ref_images or ())) if r]
+    image_refs = refs if len(refs) > 1 else (refs[0] if refs else None)
 
     if args.balance:
         acct = get_account_status()
@@ -1267,7 +1287,8 @@ def main():
             resolution=args.resolution if kind == "image" else None,
             duration=args.duration, kind=kind, extra_params=extra_params or None,
             # the same media the create call will send
-            ref_image=args.ref_image, start_image=args.start_image,
+            ref_image=image_refs if kind == "image" else args.ref_image,
+            start_image=args.start_image,
             end_image=args.end_image, video_references=args.video_references,
         )
         print(json.dumps(cost, indent=2))
@@ -1308,7 +1329,7 @@ def main():
                                            seed=args.seed, enhance=args.enhance)
         elif args.backend == "auto":
             result = generate_higgsfield(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
-                                         resolution=args.resolution, ref_image=args.ref_images or args.ref_image, extra_params=extra_params or None)
+                                         resolution=args.resolution, ref_image=image_refs, extra_params=extra_params or None)
             if not result["success"]:
                 print(f"Higgsfield failed ({result['error']}). Falling back to Pollinations...", file=sys.stderr)
                 w, h = ASPECT_RATIOS.get(args.aspect_ratio, (768, 768))
@@ -1316,7 +1337,7 @@ def main():
                                                seed=args.seed, enhance=args.enhance)
         else:
             result = generate_higgsfield(args.prompt, args.output, model=args.model, aspect_ratio=args.aspect_ratio,
-                                         resolution=args.resolution, ref_image=args.ref_images or args.ref_image, extra_params=extra_params or None)
+                                         resolution=args.resolution, ref_image=image_refs, extra_params=extra_params or None)
 
     print(json.dumps(result, indent=2))
     if result["success"]:

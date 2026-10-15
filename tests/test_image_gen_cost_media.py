@@ -75,6 +75,70 @@ class CostCommand(unittest.TestCase):
         cmd = self.quote("waves", "--video", "-m", "veo3", "--duration", "8", "--start-image", "/tmp/a.png")
         self.assertNotIn("--duration", cmd)
 
+    # --ref-images: one --image per reference, and the quote carries the list the
+    # job sends. The flag first reached the create call only, so a quote priced a
+    # job with no references, and an -r given beside it was dropped without a word.
+
+    @staticmethod
+    def images(cmd):
+        return [cmd[i + 1] for i, t in enumerate(cmd) if t == "--image"]
+
+    def create(self, *argv):
+        """The create command the tool builds. The fake CLI returns no result, so it exits 1."""
+        with mock.patch("sys.argv", ["generate.py", *argv, "--backend", "higgsfield"]), \
+                mock.patch("builtins.print"), self.assertRaises(SystemExit):
+            self.gen.main()
+        made = [c for c in self.calls if c[:3] == ["higgsfield", "generate", "create"]]
+        self.assertEqual(len(made), 1, self.calls)
+        return made[0]
+
+    def test_several_references_reach_the_quote(self):
+        cmd = self.quote("the same bottle", "-m", "nano-pro", "--ref-images", "/tmp/a.png", "/tmp/b.png")
+        self.assertEqual(self.images(cmd), ["/tmp/a.png", "/tmp/b.png"])
+
+    def test_the_job_sends_what_the_quote_priced(self):
+        argv = ("the same bottle", "-m", "nano-pro", "--ref-images", "/tmp/a.png", "/tmp/b.png")
+        quoted = self.images(self.quote(*argv))
+        self.calls.clear()
+        self.assertEqual(self.images(self.create(*argv)), quoted)
+
+    def test_ref_image_beside_ref_images_goes_first(self):
+        argv = ("p", "-m", "nano-pro", "-r", "/tmp/a.png", "--ref-images", "/tmp/b.png", "/tmp/c.png")
+        both = ["/tmp/a.png", "/tmp/b.png", "/tmp/c.png"]
+        self.assertEqual(self.images(self.quote(*argv)), both)
+        self.calls.clear()
+        self.assertEqual(self.images(self.create(*argv)), both)
+
+    def test_a_single_path_after_ref_images_is_sent(self):
+        argv = ("p", "-m", "nano-pro", "--ref-images", "/tmp/a.png")
+        self.assertEqual(self.images(self.quote(*argv)), ["/tmp/a.png"])
+        self.calls.clear()
+        self.assertEqual(self.images(self.create(*argv)), ["/tmp/a.png"])
+
+    def test_one_reference_string_is_one_flag(self):
+        self.gen.generate_higgsfield("p", "/tmp/x.jpg", model="nano-pro", ref_image="/tmp/photo.png")
+        made = [c for c in self.calls if c[:3] == ["higgsfield", "generate", "create"]]
+        self.assertEqual(self.images(made[0]), ["/tmp/photo.png"])
+
+    def test_refused_where_nothing_would_send_it(self):
+        failed = {"success": False, "path": "", "error": "not reached"}
+        for extra in (["--video"], ["--threed"], ["--audio"], ["--workflow", "reframe"],
+                      ["--backend", "pollinations"]):
+            with self.subTest(extra=extra):
+                self.calls.clear()
+                with mock.patch("sys.argv", ["generate.py", "p", "--ref-images", "/tmp/a.png", "/tmp/b.png", *extra]), \
+                        mock.patch("sys.stderr"), mock.patch("builtins.print"), \
+                        mock.patch.object(self.gen, "generate_pollinations", return_value=failed) as poll, \
+                        mock.patch.object(self.gen, "generate_video", return_value=failed) as video, \
+                        mock.patch.object(self.gen, "generate_job", return_value=failed) as job, \
+                        mock.patch.object(self.gen, "generate_workflow", return_value=failed) as flow, \
+                        self.assertRaises(SystemExit) as stop:
+                    self.gen.main()
+                self.assertEqual(stop.exception.code, 2)
+                self.assertEqual(self.calls, [])
+                for runner in (poll, video, job, flow):
+                    runner.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

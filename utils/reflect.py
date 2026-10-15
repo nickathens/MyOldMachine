@@ -431,9 +431,14 @@ def _project_visible_to(state_file: Path, user_id: int) -> bool:
     """
     try:
         with open(state_file, encoding="utf-8") as f:
-            owner = json.load(f).get("owner") or "shared"
+            data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return False
+    # Valid JSON that is not an object has no owner to read, and the .get()
+    # used to raise outside the routing loop's guard.
+    if not isinstance(data, dict):
+        return False
+    owner = data.get("owner") or "shared"
     return owner == "shared" or str(owner) == str(user_id)
 
 

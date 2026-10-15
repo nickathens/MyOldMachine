@@ -517,6 +517,12 @@ the DELIVERED alpha and the DELIVERED picture, never off an intermediate:
   per frame travel. And the high frequency wobble of silhouette area and centroid
   against a moving quadratic, which separates boiling from a real move.
 
+`scripts/matte_gate.py` takes all four, under `~/.venvs/post/bin/python`:
+`matte_gate.py 'FRAMES_*.png' [Y0 Y1] [LABEL]`, on RGBA or bare matte frames. Run it
+on the delivery and on the approved reference the same way. The gate passes on no aliased
+edge, no pops, and a PICTURE no steeper than the reference's. A bare matte carries
+no picture, so PICTURE needs the RGBA frames.
+
 ### The picture is usually the culprit, not the matte
 
 The rule above exists because of a note that read "the mask is weird, it has

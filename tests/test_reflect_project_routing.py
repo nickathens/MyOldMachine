@@ -167,6 +167,71 @@ class ProjectRoutingTest(unittest.TestCase):
         self.assertEqual(routed, [])
         self.assertEqual(len(remaining), 1)
 
+    # Damaged but readable state files. Each of these raised out of the routing
+    # loop and ended the whole nightly run, for every user after the one whose
+    # project it was.
+
+    def _raw_state(self, slug, state):
+        pdir = self.projects / slug
+        pdir.mkdir(parents=True)
+        path = pdir / "state.json"
+        path.write_text(json.dumps(state), encoding="utf-8")
+        return path
+
+    def test_hand_written_string_lessons_do_not_stop_routing(self):
+        """Sessions have written plain strings into lessons, and a string has no .get()."""
+        self._raw_state("notes", {"slug": "notes", "owner": "shared",
+                                  "lessons": ["Measured before cutting, written by hand"]})
+
+        routed, remaining = reflect.route_project_observations([_record("notes")], self.mm, OWNER)
+
+        self.assertEqual(len(routed), 1)
+        self.assertEqual(remaining, [])
+        lessons = self._lessons("notes")
+        self.assertEqual(lessons[0], "Measured before cutting, written by hand")
+        self.assertEqual(lessons[1]["content"], "Client moved the deadline")
+
+    def test_a_string_lesson_with_the_same_words_is_not_repeated(self):
+        self._raw_state("notes", {"slug": "notes", "owner": "shared",
+                                  "lessons": ["Client moved the deadline"]})
+
+        routed, _ = reflect.route_project_observations([_record("notes")], self.mm, OWNER)
+
+        self.assertEqual(len(routed), 1)
+        self.assertEqual(self._lessons("notes"), ["Client moved the deadline"])
+
+    def test_lessons_that_are_not_a_list_keep_the_note_in_the_pool(self):
+        path = self._raw_state("odd", {"slug": "odd", "owner": "shared", "lessons": "one long note"})
+        before = path.read_bytes()
+        rec = _record("odd")
+
+        routed, remaining = reflect.route_project_observations([rec], self.mm, OWNER)
+
+        self.assertEqual(routed, [])
+        self.assertEqual(remaining, [rec], "the note must fall back to the pool, not vanish")
+        self.assertEqual(path.read_bytes(), before, "a file it cannot use is left as it was")
+
+    def test_a_state_file_that_is_not_an_object_is_not_routed_into(self):
+        path = self._raw_state("listed", ["not", "an", "object"])
+        before = path.read_bytes()
+
+        routed, remaining = reflect.route_project_observations([_record("listed")], self.mm, OWNER)
+
+        self.assertEqual(routed, [])
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_one_damaged_project_does_not_stop_the_next(self):
+        self._raw_state("listed", ["not", "an", "object"])
+        self._raw_state("odd", {"slug": "odd", "owner": "shared", "lessons": "one long note"})
+        self._project("client-films", owner="shared")
+        recs = [_record("listed"), _record("odd"), _record("client-films")]
+
+        routed, remaining = reflect.route_project_observations(recs, self.mm, OWNER)
+
+        self.assertEqual([r["project"] for r in routed], ["client-films"])
+        self.assertEqual([r["project"] for r in remaining], ["listed", "odd"])
+
 
 if __name__ == "__main__":
     unittest.main()

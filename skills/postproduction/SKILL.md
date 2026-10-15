@@ -235,7 +235,10 @@ ffmpeg and ffprobe are the only hard requirement.
   light, premultiplied and padded; `insert` is the horizon ratio; `grain`
   measures a plate's own grain by luminance band; `holdout` is the gate for any
   occluded edge; and `verify` is the point of the whole thing, five checks each
-  anchored in the PLATE.
+  anchored in the PLATE. `matte_gate.py` is the standing gate on any matte:
+  aliasing, pieces that pop for one frame, wobble, and the picture's own steepest
+  step against a reference already approved on the plate
+  (`reference/06_compositing.md`).
 - **Standards**: `standards.py show loudness`, `... const safe.action`,
   `... freshness`. Dated scaffolding with its sources named, never authority.
 - **Self test**: `python $SKILL_DIR/scripts/selftest.py` must end "0 failures"
@@ -297,8 +300,8 @@ OpenCV, SciPy and Pillow in this skill's OWN environment, never the bot's:
     python3 -m venv ~/.venvs/post
     ~/.venvs/post/bin/pip install pillow numpy opencv-python-headless scipy
 
-Three things use it: the supers legibility audit, the whole of `comp.py`, and
-the whole of `upres.py` except `routes` and `superscale`. Run them with
+Four things use it: the supers legibility audit, the whole of `comp.py`, the
+whole of `upres.py` except `routes` and `superscale`, and `matte_gate.py`. Run them with
 `~/.venvs/post/bin/python`; everything else runs with the system
 `python3`. `selftest.py` runs either way and SKIPS the compositing section with
 an explanation when it is run without that environment, so run it with

@@ -208,6 +208,7 @@ python skills/image-gen/scripts/generate.py --balance
 | `-m`, `--model` | Model name or alias (auto-selects based on --video flag) |
 | `-a`, `--aspect-ratio` | Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 5:4, 4:5, 21:9, 9:21, plus the per-model 2:1, 1:2, `auto` and the new models' strip ratios (4:1, 8:1 and the like). The accepted set is the union of every model's own ratios; the model's own schema refuses a ratio it does not take (`--cost` shows it free). Pollinations falls back to 768x768 for a ratio it has no size for. Leave it out and the model keeps its own, which is not always 1:1 or 16:9 |
 | `-r`, `--ref-image` | Reference image for image-to-image or image-to-video |
+| `--ref-images` | Several reference images for an image model that takes a list of them (nano-pro takes up to 14). Sent after `-r` when both are given, and `--cost` quotes the same list. Refused for video, 3D, audio, workflows and Pollinations, which would drop it |
 | `--video` | Generate video instead of image |
 | `--threed` | Generate a 3D mesh (default output `.glb`) |
 | `--audio` | Generate audio: music or speech (default output `.mp3`) |
