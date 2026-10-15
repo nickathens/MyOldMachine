@@ -330,10 +330,11 @@ class TestSeedance25PriceModel(unittest.TestCase):
     credit balance, so none of it cost anything.
     """
 
-    # Re-quoted live on 2026-09-27, after ByteDance's 1080p promotion ended on
-    # 17 September (August: 2.5, 6.5, 9.0). video_edit bills its own rate now.
-    RATES = {"480p": 3.0, "720p": 7.0, "1080p": 12.0}
-    EDIT_RATES = {"480p": 3.5, "720p": 7.5, "1080p": 12.0}
+    # Re-quoted live on 2026-10-15: 1080p rose to 16.0, and to 20.0 for a
+    # video_edit; 480p and 720p held. (2026-09-27, after ByteDance's 1080p
+    # promotion ended: 3.0, 7.0, 12.0 and 12.0 for an edit. August: 2.5, 6.5, 9.0.)
+    RATES = {"480p": 3.0, "720p": 7.0, "1080p": 16.0}
+    EDIT_RATES = {"480p": 3.5, "720p": 7.5, "1080p": 20.0}
     RETIRED_VREF_720, RETIRED_VREF_480 = 4.0, 2.0
 
     @classmethod
@@ -437,6 +438,70 @@ class TestSeedance25PriceModel(unittest.TestCase):
         # Measured on/off in both resolutions and all four modes: identical quote.
         self.assertIn("Turning it off costs exactly the same", self.text)
 
+    # The rates are repeated in five more places in the guide and one in the
+    # wrapper. Nothing tied them to the table, and the "find out by eye" figure
+    # still read 45 (the August 9.0 x 5) through two re-prices, so each one is
+    # recomputed from RATES here.
+
+    def test_section_one_opens_on_the_current_rates(self):
+        flat = " ".join(self.text.split())
+        m = re.search(r"Re-quoted live on \d{4}-\d{2}-\d{2}: \*\*(\d+(?:\.\d+)?)(?: credits a second)? at 480p, "
+                      r"(\d+(?:\.\d+)?) at 720p, (\d+(?:\.\d+)?) at 1080p\*\* \(5 s = (\d+), (\d+), (\d+)\), and "
+                      r"`video_edit` bills (\d+(?:\.\d+)?), (\d+(?:\.\d+)?) and (\d+(?:\.\d+)?)", flat)
+        self.assertIsNotNone(m, "section 1 no longer opens on the current rates")
+        res = ("480p", "720p", "1080p")
+        nums = [float(g) for g in m.groups()]
+        self.assertEqual(dict(zip(res, nums[0:3])), self.RATES)
+        self.assertEqual(nums[3:6], [5 * self.RATES[r] for r in res])
+        self.assertEqual(dict(zip(res, nums[6:9])), self.EDIT_RATES)
+
+    def test_the_summary_states_the_same_rates(self):
+        m = re.search(r"^480p\s+(\d+(?:\.\d+)?)\s+720p\s+(\d+(?:\.\d+)?)\s+1080p\s+(\d+(?:\.\d+)?)\s+"
+                      r"\(video_edit: (\d+(?:\.\d+)?), (\d+(?:\.\d+)?), (\d+(?:\.\d+)?)\)$", self.text, re.M)
+        self.assertIsNotNone(m, "could not find the summary's rate line")
+        res = ("480p", "720p", "1080p")
+        nums = [float(g) for g in m.groups()]
+        self.assertEqual(dict(zip(res, nums[:3])), self.RATES)
+        self.assertEqual(dict(zip(res, nums[3:])), self.EDIT_RATES)
+
+    def test_the_summary_grid_is_rate_times_duration(self):
+        table = re.search(r"^\| \| ((?:\d+ s \| )*\d+ s) \|\n\|[-| ]+\|\n((?:\|.*\|\n)+)",
+                          self.text, re.M)
+        self.assertIsNotNone(table, "could not find the summary's price grid")
+        seconds = [float(s.rstrip(" s")) for s in table.group(1).split(" | ")]
+        seen = set()
+        for row in table.group(2).strip().splitlines():
+            cells = [c.strip() for c in row.strip().strip("|").split("|")]
+            res, quoted = cells[0], [float(c) for c in cells[1:]]
+            self.assertEqual(len(quoted), len(seconds), msg=f"malformed summary row: {row!r}")
+            for s, q in zip(seconds, quoted):
+                self.assertAlmostEqual(q, self.RATES[res] * s, places=6,
+                                       msg=f"summary: {s:g} s at {res} reads {q:g}, not {self.RATES[res]}/s")
+            seen.add(res)
+        self.assertEqual(seen, set(self.RATES), "the summary grid lost a resolution")
+
+    def test_finding_out_by_eye_costs_one_five_second_roll_at_1080p(self):
+        flat = " ".join(self.text.split())
+        m = re.search(r"it costs (\d+) credits(?:, one 5 s roll at 1080p,)? to find out by eye", flat)
+        self.assertIsNotNone(m, "the native or upscaled 1080p note lost its price")
+        self.assertEqual(float(m.group(1)), 5 * self.RATES["1080p"])
+
+    def test_the_worked_edit_is_its_rate_times_the_source(self):
+        flat = " ".join(self.text.split())
+        m = re.search(r"An edit of an (\d+) second clip is (\d+) credits at 720p \((\d+(?:\.\d+)?) a second\) "
+                      r"and (\d+) at 1080p \((\d+(?:\.\d+)?) a second\)", flat)
+        self.assertIsNotNone(m, "the effective duration list lost its worked edit")
+        source, at_720, rate_720, at_1080, rate_1080 = (float(g) for g in m.groups())
+        self.assertEqual((rate_720, rate_1080), (self.EDIT_RATES["720p"], self.EDIT_RATES["1080p"]))
+        self.assertAlmostEqual(at_720, rate_720 * source)
+        self.assertAlmostEqual(at_1080, rate_1080 * source)
+
+    def test_the_menu_price_spans_the_guides_rates(self):
+        """The Mini App card prints this range, and nothing else ties it to the guide."""
+        lo, hi = generate.MODEL_MENU["seedance_2_5"]["credits"]
+        self.assertEqual(lo, min(self.RATES.values()))
+        self.assertEqual(hi, max([*self.RATES.values(), *self.EDIT_RATES.values()]))
+
 
 class TestImplicitModeTrap(unittest.TestCase):
     """`t2v` rejects references only when `--mode` is passed explicitly.
@@ -539,9 +604,25 @@ class TestTheSelectionSurfacesCarryTheCorrection(unittest.TestCase):
         note = re.search(r"`seedance2\.5` \*\*used to\*\* drop.*?`seedance-2-5\.md`",
                          self.skill, re.S)
         self.assertIsNotNone(note, "SKILL.md has no seedance correction note under the table")
-        body = note.group(0)
-        for res, rate in (("480p", 3.0), ("720p", 7.0), ("1080p", 12.0)):
-            self.assertIn(f"{rate:.1f}", body, msg=f"the note omits the {res} rate")
+        body = " ".join(note.group(0).split())
+        m = re.search(r"It charges (\d+(?:\.\d+)?)/s at 480p, (\d+(?:\.\d+)?) at 720p and (\d+(?:\.\d+)?) at 1080p .*?"
+                      r"`video_edit` bills its own (\d+(?:\.\d+)?), (\d+(?:\.\d+)?) and (\d+(?:\.\d+)?)", body)
+        self.assertIsNotNone(m, f"the note no longer states the rates: {body!r}")
+        res = ("480p", "720p", "1080p")
+        nums = [float(g) for g in m.groups()]
+        self.assertEqual(dict(zip(res, nums[:3])), TestSeedance25PriceModel.RATES)
+        self.assertEqual(dict(zip(res, nums[3:])), TestSeedance25PriceModel.EDIT_RATES)
+
+    def test_the_table_row_states_the_measured_rates(self):
+        """The row a model is picked from carries the 480p, 1080p and edit rates too."""
+        cell = rate_rows(self)[self.guide_720_rate()]
+        m = re.search(r"\((\d+(?:\.\d+)?) at 480p, (\d+(?:\.\d+)?) at 1080p; a `video_edit` (\d+(?:\.\d+)?), (\d+(?:\.\d+)?), (\d+(?:\.\d+)?)\)",
+                      cell)
+        self.assertIsNotNone(m, f"the seedance2.5 row no longer states its other rates: {cell!r}")
+        rates, edits = TestSeedance25PriceModel.RATES, TestSeedance25PriceModel.EDIT_RATES
+        nums = [float(g) for g in m.groups()]
+        self.assertEqual(nums[:2], [rates["480p"], rates["1080p"]])
+        self.assertEqual(nums[2:], [edits["480p"], edits["720p"], edits["1080p"]])
 
     def test_the_worked_example_is_the_rate_times_the_source(self):
         """The 8 s / 60 pairing, recomputed so a typo cannot survive.

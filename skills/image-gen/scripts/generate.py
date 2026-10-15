@@ -174,7 +174,8 @@ MODEL_MENU = {
     "veo3_1": {"name": "Veo 3.1", "credits": (4, 15), "ratios": ["16:9", "9:16"], "ref": "optional"},
     "veo3_1_lite": {"name": "Veo 3.1 Lite", "credits": (1.5, 1.5), "ratios": ["16:9", "9:16", "auto"], "ref": "optional"},
     "veo3": {"name": "Veo 3", "credits": (22, 58), "ratios": ["16:9", "9:16"], "ref": "required"},
-    "seedance_2_5": {"name": "Seedance 2.5", "credits": (3, 12), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
+    # seedance_2_5 spans 3.0/s (480p) to 20.0/s (a 1080p video_edit), quoted 2026-10-15.
+    "seedance_2_5": {"name": "Seedance 2.5", "credits": (3, 20), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
     "seedance_2_0": {"name": "Seedance 2.0", "credits": (1, 22), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
     "seedance_2_0_mini": {"name": "Seedance 2.0 Mini", "credits": (0.5, 1), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
     "seedance1_5": {"name": "Seedance 1.5", "credits": (0.6, 3), "ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "auto"], "ref": "optional"},
@@ -389,8 +390,9 @@ MODEL_PARAMS = {
     },
     "seedance_2_5": {
         "mode": {"options": ["t2v", "omni_reference", "video_edit", "video_extension"], "default": "t2v"},
-        # 1080p (9.0 cr/s) and bitrate_mode both went live between 2026-08-10 and
-        # 2026-08-19; the old table said neither existed. 4k is still refused.
+        # 1080p (9.0 cr/s then, 16.0 by 2026-10-15) and bitrate_mode both went live
+        # between 2026-08-10 and 2026-08-19; the old table said neither existed.
+        # 4k is still refused.
         "resolution": {"options": ["480p", "720p", "1080p"], "default": "720p"},
         "bitrate_mode": {"options": ["standard", "high"], "default": "standard"},
         "generate_audio": {"type": "bool", "default": True},

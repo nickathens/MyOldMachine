@@ -8,8 +8,9 @@ clip** or **extend one in either direction**, and it is the most expensive video
 reach. Read this before touching it.
 
 Specs, prices, parameters and validator messages measured live **2026-08-19** on CLI 1.1.23 and
-re-verified live **2026-08-23**. Six things changed under the previous revision: read section 1
-first.
+re-verified live **2026-08-23**. Prices re-quoted **2026-09-27** and again **2026-10-15** on CLI
+1.1.26, when 1080p rose to 16.0 a second. Six things changed under the previous revision: read
+section 1 first.
 
 ---
 
@@ -45,10 +46,16 @@ Do not reach for it to find a framing or test an idea. At 7.0 credits a second i
 
 ## 1. What changed, and what the old guide got wrong
 
-**Prices moved again on 2026-09-17, when ByteDance's 1080p promotion ended.** Re-quoted live on
-2026-09-27: **3.0 credits a second at 480p, 7.0 at 720p, 12.0 at 1080p** (5 s = 15, 35, 60), and
-`video_edit` bills 3.5, 7.5 and 12.0 on its source length. The August figures below (2.5, 6.5, 9.0)
-are kept as the record of that probe; the operational numbers later in this guide are the new ones.
+**1080p rose again between 2026-09-27 and 2026-10-15, to 16.0 credits a second and 20.0 for a
+`video_edit`.** Re-quoted live on 2026-10-15: **3.0 at 480p, 7.0 at 720p, 16.0 at 1080p** (5 s =
+15, 35, 80), and `video_edit` bills 3.5, 7.5 and 20.0 on its source length. 480p and 720p did not
+move, and no announcement of the change was found.
+
+**Prices moved on 2026-09-17, when ByteDance's 1080p promotion ended.** Re-quoted live on
+2026-09-27: 3.0 credits a second at 480p, 7.0 at 720p, 12.0 at 1080p (5 s = 15, 35, 60), and
+`video_edit` billed 3.5, 7.5 and 12.0 on its source length. The August figures below (2.5, 6.5, 9.0)
+are kept as the record of that probe; the operational numbers later in this guide are the current
+ones.
 
 The previous version of this guide was measured on 2026-08-07 through 2026-08-10. Nine days later
 the route has moved under it. Everything below was re-probed live on **2026-08-19** with CLI 1.1.23,
@@ -139,43 +146,44 @@ The 180 second figure is not a single take. It is repeated extension chained ont
 beta, and it is not exposed on this route. The 4K figure needs the same caution: several resellers
 sell a 1080p and a 4K tier that are upscales of the same 720p render rather than a larger native
 one. Whether the 1080p on this route is native or upscaled is not something the API will tell us,
-and it costs 45 credits to find out by eye.
+and it costs 80 credits, one 5 s roll at 1080p, to find out by eye.
 
 ### The price model
 
-One rate per resolution, applied to the effective duration. Nothing else moves the number:
-not the mode, not `generate_audio`, not `bitrate_mode`.
+One rate per resolution, applied to the effective duration, in every mode except `video_edit`,
+which bills its own rate (3.5, 7.5 and 20.0, below). Nothing else moves the number: not
+`generate_audio`, not `bitrate_mode` (both re-checked at 1080p on 2026-10-15).
 
 | Resolution | Credits per second |
 |---|---|
 | 480p | **3.0** |
 | 720p | **7.0** |
-| 1080p | **12.0** |
+| 1080p | **16.0** |
 
-Exactly linear (measured at 4, 5, 10 and 30 seconds in August; re-quoted at 5 s on 2026-09-27:
-15, 35, 60). The full grid at today's rates:
+Exactly linear (measured at 4, 5, 10 and 30 seconds in August; re-quoted on 2026-10-15 at 4, 5,
+10 and 30 s in every resolution, and at 15 s in 1080p). The full grid at today's rates:
 
 | Duration | 480p | 720p | 1080p |
 |---|---|---|---|
-| 4 s | 12 | 28 | 48 |
-| 5 s | 15 | 35 | 60 |
-| 10 s | 30 | 70 | 120 |
-| 15 s | 45 | 105 | 180 |
-| 30 s | 90 | 210 | 360 |
+| 4 s | 12 | 28 | 64 |
+| 5 s | 15 | 35 | 80 |
+| 10 s | 30 | 70 | 160 |
+| 15 s | 45 | 105 | 240 |
+| 30 s | 90 | 210 | 480 |
 
 **Effective duration is not always what you asked for.**
 
 - `t2v`, `omni_reference`, `video_extension`: you are billed for the duration you request.
 - `video_edit`: `duration` is ignored and you are billed for the **length of the source clip**,
-  with a four second floor. A 40 second edit of an 8 second clip is 60 credits at 720p (7.5 a
-  second, re-quoted 2026-09-27), and asking for 20 seconds does not change it.
+  with a four second floor. An edit of an 8 second clip is 60 credits at 720p (7.5 a second) and
+  160 at 1080p (20.0 a second), and asking for 20 seconds changes neither (re-quoted 2026-10-15).
 
 ### Where it sits in the catalogue
 
 At 7.0 a second in 720p it is the most expensive video model on this route, above `flux-video`
-at 5.5, `cinematic3` and `cinematic3.5` at 5.0, `seedance` at 4.5 and `h3` at 2.0. In 1080p at 12.0
-it is in a class of its own (re-quoted 2026-09-27). The old escape hatch, the video reference discount that dropped it to
-4.0, is gone.
+at 5.5, `cinematic3` and `cinematic3.5` at 5.0, `seedance` at 4.5 and `h3` at 2.0. In 1080p at 16.0,
+20.0 for an edit, it is in a class of its own (re-quoted 2026-10-15). The old escape hatch, the
+video reference discount that dropped it to 4.0, is gone.
 
 **480p is a genuine draft tier at 3.0 a second**, just above `happy-horse` and `seedance-mini` at
 2.5. Block the shot out there and commit once.
@@ -988,20 +996,20 @@ spoken words inside the braces.
 Name what each one defines **and what to ignore**. One job per reference. Eight subjects maximum,
 five once video or audio references are in play.
 
-### Price, per second, measured 2026-08-19
+### Price, per second, re-quoted 2026-10-15
 
 ```
-480p  3.0      720p  7.0      1080p  12.0      (video_edit: 3.5, 7.5, 12.0)
+480p  3.0      720p  7.0      1080p  16.0      (video_edit: 3.5, 7.5, 20.0)
 ```
 
-Same rate in every mode. `video_edit` ignores your duration and bills the source clip's length,
-four second floor. Everything else bills the duration you request.
+Same rate in every mode except `video_edit`, which bills its own rate on the source clip's length,
+four second floor, whatever duration you pass. Everything else bills the duration you request.
 
 | | 4 s | 5 s | 10 s | 30 s |
 |---|---|---|---|---|
 | 480p | 12 | 15 | 30 | 90 |
 | 720p | 28 | 35 | 70 | 210 |
-| 1080p | 48 | 60 | 120 | 360 |
+| 1080p | 64 | 80 | 160 | 480 |
 
 ### Limits
 
@@ -1063,6 +1071,12 @@ Everything about specs, prices, parameters, validator messages and rejections wa
 Both rounds ran to a flat credit balance, unchanged to the cent before and after, which is what
 makes the method safe: quotes and rejected submissions cost nothing. Prices are Higgsfield's and
 can move without notice, so treat every number here as a reading with a date on it, not a contract.
+
+The prices were re-quoted on **2026-09-27** and on **2026-10-15** (CLI 1.1.26, `generate cost`
+only, every mode at every resolution, edits against synthetic test clips of 2 and 8 seconds), and
+the 2026-10-15 round left the balance unchanged to the cent. The same day a 4000, a 4001 and a
+40000 character prompt, and an empty one, all quoted 15 at 480p for 5 s, so the quote path still
+never reads the prompt.
 
 Two techniques worth reusing:
 
