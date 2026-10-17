@@ -44,6 +44,28 @@ def api_url(token: str, method: str) -> str:
 # Telegram refuses a caption over 1024 characters, and with it the whole file.
 CAPTION_LIMIT = 1024
 
+# A file over 2 GB goes as a SwissTransfer download link, never down the chat
+# (the machine's rule since 2026-10-17). 2 GB as the Finder counts it, which
+# also sits at or under Telegram's own 2000 MB ceiling through a local Bot API
+# server, so a file this lets through never bounces for its size.
+# skills/swisstransfer/scripts/swisstransfer.py keeps the same number, and a
+# test holds the two equal.
+LINK_RULE_BYTES = 2_000_000_000
+
+
+def over_link_rule(path) -> bool:
+    """True, with the reason printed, for a file that must go as a link."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False  # a missing file fails at the send with its own error
+    if size <= LINK_RULE_BYTES:
+        return False
+    print(f"Not sent: {Path(path).name} is {size / 1e9:.2f} GB, over the 2 GB line. "
+          "Send it as a download link with skills/swisstransfer (read its SKILL.md).",
+          file=sys.stderr)
+    return True
+
 
 def _accepted_or_say_why(response: httpx.Response, what: str) -> bool:
     """True when Telegram accepted the call. Otherwise print its own reason.
@@ -124,6 +146,10 @@ def main():
         (args.voice, "sendVoice", "voice", "Voice"),
     ):
         if not flag:
+            continue
+        if over_link_rule(flag):
+            all_ok = False
+            print(f"{label} sent: False")
             continue
         ok = send_file(token, args.user, method, field, flag, args.caption)
         all_ok &= bool(ok)

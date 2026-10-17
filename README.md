@@ -10,7 +10,7 @@ One command installs it. After that you talk to it on your phone, and because it
 
 - **Runs on hardware most software has given up on.** A decade old laptop, a machine with 1GB of RAM paired with a small local model, a Raspberry Pi. If it boots, it can host this.
 - **14 AI providers, including free and fully local ones.** Switch between them from your phone, no reinstall, no SSH.
-- **85 skills**, from image generation and stem separation to Greek legal drafting, market backtesting, image-to-Three.js reconstruction, and DaVinci Resolve. Each lists what it needs, and the assistant installs whatever is missing the first time a skill asks for it.
+- **86 skills**, from image generation and stem separation to Greek legal drafting, market backtesting, image-to-Three.js reconstruction, and DaVinci Resolve. Each lists what it needs, and the assistant installs whatever is missing the first time a skill asks for it.
 - **A graphical Mini App inside Telegram** for the things a chat box is clumsy at.
 - **It remembers you.** A private memory per user that grows into a real model of how you work.
 - **Serves a whole household.** Many Telegram users on one machine, each with separate memory, data, and reminders.
@@ -283,7 +283,7 @@ If you have seen [OpenClaw](https://github.com/openclaw/openclaw), you might won
 | **AI providers** | 14: Claude CLI, Codex CLI, OpenAI, Gemini, Grok, Kimi, MiniMax, DeepSeek, Z.ai, OpenRouter, Ollama, Ollama Cloud, Claude API, FCC | Primarily OpenAI, configurable profiles |
 | **Free or local AI** | Ollama (unlimited, local), Ollama Cloud (free tier), OpenRouter free tier, Gemini free tier, FCC on free backends | No built in free option |
 | **Messaging** | Telegram | 22 channels (WhatsApp, Slack, Discord, Telegram, and more) |
-| **Skills** | 85 skills with auto installing dependencies and resource aware hooks | 100+ AgentSkills |
+| **Skills** | 86 skills with auto installing dependencies and resource aware hooks | 100+ AgentSkills |
 | **Target machine** | Old laptops, desktops, any Linux or macOS, runs on 1GB of RAM with small Ollama models | Modern hardware recommended |
 | **Ownership** | Independent, MIT licensed | OpenAI acquired (March 2026) |
 | **MCP support** | Client, connects to any MCP server for unlimited tool expansion | Native MCP client support |
@@ -369,6 +369,7 @@ Skills are modular packages the bot loads automatically. Each has instructions t
 | ocr | Text extraction from images and PDFs |
 | compress | ZIP and TAR archives |
 | downloads | Parallel downloads with aria2 |
+| swisstransfer | Send a file over 2 GB as a SwissTransfer download link, free and with no account |
 | summarize | Fetch and summarize URLs |
 | pdf | Merge, split, and extract text from PDFs |
 | image-editing | Resize, crop, rotate, filter, and convert formats |

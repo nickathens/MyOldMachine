@@ -89,7 +89,7 @@ GROUPS: list[tuple[str, list[str]]] = [
     ]),
     ("System & Files", [
         "browser", "media", "downloads", "torrent", "cloud-sync",
-        "compress", "vpn", "screenshot-diff",
+        "swisstransfer", "compress", "vpn", "screenshot-diff",
     ]),
 ]
 
@@ -289,6 +289,7 @@ DISAMBIGUATION: dict[str, list[str]] = {
         "{media} for screenshots, and screen recording on Linux",
         "{downloads} and {torrent} to fetch files",
         "{cloud-sync} for rclone",
+        "{swisstransfer} sends a file over 2 GB as a download link",
         "{compress} for archives",
         "{vpn} for ProtonVPN",
         "{screenshot-diff} to compare two images",
