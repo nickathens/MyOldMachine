@@ -1,0 +1,7 @@
+{
+  "check": {
+    "python3": "python3 --version"
+  },
+  "weight": "light",
+  "install_note": "Nothing to install: Python 3 standard library only (3.10 or newer). Needs one sender email address, confirmed once by a six character code SwissTransfer emails to it."
+}
