@@ -1,7 +1,7 @@
 {
   "apt": ["ffmpeg", "yt-dlp"],
   "brew": ["ffmpeg", "yt-dlp"],
-  "pip": ["openai-whisper"],
+  "pip": ["openai-whisper", "scenedetect", "librosa"],
   "check": {
     "ffmpeg": "ffmpeg -version",
     "ffprobe": "ffprobe -version",

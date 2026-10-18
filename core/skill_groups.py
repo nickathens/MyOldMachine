@@ -166,9 +166,10 @@ SUMMARIES: dict[str, str] = {
         "Magnific behind a quote. A measured workflow for choosing how to "
         "upscale, not just a button.",
     "watch":
-        "Watch any video: downloads with yt-dlp, extracts frames with ffmpeg and "
-        "pulls a timestamped transcript (captions first, Whisper as the "
-        "fallback). Use to analyse or summarise a video.",
+        "Watch any video: yt-dlp download, ffmpeg frames, a timestamped "
+        "transcript (captions first, Whisper as the fallback). Use to analyse or "
+        "summarise a video. Its breakdown measures how a reference is built: every "
+        "shot, camera move and colour, the music's tempo and hits.",
 }
 
 # ── pointer sentences split off curated summaries ───────────────────────────
@@ -217,7 +218,7 @@ DISAMBIGUATION: dict[str, list[str]] = {
         "{rive} for vector motion graphics (lower thirds, logo stings, UI "
         "screens) with alpha, or live on a web page",
         "{adobe} renders After Effects templates (macOS)",
-        "{watch} to analyse an existing video",
+        "{watch} to analyse an existing video or break down how a reference is cut",
     ],
     "Image": [
         "{image-gen} makes NEW images, video, 3D and audio with AI, from text "
