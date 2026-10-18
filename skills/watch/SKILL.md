@@ -41,13 +41,13 @@ Optional flags:
 When the question is how a video is made rather than what it says ("make it feel like this", "what is the pacing of this ad", "how does this trailer cut to the music"), run the breakdown. It measures; the watch report above describes. For a full read of a reference, run both.
 
 ```bash
-python skills/watch/scripts/breakdown.py "<url-or-file>" [--start T] [--end T] [--out-dir DIR]
+~/.venvs/watch/bin/python skills/watch/scripts/breakdown.py "<url-or-file>" [--start T] [--end T] [--out-dir DIR]
 ```
 
-It needs PySceneDetect and librosa in the bot's Python (`pip install scenedetect librosa`; PySceneDetect brings OpenCV and numpy, about 680 MB in a fresh environment, less where whisper or audio-analysis already installed some of it). It names whatever is missing, with the install line for the Python that ran it, and stops. It prints a markdown report and leaves in its working folder:
+It runs in its own Python environment, never in the bot's: the bot's `.venv` is off limits, the same rule colorgrade and postproduction follow. Set it up once with `python3 -m venv ~/.venvs/watch && ~/.venvs/watch/bin/pip install scenedetect librosa` (PySceneDetect brings OpenCV and numpy; about 520 MB on the Mac mini, 680 MB measured on Linux). Run from any other Python, it names whatever is missing and the line that sets up or uses that environment, and stops. It prints a markdown report and leaves in its working folder:
 
 - `sheet_1fps.jpg`: up to 64 frames spread across the stretch, 8 to a row. Read it first.
-- `sheet_scenes.jpg`: the middle frame of each shot (every Nth shot past 48), labelled with its time in seconds.
+- `sheet_scenes.jpg`: the middle frame of each shot (every Nth shot past 48), labelled with its time in seconds from the first frame analysed. When that frame is not at 0:00 (a range, or a picture that starts after the sound), the report's sheet line says where it is in the source.
 - `report.json`: every number, every beat time included.
 - `proxy.mp4` (the analysis copy, at most 640 px wide) and `audio.wav` (the loudness normalised mono mix the music was measured on).
 
@@ -59,7 +59,7 @@ What it measures:
 - **Music:** tempo, the beats, the mean shot length in beats, and up to three moments where it builds and hits.
 - **Flash frames:** frames much brighter than the frames on both sides of them.
 - **The picture inside the frame:** letterbox bars, and in an upright frame the app bars of a phone screen recording, are found and cropped away before anything is measured. A phone video stored on its side with a rotation flag is read, and reported, upright.
-- **The sound on the picture's clock:** a sound track that starts after the picture (screen recordings, some downloads) keeps its place, so a beat or hit at 0:12 in the report is at 0:12 in the picture.
+- **Picture and sound on one clock, the file's:** a sound track that starts after the picture (screen recordings, some downloads), or a picture that starts after the sound, keeps its place, so a cut, beat or hit at 0:12 in the report is at 0:12 in a player.
 
 `--start` and `--end` pick a section. One run reads at most 15 minutes, so a longer video needs a section. Every time in the report stays a time in the source, and a shot the range cuts into is marked and left out of the mean, shortest and longest.
 
@@ -70,7 +70,7 @@ What to trust, measured on four 1080p ads and fifteen excerpts of film scores an
 - **Cuts:** on a 54 s ad, 24 of 25 cuts were real, and a second detector (ffmpeg's scene filter) agreed on all 24; its only other hit was the single black frame that ends the spot. The 25th was a large graphic disc wiping across one shot. A shot under 15 frames, like that last black frame, merges into its neighbour, and a slow dissolve can go unseen.
 - **Camera:** of 8 shots checked by eye, 6 matched the picture (push ins, pans, still shots), 1 looked right but was hard to confirm from stills, and 1 read animated graphics as camera moves. It reads how the whole picture moves, so moving graphics (an end card of tumbling 3D discs) read as camera moves.
 - **Tempo:** on click tracks at known tempos it reads within 0.1 bpm, and on the four ads it matched essentia, a second, independent beat tracker, within 1.3%. It can still land on half, double or one and a half times the felt tempo, and music with no steady pulse still gets a number. Treat a tempo on rubato or orchestral music as unverified, and do not take a second tracker's agreement as proof: on clicks with no steady beat (random, or speeding up the whole time) the two trackers' beats lined up as well as essentia's own bar for a good read on six clips of seven and their tempos matched on two, and on one film score their tempos matched (153 bpm) while their beats lined up no better than chance. The report gives the beat count and where the beats run, and a tracker that lost the beat shows as "no reliable tempo".
-- **Picture and sound shapes:** a phone video stored on its side with a rotation flag, a vertical 1080x1920 ad, 60 fps, a sound track that starts 0.75 s or 1 s after the picture, a picture that starts 0.5 s after the sound, a sound track shorter than the picture, a 0.3 s clip, and a path with spaces and accents all read correctly. One still landscape shot whose motion sits in a band across the middle was taken for a phone screen recording and cropped to the band until the app bar search was limited to upright frames; in an upright frame that mistake is still possible, and the report's Picture line says when a crop was made.
+- **Picture and sound shapes:** a phone video stored on its side with a rotation flag, a vertical 1080x1920 ad, 60 fps, a sound track that starts 0.75 s or 1 s after the picture, a picture that starts 0.25 s or 0.5 s after the sound (until the picture's own start was read, its cuts and flashes came out early by the gap; at 0.5 s and 120 bpm that is exactly one beat, so the first check could not see it), a sound track shorter or longer than the picture, a 0.3 s clip, and a path with spaces and accents all read correctly. One still landscape shot whose motion sits in a band across the middle was taken for a phone screen recording and cropped to the band until the app bar search was limited to upright frames; in an upright frame that mistake is still possible, and the report's Picture line says when a crop was made.
 - **Flash frames:** a cut into a bright card, or a dissolve out of one, is not a flash. ReelMimic's own rule counted both, and they were its only two hits on the 54 s ad. A flash shorter than about 4 frames at 24 fps can fall between samples.
 - **Library versions:** the tests pass on OpenCV 4.13 with librosa 0.11 and on what a fresh install brings today, OpenCV 5.0 with librosa 1.0.
 - **Speed and size** (a 4 core 2015 i5 on Linux): 23 s for a 54 s 1080p ad (about two cores, 370 MB of memory); 4 min 15 s for the 15 minute maximum of 1080p footage with 297 shots (1.1 GB of memory; the working folder peaks at 614 MB while the music is measured, a float copy of the sound included, and keeps 210 MB).
@@ -154,7 +154,7 @@ If you already watched a video this session and the user asks a follow-up, **do 
 - Does not upload anything when using `--whisper local` — transcription runs entirely on this machine
 - Does not access platform accounts (no login, no cookies, no posting)
 - Does not log API keys to stdout, stderr, or output files
-- Does not persist anything outside the working dir and `~/.config/watch/.env`
+- Does not persist anything outside the working dir and `~/.config/watch/.env` (the breakdown's libraries are installed once, in `~/.venvs/watch`)
 
 Source: https://github.com/bradautomates/claude-video (MIT, by bradautomates)
 

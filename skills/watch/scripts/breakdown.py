@@ -320,6 +320,11 @@ PROXY_WIDTH = 640          # nothing in the analysis reads finer than 320 px
 OUTPUTS = ("report.json", "sheet_1fps.jpg", "sheet_scenes.jpg", "proxy.mp4",
            "proxy_full.mp4", "audio.wav", "_stereo.wav", "sound.wav")
 MARKER = ".breakdown"      # marks a folder this tool made, so it may clear OUTPUTS there
+# The breakdown's own Python environment, never the bot's: a pip install into
+# the bot's .venv is what its self protection rule forbids, and core/tools
+# blocks that line under the API providers. download.py and frames.py import
+# only the standard library, so NEEDS is all this environment has to hold.
+VENV = Path.home() / ".venvs" / "watch"
 
 
 def log(msg: str) -> None:
@@ -330,6 +335,19 @@ def missing_modules(names=None) -> list[str]:
     """The analysis libraries this Python cannot import (default: NEEDS, read
     at call time so a caller or test can swap it)."""
     return [n for n in (NEEDS if names is None else names) if importlib.util.find_spec(n) is None]
+
+
+def install_hint() -> str:
+    """Where the missing libraries go: VENV, the way colorgrade and
+    postproduction keep theirs, and how to run this script there."""
+    py, pip, script = VENV / "bin" / "python", VENV / "bin" / "pip", SCRIPT_DIR / "breakdown.py"
+    if Path(sys.prefix).resolve() == VENV.resolve():
+        return f"Install them in this environment: {pip} install scenedetect librosa"
+    if py.exists():
+        return f"Run it with the breakdown's own Python, with the same arguments: {py} {script}"
+    return (f"The breakdown runs in its own environment, never in the bot's Python: python3 -m venv {VENV} "
+            f"&& {pip} install scenedetect librosa (PySceneDetect brings OpenCV and numpy), then run it "
+            f"with the same arguments as {py} {script}")
 
 
 def claim_folder(work: Path) -> None:
@@ -368,14 +386,46 @@ def read_probe(path: str) -> dict:
     return info
 
 
+def picture_span(path: str, dur: float) -> tuple[float, float]:
+    """Where the picture starts and ends, in seconds from the start of the
+    file: the clock a player shows, and the one --start, --end and the sound
+    cut count on. OpenCV and PySceneDetect count from the first frame
+    instead, so a picture that starts after its sound read every cut and
+    flash early by the gap (0.25 s on a measured file: half a beat at 120
+    bpm, while the beats kept their place). The end is the file's length
+    when the stream gives none (Matroska keeps no length per stream)."""
+    r = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=start_time,duration:format=start_time", "-of", "json", path])
+
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    try:
+        j = json.loads(r.stdout)
+        st, fmt = j["streams"][0], j.get("format") or {}
+    except (ValueError, KeyError, IndexError, TypeError):
+        return 0.0, dur
+    vs, fs, vd = num(st.get("start_time")), num(fmt.get("start_time")), num(st.get("duration"))
+    start = max(0.0, vs - fs) if vs is not None and fs is not None else 0.0
+    end = min(dur, start + vd) if vd else dur
+    return start, end
+
+
 def make_analysis_copy(src: str, dst: str, start: float | None = None,
                        end: float | None = None, crop: dict | None = None) -> str:
     """Video only, cut to the range, cropped when a box is given, at most
     PROXY_WIDTH wide, a keyframe every 12 frames so the per shot sampling
     seeks cheaply. On a 54 s 1080p ad this gave the same 26 shots, flash
     frames and music as reading the full size file, in half the time (28 s
-    against 58 s); no shot's brightness moved by more than 0.002."""
-    vf = [f"crop={crop['w']}:{crop['h']}:{crop['x']}:{crop['y']}"] if crop else []
+    against 58 s); no shot's brightness moved by more than 0.002. The trim
+    ends the copy at the range end: -to counts the length from the first
+    frame, so a picture that starts after the range start ran on past the end
+    by the gap (142 frames for a range that holds 138)."""
+    vf = [f"trim=end={end - (start or 0.0):.3f}"] if end is not None else []
+    if crop:
+        vf.append(f"crop={crop['w']}:{crop['h']}:{crop['x']}:{crop['y']}")
     vf.append(f"scale='trunc(min({PROXY_WIDTH},iw)/2)*2':-2")
     cmd = ["ffmpeg", "-v", "error", "-y"]
     if start is not None:
@@ -391,13 +441,13 @@ def make_analysis_copy(src: str, dst: str, start: float | None = None,
 
 
 def cut_audio(src: str, dst: str, start: float | None, end: float | None) -> str:
-    """The sound of the range (or the whole file) on the picture's clock,
-    every channel kept. A sound track can start after the picture (screen
-    recordings, some downloads); written out as it is, its first sample lands
-    at 0 and every beat and hit reads early by the gap. aresample's
-    first_pts=0 fills that gap with silence instead. 32 bit float, because an
-    AAC decode runs past full scale (1.058 on a 75 s ad) and 16 bit clipped
-    it, which moved the build and hit scores."""
+    """The sound of the range (or the whole file) on the file's clock (see
+    picture_span), every channel kept. A sound track can start after the
+    picture (screen recordings, some downloads); written out as it is, its
+    first sample lands at 0 and every beat and hit reads early by the gap.
+    aresample's first_pts=0 fills that gap with silence instead. 32 bit
+    float, because an AAC decode runs past full scale (1.058 on a 75 s ad)
+    and 16 bit clipped it, which moved the build and hit scores."""
     cmd = ["ffmpeg", "-v", "error", "-y"]
     if start is not None:
         cmd += ["-ss", f"{start:.3f}"]
@@ -454,7 +504,7 @@ def refine_tempo(beats: list[float]) -> float | None:
 
 def music(path: str, info: dict, out: str, start: float | None = None,
           end: float | None = None) -> dict:
-    """ReelMimic's audio() on the sound cut to the picture's clock, with its
+    """ReelMimic's audio() on the sound cut to the file's clock, with its
     failures made readable and the tempo sharpened.
 
     audio() divides by zero when the tracker finds no beat at all (a held
@@ -480,19 +530,23 @@ def music(path: str, info: dict, out: str, start: float | None = None,
     return au
 
 
-def shift_times(rep: dict, offset: float) -> None:
+def shift_times(rep: dict, offset: float, picture: float = 0.0) -> None:
     """Move every time in the report from range time to source time, so a
-    shot at 0:12 of a range that starts at 1:00:00 reads 1:00:12."""
-    if not offset:
+    shot at 0:12 of a range that starts at 1:00:00 reads 1:00:12. The times
+    read off the picture (shots, shot details, flashes) move `picture` more:
+    they count from the analysis copy's first frame, which is that far into
+    the range when the picture starts after the sound (picture_span)."""
+    if not offset and not picture:
         return
 
-    def sh(v):
-        return None if v is None else round(v + offset, 3)
+    def sh(v, by=offset):
+        return None if v is None else round(v + by, 3)
 
-    rep["shots"] = [[sh(a), sh(b)] for a, b in rep["shots"]]
+    pic = offset + picture
+    rep["shots"] = [[sh(a, pic), sh(b, pic)] for a, b in rep["shots"]]
     for d in rep["shot_details"]:
-        d["start"], d["end"] = sh(d["start"]), sh(d["end"])
-    rep["flashes"] = [sh(t) for t in rep["flashes"]]
+        d["start"], d["end"] = sh(d["start"], pic), sh(d["end"], pic)
+    rep["flashes"] = [sh(t, pic) for t in rep["flashes"]]
     au = rep["audio"]
     if "first_beat" in au:
         au["first_beat"] = sh(au["first_beat"])
@@ -527,6 +581,11 @@ def analyse(video: str, work, start: float | None = None, end: float | None = No
             f"{e - s:.0f}s is longer than one run takes ({MAX_SECONDS // 60} minutes): every "
             "frame and all the sound are read. Pick a section with --start and --end.")
     focused = start is not None or end is not None
+    # The analysis copy starts at the first frame in the range. When the range
+    # starts before the picture does, that frame is lead seconds into the
+    # range, and every time read off the copy is early by lead.
+    pstart, pend = picture_span(video, dur)
+    lead = max(0.0, pstart - s)
 
     log("making the analysis copy")
     full = make_analysis_copy(video, str(work / "proxy_full.mp4"), start, end)
@@ -564,12 +623,15 @@ def analyse(video: str, work, start: float | None = None, end: float | None = No
 
     # A range that starts or ends inside a shot cuts that shot short; a 0.25 s
     # tail of a 3 s shot is not the edit's shortest shot. Edge shots cut by the
-    # range stay in the list, marked, and out of the pacing figures.
+    # range stay in the list, marked, and out of the pacing figures. The
+    # picture's own start and end decide it, not the file's: a range that
+    # starts in sound before the first frame, or ends in sound that outlasts
+    # the picture, cuts no shot.
     partial = []
     if focused and len(cuts) > 1:
-        if s > 0.05:
+        if s > pstart + 0.05:
             partial.append(1)
-        if e < dur - 0.05:
+        if e < pend - 0.05:
             partial.append(len(cuts))
     whole = [b - a for i, (a, b) in enumerate(cuts, 1) if i not in partial]
     lens = whole or [b - a for a, b in cuts]
@@ -589,8 +651,11 @@ def analyse(video: str, work, start: float | None = None, end: float | None = No
         pacing["mean_shot_beats"] = round(pacing["mean_shot_s"] * au["tempo_bpm"] / 60, 1)
     rep = {"made_with": MADE_WITH, "source": source or video, "video": info,
            "range": {"start": round(s, 3), "end": round(e, 3)} if focused else None,
+           # starts_at: the source time of proxy.mp4's first frame, which the
+           # contact sheet labels count from
            "analysed": {"file": "proxy.mp4", "width": vinfo["width"],
-                        "height": vinfo["height"], "duration": round(cdur, 3)},
+                        "height": vinfo["height"], "duration": round(cdur, 3),
+                        "starts_at": round(s + lead, 3)},
            "crop": crop, "shots": cuts, "partial_shots": partial, "pacing": pacing, "audio": au,
            "shot_details": details, "flashes": fl}
     if crop:
@@ -604,7 +669,7 @@ def analyse(video: str, work, start: float | None = None, end: float | None = No
             "moving_camera_shots": round(sum(1 for x in details if x["camera"]["kind"] != ["static"]) / n, 2),
             "mean_brightness": round(sum(x["look"]["brightness"] for x in details) / n, 3),
             "camera_kinds": sorted({k for x in details for k in x["camera"]["kind"]})}
-    shift_times(rep, s)
+    shift_times(rep, s, lead)
     with open(work / "report.json", "w", encoding="utf-8") as f:
         json.dump(rep, f, ensure_ascii=False, indent=1)
     return rep
@@ -662,7 +727,10 @@ def render(rep: dict, work) -> str:
     if (work / "sheet_scenes.jpg").exists():
         step = max(1, p["count"] // 48)
         which = "each shot" if step == 1 else f"every {step}th shot (up to 48 tiles)"
-        rel = " from the start of the range" if rep.get("range") else ""
+        # the labels count from the analysis copy's first frame: the range
+        # start, or later when the picture starts after the sound
+        zero = (rep.get("analysed") or {}).get("starts_at", (rep.get("range") or {}).get("start", 0.0))
+        rel = f", counted from {ts(zero)} in the source" if zero >= 0.005 else ""
         sheet_lines.append(f"  - `{work / 'sheet_scenes.jpg'}`: the middle frame of {which}, "
                            f"labelled with its time in seconds{rel}")
     if sheet_lines:
@@ -741,9 +809,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     missing = missing_modules()
     if missing:
-        raise SystemExit(f"missing Python modules: {', '.join(missing)}. Install them for this "
-                         f"Python: {sys.executable} -m pip install scenedetect librosa "
-                         "(PySceneDetect brings OpenCV and numpy)")
+        raise SystemExit(f"missing Python modules: {', '.join(missing)}. {install_hint()}")
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         raise SystemExit("ffmpeg and ffprobe are required")
     start, end = parse_time(a.start), parse_time(a.end)

@@ -5,10 +5,12 @@ Linux bot port 2026-10-18. Every fixture is made here with ffmpeg and PIL, with
 a known answer: cuts at known times, a pan and a push in of known direction, a
 flash beside a cut into a bright card, click tracks at exact tempos, a phone
 video stored on its side, a still shot with motion in a band, a sound track that
-starts after the picture. Media tests skip when ffmpeg or the analysis libraries
-(numpy, OpenCV, PySceneDetect, librosa) are absent, which is the case on CI; the
-pure tests (tempo when numpy is there, time shift, report text, the size of a
-turned video, the pin on the verbatim ReelMimic block) always run.
+starts after the picture and a picture that starts after the sound. Media tests
+skip when ffmpeg or the analysis libraries (numpy, OpenCV, PySceneDetect,
+librosa) are absent, which is the case on CI; the pure tests (tempo when numpy
+is there, time shift, report text, the size of a turned video, the picture's
+start and end, the install line, the pin on the verbatim ReelMimic block)
+always run.
 """
 from __future__ import annotations
 
@@ -177,6 +179,19 @@ class Fixtures:
         ff("-f", "lavfi", "-i", "color=c=0x303030:s=320x240:r=24:d=7", "-itsoffset", "0.75",
            "-i", str(root / "c120_6.wav"), "-map", "0:v", "-map", "1:a", "-c:v", "libx264",
            "-pix_fmt", "yuv420p", "-c:a", "aac", str(root / "late_sound.mp4"))
+        # the picture starts 0.25 s after 120 bpm clicks that run 7 s from 0: a red
+        # card then a blue one, cut at 3.0 of the picture and so at 3.25 of the
+        # source, half a beat off the clicks; the picture ends at 6.25, the sound at 7
+        clicks(str(root / "c120_7.wav"), 120, 7)
+        ff("-f", "lavfi", "-i", "color=c=0xC01010:s=320x240:r=24:d=3",
+           "-f", "lavfi", "-i", "color=c=0x1010C0:s=320x240:r=24:d=3",
+           "-filter_complex", "[0][1]concat=n=2:v=1:a=0,format=yuv420p", "-c:v", "libx264",
+           str(root / "cards.mp4"))
+        ff("-itsoffset", "0.25", "-i", str(root / "cards.mp4"), "-i", str(root / "c120_7.wav"),
+           "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", str(root / "late_picture.mp4"))
+        # the flash story with its picture 0.25 s after a silent sound track
+        ff("-itsoffset", "0.25", "-i", str(root / "flash.mp4"), "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+           "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-t", "4.5", str(root / "late_flash.mp4"))
         # sound only fixtures
         clicks(str(root / "c126.wav"), 126, 12)
         clicks(str(root / "c100.wav"), 100, 12)
@@ -273,6 +288,23 @@ class TestShiftTimes(unittest.TestCase):
         rep["audio"] = {"present": False}
         breakdown.shift_times(rep, 5.0)   # no music keys: must not raise
         self.assertEqual(rep["flashes"], [6.5])
+
+    def test_picture_times_move_by_the_lead_too(self):
+        # a picture that starts after the sound: the shots, details and flashes
+        # count from its first frame, the music from the range start
+        rep = self._rep()
+        breakdown.shift_times(rep, 100.0, 0.25)
+        self.assertEqual(rep["shots"], [[100.25, 102.25], [102.25, 103.75]])
+        self.assertEqual([(d["start"], d["end"]) for d in rep["shot_details"]], [(100.25, 102.25), (102.25, 103.75)])
+        self.assertEqual(rep["flashes"], [101.75])
+        self.assertEqual(rep["audio"]["beats"], [100.25, 100.75])
+        self.assertEqual(rep["audio"]["peak_candidates"][0]["t"], 102.0)
+        # the whole file: no range start, and the picture still moves
+        rep = self._rep()
+        breakdown.shift_times(rep, 0.0, 0.25)
+        self.assertEqual(rep["shots"], [[0.25, 2.25], [2.25, 3.75]])
+        self.assertEqual(rep["flashes"], [1.75])
+        self.assertEqual(rep["audio"], self._rep()["audio"])
 
 
 class TestTimeFormat(unittest.TestCase):
@@ -374,6 +406,22 @@ class TestRender(unittest.TestCase):
         md = breakdown.render(self._rep(), self.work)
         self.assertIn("sheet_1fps.jpg", md)
         self.assertNotIn("sheet_scenes.jpg", md)
+
+    def test_sheet_labels_say_where_they_count_from(self):
+        # the labels count from the analysis copy's first frame; on a picture
+        # that starts 0.25 s after the sound the line called them source times
+        (self.work / "sheet_scenes.jpg").write_bytes(b"x")
+
+        def sheet_line(rep):
+            return next(line for line in breakdown.render(rep, self.work).splitlines() if "sheet_scenes" in line)
+        rep = self._rep()
+        rep["analysed"] = {"starts_at": 0.25}
+        self.assertIn("labelled with its time in seconds, counted from 0:00.25 in the source", sheet_line(rep))
+        rep["analysed"] = {"starts_at": 0.0}
+        self.assertTrue(sheet_line(rep).endswith("labelled with its time in seconds"), sheet_line(rep))
+        rep = self._rep()
+        rep["range"] = {"start": 60.0, "end": 66.0}
+        self.assertIn("counted from 1:00.00 in the source", sheet_line(rep))
 
     def test_no_dashes_or_arrows_in_the_adapter_prose(self):
         # the house writing rule: no em or en dashes and no arrows in report prose
@@ -625,6 +673,38 @@ class TestAnalyse(unittest.TestCase):
         on_the_clicks(breakdown.analyse(str(self.root / "late_sound.mp4"), self.work,
                                         start=0.25, end=6.5)["audio"]["beats"])
 
+    def test_a_late_picture_keeps_its_place(self):
+        # the cut is at 3.25 of the source, half a beat off clicks on 0, 0.5, 1.0 ...
+        # OpenCV and PySceneDetect count from the first frame, so it read 3.00, on
+        # a beat. A 0.5 s gap at 120 bpm is a whole beat, which hid the slip.
+        def cut(rep):
+            self.assertEqual(len(rep["shots"]), 2, rep["shots"])
+            self.assertAlmostEqual(rep["shot_details"][1]["start"], rep["shots"][1][0], delta=0.01)
+            return rep["shots"][1][0]
+        whole = breakdown.analyse(str(self.root / "late_picture.mp4"), self.work)
+        self.assertAlmostEqual(whole["shots"][0][0], 0.25, delta=0.03)
+        self.assertAlmostEqual(cut(whole), 3.25, delta=0.05)
+        for b in whole["audio"]["beats"]:
+            self.assertLess(abs((b + 0.25) % 0.5 - 0.25), 0.08, whole["audio"]["beats"])
+        self.assertIn("counted from 0:00.25 in the source", breakdown.render(whole, self.work))
+        # a range that starts before the first frame cuts no shot there; its end
+        # at 6.0 cuts the blue card, which runs to 6.25
+        early = breakdown.analyse(str(self.root / "late_picture.mp4"), self.work, start=0.1, end=6.0)
+        self.assertAlmostEqual(cut(early), 3.25, delta=0.05)
+        self.assertEqual(early["partial_shots"], [2])
+        # and the analysis stops at the range end, not 0.15 s past it
+        self.assertAlmostEqual(early["shots"][1][1], 6.0, delta=0.03)
+        # a range that ends in the sound after the picture has ended cuts no shot
+        # there; its start at 1.0 cuts the red card, which began at 0.25
+        late = breakdown.analyse(str(self.root / "late_picture.mp4"), self.work, start=1.0, end=6.75)
+        self.assertAlmostEqual(cut(late), 3.25, delta=0.05)
+        self.assertEqual(late["partial_shots"], [1])
+
+    def test_a_late_picture_moves_its_flash_too(self):
+        rep = breakdown.analyse(str(self.root / "late_flash.mp4"), self.work)
+        self.assertEqual(len(rep["flashes"]), 1, rep["flashes"])
+        self.assertAlmostEqual(rep["flashes"][0], 2.25, delta=0.12)
+
     def test_same_input_same_answer(self):
         a = breakdown.analyse(str(self.root / "pan.mp4"), self.work)["shot_details"]
         b = breakdown.analyse(str(self.root / "pan.mp4"), self.work)["shot_details"]
@@ -689,6 +769,73 @@ class TestReadProbe(unittest.TestCase):
                 info = breakdown.read_probe("clip.mp4")
                 self.assertEqual((info["width"], info["height"]), want)
                 rotation.assert_called_once_with("clip.mp4")
+
+
+class TestPictureSpan(unittest.TestCase):
+    def _span(self, stdout: str, dur: float = 7.0):
+        with mock.patch.object(breakdown, "run", return_value=mock.Mock(stdout=stdout)):
+            return breakdown.picture_span("clip.mp4", dur)
+
+    def test_start_and_end_on_the_files_clock(self):
+        def probe_json(stream, fmt):
+            return json.dumps({"streams": [stream], "format": fmt})
+        # the picture 0.25 s after the sound, 6 s long, in a 7 s file
+        self.assertEqual(self._span(probe_json({"start_time": "0.250000", "duration": "6.000000"},
+                                               {"start_time": "0.000000"})), (0.25, 6.25))
+        # a file whose clock starts at 1.4 (MPEG-TS): the picture starts with it
+        self.assertEqual(self._span(probe_json({"start_time": "1.400000", "duration": "5.000000"},
+                                               {"start_time": "1.400000"}), 5.0), (0.0, 5.0))
+        # Matroska keeps no length per stream: the end is the file's
+        self.assertEqual(self._span(probe_json({"start_time": "0.250000"}, {"start_time": "0.000000"})),
+                         (0.25, 7.0))
+        # nothing readable: the whole file, from 0
+        self.assertEqual(self._span(""), (0.0, 7.0))
+        self.assertEqual(self._span(probe_json({"start_time": "N/A"}, {})), (0.0, 7.0))
+
+
+class TestOwnEnvironment(unittest.TestCase):
+    """The breakdown's libraries go in ~/.venvs/watch, never in the bot's .venv:
+    the script's error named sys.executable, which inside a bot turn is the
+    bot's own Python, and SKILL.md said "in the bot's Python"."""
+
+    def setUp(self):
+        self.venv = Path(tempfile.mkdtemp(prefix="bdvenv-")) / "watch"
+        self.addCleanup(shutil.rmtree, self.venv.parent, True)
+
+    def _error(self) -> str:
+        with mock.patch.object(breakdown, "NEEDS", ("no_such_module_xyz",)), \
+                mock.patch.object(breakdown, "VENV", self.venv), \
+                self.assertRaises(SystemExit) as cm:
+            breakdown.main(["clip.mp4"])
+        return str(cm.exception)
+
+    def test_missing_libraries_point_to_the_breakdowns_own_environment(self):
+        msg = self._error()
+        self.assertIn("no_such_module_xyz", msg)
+        self.assertIn(f"python3 -m venv {self.venv} && {self.venv}/bin/pip install scenedetect librosa", msg)
+        self.assertIn(f"{self.venv}/bin/python {breakdown.SCRIPT_DIR / 'breakdown.py'}", msg)
+        self.assertNotIn(f"{sys.executable} -m pip", msg)
+        # the environment is there, this Python is not it: run it there
+        (self.venv / "bin").mkdir(parents=True)
+        (self.venv / "bin" / "python").touch()
+        msg = self._error()
+        self.assertIn(f"Run it with the breakdown's own Python, with the same arguments: {self.venv}/bin/python", msg)
+        self.assertNotIn("pip install", msg)
+        # running in the environment, which lacks the library: install it there
+        with mock.patch.object(breakdown.sys, "prefix", str(self.venv)):
+            msg = self._error()
+        self.assertIn(f"Install them in this environment: {self.venv}/bin/pip install scenedetect librosa", msg)
+
+    def test_the_skill_installs_into_its_own_environment_only(self):
+        import re
+        skill = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("~/.venvs/watch/bin/python skills/watch/scripts/breakdown.py", skill)
+        pips = re.findall(r"(\S*)pip install scenedetect", skill)
+        self.assertTrue(pips)
+        self.assertEqual(set(pips), {"~/.venvs/watch/bin/"}, "a pip install that is not the breakdown's own")
+        deps = json.loads((SCRIPTS.parent / "deps.json").read_text(encoding="utf-8"))
+        self.assertFalse({"scenedetect", "librosa"} & set(deps["pip"]))
+        self.assertIn(".venvs/watch/bin/python", deps["check"]["watch-breakdown-venv"])
 
 
 class TestDefaultFolder(unittest.TestCase):

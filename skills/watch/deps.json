@@ -1,11 +1,12 @@
 {
   "apt": ["ffmpeg", "yt-dlp"],
   "brew": ["ffmpeg", "yt-dlp"],
-  "pip": ["openai-whisper", "scenedetect", "librosa"],
+  "pip": ["openai-whisper"],
   "check": {
     "ffmpeg": "ffmpeg -version",
     "ffprobe": "ffprobe -version",
-    "yt-dlp": "yt-dlp --version"
+    "yt-dlp": "yt-dlp --version",
+    "watch-breakdown-venv": "test -x $HOME/.venvs/watch/bin/python && $HOME/.venvs/watch/bin/python -c 'import scenedetect, librosa, cv2, numpy'"
   },
   "weight": "heavy",
   "min_ram_gb": 4,
