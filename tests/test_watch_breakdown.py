@@ -682,6 +682,10 @@ class TestAnalyse(unittest.TestCase):
             self.assertAlmostEqual(rep["shot_details"][1]["start"], rep["shots"][1][0], delta=0.01)
             return rep["shots"][1][0]
         whole = breakdown.analyse(str(self.root / "late_picture.mp4"), self.work)
+        # the copy is the picture alone, from its first frame: ffmpeg 6.1 and 7.0
+        # fill the 0.25 s before that frame with copies of it, and on such a copy
+        # the lead counted twice (the cut read 3.50); the Mac's ffmpeg does not
+        self.assertAlmostEqual(whole["analysed"]["duration"], 6.0, delta=0.03)
         self.assertAlmostEqual(whole["shots"][0][0], 0.25, delta=0.03)
         self.assertAlmostEqual(cut(whole), 3.25, delta=0.05)
         for b in whole["audio"]["beats"]:
@@ -690,6 +694,7 @@ class TestAnalyse(unittest.TestCase):
         # a range that starts before the first frame cuts no shot there; its end
         # at 6.0 cuts the blue card, which runs to 6.25
         early = breakdown.analyse(str(self.root / "late_picture.mp4"), self.work, start=0.1, end=6.0)
+        self.assertAlmostEqual(early["analysed"]["duration"], 5.75, delta=0.03)
         self.assertAlmostEqual(cut(early), 3.25, delta=0.05)
         self.assertEqual(early["partial_shots"], [2])
         # and the analysis stops at the range end, not 0.15 s past it
@@ -791,6 +796,30 @@ class TestPictureSpan(unittest.TestCase):
         # nothing readable: the whole file, from 0
         self.assertEqual(self._span(""), (0.0, 7.0))
         self.assertEqual(self._span(probe_json({"start_time": "N/A"}, {})), (0.0, 7.0))
+
+    def test_the_copy_is_cut_at_the_first_frame_never_past_it(self):
+        # where the analysis copy is cut, for a picture that starts at `span`; a
+        # seek rounded to the millisecond would land past a first frame at
+        # 0.0417 s (one frame at 24 fps) and drop it, so it is rounded down
+        def copy_start(span, start=None, end=None):
+            seen = {}
+
+            def stop(src, dst, start=None, end=None, crop=None):
+                seen["start"] = start
+                raise RuntimeError("copy reached")
+            with tempfile.TemporaryDirectory() as tmp, \
+                    mock.patch.object(breakdown, "read_probe",
+                                      return_value={"duration": 7.0, "width": 320, "height": 240}), \
+                    mock.patch.object(breakdown, "picture_span", return_value=span), \
+                    mock.patch.object(breakdown, "make_analysis_copy", side_effect=stop):
+                with self.assertRaisesRegex(RuntimeError, "copy reached"):
+                    breakdown.analyse("clip.mp4", tmp, start, end)
+            return seen["start"]
+        self.assertEqual(copy_start((0.0417, 6.0417)), 0.041)
+        self.assertEqual(copy_start((0.25, 6.25), 0.1, 6.0), 0.25)
+        # a picture that starts with the file, or before the range: cut as asked
+        self.assertIsNone(copy_start((0.0, 7.0)))
+        self.assertEqual(copy_start((0.25, 6.25), 1.0, 3.0), 1.0)
 
 
 class TestOwnEnvironment(unittest.TestCase):

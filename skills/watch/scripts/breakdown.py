@@ -588,7 +588,14 @@ def analyse(video: str, work, start: float | None = None, end: float | None = No
     lead = max(0.0, pstart - s)
 
     log("making the analysis copy")
-    full = make_analysis_copy(video, str(work / "proxy_full.mp4"), start, end)
+    # Cut the copy at that frame, not at the range start. ffmpeg 6.1 and 7.0
+    # fill a gap before the first frame with copies of it (6 for 0.25 s at 24
+    # fps), which put the copy back on the source's clock, and the lead then
+    # counted twice (a cut at 3.25 read 3.50); the Mac's ffmpeg leaves the gap
+    # out. Cut at the frame, there is no gap on either. Rounded down to the
+    # millisecond, so the seek never lands just past the frame and drops it.
+    cstart = int(pstart * 1000) / 1000 if lead else start
+    full = make_analysis_copy(video, str(work / "proxy_full.mp4"), cstart, end)
     finfo = read_probe(full)
     cdur, fw, fh = finfo["duration"], finfo["width"], finfo["height"]
     # ui_strip_crop looks for a phone screen recording, which is upright. On a
