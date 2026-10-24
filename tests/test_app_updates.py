@@ -90,7 +90,27 @@ class MajorJumpTests(unittest.TestCase):
         self.assertTrue(au.is_major_jump("1.0.0", ""))
 
 
-class ClaudeCodeTests(unittest.TestCase):
+class _NoReleaseAge:
+    """The release age rule off, for the tests of everything else an install
+    does. tests/test_app_updates_release_age.py holds the rule, with it on,
+    on each of these install paths."""
+
+    def setUp(self):
+        super().setUp()
+        p = patch.object(au, "MIN_RELEASE_AGE_DAYS", 0)
+        p.start()
+        self.addCleanup(p.stop)
+
+
+class ClaudeCodeTests(_NoReleaseAge, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        # `claude update`, whatever claude this machine has: how each install
+        # kind is updated is held in the release age tests.
+        p = patch.object(au, "_claude_source", return_value="")
+        p.start()
+        self.addCleanup(p.stop)
+
     @patch("utils.app_updates.shutil.which", return_value=None)
     def test_not_installed_reports_nothing(self, _which):
         self.assertEqual(au.check_claude_code(), [])
@@ -248,7 +268,7 @@ class _UserOwnedNpm:
         self.addCleanup(p.stop)
 
 
-class NpmCliTests(_UserOwnedNpm, unittest.TestCase):
+class NpmCliTests(_NoReleaseAge, _UserOwnedNpm, unittest.TestCase):
     def _outdated(self, payload: dict):
         return patch("utils.app_updates._npm_outdated_global", return_value=payload)
 
@@ -377,7 +397,7 @@ class NpmCliTests(_UserOwnedNpm, unittest.TestCase):
         self.assertEqual(au._run(["x"], merge_stderr=False), (0, "out"))
 
 
-class NpmProofTests(_UserOwnedNpm, unittest.TestCase):
+class NpmProofTests(_NoReleaseAge, _UserOwnedNpm, unittest.TestCase):
     """An update npm reports as clean can still leave a skill unable to work.
 
     Measured on the Mac, 25 Sep 2026, on a scratch copy of the global prefix:
@@ -459,7 +479,7 @@ class NpmProofTests(_UserOwnedNpm, unittest.TestCase):
         self.assertEqual([c.args[0] for c in run.call_args_list], [["npm", "install", "-g", "surge@0.44.3"]])
 
 
-class NpmRootOwnedPrefixTests(unittest.TestCase):
+class NpmRootOwnedPrefixTests(_NoReleaseAge, unittest.TestCase):
     """Linux, node from the distro or NodeSource: npm's global folder is
     /usr/lib/node_modules, owned by root, and the nightly job runs as the bot's
     user. Before 2026-09-26 every update there failed with EACCES, every night.
@@ -1164,7 +1184,7 @@ class CodexVersionTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], ["pgrep", "-x", "codex"])
 
 
-class CodexCliTests(unittest.TestCase):
+class CodexCliTests(_NoReleaseAge, unittest.TestCase):
     """check_codex_cli from the version read to the install, every step faked."""
 
     BIN = "/opt/homebrew/bin/codex"
@@ -1183,7 +1203,9 @@ class CodexCliTests(unittest.TestCase):
             calls.append(("run", cmd, (env or {}).get("HOMEBREW_NO_AUTO_UPDATE")))
             return install_rc, "brew said so"
 
-        def npm_live(spec):
+        def npm_live(spec, before=None):
+            # The release age rule is off here, so nothing is held to a date.
+            self.assertIsNone(before)
             calls.append(("npm-live", spec))
             return install_rc, "npm said so"
 
@@ -1191,7 +1213,8 @@ class CodexCliTests(unittest.TestCase):
             calls.append(("cask-trial", version))
             return trial
 
-        def npm_trial(pkg, version, proof):
+        def npm_trial(pkg, version, proof, before=None):
+            self.assertIsNone(before)
             calls.append(("npm-trial", pkg, version))
             return trial
 
