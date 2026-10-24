@@ -327,6 +327,18 @@ class ClaudeCodeAgeTests(_Clock, _Installs, unittest.TestCase):
         self.assertEqual(s.state, "failed")
         self.assertIn("2.1.310", s.detail)
 
+    def test_a_version_that_is_not_plain_never_reaches_the_command_line(self):
+        # `claude install` also reads words ("stable", "latest"), and with the
+        # rule off the channel's text would go straight to it.
+        with patch.object(au, "MIN_RELEASE_AGE_DAYS", 0), \
+                patch.object(au, "_claude_installed_version", return_value="2.1.300"), \
+                patch.object(au, "_claude_latest_version", return_value="2.1.310-rc1"), \
+                patch.object(au, "_claude_source", return_value="native"):
+            (s,) = au.check_claude_code(auto_update=True)
+        self.assertEqual(s.state, "failed")
+        self.assertIn("not a plain version", s.detail)
+        self.assertEqual(self.installs(), [])
+
     def test_report_only_and_major_moves_never_ask_npm(self):
         with patch.object(au, "npm_release_times") as view, \
                 patch.object(au, "_claude_installed_version", return_value="2.1.300"), \
