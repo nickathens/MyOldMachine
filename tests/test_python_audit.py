@@ -88,8 +88,22 @@ NO_FIX = {"id": "GHSA-nofix", "database_specific": {"severity": "HIGH"},
 WITHDRAWN = {"id": "GHSA-gone", "withdrawn": "2026-10-01T00:00:00Z",
              "affected": [{"package": {"ecosystem": "PyPI", "name": "idna"},
                            "ranges": [{"events": [{"introduced": "0"}, {"fixed": "9.0"}]}]}]}
+# A PYSEC record names the fixing commit in a GIT range beside the release
+# range: PYSEC-2021-317 for Pillow carries 9e08eb8f... and 8.3.2. Here the fix
+# is committed and no release carries it yet.
+COMMIT = "9e08eb8f78fdfd2f476e1b20b7cf38683754866b"
+GIT_FIX = {"type": "GIT", "repo": "https://github.com/python-pillow/Pillow",
+           "events": [{"introduced": "0"}, {"fixed": COMMIT}]}
+PILLOW_HIGH = {"id": "GHSA-pillow", "database_specific": {"severity": "HIGH"},
+               "affected": [{"package": {"ecosystem": "PyPI", "name": "pillow"},
+                             "ranges": [{"type": "ECOSYSTEM", "events": [
+                                 {"introduced": "0"}, {"fixed": "8.3.2"}]}]}]}
+PILLOW_UNRELEASED = {"id": "PYSEC-unreleased",
+                     "affected": [{"package": {"ecosystem": "PyPI", "name": "pillow"},
+                                   "ranges": [GIT_FIX, {"type": "ECOSYSTEM", "events": [
+                                       {"introduced": "0"}]}]}]}
 DETAILS = {v["id"]: v for v in (BROTLI_GHSA, BROTLI_PYSEC, CERTIFI, CERTIFI_PYSEC, OLD_FIX,
-                                 NO_FIX, WITHDRAWN)}
+                                 NO_FIX, WITHDRAWN, PILLOW_HIGH, PILLOW_UNRELEASED)}
 
 
 class FakeOSV:
@@ -191,6 +205,21 @@ class NameAndVersionTests(unittest.TestCase):
 
     def test_no_fix_is_empty(self):
         self.assertEqual(pa.first_fix(NO_FIX, "torch", "2.6.0+cu118"), "")
+
+    def test_a_commit_is_not_a_fix(self):
+        """A GIT range's "fixed" is a commit, and as a version it sorts above
+        every release, so it must never stand in for one."""
+        released = {"affected": [{"package": {"ecosystem": "PyPI", "name": "pillow"},
+                                  "ranges": [GIT_FIX, {"type": "ECOSYSTEM", "events": [
+                                      {"introduced": "0"}, {"fixed": "8.3.2"}]}]}]}
+        self.assertEqual(pa.first_fix(released, "Pillow", "8.3.1"), "8.3.2")
+        self.assertEqual(pa.first_fix(PILLOW_UNRELEASED, "Pillow", "8.3.1"), "")
+        # A release that fixes only an older line is no fix for this one.
+        older_line = {"affected": [{"package": {"ecosystem": "PyPI", "name": "pillow"},
+                                    "ranges": [GIT_FIX, {"type": "ECOSYSTEM", "events": [
+                                        {"introduced": "0"}, {"fixed": "7.2.1"},
+                                        {"introduced": "8.0.0"}]}]}]}
+        self.assertEqual(pa.first_fix(older_line, "Pillow", "8.3.1"), "")
 
     def test_numeric_version_order(self):
         """As text, 1.10.0 sorts BELOW 1.9.5 and the fix would vanish."""
@@ -370,6 +399,15 @@ class MessageTests(Base):
         # urllib3 in two kits with two versions: one row.
         self.assertIn("Moderate, low or unrated: urllib3.", msg)
         self.assertEqual(msg.count("urllib3"), 1)
+
+    def test_a_fix_only_committed_reads_as_no_fix_released(self):
+        """One hole fixed in 8.3.2 and one fixed only in a commit: no release
+        fixes both, and the commit must not be named as the version."""
+        self.packages["~/.venvs/post"].append(("Pillow", "8.3.1"))
+        self.table[("pillow", "8.3.1")] = ["GHSA-pillow", "PYSEC-unreleased"]
+        msg = pa.build_message(pa.audit()[0], [])
+        self.assertIn("Pillow 8.3.1 in ~/.venvs/post: 2 holes, no fix released yet", msg)
+        self.assertNotIn(COMMIT[:7], msg)
 
     def test_the_same_package_in_many_kits_is_one_row(self):
         rows = pa.by_package([

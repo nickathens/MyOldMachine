@@ -198,6 +198,13 @@ def first_fix(advisory: dict, name: str, installed: str) -> str:
         if pkg.get("ecosystem") != "PyPI" or normalize(pkg.get("name")) != normalize(name):
             continue
         for rng in affected.get("ranges") or []:
+            # A GIT range's "fixed" is the commit that fixed it, not a
+            # release. PYSEC records carry one beside the release range
+            # (PYSEC-2021-317, Pillow: commit 9e08eb8f and 8.3.2), and as a
+            # version it sorts above every release, so a fix committed but
+            # not yet released would read as "fixed in 9e08eb8f...".
+            if rng.get("type") == "GIT":
+                continue
             fixes += [e["fixed"] for e in rng.get("events") or [] if e.get("fixed")]
     # PEP 440 already orders a GPU build's label right (2.6.0+cu118 sits
     # above 2.6.0, so a fix of 2.6.0 counts as installed).

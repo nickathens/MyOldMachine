@@ -1,9 +1,9 @@
 """The 3 day release age in utils.app_updates.
 
-A poisoned release published with a stolen upload token (LiteLLM on PyPI,
-October 2026, live for under two hours) is usually found and pulled within
-hours, so a nightly job that installs on the first night is the one that
-catches it. These tests hold the rule on every path that installs: Claude
+A poisoned release (LiteLLM 1.107.0 on PyPI, October 2026, signed and
+published by its own hijacked release pipeline, live for under two hours) is
+usually found and pulled within hours, so a nightly job that installs on the
+first night is the one that catches it. These tests hold the rule on every path that installs: Claude
 Code, the Codex CLI from npm or its cask, and the skill CLIs.
 
 Everything is faked: npm's release dates, every install, the clock. Nothing

@@ -24,11 +24,13 @@ swap a 3.5 GB GUI application, but exactly the right place to move a CLI
 forward by a patch release.
 
 A release that may install still waits out its first days
-(MIN_RELEASE_AGE_DAYS). A poisoned release published with a stolen upload
-token, like LiteLLM's on PyPI in October 2026, live for under two hours, is
-usually found and pulled within hours, so an unattended job that installs on
-the first night is the one that catches it. The dates come from the npm
-registry, which publishes every release this module installs except Rive's.
+(MIN_RELEASE_AGE_DAYS). A poisoned release, like LiteLLM's 1.107.0 on PyPI in
+October 2026, which its own release pipeline signed and published once stolen
+GitHub credentials had pointed it at a fork, and which was live for under two
+hours, is usually found and pulled within hours, so an unattended job that
+installs on the first night is the one that catches it. The dates come from
+the npm registry, which publishes every release this module installs except
+Rive's.
 """
 
 from __future__ import annotations
@@ -152,7 +154,9 @@ AUTO_INSTALLABLE = frozenset({"claude-code", "codex", "npm", "rive"})
 #
 # Rive's two casks are not dated: they come from Rive's own tap and server,
 # and a build is installed only once it carries Rive's signature and Apple's
-# notarization (_signed_by_rive), which a stolen upload token cannot fake.
+# notarization (_signed_by_rive), which a stolen upload token cannot fake. A
+# hijacked release pipeline can: LiteLLM's signed the poisoned 1.107.0 itself,
+# so the signature covers a stolen token, not that case.
 # Homebrew's formulae and the distro's packages do not wait either: Homebrew
 # and the distro build those themselves.
 MIN_RELEASE_AGE_DAYS = 3
