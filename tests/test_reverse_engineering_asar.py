@@ -69,10 +69,14 @@ def build_asar(entries):
 
 
 def scratch(test, prefix):
-    """A temp folder removed when the test ends (these tests once left one in /tmp per run)."""
+    """A temp folder removed when the test ends (these tests once left one in /tmp per run).
+
+    Resolved, because extract() writes to the realpath of its output dir and the
+    callers compare against it: on macOS TMPDIR is /var/folders/... linked to
+    /private/var/folders/..., so an unresolved path would never match."""
     d = tempfile.mkdtemp(prefix=prefix)
     test.addCleanup(shutil.rmtree, d, True)
-    return d
+    return os.path.realpath(d)
 
 
 class RealArchive(unittest.TestCase):

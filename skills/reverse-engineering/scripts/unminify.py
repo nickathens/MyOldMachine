@@ -273,7 +273,11 @@ def wakaru_path():
 
 
 def _cap_memory():
-    resource.setrlimit(resource.RLIMIT_AS, (TOOL_MEMORY, TOOL_MEMORY))
+    # RLIMIT_AS is the OOM backstop on Linux. macOS does not enforce it the same
+    # way and a low address-space cap makes the child fail to exec, so cap only
+    # on Linux; the tool timeout is the backstop elsewhere.
+    if sys.platform.startswith("linux"):
+        resource.setrlimit(resource.RLIMIT_AS, (TOOL_MEMORY, TOOL_MEMORY))
 
 
 def run_wakaru(src_path, out_file=None, unpack_dir=None, level="standard"):

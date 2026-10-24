@@ -350,9 +350,11 @@ class BinTriageBounded(unittest.TestCase):
         from_bytes = bt.inspect(Path("/bin/ls").read_bytes())
         with open("/bin/ls", "rb") as fh, _mmap.mmap(fh.fileno(), 0, access=_mmap.ACCESS_READ) as mm:
             from_mmap = bt.inspect(mm, want_strings=True, limit=20)
-        self.assertEqual(from_mmap["arch"], from_bytes["arch"])
-        self.assertEqual(from_mmap["needed"], from_bytes["needed"])
-        self.assertEqual(from_mmap["entry"], from_bytes["entry"])
+        # Format-agnostic: /bin/ls is ELF on Linux and a fat Mach-O (no top-level
+        # arch/needed/entry) on macOS. The two read paths must parse identically
+        # apart from the strings the mmap call was additionally asked for.
+        self.assertEqual({k: v for k, v in from_mmap.items() if k != "strings"},
+                         {k: v for k, v in from_bytes.items() if k != "strings"})
         self.assertTrue(from_mmap["strings"])
 
     def test_a_string_across_a_4mb_seam_is_whole(self):

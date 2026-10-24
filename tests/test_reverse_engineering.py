@@ -59,6 +59,15 @@ TOOLS_IMAGE_OK = bool(shutil.which("docker")) and subprocess.run(
 HAS_REQUESTS = importlib.util.find_spec("requests") is not None
 
 
+def _cap_as_on_linux():
+    """Address-space cap for a spawned tool, Linux only. macOS does not enforce
+    RLIMIT_AS the same way and a low cap makes the child fail to exec, so leave
+    it unset there and rely on the subprocess timeout."""
+    if sys.platform.startswith("linux"):
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
+
+
 def validate(dossier):
     errors = vd.collect(dossier, SCHEMA, "$")
     vd.semantic_layer(dossier, errors)
@@ -300,7 +309,6 @@ class LibscanVerdicts(unittest.TestCase):
 
     def test_special_files_in_a_folder_are_skipped(self):
         # A pipe named a.js blocked the read for ever; a link to /dev/zero read until memory ran out.
-        import resource
         d = tempfile.mkdtemp(prefix="re-libscan-special-")
         os.mkfifo(os.path.join(d, "a.js"))
         os.symlink("/dev/zero", os.path.join(d, "b.js"))
@@ -308,7 +316,7 @@ class LibscanVerdicts(unittest.TestCase):
         try:
             p = subprocess.run([sys.executable, "-I", str(SCRIPTS / "libscan.py"), "--dir", d],
                                capture_output=True, text=True, timeout=30,
-                               preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30)))
+                               preexec_fn=_cap_as_on_linux)
         except subprocess.TimeoutExpired:
             self.fail("libscan blocked on a pipe in the folder")
         finally:
@@ -767,11 +775,10 @@ class UnminifySafety(unittest.TestCase):
         self.assertIn("FILE C", texts)
 
     def test_a_local_file_must_be_a_regular_file_under_the_cap(self):
-        import resource
         try:
             p = subprocess.run([sys.executable, "-I", str(SCRIPTS / "unminify.py"), "--file", "/dev/zero", "--no-map",
                                 "--engine", "beautify"], capture_output=True, text=True, timeout=30,
-                               preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30)))
+                               preexec_fn=_cap_as_on_linux)
         except subprocess.TimeoutExpired:
             self.fail("unminify kept reading /dev/zero")
         self.assertNotEqual(p.returncode, 0)
