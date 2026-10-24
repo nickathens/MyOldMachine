@@ -1,0 +1,123 @@
+{
+  "$comment": "Single source of truth for a reverse-engineering dossier (see SKILL.md, Verification spine, and references/verification.md). validate_dossier.py reads this file directly and interprets it -- there is no second copy of these rules to keep in sync. A dossier is ONE object per target. Every claim carries a kind that fixes its epistemic weight: ground_truth (what a tool literally shows -- must cite tool+locator+literal), hypothesis (believed meaning -- must cite the basis it rests on), behavioural (what the target DOES at runtime -- confirmed only with dynamic/sandbox evidence, otherwise a labelled guess). Schema subset interpreted by the validator: type (object|array|string|integer|boolean), properties, required, additionalProperties:false, enum, const, items, minItems, oneOf. Constraints the subset cannot express (unique ids, supports-references, confirmed-needs-dynamic-evidence) are applied as a labelled semantic layer after schema validation.",
+  "dossier_schema": {
+    "type": "object",
+    "description": "One dossier per target: the mechanism asked about, every statement split into ground truth, hypothesis, and behaviour.",
+    "properties": {
+      "target": {
+        "type": "string",
+        "description": "What was analysed: a URL, a file path, or a content hash. Be specific and resolvable."
+      },
+      "tier": {
+        "type": "string",
+        "enum": ["web", "native", "carving"],
+        "description": "Which tier of the skill produced this dossier."
+      },
+      "question": {
+        "type": "string",
+        "description": "The mechanism asked about, in one sentence. e.g. 'How does the scroll drive the reel animation?'"
+      },
+      "lawful_basis": {
+        "type": "object",
+        "description": "Why this analysis is permitted. The gate: only lawful purposes are representable here.",
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "enum": ["interoperability", "security_research", "format_understanding", "own_work", "education"],
+            "description": "interoperability = EU Software Directive 2009/24/EC art.6 conditions; security_research = finding/understanding vulnerabilities; format_understanding = reading an undocumented file/wire format; own_work = a target you own or are contracted on; education = learning how a technique works."
+          },
+          "note": {
+            "type": "string",
+            "description": "One sentence naming the concrete basis (which client, which program, which format)."
+          }
+        },
+        "required": ["purpose", "note"],
+        "additionalProperties": false
+      },
+      "analyst_date": {
+        "type": "string",
+        "description": "ISO date the analysis was performed (YYYY-MM-DD)."
+      },
+      "claims": {
+        "type": "array",
+        "minItems": 1,
+        "description": "Every statement in the dossier, each tagged by kind. A claim with no evidence of the kind its tag demands is a schema failure.",
+        "items": {
+          "oneOf": [
+            {
+              "type": "object",
+              "description": "Ground truth: what a tool literally output. Not interpreted. Cite the tool, where it came from, and the literal bytes/text.",
+              "properties": {
+                "kind": { "type": "string", "const": "ground_truth" },
+                "id": { "type": "string", "description": "Unique within the dossier. Referenced by hypotheses." },
+                "statement": { "type": "string", "description": "The literal fact, stated flatly. No 'this means'." },
+                "evidence": {
+                  "type": "object",
+                  "properties": {
+                    "tool": { "type": "string", "description": "What produced it: fingerprint.py, capture_net.py, objdump, radare2, the response headers, etc." },
+                    "locator": { "type": "string", "description": "Where exactly: a response header name, a request URL, a file offset, an instruction address, a line in a beautified file." },
+                    "literal": { "type": "string", "description": "The exact string/bytes the tool showed. Quote it; do not paraphrase." }
+                  },
+                  "required": ["tool", "locator", "literal"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["kind", "id", "statement", "evidence"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "Hypothesis: what the ground truth is believed to MEAN. Always provisional. Must name the basis it rests on.",
+              "properties": {
+                "kind": { "type": "string", "const": "hypothesis" },
+                "id": { "type": "string" },
+                "statement": { "type": "string", "description": "The interpretation. Written so it could be proven wrong." },
+                "basis": { "type": "string", "description": "Why this reading is plausible: the reasoning from the ground truth to the meaning." },
+                "supports": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "ids of the ground_truth (or behavioural) claims this rests on. Each must exist in the dossier (enforced by the validator)."
+                }
+              },
+              "required": ["kind", "id", "statement", "basis"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "description": "Behavioural: a claim about what the target DOES at runtime (phones home, writes a file, loads this on scroll). Static reading alone can never confirm one. status 'confirmed' REQUIRES dynamic/sandbox evidence (enforced by the validator); otherwise it stays 'unconfirmed' -- a labelled guess.",
+              "properties": {
+                "kind": { "type": "string", "const": "behavioural" },
+                "id": { "type": "string" },
+                "statement": { "type": "string", "description": "The runtime behaviour claimed." },
+                "status": {
+                  "type": "string",
+                  "enum": ["confirmed", "unconfirmed"],
+                  "description": "confirmed = observed in a dynamic/sandbox run (evidence required). unconfirmed = suspected from static reading only (a labelled guess)."
+                },
+                "evidence": {
+                  "type": "object",
+                  "description": "Required when status is 'confirmed'. The method must be a dynamic observation; a behavioural fact cannot be confirmed on static evidence.",
+                  "properties": {
+                    "method": {
+                      "type": "string",
+                      "enum": ["dynamic", "sandbox", "runtime"],
+                      "description": "How it was observed running: dynamic trace, sandbox execution, or live runtime capture (e.g. capture_net.py)."
+                    },
+                    "locator": { "type": "string", "description": "Where in the run: a captured request, a syscall, a traced address at a timestamp." },
+                    "literal": { "type": "string", "description": "The exact observed artifact: the request line, the syscall, the written path." }
+                  },
+                  "required": ["method", "locator", "literal"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["kind", "id", "statement", "status"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      }
+    },
+    "required": ["target", "tier", "question", "lawful_basis", "analyst_date", "claims"],
+    "additionalProperties": false
+  }
+}

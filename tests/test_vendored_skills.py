@@ -36,7 +36,8 @@ VENDORED = {
 
 # Skills ported in from the donor machine. MOM installs on strangers' machines,
 # so an operator's name, home directory or private project must not ride along.
-PORTED_SKILLS = ("img2threejs", "remotion", "google-workspace", "last30days")
+PORTED_SKILLS = ("img2threejs", "remotion", "google-workspace", "last30days",
+                 "reverse-engineering")
 DONOR_MARKERS = (
     "claude-telegram-bot",
     "/home/ntouri",

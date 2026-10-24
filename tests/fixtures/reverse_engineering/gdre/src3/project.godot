@@ -1,0 +1,7 @@
+; Engine configuration file.
+config_version=4
+
+[application]
+
+config/name="re_gdre_probe3"
+run/main_scene="res://main.tscn"

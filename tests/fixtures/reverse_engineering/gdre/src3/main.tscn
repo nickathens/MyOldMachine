@@ -1,0 +1,21 @@
+[gd_scene load_steps=3 format=2]
+
+[ext_resource path="res://main.gd" type="Script" id=1]
+
+[sub_resource type="StyleBoxFlat" id=1]
+bg_color = Color( 0.1, 0.2, 0.3, 1 )
+corner_radius_top_left = 6
+
+[node name="Main" type="Node" groups=["probe"]]
+script = ExtResource( 1 )
+speed = 4.0
+
+[node name="Label" type="Label" parent="."]
+text = "RE_SCENE_MARKER_33"
+custom_styles/normal = SubResource( 1 )
+
+[node name="Timer" type="Timer" parent="."]
+wait_time = 0.25
+one_shot = true
+
+[connection signal="timeout" from="Timer" to="." method="_on_timer_timeout"]

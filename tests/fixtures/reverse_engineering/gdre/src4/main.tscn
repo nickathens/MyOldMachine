@@ -1,0 +1,26 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://main.gd" id="1"]
+[ext_resource type="StyleBox" path="res://style.tres" id="2"]
+
+[sub_resource type="StyleBoxFlat" id="box"]
+bg_color = Color(0.1, 0.2, 0.3, 1)
+corner_radius_top_left = 6
+
+[node name="Main" type="Node" groups=["probe"]]
+script = ExtResource("1")
+speed = 4.0
+
+[node name="Label" type="Label" parent="."]
+unique_name_in_owner = true
+text = "RE_SCENE_MARKER_55"
+theme_override_styles/normal = SubResource("box")
+
+[node name="Panel" type="Panel" parent="."]
+theme_override_styles/panel = ExtResource("2")
+
+[node name="Timer" type="Timer" parent="."]
+wait_time = 0.25
+one_shot = true
+
+[connection signal="timeout" from="Timer" to="." method="_on_timer_timeout"]
