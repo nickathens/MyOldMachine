@@ -5136,6 +5136,46 @@ def _setup_weekly_model_report_job(scheduler):
     logger.info("Scheduled weekly model report job (Mondays 08:05)")
 
 
+def _setup_weekly_python_audit_job(scheduler):
+    """Set up the weekly Python security check if not already present.
+
+    utils/python_audit.py checks the packages in every Python tool kit
+    against OSV and tells the admin once about each new known hole. Nothing
+    else ever moves the packages inside a kit, so without it a kit keeps a
+    broken version for good. Registered unconditionally because the script
+    reads its own switch ("python_audit" in data/maintenance.json) when it
+    runs. Mondays 08:30, after the weekend's nightly runs.
+    """
+    from core.scheduler import _get_all_meta
+
+    for meta in _get_all_meta():
+        if meta.get("name") == "weekly-python-audit":
+            logger.info("Weekly Python check job already scheduled")
+            return
+
+    venv_python = str(BOT_DIR / ".venv" / "bin" / "python")
+    audit_script = str(BOT_DIR / "utils" / "python_audit.py")
+    admin_id = get_primary_admin_id() or 0
+
+    # Next Monday 08:30 (today if that is still in the future).
+    run_at = datetime.now().replace(hour=8, minute=30, second=0, microsecond=0)
+    run_at += timedelta(days=(0 - run_at.weekday()) % 7)
+    if run_at <= datetime.now():
+        run_at += timedelta(days=7)
+
+    scheduler.add_job(
+        user_id=admin_id,
+        message="Weekly Python security check",
+        run_at=run_at,
+        repeat="weekly",
+        job_type="command",
+        name="weekly-python-audit",
+        notify=False,
+        command=f"{shlex.quote(venv_python)} {shlex.quote(audit_script)}",
+    )
+    logger.info("Scheduled weekly Python check job (Mondays 08:30)")
+
+
 def _setup_maintenance_jobs(scheduler):
     """Set up nightly maintenance jobs (system update, cleanup, backup) if not already present."""
     from core.scheduler import _get_all_meta
@@ -6539,6 +6579,9 @@ def main():
 
         # Schedule the weekly person-model change report if not already present
         _setup_weekly_model_report_job(scheduler)
+
+        # Schedule the weekly Python security check if not already present
+        _setup_weekly_python_audit_job(scheduler)
 
         # Schedule maintenance jobs (system update, cleanup, backup) if not already present
         _setup_maintenance_jobs(scheduler)
