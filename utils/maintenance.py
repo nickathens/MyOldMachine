@@ -71,6 +71,13 @@ DEFAULT_CONFIG = {
     # kit and undone if it does not start; the 04:45 report says what changed.
     # See utils/venv_repair.py.
     "venv_repair": True,
+    # Mondays 08:30, check the packages in the bot's .venv and in every tool
+    # kit the repair above looks at against OSV, the open database of known
+    # security holes, and tell the admin once about each new one with the
+    # version that fixes it. Installs nothing. Sends each package's name and
+    # version to OSV, never a package built from a local folder or a git
+    # checkout. See utils/python_audit.py.
+    "python_audit": True,
     # Close idle, orphaned heavyweight helper apps (LibreOffice, GIMP, Inkscape,
     # Blender) that skills spawn headless and leave resident. On by default: the
     # process reaper only touches an app that is BOTH older than the window below

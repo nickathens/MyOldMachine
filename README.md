@@ -630,6 +630,8 @@ The Codex CLI is checked there too, through whichever of Homebrew or npm install
 
 The Rive CLI, which the `rive` skill renders with, and the Rive editor are Homebrew casks on a Mac, and they are updated there the same way. Neither ever moved by itself: the CLI has no updater on a Homebrew install, and the editor's own updater runs only while the app is open, which on a machine nobody sits at is never. A copy of the new CLI is unpacked in a scratch folder and has to pass the skill's own doctor (every flag the skill's scripts pass, a sample built and drawn, the frame cost of a click) before the live one is replaced, and the update waits while the CLI or any of the skill's scripts is running, because a render that crossed it would mix two versions' pixels. The editor is the one application installed unattended: it is a 93 MB download from Rive's own server behind no form, it is what Rive's own updater would install the moment anyone opened it, and nobody here opens it. Its disk image is opened read-only first and the app inside has to be the version meant, signed by Rive and notarized by Apple, and it is never replaced while it is open. Both are checked again where they land. A CLI from Rive's own installer (`~/.rive/bin`, the Linux route) is left alone.
 
+A release that may install still waits out its first three days. A poisoned release, like LiteLLM's 1.107.0 on PyPI in October 2026, which its own release pipeline signed and published after stolen GitHub credentials pointed it at a fork, is usually found and pulled within hours, so a job that installs on the first night is the one that catches it. Claude Code, the Codex CLI and the skill CLIs get the newest release that has been out three days, by exact version, and npm is told to take nothing newer than that for anything the release pulls in. That is npm's `--before`, because npm 10, which comes with Node 22, ignores `--min-release-age` without a word. The Codex cask, and a Claude Code that only `claude update` can move, take nothing but the newest release, so they wait until that one is three days old. The dates come from the npm registry, and a release whose date cannot be read is not installed. Each waiting release is named once in the nightly message with the day it goes in, so you can ask for it sooner. The Rive apps do not wait, since a build is installed only once it carries Rive's signature and Apple's notarization, and neither do the distro's or Homebrew's own packages. That signature stops a build uploaded with a stolen token, but not one from a hijacked release pipeline like LiteLLM's, which signs what it builds.
+
 ```bash
 /maintenance apps on          # check nightly, install safe CLI updates
 /maintenance apps report      # check nightly, install nothing
@@ -654,6 +656,18 @@ python utils/venv_repair.py --repair     # repair now
 ```
 
 It is on by default; `"venv_repair": false` in `data/maintenance.json` turns it off.
+
+### Known security holes in the Python tool kits
+
+Nothing in the nightly updates the packages inside a kit: a skill installs what it needs once, and pip never moves a requirement that is already met, so a kit keeps the versions it was built with, holes included. Every Monday at 08:30 `utils/python_audit.py` lists the packages in the bot's `.venv` and in every kit the repair above looks at, asks [OSV](https://osv.dev), the open database that carries the PyPI and GitHub advisories, which of those exact versions have a known hole, and tells the admin once about each new one, worst first, with the version that fixes it. It installs nothing. A week it cannot reach OSV is said once and counts as not checked.
+
+Each package's name and version is sent to OSV. A package built from a local folder or a git checkout is left out: OSV knows only published releases, and the name of a private one has no business leaving the machine.
+
+```bash
+python utils/python_audit.py --no-notify   # print the report; sends and records nothing
+```
+
+It is on by default; `"python_audit": false` in `data/maintenance.json` turns it off.
 
 ## Prompt evaluation
 

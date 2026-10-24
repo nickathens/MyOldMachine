@@ -681,7 +681,12 @@ def run_system_update(notify_fn=None) -> str:
     # registration form, and a new cask appearing must not reset its clock.
     remind_casks = _should_remind_pending(pkg.pending_apps)
     remind_apps = _should_remind_pending(apps.waiting, key="out_of_band")
-    remind = not material and (remind_casks or remind_apps)
+    # A release waiting out its first days (app_updates.MIN_RELEASE_AGE_DAYS)
+    # installs by itself, so it is said once, when it first waits: that is
+    # the owner's chance to ask for it sooner. On its own clock too, so a
+    # wait never restarts the reminder for an app that waits on a person.
+    remind_aging = _should_remind_pending(apps.aging, key="release_age")
+    remind = not material and (remind_casks or remind_apps or remind_aging)
 
     if material or remind:
         notify(full)
@@ -689,6 +694,7 @@ def run_system_update(notify_fn=None) -> str:
         # too, so that ping starts the clock for both next reminders.
         _record_pending_notice(pkg.pending_apps)
         _record_pending_notice(apps.waiting, key="out_of_band")
+        _record_pending_notice(apps.aging, key="release_age")
 
     return full
 

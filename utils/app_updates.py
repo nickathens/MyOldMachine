@@ -22,6 +22,15 @@ Everything here is a *check*. Installing is opt-in per family and deliberately
 narrow (see AUTO_INSTALLABLE): an unattended nightly job is the wrong place to
 swap a 3.5 GB GUI application, but exactly the right place to move a CLI
 forward by a patch release.
+
+A release that may install still waits out its first days
+(MIN_RELEASE_AGE_DAYS). A poisoned release, like LiteLLM's 1.107.0 on PyPI in
+October 2026, which its own release pipeline signed and published once stolen
+GitHub credentials had pointed it at a fork, and which was live for under two
+hours, is usually found and pulled within hours, so an unattended job that
+installs on the first night is the one that catches it. The dates come from
+the npm registry, which publishes every release this module installs except
+Rive's.
 """
 
 from __future__ import annotations
@@ -38,6 +47,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple
 
@@ -63,6 +73,9 @@ CLAUDE_DIST = (
 CLAUDE_CHANNEL = "latest"
 # Same version, second opinion, used only when the channel file is unreachable.
 CLAUDE_NPM = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"
+# The npm package: where the release dates are read, and what an npm-built
+# install is updated from.
+CLAUDE_NPM_PACKAGE = "@anthropic-ai/claude-code"
 
 # Blackmagic's own downloads feed — the one skills/davinci-resolve's installer
 # already reads to find what to fetch. Public, no registration (registration is
@@ -130,7 +143,27 @@ CASKS_UPDATED_HERE = frozenset({CODEX_CASK, RIVE_CLI_CASK.rsplit("/", 1)[-1], RI
 # while it is closed.
 AUTO_INSTALLABLE = frozenset({"claude-code", "codex", "npm", "rive"})
 
+# Days a release must have been out before the nightly installs it, and an
+# hour on top for its pieces. Claude Code and Codex publish one npm package per
+# platform beside the main one, minutes apart (Codex 0.164.0's darwin-arm64
+# build landed 5.5 minutes after its main package), and npm, told to take
+# nothing newer than a date, leaves out an optional piece that is too new and
+# still reports success. Measured with npm 11.19.1: `--before` set between the
+# two times installed Codex 0.164.0 with exit 0 and its binary missing. So a
+# release is picked an hour stricter than the window npm is given.
+#
+# Rive's two casks are not dated: they come from Rive's own tap and server,
+# and a build is installed only once it carries Rive's signature and Apple's
+# notarization (_signed_by_rive), which a stolen upload token cannot fake. A
+# hijacked release pipeline can: LiteLLM's signed the poisoned 1.107.0 itself,
+# so the signature covers a stolen token, not that case.
+# Homebrew's formulae and the distro's packages do not wait either: Homebrew
+# and the distro build those themselves.
+MIN_RELEASE_AGE_DAYS = 3
+RELEASE_PIECES_GRACE = timedelta(hours=1)
+
 _VERSION_PART = re.compile(r"\d+")
+_PLAIN_VERSION = re.compile(r"\d+(?:\.\d+)+")
 
 
 class AppStatus(NamedTuple):
@@ -140,6 +173,8 @@ class AppStatus(NamedTuple):
       current    installed and up to date
       outdated   a newer version is published, nothing was installed
       updated    a newer version was published and this run installed it
+      waiting    a newer version is published but has not been out
+                 MIN_RELEASE_AGE_DAYS yet; it installs by itself once it has
       failed     an update was attempted and did not take
       unknown    installed, but the published version could not be read
     An app that is not installed is left out entirely — skills in this repo
@@ -237,6 +272,177 @@ def is_major_jump(current: str, latest: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Release age: how long a release has been out
+# --------------------------------------------------------------------------
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_time(text) -> datetime | None:
+    """An ISO 8601 time with a zone, as UTC, or None.
+
+    A time without a zone could be any zone, up to 14 hours either way, which
+    is a large slice of a three-day window, so it reads as unknown.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        when = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        return None
+    return when.astimezone(timezone.utc)
+
+
+def npm_release_times(package: str) -> tuple[dict, str] | None:
+    """({version: publish time}, latest tag) for the plain releases npm still
+    serves, or None when npm could not say.
+
+    Asked of npm rather than fetched, because the registry document that
+    carries the times is 18 MB for @openai/codex and 24 MB for lighthouse
+    (measured 2026-10-24), and npm keeps it cached. Three things are dropped:
+    pre-releases and Codex's per-platform builds (0.165.0-alpha.1,
+    0.164.0-linux-x64), which version_tuple would order above the release
+    they belong to; anything newer than the latest tag; and any version whose
+    time is listed but which npm no longer serves, because an unpublished
+    release, the usual fate of a poisoned one, keeps its entry in the time map.
+    """
+    if not package or not shutil.which("npm"):
+        return None
+    rc, out = _run(["npm", "view", package, "time", "versions", "dist-tags", "--json"],
+                   timeout=180, merge_stderr=False)
+    if rc != 0 or not out:
+        return None
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    stamps = data.get("time") if isinstance(data.get("time"), dict) else {}
+    served = data.get("versions")
+    # npm prints a package's only version as a string, not a list.
+    served = [served] if isinstance(served, str) else served if isinstance(served, list) else []
+    served = {v for v in served if isinstance(v, str)}
+    tags = data.get("dist-tags") if isinstance(data.get("dist-tags"), dict) else {}
+    latest = str(tags.get("latest") or "")
+    if not _PLAIN_VERSION.fullmatch(latest):
+        return None
+    times = {}
+    for version, stamp in stamps.items():
+        if (isinstance(version, str) and _PLAIN_VERSION.fullmatch(version)
+                and version in served and not is_newer(version, latest)):
+            when = _parse_time(stamp)
+            if when:
+                times[version] = when
+    return (times, latest) if latest in times else None
+
+
+def newest_aged(times: dict, current: str, ceiling: str, cutoff: datetime) -> str:
+    """The highest version above current and at most ceiling that came out at
+    or before cutoff, or "" when there is none."""
+    aged = [v for v, when in times.items()
+            if when <= cutoff and is_newer(v, current) and not is_newer(v, ceiling)]
+    return max(aged, key=version_tuple) if aged else ""
+
+
+class ReleaseGate(NamedTuple):
+    """What the age rule lets through tonight for one app.
+
+    target     the release to install, "" when nothing newer is old enough
+    next       the release that installs first while target is ""
+    published  when next came out
+    eligible   when next is old enough
+    """
+
+    target: str
+    next: str
+    published: datetime
+    eligible: datetime
+
+
+def release_gate(package: str, installed: str, latest: str,
+                 pinnable: bool = True) -> ReleaseGate | None:
+    """The age rule for one app, from npm's dates. None when they could not
+    be read, which never installs.
+
+    pinnable: the installer takes an exact version (npm, `claude install`),
+    so the target is the newest release that is old enough, even when a
+    fresher one exists. Claude Code ships about one a day, and waiting for
+    its newest to be three days old would mean never updating. An installer
+    that takes only the newest (the Codex cask, `claude update`) waits until
+    that one is old enough.
+    """
+    found = npm_release_times(package)
+    if not found:
+        return None
+    times = dict(found[0])
+    now = _utcnow()
+    window = timedelta(days=MIN_RELEASE_AGE_DAYS) + RELEASE_PIECES_GRACE
+    if not pinnable:
+        # The one release this installer can take has to be dated. Taking one
+        # npm has not listed as new would make it wait for ever, without a
+        # word, if npm never lists it; undated, it is reported every week.
+        published = times.get(latest)
+        if published is None:
+            return None
+        return ReleaseGate(latest if published <= now - window else "", latest,
+                           published, published + window)
+    # Claude's release channel can lead npm by a few minutes, so a latest npm
+    # has not listed yet is simply new.
+    times.setdefault(latest, now)
+    target = newest_aged(times, installed, latest, now - window)
+    # While nothing can go in, the release that goes in first is the oldest
+    # one above installed. Naming the newest would put a new line in the
+    # report every night, with a date that is not when anything installs.
+    pending = [v for v in times if is_newer(v, installed) and not is_newer(v, latest)]
+    nxt = min(pending, key=version_tuple) if pending else latest
+    return ReleaseGate(target, nxt, times[nxt], times[nxt] + window)
+
+
+def _npm_before(now: datetime | None = None) -> str:
+    """npm's --before for an install, so nothing it pulls in, the package's
+    own dependencies included, is newer than MIN_RELEASE_AGE_DAYS: a poisoned
+    dependency is the likelier way in.
+
+    --before and not --min-release-age. npm 10, which comes with Node 22 and
+    so with the NodeSource setup the Linux installer runs, ignores
+    --min-release-age without a word, and honours --before. Measured with npm
+    10.9.9: --min-release-age=30 installed a five-day-old surge 0.46.0, and
+    --before a day ahead of its release refused it (ETARGET).
+    """
+    when = (now or _utcnow()) - timedelta(days=MIN_RELEASE_AGE_DAYS)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _day(when: datetime) -> str:
+    """'23 Oct' in this machine's time."""
+    local = when.astimezone()
+    return f"{local.day} {local:%b}"
+
+
+def _when(when: datetime) -> str:
+    """'26 Oct 07:52' in this machine's time."""
+    local = when.astimezone()
+    return f"{local.day} {local:%b %H:%M}"
+
+
+def _aging(name: str, family: str, installed: str, gate: ReleaseGate) -> AppStatus:
+    """A release waiting out MIN_RELEASE_AGE_DAYS."""
+    return AppStatus(name, family, installed, gate.next, "waiting",
+                     f"out {_day(gate.published)}, installs after {_when(gate.eligible)}")
+
+
+def _undated(name: str, family: str, installed: str, latest: str) -> AppStatus:
+    """A release whose date could not be read. Never installed here, and a
+    person can still install it by hand."""
+    return AppStatus(name, family, installed, latest, "outdated",
+                     "could not read when it came out, so it was not installed")
+
+
+# --------------------------------------------------------------------------
 # Claude Code — the bot's own runtime
 # --------------------------------------------------------------------------
 
@@ -270,6 +476,41 @@ def _claude_latest_version() -> str:
     return ""
 
 
+def _claude_source() -> str:
+    """How this claude was installed: "native", "npm", or "" for anything else.
+
+    Read off where the command really points. The native build links it to
+    ~/.local/share/claude/versions/<version>, npm to
+    <npm root>/@anthropic-ai/claude-code/bin/claude.exe (both measured
+    2026-10-24, on 2.1.310 and 2.1.305). Anything else, a Homebrew cask or a
+    build of unknown origin, keeps `claude update`.
+    """
+    binary = shutil.which("claude")
+    if not binary:
+        return ""
+    real = Path(os.path.realpath(binary))
+    if real.parent.name == "versions" and real.parent.parent.name == "claude":
+        return "native"
+    root = puppeteer_browsers.npm_global_root()
+    if root is not None and Path(os.path.realpath(root / CLAUDE_NPM_PACKAGE)) in real.parents:
+        return "npm"
+    return ""
+
+
+def _claude_build_works(binary: Path, version: str) -> tuple[bool, str]:
+    """Whether a Claude Code build on trial starts and is the version meant.
+
+    Asked of the binary, because npm can report success with the platform
+    piece left out (see RELEASE_PIECES_GRACE), and that build cannot start.
+    """
+    rc, out = _run([str(binary), "--version"], timeout=60)
+    words = out.split() if rc == 0 else []
+    found = words[0] if words else ""
+    if found != version:
+        return False, f"it reports {found or 'nothing'}, not {version}" + ("" if rc == 0 else f" (rc={rc})")
+    return True, ""
+
+
 def check_claude_code(auto_update: bool = False) -> list[AppStatus]:
     """Version state of the Claude Code CLI this bot runs on.
 
@@ -278,28 +519,69 @@ def check_claude_code(auto_update: bool = False) -> list[AppStatus]:
     keeps its own binary and previous versions stay on disk to roll back to.
     Verified during the 2.1.217 -> 2.1.221 update, 2026-08-04: the in-flight
     session survived untouched.
+
+    What installs is the newest release that has been out MIN_RELEASE_AGE_DAYS,
+    by exact version: `claude install <version>` on the native build, and on
+    the npm build an exact npm install, tried in a scratch prefix first. Any
+    other install keeps `claude update`, which takes only the newest, so it
+    waits until the newest is old enough.
     """
+    name, family = "Claude Code", "claude-code"
     installed = _claude_installed_version()
     if not installed:
         return []
     latest = _claude_latest_version()
     if not latest:
-        return [AppStatus("Claude Code", "claude-code", installed, "", "unknown",
+        return [AppStatus(name, family, installed, "", "unknown",
                           "could not reach the release channel")]
     if not is_newer(latest, installed):
-        return [AppStatus("Claude Code", "claude-code", installed, latest, "current")]
+        return [AppStatus(name, family, installed, latest, "current")]
     if not auto_update:
-        return [AppStatus("Claude Code", "claude-code", installed, latest, "outdated")]
+        return [AppStatus(name, family, installed, latest, "outdated")]
     if is_major_jump(installed, latest):
-        return [AppStatus("Claude Code", "claude-code", installed, latest, "outdated",
+        return [AppStatus(name, family, installed, latest, "outdated",
                           "major version, worth a look before installing")]
 
-    rc, out = _run(["claude", "update"], timeout=600)
+    source = _claude_source()
+    target, before = latest, None
+    if MIN_RELEASE_AGE_DAYS:
+        gate = release_gate(CLAUDE_NPM_PACKAGE, installed, latest,
+                            pinnable=source in ("native", "npm"))
+        if gate is None:
+            return [_undated(name, family, installed, latest)]
+        if not gate.target:
+            return [_aging(name, family, installed, gate)]
+        target, before = gate.target, _npm_before()
+    if source and not _PLAIN_VERSION.fullmatch(target):
+        # The pin lands on a command line, and `claude install` also reads
+        # words there ("stable", "latest").
+        return [AppStatus(name, family, installed, latest, "failed",
+                          f"{target!r} is not a plain version, so nothing was installed")]
+
+    if source == "native":
+        rc, out = _run(["claude", "install", target], timeout=600)
+    elif source == "npm":
+        works, why = _trial_install(
+            CLAUDE_NPM_PACKAGE, target,
+            lambda prefix: _claude_build_works(prefix / "bin" / "claude", target),
+            before=before)
+        if not works:
+            return [AppStatus(name, family, installed, target, "failed",
+                              f"{target} failed a trial install, so {installed} was kept: {why}")]
+        rc, out = _npm_install_live(f"{CLAUDE_NPM_PACKAGE}@{target}", before=before)
+    else:
+        rc, out = _run(["claude", "update"], timeout=600)
     now = _claude_installed_version()
-    if rc == 0 and is_newer(now, installed):
-        return [AppStatus("Claude Code", "claude-code", now, latest, "updated")]
-    return [AppStatus("Claude Code", "claude-code", installed, latest, "failed",
-                      out[-200:] if out else f"rc={rc}")]
+    if rc != 0:
+        return [AppStatus(name, family, installed, target, "failed",
+                          out[-200:] if out else f"rc={rc}")]
+    # `claude update` exits 0 having done nothing, so the version is read
+    # again; a pinned install has to land on exactly its version.
+    if not (now == target if source else is_newer(now, installed)):
+        return [AppStatus(name, family, now or installed, target, "failed",
+                          f"the install finished, but claude reports {now or 'nothing'}, not {target}")]
+    newer = f"{latest} is newer and waits out its first days" if is_newer(latest, now) else ""
+    return [AppStatus(name, family, now, now, "updated", newer)]
 
 
 # --------------------------------------------------------------------------
@@ -460,7 +742,8 @@ NPM_PROOF: dict[str, Callable[[Path | None], tuple[bool, str]]] = {
 
 
 def _trial_install(pkg: str, version: str,
-                   proof: Callable[[Path | None], tuple[bool, str]]) -> tuple[bool, str]:
+                   proof: Callable[[Path | None], tuple[bool, str]],
+                   before: str | None = None) -> tuple[bool, str]:
     """Install pkg@version into a scratch prefix and run its proof there.
 
     The live copy stays as it is unless this passes. Putting the old version
@@ -468,10 +751,15 @@ def _trial_install(pkg: str, version: str,
     as a peer dependency and npm resolves the newest match on every install,
     a rollback included. Measured: 11.16.0 with Puppeteer 25.3.0, updated to
     11.17.0 and then put back, kept 25.12.0 and the newer Chrome it pins.
+
+    before is npm's --before (_npm_before), the same hold the live install
+    gets, so the copy tried is the copy that would go live.
     """
     scratch = Path(tempfile.mkdtemp(prefix="app_update_trial_"))
+    hold = [f"--before={before}"] if before else []
     try:
-        rc, out = _run(["npm", "install", "-g", "--prefix", str(scratch), f"{pkg}@{version}"], timeout=600)
+        rc, out = _run(["npm", "install", "-g", "--prefix", str(scratch), *hold, f"{pkg}@{version}"],
+                       timeout=600)
         if rc != 0:
             return False, f"the trial install failed: {out[-200:] if out else f'rc={rc}'}"
         return proof(scratch)
@@ -498,8 +786,9 @@ def _npm_global_needs_sudo() -> bool:
     return not os.access(root, os.W_OK)
 
 
-def _npm_install_live(spec: str) -> tuple[int, str]:
-    """npm install -g spec where the live copy is.
+def _npm_install_live(spec: str, before: str | None = None) -> tuple[int, str]:
+    """npm install -g spec where the live copy is, held to before when given
+    (npm's --before, from _npm_before).
 
     Through sudo when the global folder is root's, with the password the
     installer stored (the same one the package manager upgrade uses). The
@@ -521,7 +810,7 @@ def _npm_install_live(spec: str) -> tuple[int, str]:
     fetch nothing. A sudo rule that allows npm alone, and not env, refuses
     this call; the stored password covers both.
     """
-    cmd = ["npm", "install", "-g", spec]
+    cmd = ["npm", "install", "-g", *([f"--before={before}"] if before else []), spec]
     if not _npm_global_needs_sudo():
         return _run(cmd, timeout=600)
     from install.sudo import get_sudo_password
@@ -563,29 +852,42 @@ def check_npm_clis(auto_update: bool = False) -> list[AppStatus]:
                 pkg, "npm", current, latest, "outdated",
                 f"{detail}, major version so it needs a look before installing"))
             continue
+        target, before = latest, None
+        if MIN_RELEASE_AGE_DAYS:
+            gate = release_gate(pkg, current, latest)
+            if gate is None:
+                results.append(_undated(pkg, "npm", current, latest))
+                continue
+            if not gate.target:
+                results.append(_aging(pkg, "npm", current, gate))
+                continue
+            target, before = gate.target, _npm_before()
         proof = NPM_PROOF.get(pkg)
         if proof:
-            works, why = _trial_install(pkg, latest, proof)
+            works, why = _trial_install(pkg, target, proof, before=before)
             if not works:
-                results.append(AppStatus(pkg, "npm", current, latest, "failed",
-                                         f"{latest} failed a trial install, so {current} was kept: {why}"))
+                results.append(AppStatus(pkg, "npm", current, target, "failed",
+                                         f"{target} failed a trial install, so {current} was kept: {why}"))
                 continue
         # An exact version is pinned rather than @latest so the return code is
         # a usable signal: npm either installed that version or failed. (The
         # Claude check cannot rely on rc alone — `claude update` exits 0 having
         # done nothing — so it re-reads the version instead.)
-        rc, out = _npm_install_live(f"{pkg}@{latest}")
+        # Under --before, npm can also leave out an optional piece that is too
+        # new and still exit 0. None of these CLIs ships a per-platform piece,
+        # and the hour on the target (RELEASE_PIECES_GRACE) covers those that do.
+        rc, out = _npm_install_live(f"{pkg}@{target}", before=before)
         if rc != 0:
-            results.append(AppStatus(pkg, "npm", current, latest, "failed",
+            results.append(AppStatus(pkg, "npm", current, target, "failed",
                                      out[-200:] if out else f"rc={rc}"))
             continue
         if proof:
             works, why = proof(None)
             if not works:
-                results.append(AppStatus(pkg, "npm", latest, latest, "failed",
-                                         f"{latest} passed its trial but not where it was installed: {why}"))
+                results.append(AppStatus(pkg, "npm", target, target, "failed",
+                                         f"{target} passed its trial but not where it was installed: {why}"))
                 continue
-        results.append(AppStatus(pkg, "npm", latest, latest, "updated", detail))
+        results.append(AppStatus(pkg, "npm", target, target, "updated", detail))
     return results
 
 
@@ -819,20 +1121,33 @@ def check_codex_cli(auto_update: bool = False) -> list[AppStatus]:
     if version_tuple(latest)[0] != version_tuple(installed)[0]:
         return [AppStatus(CODEX_NAME, "codex", installed, latest, "outdated",
                           "major version, worth a look before installing")]
-    in_use = AppStatus(CODEX_NAME, "codex", installed, latest, "outdated",
+    # The cask installs only the version it lists, so that release has to be
+    # old enough itself; npm takes the newest that is. The cask ships the
+    # same release numbers npm does, so npm's dates serve both.
+    target, before = latest, None
+    if MIN_RELEASE_AGE_DAYS:
+        gate = release_gate(CODEX_NPM, installed, latest, pinnable=source == "npm")
+        if gate is None:
+            return [_undated(CODEX_NAME, "codex", installed, latest)]
+        if not gate.target:
+            return [_aging(CODEX_NAME, "codex", installed, gate)]
+        target = gate.target
+        before = _npm_before() if source == "npm" else None
+    in_use = AppStatus(CODEX_NAME, "codex", installed, target, "outdated",
                        "Codex was in use, so the update waits for a quiet night")
     if _codex_running():
         return [in_use]
 
     if source == "cask":
-        works, why = _codex_cask_trial(latest)
+        works, why = _codex_cask_trial(target)
     else:
         works, why = _trial_install(
-            CODEX_NPM, latest,
-            lambda prefix: _codex_takes_the_bot(str(prefix / "bin" / "codex"), latest))
+            CODEX_NPM, target,
+            lambda prefix: _codex_takes_the_bot(str(prefix / "bin" / "codex"), target),
+            before=before)
     if not works:
-        return [AppStatus(CODEX_NAME, "codex", installed, latest, "failed",
-                          f"{latest} failed its trial, so {installed} was kept: {why}")]
+        return [AppStatus(CODEX_NAME, "codex", installed, target, "failed",
+                          f"{target} failed its trial, so {installed} was kept: {why}")]
     # Asked again, because a turn can start while the trial downloads.
     if _codex_running():
         return [in_use]
@@ -840,19 +1155,19 @@ def check_codex_cli(auto_update: bool = False) -> list[AppStatus]:
     if source == "cask":
         rc, out = _run(["brew", "upgrade", "--cask", CODEX_CASK], timeout=900, env=_brew_env())
     else:
-        rc, out = _npm_install_live(f"{CODEX_NPM}@{latest}")
+        rc, out = _npm_install_live(f"{CODEX_NPM}@{target}", before=before)
     if rc != 0:
-        return [AppStatus(CODEX_NAME, "codex", installed, latest, "failed",
+        return [AppStatus(CODEX_NAME, "codex", installed, target, "failed",
                           out[-200:] if out else f"rc={rc}")]
     now = _codex_version(binary)
-    if now != latest:
-        return [AppStatus(CODEX_NAME, "codex", now or installed, latest, "failed",
-                          f"{where} finished, but codex reports {now or 'nothing'}, not {latest}")]
-    works, why = _codex_takes_the_bot(binary, latest)
+    if now != target:
+        return [AppStatus(CODEX_NAME, "codex", now or installed, target, "failed",
+                          f"{where} finished, but codex reports {now or 'nothing'}, not {target}")]
+    works, why = _codex_takes_the_bot(binary, target)
     if not works:
-        return [AppStatus(CODEX_NAME, "codex", latest, latest, "failed",
-                          f"{latest} passed its trial but not where it was installed: {why}")]
-    return [AppStatus(CODEX_NAME, "codex", latest, latest, "updated")]
+        return [AppStatus(CODEX_NAME, "codex", target, target, "failed",
+                          f"{target} passed its trial but not where it was installed: {why}")]
+    return [AppStatus(CODEX_NAME, "codex", target, target, "updated")]
 
 
 # --------------------------------------------------------------------------
@@ -1269,6 +1584,7 @@ def summarize(statuses: list[AppStatus]) -> str:
     """
     updated = [s for s in statuses if s.state == "updated"]
     outdated = [s for s in statuses if s.state == "outdated"]
+    aging = [s for s in statuses if s.state == "waiting"]
     failed = [s for s in statuses if s.state == "failed"]
     parts = []
     if updated:
@@ -1281,6 +1597,13 @@ def summarize(statuses: list[AppStatus]) -> str:
             f"{len(outdated)} app update(s) waiting on you: "
             + ", ".join(f"{s.name} {s.installed} to {s.latest}" for s in outdated)
             + ". Ask me to update them."
+        )
+    if aging:
+        parts.append(
+            f"Waiting out their first {MIN_RELEASE_AGE_DAYS} days, in case a new release "
+            "is a poisoned one: "
+            + ", ".join(f"{s.name} {s.latest} ({s.detail})" for s in aging)
+            + ". Ask me if one should go in sooner."
         )
     if failed:
         parts.append(
@@ -1298,11 +1621,15 @@ class AppCheckResult(NamedTuple):
              night after night — Resolve can sit a version behind for weeks —
              and a nightly repeat of the same line is how a digest gets muted.
              The caller throttles these; see system_update._should_remind_pending.
+    aging:   releases waiting out MIN_RELEASE_AGE_DAYS, as "name version". Said
+             once each: they install by themselves, so a repeat is noise, but
+             the first time is the chance to ask for one sooner.
     """
 
     summary: str = ""
     news: bool = False
     waiting: tuple[str, ...] = ()
+    aging: tuple[str, ...] = ()
 
 
 def run_app_update_check(auto_update: bool = False, log_fn=None) -> AppCheckResult:
@@ -1329,6 +1656,7 @@ def run_app_update_check(auto_update: bool = False, log_fn=None) -> AppCheckResu
         summary=summary,
         news=any(s.state in ("updated", "failed") for s in statuses),
         waiting=tuple(sorted(s.name for s in statuses if s.state == "outdated")),
+        aging=tuple(sorted(f"{s.name} {s.latest}" for s in statuses if s.state == "waiting")),
     )
 
 

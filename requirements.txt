@@ -9,3 +9,12 @@ sqlalchemy>=2.0
 fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
+
+# Never imported here: httpx, and with it python-telegram-bot, verifies every
+# connection against the CA list certifi carries. Releases before 2026.10.19
+# still trust emSign ECC Root CA - G3, which signed eight eMudhra intermediates
+# whose private keys leaked in October 2026 (GHSA-6q48-6c7w-9gw2), so anyone
+# holding one could pass for api.telegram.org. pip never moves a dependency
+# that is already met, so without this floor an install keeps the certifi it
+# started with; /update reinstalls these requirements and brings it up.
+certifi>=2026.10.19

@@ -374,6 +374,47 @@ class RunSystemUpdateOrchestrationTests(unittest.TestCase):
 
     @patch("utils.system_update._maybe_run_app_update_check")
     @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
+    @patch("utils.system_update._run_pkg_manager_update",
+           return_value=su.PkgUpdateResult("", False))
+    def test_a_release_waiting_out_its_days_is_said_once(self, _pkg, _sw, app):
+        # It installs by itself, so saying it every night is noise, but the
+        # first night is the owner's chance to ask for it sooner. The next
+        # release in line is news again.
+        line = ("Waiting out their first 3 days, in case a new release is a poisoned one: "
+                "Codex CLI 0.164.0 (out 23 Oct, installs after 26 Oct 08:52).")
+        app.return_value = su.AppCheckResult(summary=line, aging=("Codex CLI 0.164.0",))
+        su.run_system_update(notify_fn=self.notify)
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(self.notified, [line])
+        app.return_value = su.AppCheckResult(summary=line.replace("0.164.0", "0.165.0"),
+                                             aging=("Codex CLI 0.165.0",))
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 2)
+
+    @patch("utils.system_update._maybe_run_app_update_check")
+    @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
+    @patch("utils.system_update._run_pkg_manager_update",
+           return_value=su.PkgUpdateResult("", False))
+    def test_a_wait_keeps_its_own_clock(self, _pkg, _sw, app):
+        # A release waiting out its days must not restart the weekly reminder
+        # of an app that waits on a person, nor be silenced by it.
+        app.return_value = su.AppCheckResult(summary="waiting on you: DaVinci Resolve",
+                                             waiting=("DaVinci Resolve",))
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 1)
+        app.return_value = su.AppCheckResult(summary="waiting on you: DaVinci Resolve; Codex waits",
+                                             waiting=("DaVinci Resolve",),
+                                             aging=("Codex CLI 0.164.0",))
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 2)
+        su.run_system_update(notify_fn=self.notify)
+        self.assertEqual(len(self.notified), 2)
+        state = json.loads(su.PENDING_APPS_STATE.read_text(encoding="utf-8"))
+        self.assertEqual(state["out_of_band"], ["DaVinci Resolve"])
+        self.assertEqual(state["release_age"], ["Codex CLI 0.164.0"])
+
+    @patch("utils.system_update._maybe_run_app_update_check")
+    @patch("utils.system_update._maybe_run_macos_softwareupdate", return_value="")
     @patch("utils.system_update._run_pkg_manager_update")
     def test_legacy_cask_state_still_throttles(self, pkg, _sw, app):
         # State written before the per-list keys existed: a bare "apps" list
