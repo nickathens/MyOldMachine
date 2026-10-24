@@ -17,8 +17,8 @@ the target or its publisher is US based. Adjust for your own jurisdiction.
    build something that works with it. In the EU this is a protected act under the
    Software Directive (below). This is the strongest footing RE has.
 2. **security_research.** Finding, understanding, or verifying vulnerabilities, for
-   defence or for an authorized disclosure. The `hacker` skill is the sibling for live
-   targets and source audits.
+   defence or for an authorized disclosure. The `security-audit` skill is the sibling for
+   source audits.
 3. **format_understanding.** Reading an undocumented file or wire format so data can be
    recovered, converted, or validated. Includes your own files trapped in a dead tool.
 4. **own_work.** A target you own, wrote, or are contracted to work on. A client site, a

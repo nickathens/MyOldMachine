@@ -8,8 +8,8 @@ input) or runs a page you may analyse; code we do not trust runs only in `sandbo
 RE=skills/reverse-engineering/scripts
 ```
 
-The order matters. Watch before you read: the first version of the Supreme dossier read
-the code first, kept the question's premise ("how does scroll drive it") and got three
+The order matters. Watch before you read: the first version of the production site's
+dossier read the code first, kept the question's premise ("how does scroll drive it") and got three
 things wrong. Watching the page run for one minute showed the page cannot scroll at all.
 
 ## 1. Fingerprint the stack
@@ -38,9 +38,9 @@ python $RE/capture_net.py --url https://site.com --scroll --out scrolled.json
 ```
 
 Every request with method, type, status and size. Always take an idle capture as well as a
-driven one: a request that appears in both is not caused by your scrolling. (Supreme's 34
-`?_rsc=` requests are Next.js prefetches that fire on load; the first dossier credited them
-to scrolling because it never ran an idle load.)
+driven one: a request that appears in both is not caused by your scrolling. (The production
+site's 34 `?_rsc=` requests are Next.js prefetches that fire on load; the first dossier
+credited them to scrolling because it never ran an idle load.)
 
 ## 3. Watch what moves, and why
 
@@ -65,14 +65,14 @@ inner scroll containers, sticky elements, scroll snapping, and CSS scroll-driven
 with the same window of the idle run (aligned on the settle point, widened by 250 ms):
 a change absent from the idle run, or far beyond jitter, is an answer to the input. A few
 extra animation frames on an element that animates in both runs are not (that false answer
-was found on Supreme's caption and fixed).
+was found on the production site's caption and fixed).
 
 Where the input lands matters as much as what follows it. The pointer rests at the centre of
 the viewport from the moment the page loads, in every run alike, so a wheel goes to whatever
 sits in the middle of the screen; `hover:SELECTOR` or a click moves it. Each comparison lists
 `received_by`, the elements the input reached: read it before trusting a "no change". (The
-first Supreme wheel test fired at the page's top-left corner, landed on the site header and
-never reached the reel.) An action that failed, such as a click on a selector that was never
+production site's first wheel test fired at the page's top-left corner, landed on the site
+header and never reached the reel.) An action that failed, such as a click on a selector that was never
 found, gets "action failed: no verdict".
 
 What the summary tells you, fast:

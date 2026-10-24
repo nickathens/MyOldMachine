@@ -307,7 +307,7 @@ class CompareLogic(unittest.TestCase):
 
 class OlderRecordings(unittest.TestCase):
     def test_timer_records_without_an_event_are_counted_apart(self):
-        # An earlier recorder logged timers with no set/fire/clear field (four of the kept Supreme runs).
+        # An earlier recorder logged timers with no set/fire/clear field (four of the production site's kept runs).
         run = _fake_run(3000, [{"k": "timer", "kind": "timeout", "delay": 10000, "ms": 4000},
                                {"k": "timer", "ev": "set", "kind": "timeout", "delay": 1000, "id": 7, "ms": 4100}])
         s = wp.summarize(run)

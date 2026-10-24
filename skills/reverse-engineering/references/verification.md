@@ -47,8 +47,8 @@ carries runtime evidence, a ground_truth literal is not empty. `--evidence` adds
 discipline: every `<file> byte <N>` and `<file> @ char <N>` locator is re-read and must hold
 its literal at exactly that place, its file must be in the folder, and a locator that names
 a file there in any other form fails (it could not be re-read).
-On the Supreme dossier the first pass of that check caught a locator written from memory
-(byte 6440; the literal is at byte 6466).
+On the production site's dossier the first pass of that check caught a locator written from
+memory (byte 6440; the literal is at byte 6466).
 
 ## Every instrument is proven able to fail
 
@@ -116,9 +116,9 @@ If you change an instrument, rerun its battery. A green result you have not seen
 not yet evidence.
 
 Independent corroboration counts as a second, different kind of proof: libscan's markers
-were proven on builds made here, then checked on 16 public sites and on Supreme's Turbopack
-build, a minifier the proof never used. wasm_inspect's body offsets were checked against
-wasm-objdump's on real modules. For native code the same principle is the primary check:
+were proven on builds made here, then checked on 16 public sites and on the production site's
+Turbopack build, a minifier the proof never used. wasm_inspect's body offsets were checked
+against wasm-objdump's on real modules. For native code the same principle is the primary check:
 `bin_triage` (pure Python) is read against readelf, file and objdump, and a native
 ground_truth claim is corroborated by three tools agreeing byte for byte on one function,
 objdump on the host and radare2 and Ghidra in the sandbox

@@ -26,8 +26,8 @@ Three tiers, one discipline:
   readers: a Godot pack reader, a Godot script and scene decompiler (GDRE Tools) and a Unity/.NET
   C# decompiler. See the Tier 3 and Games sections.
 
-The `hacker` skill is the sibling for live web targets and source security audits. This
-skill is for understanding mechanism.
+The `security-audit` skill is the sibling for auditing source code you own or may review.
+This skill is for understanding mechanism.
 
 ## Legal and ethics gate (MANDATORY)
 
@@ -85,7 +85,7 @@ in the folder, or when a locator names a file there in any other form. A libscan
 its markers joined by ` | `: the first is re-read at its offset and every other one must be in
 some file of the folder. A citation from memory cannot pass it. Keep each target's downloaded files in `~/.cache/re-evidence/<target>/` with
 a MANIFEST.json of URLs and sha256 (outside the repo: they are the target's code, kept only
-so the dossier can be re-checked). Supreme's are in `~/.cache/re-evidence/example/`.
+so the dossier can be re-checked).
 
 ## Where untrusted code runs
 
@@ -98,8 +98,8 @@ imports, exports, types and data segments at 100,000 and functions at 1,000,000,
 worst case, every list at its cap, of 732 MB. They read regular files only: a pipe named `x.js`
 in a folder once blocked libscan for ever, and a link to `/dev/zero` read until memory ran out.
 `unminify` without `--deobfuscate` is close: it reads code and never runs it, but through
-wakaru (a Rust decompiler, under a time and memory cap) or js-beautify (Node, under a time cap)
-on the host, not in the sandbox. Native parsers of untrusted files run in the sandbox:
+wakaru (a Rust decompiler, under a time cap and, on Linux, a memory cap) or js-beautify (Node,
+under a time cap) on the host, not in the sandbox. Native parsers of untrusted files run in the sandbox:
 `wasm_inspect`'s `--disasm`/`--decompile` (wabt), all of `r2.py` (radare2), `ghidra.py`
 (Ghidra) and `carve.py`'s `--binwalk`/`--extract` (binwalk), each unless `--host-tools` is
 given for a target you trust (radare2 and Ghidra have no host copy here, so the sandbox is the
@@ -120,7 +120,10 @@ Chromium builds those namespaces. On Ubuntu 23.10+ install one at
 then `sudo apparmor_parser -r /etc/apparmor.d/playwright-chromium`. Without that profile the two
 page tools die at launch (SIGTRAP) rather than run unsandboxed, so they fail safe; the rest of
 the skill does not need it. A memory ulimit (`ulimit -v`) kills Chromium the same way. A test
-reads the running processes, not the launch call, to prove the sandbox is on. The sandbox is one layer, not a container: an exploit would need
+reads the running processes, not the launch call, to prove the sandbox is on. On macOS the
+sandbox is the system's own (Seatbelt) and needs no profile: the same test reads it there from
+the kernel (`sandbox_check` on each renderer), and fails with the sandbox switched off. The
+sandbox is one layer, not a container: an exploit would need
 a renderer bug and a sandbox escape to reach the bot's user. So these tools are for pages you
 may analyse (a public site, your own build, a client's), never a page you have reason to think
 is hostile. Anything else
@@ -155,13 +158,14 @@ each set in its own empty folder, pass paths as arguments, run Python readers wi
 ## Running heavy tools safely
 
 No persistent daemon. Ghidra runs headless one-shot, radare2 one command at a time. The heavy
-native tools run as Docker containers, which do not share the bot's 8 GB memory group, so an
-out-of-memory kill inside one cannot take the bot down the way a direct subprocess can (memory
-`reference_bot_cgroup_oom`); each container is still memory capped (`--memory`), Ghidra's JVM
-heap is capped on top (`GHIDRA_HEADLESS_MAXMEM`), and every run has a time limit, kept twice:
+native tools run as Docker containers, outside the bot's own processes, so an out-of-memory
+kill inside one cannot take the bot down the way a direct subprocess can; each container is
+still memory capped (`--memory`), Ghidra's JVM heap is capped on top (`GHIDRA_HEADLESS_MAXMEM`),
+and every run has a time limit, kept twice:
 by the caller and, 5 s later, inside the container. A caller killed mid-run (a turn cut short)
-once left its container running past the limit. Pure-Python
-batteries you run directly still belong in `systemd-run --user --scope -p MemoryMax=4G ...`.
+once left its container running past the limit. On Linux, pure-Python batteries you run
+directly still belong in `systemd-run --user --scope -p MemoryMax=4G ...`; macOS has no
+systemd-run, so run them there as plain `python`.
 Single process only: no subagents.
 
 ## Tier 1: web
@@ -197,8 +201,8 @@ its real duration, every timer the page sets (and whether it fired or was cancel
 inputs it received; `--control` runs the page idle as well and says, for each input, whether
 anything changed that the idle run did not change. The pointer rests at the centre of the
 viewport in every run, so a wheel lands in the middle of the screen, and each comparison
-names the element that received the input: on Supreme the first wheel test, fired at the
-page's top-left corner, landed on the site header and never reached the reel. An action that
+names the element that received the input: on the production site the first wheel test,
+fired at the page's top-left corner, landed on the site header and never reached the reel. An action that
 failed (a selector never found) gets no verdict rather than "no change".
 
 Step 4's markers are proven, not guessed: `proof/libscan/prove.py` builds every covered
@@ -549,15 +553,19 @@ sandbox.
   bare name or an `0x`-address, so a name with unusual characters must be given as its address.
   `r2.py` also refuses `@`: radare2 reads `@@` as a foreach iterator, and `entry0@@c:ij` (only
   letters, digits, `@` and `:`) made it run `ij`. No radare2 function name carries an `@`.
-- `bin_triage` reads ELF in full; PE and Mach-O to triage depth (format, arch, sections,
-  imported libraries). For a fat/universal Mach-O it lists each slice's arch, offset and size
-  (both the 32-bit `fat_arch` and 64-bit `fat_arch_64` forms), and `--slice <arch|index>` carves
+- `bin_triage` reads ELF in full; PE to triage depth (format, arch, sections, imported
+  libraries); Mach-O to format, arch (arm64e and its variants named from the cpusubtype, as
+  lipo names them), file type, load commands and linked libraries. For a fat/universal Mach-O
+  it lists each slice's arch, offset and size (both the 32-bit `fat_arch` and 64-bit
+  `fat_arch_64` forms), and `--slice <arch|index>` carves
   one thin slice out; `r2.py` and `ghidra.py` take the same `--slice` to open one arch of a
   universal binary. `\xca\xfe\xba\xbe` is both a Mach-O fat header and a Java class, so a
   `.class` can misread as a fat binary; confirm from the surrounding structure. The slice
-  selection is proven on synthetic universal binaries built in the tests; running radare2 or
-  Ghidra on a slice of a *real* Mac universal binary is still unproven here (no Mach-O to build
-  or run against), so say that in a dossier.
+  selection is proven on synthetic universal binaries built in the tests, and the reading on real
+  ones: on a Mac, 400 binaries (1,108 slices) read exactly as lipo and otool read them, every
+  slice's offset, size and arch and every linked library. Running radare2 or Ghidra on a slice of
+  a *real* Mac universal binary is still unproven (that Mac had no Docker), so say that in a
+  dossier.
 - `carve`'s pure-Python scan reports a magic wherever it sits. A magic of four or more
   distinctive bytes stands alone; a shorter or low-entropy one is checked against the structure
   after it (MZ must point at a real PE header; JPEG's `FF D8 FF` needs a segment that lands on
@@ -570,9 +578,15 @@ sandbox.
   real shipped game yet. GDRE also carries tables for Godot 1, 2 and older 3.x bytecode; those are
   its claim, unproven here. A recovered project is a reading aid: cite a script's lines as what the
   decompile says, and the pack's bytes (godot_pck) as ground truth.
-- Docker containers do not sit in the bot's 8 GB cgroup, so a native tool's memory is accounted
-  to Docker and capped by `--memory`, not by the bot's `MemoryMax`. Confirm the image exists
-  before claiming a tool ran; the first Ghidra use builds a 1.3 GB image (needs the network).
+- Docker containers run outside the bot's own processes, so a native tool's memory is accounted
+  to Docker and capped by `--memory`. Confirm the image exists before claiming a tool ran; the
+  first Ghidra use builds a 1.3 GB image (needs the network).
+- The images build for the machine's own processor, and four are tied to x86-64. `re-native`
+  (radare2's amd64 .deb), `re-gdre` (GDRE's x86_64 build) and `re-oracle` (the x86_64 Unicorn
+  and Capstone wheels) fail to build on an ARM machine (an Apple silicon Mac, a Raspberry Pi), and
+  `re-ghidra` builds there but Ghidra's release ships its decompiler for x86-64 only. The other
+  four take Debian's own packages or a multi-architecture SDK. On an ARM machine, say so before
+  anyone installs Docker for radare2, Ghidra, GDRE or the oracle.
 
 ## Status
 
@@ -585,9 +599,10 @@ logged-in-page and Godot script and scene additions (2026-10-24).
   recovered code, and a differential rebuild that matched the original on every measured
   check. Plus: an Electron `.asar` reader and a saved-session `.har` importer, so the
   web tools reach a desktop app and a page behind a login.
-- **Tier 2 (native):** `bin_triage` corroborated against readelf (ELF `/bin/ls`, every field)
-  and file+objdump (a real PE); radare2 and Ghidra run in their sandbox images; objdump,
-  radare2 and Ghidra agree byte for byte on the same function's instructions. A fat/universal
+- **Tier 2 (native):** `bin_triage` corroborated against readelf (ELF `/bin/ls`, every field),
+  file+objdump (a real PE) and, on a Mac, lipo and otool (400 real Mach-O binaries); radare2
+  and Ghidra run in their sandbox images; objdump, radare2 and Ghidra agree byte for byte on the
+  same function's instructions. A fat/universal
   Mach-O's slices are listed with offsets and opened one at a time (`--slice`). The **native
   oracle** runs the original function's bytes in Unicorn and confirms a rebuild matches over a
   corpus (System V and Win64), and `trace.py` records a Linux program's runtime behaviour
@@ -600,8 +615,9 @@ logged-in-page and Godot script and scene additions (2026-10-24).
   side in each engine; `proof/gdre/result.json`), and a Unity/.NET C# decompiler (ilspycmd, with
   IL2CPP recognition).
 
-Tests: 287 in `tests/test_reverse_engineering*.py` (static 76, native 52, sandbox 17, watch 23,
-games 25, oracle 13, asar 18, csharp 10, har 17, trace 8, gdre 28), all passing 2026-10-24 in one
+Tests: 288 in `tests/test_reverse_engineering*.py` (static 74, native 55, sandbox 17, watch 23,
+games 25, oracle 13, asar 18, csharp 10, har 17, trace 8, gdre 28). The 285 before the Mac
+review's three Mach-O tests all passed 2026-10-24 on Linux in one
 run of every file (915 subtests; the Docker-gated classes skip without their images). The count
 given earlier that day, 254, was one too high: the trace file holds 8 tests, not 9. Every
 instrument is battery-tested: `proof/batteries/` holds `static_tests.py` (40/40), `native_tests.py`
@@ -612,4 +628,4 @@ instrument is battery-tested: `proof/batteries/` holds `static_tests.py` (40/40)
 `trace_tests.py` (6/6) and `gdre_tests.py` (23/23), each with a null control that survives. Two
 whole-skill audits on 2026-10-12 fixed 14 defects each; the 2026-10-24 additions each went
 through tests red-first, a planted-fault battery, and three audit passes. See
-`references/verification.md`. `SCOPE.md` is the agreed plan.
+`references/verification.md`.

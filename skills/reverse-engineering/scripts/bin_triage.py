@@ -48,8 +48,12 @@ ELF_MACHINES = {
 }
 ELF_TYPES = {0: "NONE", 1: "REL (object)", 2: "EXEC (executable)", 3: "DYN (shared/PIE)", 4: "CORE"}
 ELF_OSABI = {0: "System V", 3: "Linux", 6: "Solaris", 9: "FreeBSD", 12: "OpenBSD", 255: "standalone"}
-MACHO_CPU = {7: "x86", 0x01000007: "x86-64", 12: "ARM", 0x0100000C: "ARM64", 0x0100000C | 0x80000000: "ARM64e",
+MACHO_CPU = {7: "x86", 0x01000007: "x86-64", 12: "ARM", 0x0100000C: "ARM64", 0x0200000C: "ARM64_32",
              18: "PPC", 0x01000012: "PPC64"}
+# An ARM64 variant is named by the cpusubtype, never the cputype (mach/machine.h); the
+# subtype's top byte is feature flags (CPU_SUBTYPE_MASK), such as arm64e's pointer
+# authentication ABI bit. Names follow lipo's: arm64e.x1 is the third slice of /bin/ls.
+MACHO_ARM64_SUBTYPES = {0: "ARM64", 1: "ARM64", 2: "ARM64e", 3: "ARM64.x1", 12: "ARM64e.x1"}
 MACHO_TYPES = {1: "OBJECT", 2: "EXECUTE", 3: "FVMLIB", 4: "CORE", 5: "PRELOAD", 6: "DYLIB", 7: "DYLINKER",
                8: "BUNDLE", 10: "DSYM"}
 PE_MACHINES = {0x014C: "x86", 0x8664: "x86-64", 0x01C0: "ARM", 0xAA64: "ARM64", 0x01C4: "ARMNT",
@@ -349,6 +353,13 @@ def _pe_imports(r, sections, imp_rva, rep):
 
 # ---------------- Mach-O ----------------
 
+def macho_arch(cputype, cpusubtype):
+    if cputype == 0x0100000C:
+        sub = cpusubtype & 0x00FFFFFF
+        return MACHO_ARM64_SUBTYPES.get(sub, f"ARM64 (subtype {sub})")
+    return MACHO_CPU.get(cputype, f"cputype 0x{cputype:08x}")
+
+
 def parse_macho(data, fmt):
     if fmt == "macho-fat":
         return _parse_macho_fat(data)
@@ -358,9 +369,9 @@ def parse_macho(data, fmt):
     big = data[:4] in (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf")
     is64 = data[:4] in (b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe")
     r = Reader(data, little=not big)
-    cputype = r.u32(4)
+    cputype, cpusubtype = r.u32(4), r.u32(8)
     rep = {"format": "mach-o", "bits": 64 if is64 else 32, "endianness": "big" if big else "little",
-           "arch": MACHO_CPU.get(cputype, f"cputype 0x{cputype:08x}"),
+           "arch": macho_arch(cputype, cpusubtype), "cputype": cputype, "cpusubtype": cpusubtype,
            "type": MACHO_TYPES.get(r.u32(12), f"0x{r.u32(12):x}"),
            "needed": [], "load_commands": {}, "errors": []}
     ncmds = r.u32(16)
@@ -402,14 +413,14 @@ def _parse_macho_fat(data):
     for i in range(min(nfat, 64)):
         base = 8 + i * step
         try:
-            cputype = r.u32(base)
+            cputype, cpusubtype = r.u32(base), r.u32(base + 4)
             if is64:
                 offset, size, align = r.u64(base + 8), r.u64(base + 16), r.u32(base + 24)
             else:
                 offset, size, align = r.u32(base + 8), r.u32(base + 12), r.u32(base + 16)
         except BinError:
             break
-        slices.append({"arch": MACHO_CPU.get(cputype, f"cputype 0x{cputype:08x}"), "cputype": cputype,
+        slices.append({"arch": macho_arch(cputype, cpusubtype), "cputype": cputype, "cpusubtype": cpusubtype,
                        "offset": offset, "size": size, "align": align,
                        "in_bounds": 0 <= offset and offset + size <= len(data)})
     return {"format": "mach-o (fat/universal)", "fat64": is64, "arches": [s["arch"] for s in slices],

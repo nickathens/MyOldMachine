@@ -190,17 +190,21 @@ class BinTriageSynthetic(unittest.TestCase):
         self.assertIn("/usr/lib/libSystem.B.dylib", rep["needed"])
 
 
-def _thin_macho(cpu):
-    """A minimal 64-bit thin Mach-O (little-endian) with one LOAD_DYLIB command."""
+def _thin_macho(cpu, sub=None):
+    """A minimal 64-bit thin Mach-O (little-endian) with one LOAD_DYLIB command. The
+    subtype defaults to the cputype's own ALL value (x86-64: 3, ARM64: 0)."""
+    if sub is None:
+        sub = 0 if cpu == 0x0100000C else 3
     name = b"/usr/lib/libSystem.B.dylib\x00"
     name += b"\x00" * ((-len(name)) % 4)
     lc = struct.pack("<IIIIII", 0x0C, 24 + len(name), 24, 0, 0x10000, 0x10000) + name
-    hdr = struct.pack("<IIIIIII", 0xFEEDFACF, cpu, 3, 2, 1, len(lc), 0) + b"\x00" * 4
+    hdr = struct.pack("<IIIIIII", 0xFEEDFACF, cpu, sub, 2, 1, len(lc), 0) + b"\x00" * 4
     return hdr + lc
 
 
 def _fat_macho(slices, fat64=False, align=0x4000):
-    """A fat/universal Mach-O wrapping the given (cputype, thin-bytes) slices."""
+    """A fat/universal Mach-O wrapping the given (cputype, thin-bytes) slices. Each fat
+    entry carries its slice's own cpusubtype, as a real universal binary does."""
     magic = 0xCAFEBABF if fat64 else 0xCAFEBABE
     entry = 32 if fat64 else 20
     head_len = 8 + entry * len(slices)
@@ -210,10 +214,11 @@ def _fat_macho(slices, fat64=False, align=0x4000):
         placed.append((cpu, off, body))
         off = ((off + len(body) + align - 1) // align) * align
     for cpu, o, body in placed:
+        sub = struct.unpack_from("<I", body, 8)[0]
         if fat64:
-            out += struct.pack(">IIQQII", cpu, 3, o, len(body), 14, 0)
+            out += struct.pack(">IIQQII", cpu, sub, o, len(body), 14, 0)
         else:
-            out += struct.pack(">IIIII", cpu, 3, o, len(body), 14)
+            out += struct.pack(">IIIII", cpu, sub, o, len(body), 14)
     buf = bytearray(out)
     for _cpu, o, body in placed:
         buf += b"\x00" * (o - len(buf))
@@ -279,6 +284,42 @@ class FatMachO(unittest.TestCase):
     def test_not_fat_is_an_error(self):
         with self.assertRaises(bt.BinError):
             bt.macho_slice(self.s1, "x86-64")      # a thin binary is not fat
+
+
+class MachOArm64Variants(unittest.TestCase):
+    """An ARM64 variant is named by the cpusubtype (mach/machine.h), not the cputype. Keyed on
+    the cputype, every arm64e slice read as plain ARM64 (741 of 1,108 slices in 400 binaries on
+    a Mac, every Apple system binary among them) and --slice ARM64e could never match."""
+    X86_64, ARM64 = 0x01000007, 0x0100000C
+
+    def test_subtype_names_the_variant(self):
+        # lipo -archs on the same headers: arm64, arm64, arm64e, arm64e, arm64.x1, arm64e.x1, unknown
+        for sub, name in ((0, "ARM64"), (1, "ARM64"), (2, "ARM64e"), (0x80000002, "ARM64e"), (3, "ARM64.x1"),
+                          (0x8000000C, "ARM64e.x1"), (7, "ARM64 (subtype 7)")):
+            with self.subTest(sub=hex(sub)):
+                thin = _thin_macho(self.ARM64, sub)
+                self.assertEqual(bt.inspect(thin)["arch"], name)
+                fat = _fat_macho([(self.X86_64, _thin_macho(self.X86_64)), (self.ARM64, thin)])
+                self.assertEqual(bt.inspect(fat)["arches"], ["x86-64", name])
+
+    def test_arm64e_slices_are_told_apart_and_selectable(self):
+        # The shape of /bin/ls on macOS 27: x86_64, arm64e (0x80000002) and arm64e.x1 (0x8000000C).
+        x86 = _thin_macho(self.X86_64)
+        e, x1 = _thin_macho(self.ARM64, 0x80000002), _thin_macho(self.ARM64, 0x8000000C)
+        fat = _fat_macho([(self.X86_64, x86), (self.ARM64, e), (self.ARM64, x1)])
+        self.assertEqual(bt.inspect(fat)["arches"], ["x86-64", "ARM64e", "ARM64e.x1"])
+        for sel, body in (("ARM64e", e), ("ARM64e.x1", x1)):
+            off, size, arch = bt.macho_slice(fat, sel)
+            self.assertEqual((arch, fat[off:off + size]), (sel, body))
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("lipo"), "needs macOS and lipo")
+    def test_a_system_binary_matches_lipo(self):
+        names = {"x86_64": "x86-64", "arm64": "ARM64", "arm64e": "ARM64e", "arm64.x1": "ARM64.x1",
+                 "arm64e.x1": "ARM64e.x1"}
+        archs = subprocess.run(["lipo", "-archs", "/bin/ls"], capture_output=True, text=True, check=True,
+                               timeout=30).stdout.split()
+        rep = bt.inspect(Path("/bin/ls").read_bytes())
+        self.assertEqual(rep.get("arches") or [rep["arch"]], [names.get(a, a) for a in archs])
 
 
 # ---------------- bin_triage: bounded safety (hostile input) ----------------

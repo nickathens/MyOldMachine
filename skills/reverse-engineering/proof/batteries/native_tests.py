@@ -164,6 +164,13 @@ ARMS = [
      "test_missing_and_out_of_bounds_are_errors", [NATIVE]),
     ("missing slice falls back to the first", S + "bin_triage.py", "if not matches:", "if False and not matches:",
      "test_missing_and_out_of_bounds_are_errors", [NATIVE]),
+    ("ARM64 subtype ignored", S + "bin_triage.py", "sub = cpusubtype & 0x00FFFFFF", "sub = 0",
+     "test_subtype_names_the_variant", [NATIVE]),
+    ("ARM64 subtype feature flags kept", S + "bin_triage.py", "sub = cpusubtype & 0x00FFFFFF", "sub = cpusubtype",
+     "test_subtype_names_the_variant", [NATIVE]),
+    ("fat subtype from the wrong field", S + "bin_triage.py",
+     "cputype, cpusubtype = r.u32(base), r.u32(base + 4)", "cputype, cpusubtype = r.u32(base), r.u32(base + 12)",
+     "test_arm64e_slices_are_told_apart_and_selectable", [NATIVE]),
     ("NULL control (comment only)", S + "bin_triage.py", "# Caps: a hostile file cannot make any of these unbounded.",
      "# Caps (reworded): a hostile file cannot make any of these unbounded.", None, [NATIVE]),
 ]
