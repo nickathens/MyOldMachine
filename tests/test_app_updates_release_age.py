@@ -129,21 +129,24 @@ class NpmReleaseTimesTests(unittest.TestCase):
         self.assertEqual(times, {"0.163.0": ago(8), "0.164.0": ago(1)})
 
     def test_prereleases_and_the_platform_parts_are_dropped(self):
-        # version_tuple would order 0.165.0-alpha.1 ABOVE 0.164.0, and Codex
-        # files its platform builds as 0.164.0-linux-x64 in the same map.
-        out = npm_view({"0.164.0": ago(4)}, "0.164.0",
-                       served=["0.164.0", "0.165.0-alpha.1", "0.164.0-linux-x64"],
-                       extra={"0.165.0-alpha.1": "2026-10-23T00:00:00.000Z",
-                              "0.164.0-linux-x64": "2026-10-20T00:00:00.000Z"})
+        # version_tuple orders 0.163.0-alpha.11.2 ABOVE 0.163.0, and Codex
+        # files its platform builds as 0.163.0-linux-x64 in the same map, so
+        # either could pass for a newer release. Both sit below the latest
+        # tag here, where only the plain-version rule can drop them.
+        out = npm_view({"0.163.0": ago(9), "0.164.0": ago(4)}, "0.164.0",
+                       served=["0.163.0", "0.163.0-alpha.11.2", "0.163.0-linux-x64", "0.164.0"],
+                       extra={"0.163.0-alpha.11.2": "2026-10-15T00:00:00.000Z",
+                              "0.163.0-linux-x64": "2026-10-15T00:00:00.000Z"})
         times, _ = self.view(out)[0]
-        self.assertEqual(list(times), ["0.164.0"])
+        self.assertEqual(sorted(times), ["0.163.0", "0.164.0"])
 
     def test_a_version_npm_no_longer_serves_is_dropped(self):
         # An unpublished release, the usual fate of a poisoned one, keeps its
         # entry in the time map.
-        out = npm_view({"1.0.0": ago(30), "1.0.1": ago(5)}, "1.0.0", served=["1.0.0"])
+        out = npm_view({"1.0.0": ago(30), "1.0.1": ago(5), "1.0.2": ago(4)}, "1.0.2",
+                       served=["1.0.0", "1.0.2"])
         times, _ = self.view(out)[0]
-        self.assertEqual(list(times), ["1.0.0"])
+        self.assertEqual(sorted(times), ["1.0.0", "1.0.2"])
 
     def test_versions_above_the_latest_tag_are_dropped(self):
         out = npm_view({"1.0.0": ago(30), "2.0.0": ago(9)}, "1.0.0")
@@ -183,8 +186,8 @@ class ReleaseGateTests(_Clock, unittest.TestCase):
     def test_the_newest_release_old_enough_is_the_target(self):
         # Claude Code ships about one a day, so waiting for the NEWEST to be
         # three days old would mean never updating.
-        g = self.gate({"2.1.300": ago(9), "2.1.305": ago(4), "2.1.308": ago(2), "2.1.310": ago(0, 4)},
-                      "2.1.300", "2.1.310")
+        g = self.gate({"2.1.300": ago(9), "2.1.303": ago(6), "2.1.305": ago(4), "2.1.308": ago(2),
+                       "2.1.310": ago(0, 4)}, "2.1.300", "2.1.310")
         self.assertEqual(g.target, "2.1.305")
 
     def test_the_hour_for_the_pieces_is_part_of_the_wait(self):
