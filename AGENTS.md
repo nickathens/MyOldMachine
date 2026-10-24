@@ -108,6 +108,8 @@ provider.
 (Add a line when you start, remove it when merged. Format:
 `[YYYY-MM-DD] side: short description (PR #N if open)`.)
 
+[2026-10-24] linux: new releases wait 3 days before the nightly installs them, a weekly Python kit check against OSV, certifi floor; touches bot.py + utils/app_updates.py + utils/system_update.py (PR #212)
+
 (Entries removed above: #210 cleared in its reviewed merge revision,
 the same call as #208.
 #208 cleared in its reviewed merge revision,
