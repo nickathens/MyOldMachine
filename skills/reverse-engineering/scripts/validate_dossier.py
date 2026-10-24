@@ -11,7 +11,7 @@ runtime and the subset of JSON Schema it uses is interpreted here: type
 (object|array|string|integer|boolean), properties, required,
 additionalProperties:false, enum, const, items, minItems, oneOf.
 
-The schema-subset interpreter is ported from the hacker skill's
+The schema-subset interpreter is ported from the security-audit skill's
 validate_findings.py (itself from cloudflare/security-audit-skill, MIT). Four
 constraints the subset cannot express are applied as an explicit, labelled
 semantic layer after schema validation:

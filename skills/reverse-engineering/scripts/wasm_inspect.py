@@ -63,8 +63,8 @@ VALTYPES = {0x7F: "i32", 0x7E: "i64", 0x7D: "f32", 0x7C: "f64", 0x7B: "v128", 0x
             0x6F: "externref"}
 MAX_SECTIONS = 100_000
 MAX_FUNCS = 1_000_000
-# Each entry is a few bytes of file and a Python object of a few hundred: uncapped, 3 MB of empty
-# imports took 574 MB, so about 42 MB of module would have taken the bot's 8 GB. Real modules
+# Each entry is a few bytes of file and a Python object of a few hundred: uncapped, 4 MB of empty
+# imports took 574 MB, so about 55 MB of module would have taken 8 GB. Real modules
 # carry thousands of imports, exports, types and data segments, not hundreds of thousands.
 MAX_ENTRIES = 100_000
 MAX_STRINGS = 300

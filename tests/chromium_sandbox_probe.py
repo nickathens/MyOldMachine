@@ -1,6 +1,6 @@
 """Read, from the running processes, whether the Chromium under a process is really sandboxed.
 
-Shared by the reverse-engineering and browser tests. A launch flag proves
+Used by the reverse-engineering tests. A launch flag proves
 nothing on its own: Playwright adds --no-sandbox by default, and a sandbox that
 fails to start kills the launch. So this looks at the running processes: a
 sandboxed renderer carries no --no-sandbox and, on Linux, sits in its own user
@@ -109,16 +109,16 @@ def chrome_tree(root):
 
 
 def wait_for_renderer(root, timeout=30.0, settle=5.0):
-    """The Chromium tree under root once a renderer is up, or [] on timeout. A macOS
-    renderer applies its sandbox itself as it starts, so a renderer seen unsandboxed
-    is given `settle` seconds to report in before the tree is returned as it was."""
+    """The Chromium tree under root once a renderer is up, or [] on timeout. A renderer
+    applies its sandbox itself as it starts (on Linux the seccomp filter came 2.6 to 5 ms
+    after the process, on macOS Seatbelt), so a renderer seen unsandboxed is given
+    `settle` seconds to report in before the tree is returned as it was."""
     end = time.monotonic() + timeout
     seen, last = None, []
     while time.monotonic() < end:
         tree = chrome_tree(root)
-        renderers = [p for p in tree if p["type"] == "renderer"]
-        if renderers:
-            if not MACOS or all(p["sandboxed"] for p in renderers):
+        if any(p["type"] == "renderer" for p in tree):
+            if not sandbox_faults(tree):
                 return tree
             seen, last = seen or time.monotonic(), tree
             if time.monotonic() - seen >= settle:

@@ -13,13 +13,16 @@ it, a cancelled timer).
 """
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from functools import partial
+from unittest import mock
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -327,6 +330,46 @@ class ActionParsing(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     wp.parse_action(bad)
+
+
+class SandboxProbeWaitsForTheSandbox(unittest.TestCase):
+    """A renderer switches its own sandbox on just after it appears: on Linux its seccomp
+    filter came 2.6 to 5 ms after the process (8 of 8 launches, polled without a pause), on
+    macOS Seatbelt. Judged at first sight, a sandboxed renderer can read as unsandboxed. Fake
+    process trees here, no Chromium, so this runs everywhere."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "chromium_sandbox_probe_logic", str(Path(__file__).resolve().parent / "chromium_sandbox_probe.py"))
+        cls.probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.probe)
+        ours = "user:[ours]" if cls.probe.MACOS else os.readlink("/proc/self/ns/user")
+        browser = {"pid": 5, "type": "browser", "no_sandbox": False, "userns": ours, "netns": "net:[ours]",
+                   "seccomp": "0", "sandboxed": False}
+        renderer = {"pid": 7, "type": "renderer", "no_sandbox": False, "userns": "user:[own]", "netns": "net:[own]"}
+        cls.starting = [browser, dict(renderer, seccomp="0", sandboxed=False)]
+        cls.ready = [browser, dict(renderer, seccomp="2", sandboxed=True)]
+
+    def _wait(self, trees, **kw):
+        """wait_for_renderer over a fake process list: one tree per look, the last one repeating."""
+        looks = []
+
+        def tree(_root):
+            looks.append(1)
+            return trees[min(len(looks), len(trees)) - 1]
+        with mock.patch.object(self.probe, "chrome_tree", tree):
+            return self.probe.wait_for_renderer(1, **kw)
+
+    def test_a_renderer_is_judged_once_its_sandbox_is_up(self):
+        tree = self._wait([self.starting, self.ready], timeout=10, settle=5)
+        self.assertEqual(self.probe.sandbox_faults(tree), [], tree)
+
+    def test_a_renderer_that_never_gets_its_sandbox_still_fails(self):
+        start = time.monotonic()
+        tree = self._wait([self.starting], timeout=10, settle=0.3)
+        self.assertLess(time.monotonic() - start, 5, "waited out the timeout, not the settle")
+        self.assertTrue(self.probe.sandbox_faults(tree), tree)
 
 
 @unittest.skipUnless(HAS_PLAYWRIGHT, "playwright not installed")

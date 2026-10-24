@@ -92,8 +92,8 @@ so the dossier can be re-checked).
 Static tools that read bytes in bounded, memory-safe Python are safe on anything, trusted or
 not: `fingerprint`, `libscan`, `wasm_inspect`'s own parser, `bin_triage` (ELF/PE/Mach-O), and
 `carve`'s signature scan. Bounded means every list they build is capped, not just the bytes
-they read: a .wasm entry of three bytes is a Python object of hundreds, and 3 MB of empty
-imports once took 574 MB (about 42 MB of module would have taken the bot). wasm_inspect caps
+they read: a .wasm entry of three or four bytes is a Python object of hundreds, and 4 MB of empty
+imports once took 574 MB (about 55 MB of module would have taken 8 GB). wasm_inspect caps
 imports, exports, types and data segments at 100,000 and functions at 1,000,000, a measured
 worst case, every list at its cap, of 732 MB. They read regular files only: a pipe named `x.js`
 in a folder once blocked libscan for ever, and a link to `/dev/zero` read until memory ran out.
@@ -615,10 +615,12 @@ logged-in-page and Godot script and scene additions (2026-10-24).
   side in each engine; `proof/gdre/result.json`), and a Unity/.NET C# decompiler (ilspycmd, with
   IL2CPP recognition).
 
-Tests: 288 in `tests/test_reverse_engineering*.py` (static 74, native 55, sandbox 17, watch 23,
+Tests: 290 in `tests/test_reverse_engineering*.py` (static 74, native 55, sandbox 17, watch 25,
 games 25, oracle 13, asar 18, csharp 10, har 17, trace 8, gdre 28). The 285 before the Mac
 review's three Mach-O tests all passed 2026-10-24 on Linux in one
-run of every file (915 subtests; the Docker-gated classes skip without their images). The count
+run of every file (915 subtests; the Docker-gated classes skip without their images). After
+the Mac and Linux reviews all 290 ran there again and passed, but for the lipo check, which
+needs a Mac. The count
 given earlier that day, 254, was one too high: the trace file holds 8 tests, not 9. Every
 instrument is battery-tested: `proof/batteries/` holds `static_tests.py` (40/40), `native_tests.py`
 (with the fat-Mach-O arms; its five name-filter arms rerun 5/5 after the trailing-newline fix),

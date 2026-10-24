@@ -523,7 +523,7 @@ class WasmInspect(unittest.TestCase):
 
     def test_a_flood_of_tiny_entries_is_capped(self):
         # Each entry is a few bytes of file and a Python object of hundreds: 3 MB of empty exports
-        # took 201 MB, so a module of about 70 MB would have taken the bot's 8 GB.
+        # took 201 MB, so a module of about 120 MB would have taken 8 GB.
         import tracemalloc
         _, leb = self._one_section(0, b"")
         n = 1_000_000
