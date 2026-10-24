@@ -1,0 +1,2372 @@
+{
+ "verdict": "PASS",
+ "failures": [],
+ "packages": {
+  "@barba/core": "@barba/core@2.10.3",
+  "@studio-freight/lenis": "@studio-freight/lenis@1.0.42",
+  "@videojs/html": "@videojs/html@10.0.1",
+  "@videojs/react": "@videojs/react@10.0.1",
+  "animejs": "animejs@4.5.0",
+  "animejs3": "animejs@3.2.2",
+  "embla-carousel": "embla-carousel@8.6.0",
+  "embla9": "embla-carousel@9.0.0-rc04",
+  "esbuild": "esbuild@0.28.2",
+  "framer-motion": "framer-motion@14.1.0",
+  "framer-motion11": "framer-motion@11.18.2",
+  "gsap": "gsap@3.15.0",
+  "gsap312": "gsap@3.12.7",
+  "hls.js": "hls.js@1.7.3",
+  "hls15": "hls.js@1.5.20",
+  "jquery": "jquery@4.0.0",
+  "jquery3": "jquery@3.7.1",
+  "lenis": "lenis@1.3.26",
+  "locomotive-scroll": "locomotive-scroll@5.0.1",
+  "locomotive4": "locomotive-scroll@4.1.4",
+  "lottie-web": "lottie-web@5.13.0",
+  "pixi.js": "pixi.js@8.22.0",
+  "pixi7": "pixi.js@7.4.3",
+  "plyr": "plyr@3.8.5",
+  "preact": "preact@10.29.8",
+  "react": "react@19.3.0",
+  "react-dom": "react-dom@19.3.0",
+  "react-dom18": "react-dom@18.3.1",
+  "react18": "react@18.3.1",
+  "swiper": "swiper@14.3.0",
+  "swiper11": "swiper@11.2.10",
+  "three": "three@0.186.1",
+  "three160": "three@0.160.1",
+  "video.js": "video.js@8.24.1",
+  "videojs7": "video.js@7.21.7",
+  "vue": "vue@3.5.43",
+  "webpack": "webpack@5.111.1"
+ },
+ "bundlers": {
+  "esbuild": "esbuild --bundle --minify --format=iife --target=es2020",
+  "webpack": "webpack mode=production (terser)"
+ },
+ "bundles": [
+  {
+   "bundle": "base-vanilla.esbuild",
+   "bytes": 372,
+   "sha256": "ad1f60bff51cee7e331e9ab106ad465054926f45651e08c5bb11698cb09310a7",
+   "expected": [],
+   "found": [],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "base-vanilla.webpack",
+   "bytes": 377,
+   "sha256": "a887a25107aded2be77c28938aef6694e128a2a18e805884c6738899ffcb44be",
+   "expected": [],
+   "found": [],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "preact-10.esbuild",
+   "bytes": 19078,
+   "sha256": "5144cb054fe8cba4070139e7756f8761a403172df3d36fb87ac36b43dc31255f",
+   "expected": [],
+   "found": [],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "preact-10.webpack",
+   "bytes": 18922,
+   "sha256": "e29ede6bb1da14cd3869272d4a4f1570a9441685ae75be69ee3dbec6937769ef",
+   "expected": [],
+   "found": [],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "react-19.esbuild",
+   "bytes": 222851,
+   "sha256": "6b4fdfe3a260bacc87062b57fba27761490ab0029e817029960e27dc34f889b2",
+   "expected": [
+    "react"
+   ],
+   "found": [
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "react-19.webpack",
+   "bytes": 218663,
+   "sha256": "6d3635f94342721b1bc4793021830c061c3771c6509e1c8a2be8c644c5bccdc2",
+   "expected": [
+    "react"
+   ],
+   "found": [
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "react-18.esbuild",
+   "bytes": 142302,
+   "sha256": "60a9a7915e852a95f0253f389e02850e5ef20cbbab892de2fc4fd6fa59ee2391",
+   "expected": [
+    "react"
+   ],
+   "found": [
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "react-18.webpack",
+   "bytes": 139449,
+   "sha256": "ce64858e03be7b9c8abc969864eeefa24c27749a6d72e14476380fee16f52203",
+   "expected": [
+    "react"
+   ],
+   "found": [
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "vue-3.5.esbuild",
+   "bytes": 64629,
+   "sha256": "dffcb0071f32a7931295c7422874dceea19c64d059a46e250e22a9dd9bc7937a",
+   "expected": [
+    "vue"
+   ],
+   "found": [
+    "vue"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "vue-3.5.webpack",
+   "bytes": 63457,
+   "sha256": "2c68e4db350ec1ce034f35e44c13de67316c3e94450ec4a95535804800fb9ab4",
+   "expected": [
+    "vue"
+   ],
+   "found": [
+    "vue"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-14.esbuild",
+   "bytes": 349434,
+   "sha256": "f7aa3637a2e760b32447ecb9d53e2e649780292809c19aaccb0242ce786cb46f",
+   "expected": [
+    "framer-motion",
+    "react"
+   ],
+   "found": [
+    "framer-motion",
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-14.webpack",
+   "bytes": 343387,
+   "sha256": "5a5517e33223744c30bd17b8667d9120d0d5c2a797edc5aaa9194c5c8f4e33a8",
+   "expected": [
+    "framer-motion",
+    "react"
+   ],
+   "found": [
+    "framer-motion",
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-11.esbuild",
+   "bytes": 336210,
+   "sha256": "8b344d654df9018a80ee29b78508be48a1e05e4da0e63255bf0e6fdba544eaf3",
+   "expected": [
+    "framer-motion",
+    "react"
+   ],
+   "found": [
+    "framer-motion",
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-11.webpack",
+   "bytes": 331388,
+   "sha256": "6326f9894313f906dd2feec336ea132ac9f00d8ce34e3eca8c56f0d2b571b10a",
+   "expected": [
+    "framer-motion",
+    "react"
+   ],
+   "found": [
+    "framer-motion",
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-dom-14.esbuild",
+   "bytes": 62055,
+   "sha256": "21409f0fc7d6f0ba67ad0ead222ec9704e650bf4fcd2ef2ac0ec6b680a85fb1a",
+   "expected": [
+    "framer-motion"
+   ],
+   "found": [
+    "framer-motion"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-dom-14.webpack",
+   "bytes": 60040,
+   "sha256": "a037019b491bb67d759e838dd4b0ddadcdc4a1f1d3787b98c60cda2d53e0ccc8",
+   "expected": [
+    "framer-motion"
+   ],
+   "found": [
+    "framer-motion"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-dom-11.esbuild",
+   "bytes": 61379,
+   "sha256": "2309621b1b4f527a33459d05fd0e4c7f8f9dead964e67f582e1cd2015e6427d3",
+   "expected": [
+    "framer-motion"
+   ],
+   "found": [
+    "framer-motion"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-dom-11.webpack",
+   "bytes": 60691,
+   "sha256": "0e398b086f17db0b549b1b94002ba96042ec51b9904c95bc9108587ec110dab5",
+   "expected": [
+    "framer-motion"
+   ],
+   "found": [
+    "framer-motion"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "gsap-3.15.esbuild",
+   "bytes": 70739,
+   "sha256": "252fb7b3285252ac900e47a7b96664765846634d7d1e00960b14ba05319f816c",
+   "expected": [
+    "gsap"
+   ],
+   "found": [
+    "gsap"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "gsap-3.15.webpack",
+   "bytes": 69886,
+   "sha256": "148a8f27361bc095593dc7a93c1c8be6d75298a6954d286ba81ee7a3614abf05",
+   "expected": [
+    "gsap"
+   ],
+   "found": [
+    "gsap"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "gsap-3.12.esbuild",
+   "bytes": 70206,
+   "sha256": "2bed4202d30077d65a3d7ca0afa5709ae58ec413954f63d64fd47486cea06201",
+   "expected": [
+    "gsap"
+   ],
+   "found": [
+    "gsap"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "gsap-3.12.webpack",
+   "bytes": 69187,
+   "sha256": "9724066ffe8ecf90329440e244590a5d76e0edfb69560f1fe36298b70e0c746d",
+   "expected": [
+    "gsap"
+   ],
+   "found": [
+    "gsap"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "scrolltrigger-3.15.esbuild",
+   "bytes": 115269,
+   "sha256": "44f735f7f65cc38ee9679d340c90b6c825c347f170b7d94369cd22dc23d65c53",
+   "expected": [
+    "gsap",
+    "gsap-scrolltrigger"
+   ],
+   "found": [
+    "gsap",
+    "gsap-scrolltrigger"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "scrolltrigger-3.15.webpack",
+   "bytes": 113242,
+   "sha256": "b39675bce391e0f1b1fc5546620425e9fa296594775625597779934b24f35b1c",
+   "expected": [
+    "gsap",
+    "gsap-scrolltrigger"
+   ],
+   "found": [
+    "gsap",
+    "gsap-scrolltrigger"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "scrolltrigger-3.12.esbuild",
+   "bytes": 114226,
+   "sha256": "418042b6ae8d669f1453b45dda1048f6200cd21d0413711655e664fc59d262b9",
+   "expected": [
+    "gsap",
+    "gsap-scrolltrigger"
+   ],
+   "found": [
+    "gsap",
+    "gsap-scrolltrigger"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "scrolltrigger-3.12.webpack",
+   "bytes": 111905,
+   "sha256": "5e1ce855fb1fcebbcb57a61e1a9f7cabe39898b90eb84e78be7836c26fcb055e",
+   "expected": [
+    "gsap",
+    "gsap-scrolltrigger"
+   ],
+   "found": [
+    "gsap",
+    "gsap-scrolltrigger"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lenis-1.3.esbuild",
+   "bytes": 19564,
+   "sha256": "6dea81bfa66a1bfba8fa774329cc92b7b7657242cad9e05ab05efa3539654156",
+   "expected": [
+    "lenis"
+   ],
+   "found": [
+    "lenis"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lenis-1.3.webpack",
+   "bytes": 18813,
+   "sha256": "34efbc69f11aca3da112bbb5f2a628d627c8dc6886e274ab3bb0277768537759",
+   "expected": [
+    "lenis"
+   ],
+   "found": [
+    "lenis"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lenis-1.0-studio-freight.esbuild",
+   "bytes": 11721,
+   "sha256": "7595ee6a95063c752d5b55c82d9903781dab8bfcdb8a025b12531928adb040ff",
+   "expected": [
+    "lenis"
+   ],
+   "found": [
+    "lenis"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lenis-1.0-studio-freight.webpack",
+   "bytes": 11503,
+   "sha256": "53ad78e172a0d588ccd6a6ebabb0ccc452142934c501ee6e88dfd84a90a21b01",
+   "expected": [
+    "lenis"
+   ],
+   "found": [
+    "lenis"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "locomotive-5.esbuild",
+   "bytes": 35063,
+   "sha256": "864d41f5055ecc25c1389d17982f381d899da7e5329cd3bf0033c7a991d82cfb",
+   "expected": [
+    "lenis",
+    "locomotive-scroll"
+   ],
+   "found": [
+    "lenis",
+    "locomotive-scroll"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "locomotive-5.webpack",
+   "bytes": 34660,
+   "sha256": "dcd1f3be7d0afc33483e9ae4a5636977191f0629d5451531b64a1b163e5f34f5",
+   "expected": [
+    "lenis",
+    "locomotive-scroll"
+   ],
+   "found": [
+    "lenis",
+    "locomotive-scroll"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "locomotive-4.esbuild",
+   "bytes": 48005,
+   "sha256": "aa529091edc12d8de75e2ea7617eefeea108bc1a5d707d96baec5d40d452780c",
+   "expected": [
+    "locomotive-scroll"
+   ],
+   "found": [
+    "locomotive-scroll"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "locomotive-4.webpack",
+   "bytes": 46972,
+   "sha256": "5948305125488c0fcba848a4ce47f619e63f7c313ca672a22ac8a26ef5d781ef",
+   "expected": [
+    "locomotive-scroll"
+   ],
+   "found": [
+    "locomotive-scroll"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "three-0.186.esbuild",
+   "bytes": 529277,
+   "sha256": "aea12a97e8772f92026fdf18935016c9e5b6cc0575d44ac75c8c95903fc5fda3",
+   "expected": [
+    "three"
+   ],
+   "found": [
+    "three"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "three-0.186.webpack",
+   "bytes": 534541,
+   "sha256": "89402890d1adcef0e1428030af93e8d3ed23f415461ff831aba3879d6f463cdf",
+   "expected": [
+    "three"
+   ],
+   "found": [
+    "three"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "three-0.160.esbuild",
+   "bytes": 462627,
+   "sha256": "8f9fa9b12ba44ec595551225fcdc86b4f4ef622fcebb62589993d79d1fceaabb",
+   "expected": [
+    "three"
+   ],
+   "found": [
+    "three"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "three-0.160.webpack",
+   "bytes": 469302,
+   "sha256": "e5d2dd3afc98d2adf2d2eca921cbe2da13126be3f8cc9d8e1d724943516229ea",
+   "expected": [
+    "three"
+   ],
+   "found": [
+    "three"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "swiper-14.esbuild",
+   "bytes": 83505,
+   "sha256": "8e1eeddf501cfe8c76e43a3b1b2e3774b8fc7494ea204d288de9b1c88c912e52",
+   "expected": [
+    "swiper"
+   ],
+   "found": [
+    "swiper"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "swiper-14.webpack",
+   "bytes": 83548,
+   "sha256": "f6e29128ed88297e3123cd4b4a1b4d6821c5db3c5ca453c01b774beaa90e4683",
+   "expected": [
+    "swiper"
+   ],
+   "found": [
+    "swiper"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "swiper-11.esbuild",
+   "bytes": 84746,
+   "sha256": "9fc87d800845350cb4334ff65dc1e2f5b565b42624c8a771a39cffcca87618c2",
+   "expected": [
+    "swiper"
+   ],
+   "found": [
+    "swiper"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "swiper-11.webpack",
+   "bytes": 84879,
+   "sha256": "a6ae24d243858e7eb64f673923dd8eafe6b18508162e4f227311f6a806546eaa",
+   "expected": [
+    "swiper"
+   ],
+   "found": [
+    "swiper"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "embla-8.esbuild",
+   "bytes": 18372,
+   "sha256": "a72e5a2f127fd46192425c354cd8dd174d971a8082ffefe8f2ff127e4b3289ce",
+   "expected": [
+    "embla-carousel"
+   ],
+   "found": [
+    "embla-carousel"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "embla-8.webpack",
+   "bytes": 17593,
+   "sha256": "76374241db58e91c66d48c729337f1703c8d686568fe56f3d40f6ae48eeb2a80",
+   "expected": [
+    "embla-carousel"
+   ],
+   "found": [
+    "embla-carousel"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "embla-9-rc.esbuild",
+   "bytes": 19788,
+   "sha256": "e4d916bee7ae047d378c0f48f0f465865cbd8f81ebf5168d1e542f416865d441",
+   "expected": [
+    "embla-carousel"
+   ],
+   "found": [
+    "embla-carousel"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "embla-9-rc.webpack",
+   "bytes": 19100,
+   "sha256": "c36bdb4ca60658233a17683a0db374e1e22463348ff83e3735642b6097e73f11",
+   "expected": [
+    "embla-carousel"
+   ],
+   "found": [
+    "embla-carousel"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lottie-5.13.esbuild",
+   "bytes": 309034,
+   "sha256": "2780126916e49f4e0d1290d44ad3e16ea30bc93a0f93fecffac5162241485511",
+   "expected": [
+    "lottie-web"
+   ],
+   "found": [
+    "lottie-web"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lottie-5.13.webpack",
+   "bytes": 306226,
+   "sha256": "8b025a7cef8ddb3225d860b9bf1d9515fabd375806f7824d2dae93e1fedf4cc2",
+   "expected": [
+    "lottie-web"
+   ],
+   "found": [
+    "lottie-web"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "anime-4.esbuild",
+   "bytes": 32394,
+   "sha256": "c8b3526dc47bae3f5d42a077e381fbd73a2c29dc8c2ad418b953dcf63161a2c2",
+   "expected": [
+    "animejs"
+   ],
+   "found": [
+    "animejs"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "anime-4.webpack",
+   "bytes": 30376,
+   "sha256": "73e88b289da6b93c173e407d0c740c4dd63ae6b2389fefcdab63690e16fa8440",
+   "expected": [
+    "animejs"
+   ],
+   "found": [
+    "animejs"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "anime-3.esbuild",
+   "bytes": 18167,
+   "sha256": "463da1edfbd5d237114d428d93d27f5d5c8ac94a7e72b9b1a187ec9f051bf949",
+   "expected": [
+    "animejs"
+   ],
+   "found": [
+    "animejs"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "anime-3.webpack",
+   "bytes": 17656,
+   "sha256": "df154d8a9134ac3f6b0e8e6059770fc8a1b995f3655c6d044c34835673874755",
+   "expected": [
+    "animejs"
+   ],
+   "found": [
+    "animejs"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "pixi-8.esbuild",
+   "bytes": 528504,
+   "sha256": "61792ed37680aaae292c71773cf4b31c61ef615e14a2470696c748c0ba40ba1f",
+   "expected": [
+    "pixi.js"
+   ],
+   "found": [
+    "pixi.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "pixi-8.webpack",
+   "bytes": 246217,
+   "sha256": "1ddf6f9236de5a8facd1cd52cf8334e0ee0e22c8e2eeeb36bc126c4913c59f95",
+   "expected": [
+    "pixi.js"
+   ],
+   "found": [
+    "pixi.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "pixi-7.esbuild",
+   "bytes": 475665,
+   "sha256": "78c245a2ade0c1c89a72595eb7c85a22676531107aad250aa1c1470ebc3d6f07",
+   "expected": [
+    "pixi.js"
+   ],
+   "found": [
+    "pixi.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "pixi-7.webpack",
+   "bytes": 470390,
+   "sha256": "89a8c69091238c418ec234f0d379a9bf5deae960303ed5bc25d1d7686f8be261",
+   "expected": [
+    "pixi.js"
+   ],
+   "found": [
+    "pixi.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "hls-1.7.esbuild",
+   "bytes": 585380,
+   "sha256": "66f18725bc18fb62df9f2321b22988b15f596734fa12d913e6858988117afc17",
+   "expected": [
+    "hls.js"
+   ],
+   "found": [
+    "hls.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "hls-1.7.webpack",
+   "bytes": 587562,
+   "sha256": "3ccc9d8779ae8c8487037e04e1c8327380c38f2ba916540e80b955de3a3cd760",
+   "expected": [
+    "hls.js"
+   ],
+   "found": [
+    "hls.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "hls-1.5.esbuild",
+   "bytes": 394135,
+   "sha256": "7c33f965ade563a1dbe4b4d662675b21172704347b5b285f614e1b1d1812871e",
+   "expected": [
+    "hls.js"
+   ],
+   "found": [
+    "hls.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "hls-1.5.webpack",
+   "bytes": 394232,
+   "sha256": "f9a5ac1c862d703a0d0e3a053fcaf296a910a1147d604280405e4062bef42c28",
+   "expected": [
+    "hls.js"
+   ],
+   "found": [
+    "hls.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-8.esbuild",
+   "bytes": 717729,
+   "sha256": "994a67e10285f91e93e8a3e9a5326f04ee0711da155205c9c8c7121ea67031af",
+   "expected": [
+    "video.js"
+   ],
+   "found": [
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-8.webpack",
+   "bytes": 704382,
+   "sha256": "18fe9c3306928602d4b3ccea1d588dd644e94869c44a5976e90de5efbfb8c374",
+   "expected": [
+    "video.js"
+   ],
+   "found": [
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-7.esbuild",
+   "bytes": 646510,
+   "sha256": "def5a1ff844f2d13ca37bf740ac696ad1ad3580333533401d453216f05d9d206",
+   "expected": [
+    "video.js"
+   ],
+   "found": [
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-7.webpack",
+   "bytes": 623564,
+   "sha256": "45ab62d1a579aff75ec6d5fed431946deb5659c6c3a461aaa3c5f5c3bad2b8d3",
+   "expected": [
+    "video.js"
+   ],
+   "found": [
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-10-html.esbuild",
+   "bytes": 588387,
+   "sha256": "c91d0159c94fb975e78548163b41e51ac0918815b35cb4ab08656b7313c2dd4e",
+   "expected": [
+    "video.js"
+   ],
+   "found": [
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-10-html.webpack",
+   "bytes": 342875,
+   "sha256": "a0134a83ce9126619c8dd2ced4b6ed56a78b8f67feb3c01e897c041be0e934fb",
+   "expected": [
+    "video.js"
+   ],
+   "found": [
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-10-react.esbuild",
+   "bytes": 492219,
+   "sha256": "f5b1b3e167f8fd87b5215358d79a1768b87215059e061ef4697e4144536cdab4",
+   "expected": [
+    "react",
+    "video.js"
+   ],
+   "found": [
+    "react",
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-10-react.webpack",
+   "bytes": 473542,
+   "sha256": "44b1c97848cd1ee242da063b7662e9766b650ea5e3ef4e7091ebf611baad9bb5",
+   "expected": [
+    "react",
+    "video.js"
+   ],
+   "found": [
+    "react",
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "plyr-3.esbuild",
+   "bytes": 113447,
+   "sha256": "7420a66dae2164af88dd61f8e331f77554e06bc956477612cd8665e798602792",
+   "expected": [
+    "plyr"
+   ],
+   "found": [
+    "plyr"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "plyr-3.webpack",
+   "bytes": 113579,
+   "sha256": "bb644cbb5815c2cfbf7fb30a66d203ae20c7ea069918b37c4b11f67f3f35a887",
+   "expected": [
+    "plyr"
+   ],
+   "found": [
+    "plyr"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "barba-2.esbuild",
+   "bytes": 32340,
+   "sha256": "e6a99b6a5e6ff68b3d1380f752211fa66f21525082c5ec48ad32d4da7b5a606e",
+   "expected": [
+    "barba"
+   ],
+   "found": [
+    "barba"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "barba-2.webpack",
+   "bytes": 31934,
+   "sha256": "1637b2c0caf2a073e01b01f82fad826ede65dd33ccddf73415ebb03e96e1ec2b",
+   "expected": [
+    "barba"
+   ],
+   "found": [
+    "barba"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "jquery-4.esbuild",
+   "bytes": 79304,
+   "sha256": "12ba6cc0e7f8d05b67d5175598fab8b81e620a9ca59791187eb9a7154a28f749",
+   "expected": [
+    "jquery"
+   ],
+   "found": [
+    "jquery"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "jquery-4.webpack",
+   "bytes": 78584,
+   "sha256": "74638ab50093e6d2104fd1965739995609148c31a76bb30eae3a59c1e350d4dd",
+   "expected": [
+    "jquery"
+   ],
+   "found": [
+    "jquery"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "jquery-3.esbuild",
+   "bytes": 88478,
+   "sha256": "b927142695f15805ba1bf6183d5120d11e190cea4ce8686c574a08e44784858e",
+   "expected": [
+    "jquery"
+   ],
+   "found": [
+    "jquery"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "jquery-3.webpack",
+   "bytes": 87284,
+   "sha256": "8e6c06bc2edddef5fa49d19a9cc916cf391512e17f88511bfabd8acb21e5f688",
+   "expected": [
+    "jquery"
+   ],
+   "found": [
+    "jquery"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "gsap-3.15.dist",
+   "bytes": 72927,
+   "sha256": "92bb9a96476f983d212a2bc4f54c889039c1696dd4461d40a736860938570fbb",
+   "expected": [
+    "gsap"
+   ],
+   "found": [
+    "gsap"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "gsap-3.12.dist",
+   "bytes": 72304,
+   "sha256": "5468a19b889d234135baaad67b35ac892701f45fe3328b27eeab3aa4f4a479a7",
+   "expected": [
+    "gsap"
+   ],
+   "found": [
+    "gsap"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "scrolltrigger-3.15.dist",
+   "bytes": 44575,
+   "sha256": "b0b14d67b55b0c43c756ac0b106cfcb09d0879945f6ead64451065b0672916a2",
+   "expected": [
+    "gsap-scrolltrigger"
+   ],
+   "found": [
+    "gsap-scrolltrigger"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "scrolltrigger-3.12.dist",
+   "bytes": 43974,
+   "sha256": "d705d104381eeb97768ddc537f0f7a52fad6e3f168946b2400f0207298b22d8d",
+   "expected": [
+    "gsap-scrolltrigger"
+   ],
+   "found": [
+    "gsap-scrolltrigger"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "three-0.160.dist",
+   "bytes": 670681,
+   "sha256": "3e690ac7d180b0aadf0891bea39eec643e29e2d3e75c99b18689518665f69ba6",
+   "expected": [
+    "three"
+   ],
+   "found": [
+    "three"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "swiper-14.dist",
+   "bytes": 153767,
+   "sha256": "7ca50b195b0750f755251fcf87daca8ac30b29c6c7674b13ba1be35aa4d3d209",
+   "expected": [
+    "swiper"
+   ],
+   "found": [
+    "swiper"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "swiper-11.dist",
+   "bytes": 154597,
+   "sha256": "985f1224c0eeec99d367a9db35e58e44b21e7eb9ce45831b15b4c108e41fd97f",
+   "expected": [
+    "swiper"
+   ],
+   "found": [
+    "swiper"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lenis-1.3.dist",
+   "bytes": 18722,
+   "sha256": "53195c9797e7ce7bf9d7fa9242b08209e57f46de4c9dac126a6494fa780e3346",
+   "expected": [
+    "lenis"
+   ],
+   "found": [
+    "lenis"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lenis-1.0-studio-freight.dist",
+   "bytes": 11635,
+   "sha256": "7949f2d87aa5eaa05baa6ba843ad2eeae786d9e09954a41a1b282ac023eabae8",
+   "expected": [
+    "lenis"
+   ],
+   "found": [
+    "lenis"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "locomotive-5.dist",
+   "bytes": 20331,
+   "sha256": "2a45a550d43879130a7211395bb64dba6ef86460d468c71a16bfe219a45d074d",
+   "expected": [
+    "locomotive-scroll"
+   ],
+   "found": [
+    "locomotive-scroll"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "locomotive-4.dist",
+   "bytes": 47456,
+   "sha256": "a1d94da6c7b229efd8af615590a7e87fa0928fcf9e75b6abc70e610e9a821811",
+   "expected": [
+    "locomotive-scroll"
+   ],
+   "found": [
+    "locomotive-scroll"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "jquery-4.dist",
+   "bytes": 78748,
+   "sha256": "39a546ea9ad97f8bfaf5d3e0e8f8556adb415e470e59007ada9759dce472adaa",
+   "expected": [
+    "jquery"
+   ],
+   "found": [
+    "jquery"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "jquery-3.dist",
+   "bytes": 87533,
+   "sha256": "fc9a93dd241f6b045cbff0481cf4e1901becd0e12fb45166a8f17f95823f0b1a",
+   "expected": [
+    "jquery"
+   ],
+   "found": [
+    "jquery"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "anime-4.dist",
+   "bytes": 118043,
+   "sha256": "8d5b3a58a1f64023a04a4cedeef135a2263b18da04b35177ac13438a0bad033b",
+   "expected": [
+    "animejs"
+   ],
+   "found": [
+    "animejs"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "anime-3.dist",
+   "bytes": 17384,
+   "sha256": "b5ce1be3c3f530f192e0f2571d1942846096d66119cbada34bfdc912c4873f35",
+   "expected": [
+    "animejs"
+   ],
+   "found": [
+    "animejs"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "lottie-5.13.dist",
+   "bytes": 305704,
+   "sha256": "2eb762973aec914d981f426123040bfac9d26217239605e225ddc7cee17618ac",
+   "expected": [
+    "lottie-web"
+   ],
+   "found": [
+    "lottie-web"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "hls-1.7.dist",
+   "bytes": 619692,
+   "sha256": "a12e7ee1cd64a69dcdb314157e45dafcba705bfb0b1440b7935cb265d374423e",
+   "expected": [
+    "hls.js"
+   ],
+   "found": [
+    "hls.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "hls-1.5.dist",
+   "bytes": 415253,
+   "sha256": "d016c1230496ee59f3f5b01c16cce4cc01b5a1d3d357adec200c908b131ebe49",
+   "expected": [
+    "hls.js"
+   ],
+   "found": [
+    "hls.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-8.dist",
+   "bytes": 691794,
+   "sha256": "22394426b1c285f77afd575cd9cd63ae84f033ef08d39b315c2a5c6726d3f8b7",
+   "expected": [
+    "video.js"
+   ],
+   "found": [
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "videojs-7.dist",
+   "bytes": 589324,
+   "sha256": "820388ecff9bbd8108047f3a7f3913835613773940b8dd42527d580cc8629ac0",
+   "expected": [
+    "video.js"
+   ],
+   "found": [
+    "video.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "plyr-3.dist",
+   "bytes": 113941,
+   "sha256": "3861802c6e5e46c0acc104a5ecec761c2992a7e93a685fab349004c44436410a",
+   "expected": [
+    "plyr"
+   ],
+   "found": [
+    "plyr"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "barba-2.dist",
+   "bytes": 31817,
+   "sha256": "d64110367eb45375dc5f21cb4915d224a22e74d7e73ca8a82cde710c3f0e3774",
+   "expected": [
+    "barba"
+   ],
+   "found": [
+    "barba"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "vue-3.5.dist",
+   "bytes": 168331,
+   "sha256": "b72394052eef1eeda1752db3758ce1be6f88016903f22e5241cc732ea307478e",
+   "expected": [
+    "vue"
+   ],
+   "found": [
+    "vue"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "react-18.dist",
+   "bytes": 142587,
+   "sha256": "f5d719aa39dd57fb86f559cf2e209603eb61a64ea88dc641436c90e5f8252336",
+   "expected": [
+    "react"
+   ],
+   "found": [
+    "react"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "pixi-8.dist",
+   "bytes": 840663,
+   "sha256": "06d9ef9823e743518793083c296d801e752db128cb1f519fbabe37e1259567ea",
+   "expected": [
+    "pixi.js"
+   ],
+   "found": [
+    "pixi.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "pixi-7.dist",
+   "bytes": 456150,
+   "sha256": "712a3e1943b062a907d86c5bb56b67c7b32a3f03b3654768b00b7016d30a24c6",
+   "expected": [
+    "pixi.js"
+   ],
+   "found": [
+    "pixi.js"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "embla-8.dist",
+   "bytes": 17946,
+   "sha256": "f05b5dbfe37d79b636b9db74ad04ed5e99b4bce369d781b0fb38b0b2ac619e66",
+   "expected": [
+    "embla-carousel"
+   ],
+   "found": [
+    "embla-carousel"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-14.dist",
+   "bytes": 195354,
+   "sha256": "90dc849af416da6071e47a2bb6eed2b144a766dd3ddabe9f7195c0f664a541e9",
+   "expected": [
+    "framer-motion"
+   ],
+   "found": [
+    "framer-motion"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  },
+  {
+   "bundle": "framer-motion-11.dist",
+   "bytes": 143903,
+   "sha256": "939b9a0842ef8b4586f144896793f6f51c9e0514e5ac8bedabcf34c97597ca96",
+   "expected": [
+    "framer-motion"
+   ],
+   "found": [
+    "framer-motion"
+   ],
+   "trace": [],
+   "missing": [],
+   "extra": []
+  }
+ ],
+ "marker_hits": {
+  "react": {
+   "__reactInternalSnapshotBeforeUpdate": [
+    "react-19.esbuild",
+    "react-19.webpack",
+    "react-18.esbuild",
+    "react-18.webpack",
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack",
+    "react-18.dist"
+   ],
+   "_reactRootContainer": [
+    "react-19.esbuild",
+    "react-19.webpack",
+    "react-18.esbuild",
+    "react-18.webpack",
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack",
+    "react-18.dist"
+   ],
+   "unstable_scheduleCallback": [
+    "react-19.esbuild",
+    "react-19.webpack",
+    "react-18.esbuild",
+    "react-18.webpack",
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack",
+    "react-18.dist"
+   ],
+   "UNSAFE_componentWillMount": [
+    "react-19.esbuild",
+    "react-19.webpack",
+    "react-18.esbuild",
+    "react-18.webpack",
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack",
+    "react-18.dist"
+   ],
+   "Minified React error #": [
+    "react-19.esbuild",
+    "react-19.webpack",
+    "react-18.esbuild",
+    "react-18.webpack",
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack",
+    "react-18.dist"
+   ],
+   "react.suspense_list": [
+    "react-19.esbuild",
+    "react-19.webpack",
+    "react-18.esbuild",
+    "react-18.webpack",
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack",
+    "react-18.dist"
+   ]
+  },
+  "vue": {
+   "__VUE_DEVTOOLS_GLOBAL_HOOK__": [
+    "vue-3.5.esbuild",
+    "vue-3.5.webpack"
+   ],
+   "__v_isRef": [
+    "vue-3.5.esbuild",
+    "vue-3.5.webpack",
+    "vue-3.5.dist"
+   ],
+   "__v_isReactive": [
+    "vue-3.5.esbuild",
+    "vue-3.5.webpack",
+    "vue-3.5.dist"
+   ],
+   "__vueParentComponent": [
+    "vue-3.5.esbuild",
+    "vue-3.5.webpack"
+   ],
+   "__VUE_OPTIONS_API__": [
+    "vue-3.5.esbuild",
+    "vue-3.5.webpack"
+   ],
+   "__isKeepAlive": [
+    "vue-3.5.esbuild",
+    "vue-3.5.webpack",
+    "vue-3.5.dist"
+   ]
+  },
+  "framer-motion": {
+   "unresolvedKeyframes": [
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "framer-motion-dom-14.esbuild",
+    "framer-motion-dom-14.webpack",
+    "framer-motion-dom-11.esbuild",
+    "framer-motion-dom-11.webpack",
+    "framer-motion-14.dist",
+    "framer-motion-11.dist"
+   ],
+   "onKeyframesResolved": [
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "framer-motion-dom-14.esbuild",
+    "framer-motion-dom-14.webpack",
+    "framer-motion-dom-11.esbuild",
+    "framer-motion-dom-11.webpack",
+    "framer-motion-14.dist",
+    "framer-motion-11.dist"
+   ],
+   "isResolvedFromDuration": [
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "framer-motion-dom-14.esbuild",
+    "framer-motion-dom-14.webpack",
+    "framer-motion-dom-11.esbuild",
+    "framer-motion-dom-11.webpack",
+    "framer-motion-14.dist",
+    "framer-motion-11.dist"
+   ],
+   "resolveNoneKeyframes": [
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "framer-motion-dom-14.esbuild",
+    "framer-motion-dom-14.webpack",
+    "framer-motion-dom-11.esbuild",
+    "framer-motion-dom-11.webpack",
+    "framer-motion-14.dist",
+    "framer-motion-11.dist"
+   ],
+   "mirroredGenerator": [
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "framer-motion-dom-14.esbuild",
+    "framer-motion-dom-14.webpack",
+    "framer-motion-dom-11.esbuild",
+    "framer-motion-dom-11.webpack",
+    "framer-motion-14.dist",
+    "framer-motion-11.dist"
+   ],
+   "framerAppearId": [
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "framer-motion-dom-11.esbuild",
+    "framer-motion-dom-11.webpack",
+    "framer-motion-14.dist",
+    "framer-motion-11.dist"
+   ],
+   "scrapeMotionValuesFromProps": [
+    "framer-motion-14.esbuild",
+    "framer-motion-14.webpack",
+    "framer-motion-11.esbuild",
+    "framer-motion-11.webpack",
+    "framer-motion-dom-11.esbuild",
+    "framer-motion-dom-11.webpack",
+    "framer-motion-14.dist",
+    "framer-motion-11.dist"
+   ]
+  },
+  "gsap": {
+   "Missing plugin? gsap.registerPlugin()": [
+    "gsap-3.15.esbuild",
+    "gsap-3.15.webpack",
+    "gsap-3.12.esbuild",
+    "gsap-3.12.webpack",
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "gsap-3.15.dist",
+    "gsap-3.12.dist"
+   ],
+   "onComplete,onUpdate,onStart,onRepeat,onReverseComplete,onInterrupt": [
+    "gsap-3.15.esbuild",
+    "gsap-3.15.webpack",
+    "gsap-3.12.esbuild",
+    "gsap-3.12.webpack",
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "gsap-3.15.dist",
+    "gsap-3.12.dist"
+   ],
+   "to,from,fromTo,delayedCall,set,killTweensOf": [
+    "gsap-3.15.esbuild",
+    "gsap-3.15.webpack",
+    "gsap-3.12.esbuild",
+    "gsap-3.12.webpack",
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "gsap-3.15.dist",
+    "gsap-3.12.dist"
+   ],
+   "data-svg-origin": [
+    "gsap-3.15.esbuild",
+    "gsap-3.15.webpack",
+    "gsap-3.12.esbuild",
+    "gsap-3.12.webpack",
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "gsap-3.15.dist",
+    "gsap-3.12.dist"
+   ],
+   "perspective,force3D,transformOrigin,svgOrigin": [
+    "gsap-3.15.esbuild",
+    "gsap-3.15.webpack",
+    "gsap-3.12.esbuild",
+    "gsap-3.12.webpack",
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "gsap-3.15.dist",
+    "gsap-3.12.dist"
+   ]
+  },
+  "gsap-scrolltrigger": {
+   "gsap-marker-": [
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "scrolltrigger-3.15.dist",
+    "scrolltrigger-3.12.dist"
+   ],
+   "pin-spacer": [
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "scrolltrigger-3.15.dist",
+    "scrolltrigger-3.12.dist"
+   ],
+   "scroller-start": [
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "scrolltrigger-3.15.dist",
+    "scrolltrigger-3.12.dist"
+   ],
+   "scroller-end": [
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "scrolltrigger-3.15.dist",
+    "scrolltrigger-3.12.dist"
+   ],
+   "_gsapAllow": [
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "scrolltrigger-3.15.dist",
+    "scrolltrigger-3.12.dist"
+   ],
+   "_isScrollT": [
+    "scrolltrigger-3.15.esbuild",
+    "scrolltrigger-3.15.webpack",
+    "scrolltrigger-3.12.esbuild",
+    "scrolltrigger-3.12.webpack",
+    "scrolltrigger-3.15.dist",
+    "scrolltrigger-3.12.dist"
+   ]
+  },
+  "lenis": {
+   "data-lenis-prevent": [
+    "lenis-1.3.esbuild",
+    "lenis-1.3.webpack",
+    "lenis-1.0-studio-freight.esbuild",
+    "lenis-1.0-studio-freight.webpack",
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "lenis-1.3.dist",
+    "lenis-1.0-studio-freight.dist"
+   ],
+   "lenisVersion": [
+    "lenis-1.3.esbuild",
+    "lenis-1.3.webpack",
+    "lenis-1.0-studio-freight.esbuild",
+    "lenis-1.0-studio-freight.webpack",
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "lenis-1.3.dist",
+    "lenis-1.0-studio-freight.dist"
+   ],
+   "lenis-smooth": [
+    "lenis-1.3.esbuild",
+    "lenis-1.3.webpack",
+    "lenis-1.0-studio-freight.esbuild",
+    "lenis-1.0-studio-freight.webpack",
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "lenis-1.3.dist",
+    "lenis-1.0-studio-freight.dist"
+   ],
+   "lenis-stopped": [
+    "lenis-1.3.esbuild",
+    "lenis-1.3.webpack",
+    "lenis-1.0-studio-freight.esbuild",
+    "lenis-1.0-studio-freight.webpack",
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "lenis-1.3.dist",
+    "lenis-1.0-studio-freight.dist"
+   ],
+   "wheelMultiplier": [
+    "lenis-1.3.esbuild",
+    "lenis-1.3.webpack",
+    "lenis-1.0-studio-freight.esbuild",
+    "lenis-1.0-studio-freight.webpack",
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "lenis-1.3.dist",
+    "lenis-1.0-studio-freight.dist"
+   ],
+   "syncTouchLerp": [
+    "lenis-1.3.esbuild",
+    "lenis-1.3.webpack",
+    "lenis-1.0-studio-freight.esbuild",
+    "lenis-1.0-studio-freight.webpack",
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "lenis-1.3.dist",
+    "lenis-1.0-studio-freight.dist"
+   ]
+  },
+  "locomotive-scroll": {
+   "is-inview": [
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "locomotive-4.esbuild",
+    "locomotive-4.webpack",
+    "locomotive-5.dist",
+    "locomotive-4.dist"
+   ],
+   "setOutOfView": [
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "locomotive-4.esbuild",
+    "locomotive-4.webpack",
+    "locomotive-5.dist",
+    "locomotive-4.dist"
+   ],
+   "data-scroll-orientation": [
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "locomotive-5.dist"
+   ],
+   "data-scroll-to-href": [
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "locomotive-5.dist"
+   ],
+   "_subscribeScrollElements": [
+    "locomotive-5.esbuild",
+    "locomotive-5.webpack",
+    "locomotive-5.dist"
+   ],
+   "has-scroll-smooth": [
+    "locomotive-4.esbuild",
+    "locomotive-4.webpack",
+    "locomotive-4.dist"
+   ],
+   "has-scroll-init": [
+    "locomotive-4.esbuild",
+    "locomotive-4.webpack",
+    "locomotive-4.dist"
+   ],
+   "c-scrollbar": [
+    "locomotive-4.esbuild",
+    "locomotive-4.webpack",
+    "locomotive-4.dist"
+   ],
+   "data-scroll-section-id": [
+    "locomotive-4.esbuild",
+    "locomotive-4.webpack",
+    "locomotive-4.dist"
+   ]
+  },
+  "three": {
+   "__THREE__": [
+    "three-0.186.esbuild",
+    "three-0.186.webpack",
+    "three-0.160.esbuild",
+    "three-0.160.webpack",
+    "three-0.160.dist"
+   ],
+   "#define gl_FragColor pc_fragColor": [
+    "three-0.186.esbuild",
+    "three-0.186.webpack",
+    "three-0.160.esbuild",
+    "three-0.160.webpack",
+    "three-0.160.dist"
+   ],
+   "clipping_planes_pars_fragment": [
+    "three-0.186.esbuild",
+    "three-0.186.webpack",
+    "three-0.160.esbuild",
+    "three-0.160.webpack",
+    "three-0.160.dist"
+   ],
+   "__webglMultisampledFramebuffer": [
+    "three-0.186.esbuild",
+    "three-0.186.webpack",
+    "three-0.160.esbuild",
+    "three-0.160.webpack",
+    "three-0.160.dist"
+   ],
+   "DEFAULT_MATRIX_WORLD_AUTO_UPDATE": [
+    "three-0.186.esbuild",
+    "three-0.186.webpack",
+    "three-0.160.esbuild",
+    "three-0.160.webpack",
+    "three-0.160.dist"
+   ]
+  },
+  "swiper": {
+   "swiper-wrapper": [
+    "swiper-14.esbuild",
+    "swiper-14.webpack",
+    "swiper-11.esbuild",
+    "swiper-11.webpack",
+    "swiper-14.dist",
+    "swiper-11.dist"
+   ],
+   "swiper-slide-active": [
+    "swiper-14.esbuild",
+    "swiper-14.webpack",
+    "swiper-11.esbuild",
+    "swiper-11.webpack",
+    "swiper-14.dist",
+    "swiper-11.dist"
+   ],
+   "data-swiper-slide-index": [
+    "swiper-14.esbuild",
+    "swiper-14.webpack",
+    "swiper-11.esbuild",
+    "swiper-11.webpack",
+    "swiper-14.dist",
+    "swiper-11.dist"
+   ],
+   "swiper-no-swiping": [
+    "swiper-14.esbuild",
+    "swiper-14.webpack",
+    "swiper-11.esbuild",
+    "swiper-11.webpack",
+    "swiper-14.dist",
+    "swiper-11.dist"
+   ],
+   "--swiper-centered-offset-before": [
+    "swiper-14.esbuild",
+    "swiper-14.webpack",
+    "swiper-11.esbuild",
+    "swiper-11.webpack",
+    "swiper-14.dist",
+    "swiper-11.dist"
+   ]
+  },
+  "embla-carousel": {
+   "scrollSnapList": [
+    "embla-8.esbuild",
+    "embla-8.webpack",
+    "embla-9-rc.esbuild",
+    "embla-9-rc.webpack",
+    "embla-8.dist"
+   ],
+   "internalEngine": [
+    "embla-8.esbuild",
+    "embla-8.webpack",
+    "embla-9-rc.esbuild",
+    "embla-9-rc.webpack",
+    "embla-8.dist"
+   ],
+   "optionsMediaQueries": [
+    "embla-8.esbuild",
+    "embla-8.webpack",
+    "embla-9-rc.esbuild",
+    "embla-9-rc.webpack",
+    "embla-8.dist"
+   ],
+   "scrollContainLimit": [
+    "embla-8.esbuild",
+    "embla-8.webpack",
+    "embla-9-rc.esbuild",
+    "embla-9-rc.webpack",
+    "embla-8.dist"
+   ],
+   "slideSizesWithGaps": [
+    "embla-8.esbuild",
+    "embla-8.webpack",
+    "embla-9-rc.esbuild",
+    "embla-9-rc.webpack",
+    "embla-8.dist"
+   ],
+   "snapsContained": [
+    "embla-8.esbuild",
+    "embla-8.webpack",
+    "embla-9-rc.esbuild",
+    "embla-9-rc.webpack",
+    "embla-8.dist"
+   ]
+  },
+  "lottie-web": {
+   "__[ANIMATIONDATA]__": [
+    "lottie-5.13.esbuild",
+    "lottie-5.13.webpack",
+    "lottie-5.13.dist"
+   ],
+   "data-animation-path": [
+    "lottie-5.13.esbuild",
+    "lottie-5.13.webpack",
+    "lottie-5.13.dist"
+   ],
+   "_createBaseContainerElements": [
+    "lottie-5.13.esbuild",
+    "lottie-5.13.webpack",
+    "lottie-5.13.dist"
+   ],
+   "BLACK_FLAG_CODE_POINT": [
+    "lottie-5.13.esbuild",
+    "lottie-5.13.webpack",
+    "lottie-5.13.dist"
+   ],
+   "bodymovin": [
+    "lottie-5.13.esbuild",
+    "lottie-5.13.webpack",
+    "lottie-5.13.dist"
+   ]
+  },
+  "animejs": {
+   "_absoluteStartTime": [
+    "anime-4.esbuild",
+    "anime-4.webpack",
+    "anime-4.dist"
+   ],
+   "_currentIteration": [
+    "anime-4.esbuild",
+    "anime-4.webpack",
+    "anime-4.dist"
+   ],
+   "_renderTransforms": [
+    "anime-4.esbuild",
+    "anime-4.webpack",
+    "anime-4.dist"
+   ],
+   "_hasFromValue": [
+    "anime-4.esbuild",
+    "anime-4.webpack",
+    "anime-4.dist"
+   ],
+   "suspendWhenDocumentHidden": [
+    "anime-3.esbuild",
+    "anime-3.webpack",
+    "anime-3.dist"
+   ],
+   "easeOutElastic(1, .5)": [
+    "anime-3.esbuild",
+    "anime-3.webpack",
+    "anime-3.dist"
+   ],
+   "isPathTargetInsideSVG": [
+    "anime-3.esbuild",
+    "anime-3.webpack",
+    "anime-3.dist"
+   ],
+   "setDashoffset": [
+    "anime-3.esbuild",
+    "anime-3.webpack",
+    "anime-3.dist"
+   ]
+  },
+  "pixi.js": {
+   "_createBundleAssetId": [
+    "pixi-8.esbuild",
+    "pixi-8.webpack",
+    "pixi-7.esbuild",
+    "pixi-7.webpack",
+    "pixi-8.dist",
+    "pixi-7.dist"
+   ],
+   "_defaultBundleIdentifierOptions": [
+    "pixi-8.esbuild",
+    "pixi-8.webpack",
+    "pixi-7.esbuild",
+    "pixi-7.webpack",
+    "pixi-8.dist",
+    "pixi-7.dist"
+   ],
+   "_videoFrameRequestCallbackHandle": [
+    "pixi-8.esbuild",
+    "pixi-8.webpack",
+    "pixi-7.esbuild",
+    "pixi-7.webpack",
+    "pixi-8.dist",
+    "pixi-7.dist"
+   ],
+   "_isConnectedToTicker": [
+    "pixi-8.esbuild",
+    "pixi-8.webpack",
+    "pixi-7.esbuild",
+    "pixi-7.webpack",
+    "pixi-8.dist",
+    "pixi-7.dist"
+   ],
+   "PixiJS": [
+    "pixi-8.esbuild",
+    "pixi-8.webpack",
+    "pixi-7.esbuild",
+    "pixi-7.webpack",
+    "pixi-8.dist",
+    "pixi-7.dist"
+   ]
+  },
+  "hls.js": {
+   "MANIFEST_INCOMPATIBLE_CODECS_ERROR": [
+    "hls-1.7.esbuild",
+    "hls-1.7.webpack",
+    "hls-1.5.esbuild",
+    "hls-1.5.webpack",
+    "hls-1.7.dist",
+    "hls-1.5.dist"
+   ],
+   "Trying to nudge playhead over buffer-hole": [
+    "hls-1.7.esbuild",
+    "hls-1.7.webpack",
+    "hls-1.5.esbuild",
+    "hls-1.5.webpack",
+    "hls-1.7.dist",
+    "hls-1.5.dist"
+   ],
+   "transmuxer-interface flush error": [
+    "hls-1.7.esbuild",
+    "hls-1.7.webpack",
+    "hls-1.5.esbuild",
+    "hls-1.5.webpack",
+    "hls-1.7.dist",
+    "hls-1.5.dist"
+   ],
+   "hlsManifestParsed": [
+    "hls-1.7.esbuild",
+    "hls-1.7.webpack",
+    "hls-1.5.esbuild",
+    "hls-1.5.webpack",
+    "hls-1.7.dist",
+    "hls-1.5.dist"
+   ],
+   "hlsMediaAttached": [
+    "hls-1.7.esbuild",
+    "hls-1.7.webpack",
+    "hls-1.5.esbuild",
+    "hls-1.5.webpack",
+    "hls-1.7.dist",
+    "hls-1.5.dist"
+   ]
+  },
+  "video.js": {
+   "Plugin must be sub-classed; not directly instantiated.": [
+    "videojs-8.esbuild",
+    "videojs-8.webpack",
+    "videojs-7.esbuild",
+    "videojs-7.webpack",
+    "videojs-8.dist",
+    "videojs-7.dist"
+   ],
+   "vjs-tech": [
+    "videojs-8.esbuild",
+    "videojs-8.webpack",
+    "videojs-7.esbuild",
+    "videojs-7.webpack",
+    "videojs-8.dist",
+    "videojs-7.dist"
+   ],
+   "vjs-big-play-button": [
+    "videojs-8.esbuild",
+    "videojs-8.webpack",
+    "videojs-7.esbuild",
+    "videojs-7.webpack",
+    "videojs-8.dist",
+    "videojs-7.dist"
+   ],
+   "vjs-control-bar": [
+    "videojs-8.esbuild",
+    "videojs-8.webpack",
+    "videojs-7.esbuild",
+    "videojs-7.webpack",
+    "videojs-8.dist",
+    "videojs-7.dist"
+   ],
+   "@videojs/set-user-title": [
+    "videojs-10-html.esbuild",
+    "videojs-10-html.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack"
+   ],
+   "@videojs/media-title": [
+    "videojs-10-html.esbuild",
+    "videojs-10-html.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack"
+   ],
+   "[vjs-store]": [
+    "videojs-10-html.esbuild",
+    "videojs-10-html.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack"
+   ],
+   "@videojs/media/registered": [
+    "videojs-10-html.esbuild",
+    "videojs-10-html.webpack",
+    "videojs-10-react.esbuild",
+    "videojs-10-react.webpack"
+   ]
+  },
+  "plyr": {
+   "plyr__preview-thumb__image-container": [
+    "plyr-3.esbuild",
+    "plyr-3.webpack",
+    "plyr-3.dist"
+   ],
+   "plyr--fullscreen-enabled": [
+    "plyr-3.esbuild",
+    "plyr-3.webpack",
+    "plyr-3.dist"
+   ],
+   "[data-plyr=\"fullscreen\"]": [
+    "plyr-3.esbuild",
+    "plyr-3.webpack",
+    "plyr-3.dist"
+   ],
+   "plyr__controls": [
+    "plyr-3.esbuild",
+    "plyr-3.webpack",
+    "plyr-3.dist"
+   ]
+  },
+  "barba": {
+   "[@barba/core] No Barba container found": [
+    "barba-2.esbuild",
+    "barba-2.webpack",
+    "barba-2.dist"
+   ],
+   "[@barba/core] No Barba wrapper found": [
+    "barba-2.esbuild",
+    "barba-2.webpack",
+    "barba-2.dist"
+   ],
+   "x-barba": [
+    "barba-2.esbuild",
+    "barba-2.webpack",
+    "barba-2.dist"
+   ],
+   "data-barba": [
+    "barba-2.esbuild",
+    "barba-2.webpack",
+    "barba-2.dist"
+   ],
+   "Transition error [page]": [
+    "barba-2.esbuild",
+    "barba-2.webpack",
+    "barba-2.dist"
+   ]
+  },
+  "jquery": {
+   "Thenable self-resolution": [
+    "jquery-4.esbuild",
+    "jquery-4.webpack",
+    "jquery-3.esbuild",
+    "jquery-3.webpack",
+    "jquery-4.dist",
+    "jquery-3.dist"
+   ],
+   "_queueHooks": [
+    "jquery-4.esbuild",
+    "jquery-4.webpack",
+    "jquery-3.esbuild",
+    "jquery-3.webpack",
+    "jquery-4.dist",
+    "jquery-3.dist"
+   ],
+   "_evalUrl": [
+    "jquery-4.esbuild",
+    "jquery-4.webpack",
+    "jquery-3.esbuild",
+    "jquery-3.webpack",
+    "jquery-4.dist",
+    "jquery-3.dist"
+   ],
+   "Boolean Number String Function Array Date RegExp Object Error Symbol": [
+    "jquery-4.esbuild",
+    "jquery-4.webpack",
+    "jquery-3.esbuild",
+    "jquery-3.webpack",
+    "jquery-4.dist",
+    "jquery-3.dist"
+   ],
+   "X-Requested-With": [
+    "jquery-4.esbuild",
+    "jquery-4.webpack",
+    "jquery-3.esbuild",
+    "jquery-3.webpack",
+    "jquery-4.dist",
+    "jquery-3.dist"
+   ]
+  }
+ }
+}

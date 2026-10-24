@@ -1,0 +1,7 @@
+{
+  "pip": ["requests", "playwright"],
+  "weight": "heavy",
+  "min_ram_gb": 4,
+  "min_disk_gb": 5,
+  "install_note": "Heavy: web tier needs requests + playwright + node; native/games tiers need Docker (images build on first use); pure-Python readers need only the stdlib. See SKILL.md (incl. the Linux AppArmor note)."
+}

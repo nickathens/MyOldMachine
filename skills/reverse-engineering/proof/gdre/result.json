@@ -1,0 +1,143 @@
+{
+ "verdict": "PASS",
+ "failures": [],
+ "packs": {
+  "godot3.6.3": {
+   "pack_format": 1,
+   "engine": "3.6.3",
+   "files": 4,
+   "readers_agree": true,
+   "revision": "3.5.0-stable (a7aad78)",
+   "script_lines": 165,
+   "script_differences": {},
+   "recovered_files": 5,
+   "report": {
+    "Decompiled scripts": 1,
+    "Scripts not decompiled": 0,
+    "Imported resources for export session": 1,
+    "Successfully converted": 1,
+    "Lossy": 0,
+    "Rewrote metadata": 0,
+    "Non-importable conversions": 0,
+    "Not converted": 0,
+    "Failed conversions": 0
+   },
+   "scene_matches": true,
+   "behaviour": {
+    "constants": 22,
+    "results": 69,
+    "constants_moved": [],
+    "results_moved": [],
+    "control_results_moved": 10
+   }
+  },
+  "godot4.4.1": {
+   "pack_format": 2,
+   "engine": "4.4.1",
+   "files": 9,
+   "readers_agree": true,
+   "revision": "4.3.0-stable (77af6ca)",
+   "script_lines": 172,
+   "script_differences": {
+    "20": [
+     "const NEG_ZERO : = - 0.0",
+     "const NEG_ZERO : = 0.0"
+    ]
+   },
+   "recovered_files": 14,
+   "report": {
+    "Decompiled scripts": 1,
+    "Scripts not decompiled": 0,
+    "Imported resources for export session": 3,
+    "Successfully converted": 3,
+    "Lossy": 0,
+    "Rewrote metadata": 0,
+    "Non-importable conversions": 0,
+    "Not converted": 0,
+    "Failed conversions": 0
+   },
+   "scene_matches": true,
+   "behaviour": {
+    "constants": 25,
+    "results": 69,
+    "constants_moved": [
+     "NEG_ZERO"
+    ],
+    "results_moved": [],
+    "control_results_moved": 10
+   }
+  },
+  "godot4.6.2": {
+   "pack_format": 3,
+   "engine": "4.6.2",
+   "files": 9,
+   "readers_agree": true,
+   "revision": "4.5.0-stable (ebc36a7)",
+   "script_lines": 172,
+   "script_differences": {
+    "20": [
+     "const NEG_ZERO : = - 0.0",
+     "const NEG_ZERO : = 0.0"
+    ]
+   },
+   "recovered_files": 14,
+   "report": {
+    "Decompiled scripts": 1,
+    "Scripts not decompiled": 0,
+    "Imported resources for export session": 3,
+    "Successfully converted": 3,
+    "Lossy": 0,
+    "Rewrote metadata": 0,
+    "Non-importable conversions": 0,
+    "Not converted": 0,
+    "Failed conversions": 0
+   },
+   "scene_matches": true,
+   "behaviour": {
+    "constants": 25,
+    "results": 69,
+    "constants_moved": [
+     "NEG_ZERO"
+    ],
+    "results_moved": [],
+    "control_results_moved": 10
+   }
+  },
+  "godot4.7.2": {
+   "pack_format": 4,
+   "engine": "4.7.2",
+   "files": 9,
+   "readers_agree": true,
+   "revision": "4.5.0-stable (ebc36a7)",
+   "script_lines": 172,
+   "script_differences": {
+    "20": [
+     "const NEG_ZERO : = - 0.0",
+     "const NEG_ZERO : = 0.0"
+    ]
+   },
+   "recovered_files": 14,
+   "report": {
+    "Decompiled scripts": 1,
+    "Scripts not decompiled": 0,
+    "Imported resources for export session": 3,
+    "Successfully converted": 3,
+    "Lossy": 0,
+    "Rewrote metadata": 0,
+    "Non-importable conversions": 0,
+    "Not converted": 0,
+    "Failed conversions": 0
+   },
+   "scene_matches": true,
+   "behaviour": {
+    "constants": 25,
+    "results": 69,
+    "constants_moved": [
+     "NEG_ZERO"
+    ],
+    "results_moved": [],
+    "control_results_moved": 10
+   }
+  }
+ }
+}

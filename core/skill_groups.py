@@ -74,7 +74,7 @@ GROUPS: list[tuple[str, list[str]]] = [
         "mcp-builder", "api-test", "regex", "workflow",
     ]),
     ("Security", [
-        "security-audit",
+        "reverse-engineering", "security-audit",
     ]),
     ("Research & Data", [
         "research", "last30days", "trading", "price-monitor", "scraper",
@@ -153,6 +153,10 @@ SUMMARIES: dict[str, str] = {
         "Programmatic motion graphics: build videos as React components rendered "
         "to MP4 (animated titles, lower thirds, charts, kinetic typography, data "
         "builds for decks).",
+    "reverse-engineering":
+        "Understand how a thing works: a website (stack, network, libraries in "
+        "minified code, WebAssembly, code recovery), a compiled binary "
+        "(disassembly, decompilation), a game pack or a blob (files hidden inside it).",
     "security-audit":
         "Defensive source-code security audit of a codebase you own or are "
         "authorized to review: hunts for exploitable vulnerabilities and writes "
@@ -280,6 +284,10 @@ DISAMBIGUATION: dict[str, list[str]] = {
         "{google-workspace} for Drive/Docs/Sheets/Slides",
         "{translate} for machine translation",
         "{clipboard} bridges phone and desktop copy",
+    ],
+    "Security": [
+        "{reverse-engineering} to understand how a thing works (a site, binary or blob)",
+        "{security-audit} to hunt for vulnerabilities in code you own or may review",
     ],
     "Greece": [
         "{greek-law} for law, contracts and legal drafting",

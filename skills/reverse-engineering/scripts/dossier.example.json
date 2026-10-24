@@ -1,0 +1,71 @@
+{
+  "target": "https://example-studio.com (reel landing page)",
+  "tier": "web",
+  "question": "How does scrolling drive the reel animation, and does the page call any backend API while it plays?",
+  "lawful_basis": {
+    "purpose": "interoperability",
+    "note": "Understanding a published technique to build a comparable scroll reel for our own client; no code or assets are copied."
+  },
+  "analyst_date": "2026-10-12",
+  "claims": [
+    {
+      "kind": "ground_truth",
+      "id": "gt-gsap",
+      "statement": "The page loads GSAP 3.12.5 and the ScrollTrigger plugin.",
+      "evidence": {
+        "tool": "fingerprint.py",
+        "locator": "HTML <script src>",
+        "literal": "https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"
+      }
+    },
+    {
+      "kind": "ground_truth",
+      "id": "gt-lenis",
+      "statement": "The page loads Lenis smooth-scroll.",
+      "evidence": {
+        "tool": "fingerprint.py",
+        "locator": "HTML <script src>",
+        "literal": "https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"
+      }
+    },
+    {
+      "kind": "ground_truth",
+      "id": "gt-host",
+      "statement": "The page is served from Vercel.",
+      "evidence": {
+        "tool": "capture_net.py",
+        "locator": "response header on the document request",
+        "literal": "x-vercel-id: cdg1::abcde-1700000000000-0123456789ab"
+      }
+    },
+    {
+      "kind": "hypothesis",
+      "id": "hyp-pinning",
+      "statement": "The reel is a single pinned section whose internal timeline is scrubbed by scroll position via ScrollTrigger (scrub: true), with Lenis smoothing the wheel input.",
+      "basis": "GSAP ScrollTrigger plus Lenis is the standard stack for scrub-driven pinned reels; the two libraries together (gt-gsap, gt-lenis) are rarely loaded for anything else.",
+      "supports": ["gt-gsap", "gt-lenis"]
+    },
+    {
+      "kind": "behavioural",
+      "id": "beh-no-api",
+      "statement": "Scrubbing the reel from top to bottom triggers no XHR/fetch calls; all frames are client-side.",
+      "status": "confirmed",
+      "evidence": {
+        "method": "dynamic",
+        "locator": "capture_net.py --scroll, XHR/fetch filter over the full scroll",
+        "literal": "0 xhr/fetch entries recorded during 8 scroll steps (only static .js/.css/.woff2/.webp)"
+      }
+    },
+    {
+      "kind": "behavioural",
+      "id": "beh-prefetch",
+      "statement": "The page may prefetch the next route's data when the reel nears its end.",
+      "status": "unconfirmed",
+      "evidence": {
+        "method": "dynamic",
+        "locator": "capture_net.py --scroll, last 2 scroll steps",
+        "literal": "one request to /_next/data/.../next.json observed once but not reproduced on a second run"
+      }
+    }
+  ]
+}
